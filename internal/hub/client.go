@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -143,11 +144,39 @@ func (c *memberClient) get(ctx context.Context, m MemberRecord, scope apitokens.
 }
 
 func (c *memberClient) getOnce(ctx context.Context, m MemberRecord, scope apitokens.Scope, path string, hdr http.Header) (memberReply, error) {
+	return c.doOnce(ctx, m, scope, http.MethodGet, path, nil, hdr)
+}
+
+// do calls method path on m with the token of scope and a JSON body (nil:
+// none). A 401 drops the cached token and retries once with a fresh one.
+func (c *memberClient) do(ctx context.Context, m MemberRecord, scope apitokens.Scope, method, path string, body []byte) (memberReply, error) {
+	var hdr http.Header
+	if body != nil {
+		hdr = http.Header{"Content-Type": {"application/json"}}
+	}
+	rep, err := c.doOnce(ctx, m, scope, method, path, body, hdr)
+	if err != nil || rep.status != http.StatusUnauthorized || !m.TokenRequired {
+		return rep, err
+	}
+	c.invalidate(m, scope)
+	select {
+	case <-ctx.Done():
+		return rep, ctx.Err()
+	case <-time.After(tokenRetryDelay):
+	}
+	return c.doOnce(ctx, m, scope, method, path, body, hdr)
+}
+
+func (c *memberClient) doOnce(ctx context.Context, m MemberRecord, scope apitokens.Scope, method, path string, body []byte, hdr http.Header) (memberReply, error) {
 	secret, err := c.token(ctx, m, scope)
 	if err != nil {
 		return memberReply{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, memberURL(m, path), nil)
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, memberURL(m, path), rd)
 	if err != nil {
 		return memberReply{}, fmt.Errorf("hub: member request: %w", err)
 	}
@@ -162,11 +191,11 @@ func (c *memberClient) getOnce(ctx context.Context, m MemberRecord, scope apitok
 		return memberReply{}, fmt.Errorf("hub: member %s unreachable: %w", m.URL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, memberResponseLimit))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, memberResponseLimit))
 	if err != nil {
 		return memberReply{}, fmt.Errorf("hub: read member response: %w", err)
 	}
-	return memberReply{status: resp.StatusCode, header: resp.Header, body: body}, nil
+	return memberReply{status: resp.StatusCode, header: resp.Header, body: data}, nil
 }
 
 // memberURL joins the member's base URL and an absolute path.

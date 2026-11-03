@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/vnovick/itervox/internal/apitokens"
+	"github.com/vnovick/itervox/internal/cors"
 )
 
 // Hub is a serving hub: its member set, merged feed and HTTP surface.
@@ -28,6 +30,17 @@ type Hub struct {
 	feed      *feed
 	cursors   *cursors
 	notifiers []Notifier
+	// notify is the notification settings (#229); channels the registered
+	// channels by name (desktop always); chanNotifiers their notifiers.
+	notify        *notifySettingsStore
+	desktop       *desktopChannel
+	channels      map[string]Channel
+	chanNotifiers []*channelNotifier
+	// push is the built-in Web Push channel and vapid its key (#231);
+	// pairing the pending phone pairing codes.
+	push    *pushChannel
+	vapid   *vapidKeys
+	pairing *pairingCodes
 	// self is what this hub published in hub.lock (zero in unit tests).
 	self   LockInfo
 	router chi.Router
@@ -48,10 +61,18 @@ func newHub(cfg Config) (*Hub, error) {
 		client:  client,
 		members: newMemberSet(client),
 		cursors: loadCursors(filepath.Join(cfg.StateDir, CursorFileName)),
+		vapid:   newVAPIDKeys(filepath.Join(cfg.StateDir, VAPIDKeyFileName)),
+		pairing: newPairingCodes(),
 	}
+	h.push = newPushChannel(cfg, h.vapid, loadPushStore(filepath.Join(cfg.StateDir, PushSubscriptionsFileName)), h.tokens)
 	h.feed = newFeed(h.cursors.headSeq())
+	h.setupChannels(cfg)
+	notifiers := slices.Clone(cfg.Notifiers)
+	for _, cn := range h.chanNotifiers {
+		notifiers = append(notifiers, cn)
+	}
 	seen := map[string]bool{}
-	for _, n := range cfg.Notifiers {
+	for _, n := range notifiers {
 		if n == nil || n.Name() == "" || seen[n.Name()] {
 			slog.Warn("hub: notifier skipped (missing or duplicate name)")
 			continue
@@ -91,12 +112,14 @@ func (h *Hub) Handler() http.Handler { return h.router }
 func (h *Hub) routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(securityHeaders)
+	r.Use(cors.Middleware(h.cfg.AllowedOrigins)) // #231 server.allowed_origins
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/hub/", http.StatusFound)
 	})
 	r.Get("/hub/api/v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "hub": true})
 	})
+	r.Post("/hub/api/v1/pairing/exchange", h.handlePairingExchange)
 	r.Group(func(r chi.Router) {
 		r.Use(h.authMiddleware)
 		r.Use(scopeMiddleware)
@@ -104,6 +127,16 @@ func (h *Hub) routes() chi.Router {
 		r.Get("/hub/api/v1/projects", h.handleProjects)
 		r.Get("/hub/api/v1/feed", h.handleFeed)
 		r.Get("/hub/api/v1/events", h.handleEvents)
+		r.Get("/hub/api/v1/notifications", h.handleGetNotifications)
+		r.Put("/hub/api/v1/notifications", h.handlePutNotifications)
+		r.Post("/hub/api/v1/notifications/test", h.handleTestNotification)
+		r.Get("/hub/api/v1/push/vapid-public-key", h.handlePushPublicKey)
+		r.Post("/hub/api/v1/push/subscribe", h.handlePushSubscribe)
+		r.Get("/hub/api/v1/push/devices", h.handlePushDevices)
+		r.Delete("/hub/api/v1/push/devices/{id}", h.handlePushRevoke)
+		r.Post("/hub/api/v1/pairing", h.handleCreatePairing)
+		r.Get("/hub/api/v1/devices", h.handleDevices)
+		r.Delete("/hub/api/v1/devices/{id}", h.handleRevokeDevice)
 		r.Handle("/hub/p/{project}/api/*", http.HandlerFunc(h.handleProxy))
 	})
 	r.Handle("/hub/api/*", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -138,8 +171,18 @@ func (h *Hub) start(ctx context.Context) {
 	run("hub-discovery", h.discover)
 	run("hub-feed", h.pollFeeds)
 	run("hub-cursor-saver", h.saveCursors)
+	// #230: interactive channels (Slack's Socket Mode) hold their own
+	// connection only while this daemon serves the hub.
+	for _, name := range ChannelNames {
+		if ic, ok := h.channels[name].(InteractiveChannel); ok {
+			run("hub-channel-"+name, func(ctx context.Context) { ic.Run(ctx, hubActions{h: h}) })
+		}
+	}
 	for _, n := range h.notifiers {
 		run("hub-notifier-"+n.Name(), func(ctx context.Context) { h.runNotifier(ctx, n) })
+	}
+	for _, cn := range h.chanNotifiers {
+		run("hub-digest-"+cn.ch.Name(), cn.runDigest)
 	}
 }
 

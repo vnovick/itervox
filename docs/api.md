@@ -810,7 +810,7 @@ endpoint.
 | `run_finished` | A run succeeded, was cancelled (`outcome: "cancelled"`) or stopped by reconciliation | run fields, `outcome` |
 | `run_failed` | A run failed, stalled, was rate limited, … | run fields, `outcome` (the terminal reason) |
 | `input_required` | An agent asked a question, or a guardrail approval waits (`kind: "guardrail_approval"`) | run fields |
-| `input_answered` | A question was answered (`via`: `dashboard`, `tracker`, `agent`) or dismissed (`via: "dismiss"`) | `via`, `outcome` |
+| `input_answered` | A question was answered (`via`: `dashboard`, `slack`, `tracker`, `agent`) or dismissed (`via: "dismiss"`) | `via`, `outcome` |
 | `review_verdict` | A reviewer finished | `profile`, `verdict`, `outcome` (`passed` / `blocked`, once the review is complete) |
 | `pr_opened` | A run recorded a PR itervox did not manage yet | `prUrl`, `runId` |
 | `pr_merged` | The `merge_pr` action merged a PR | `prUrl` |
@@ -843,9 +843,20 @@ daemons' envelope, `{"error":{"code","message"}}`.
 | `GET /hub/api/v1/whoami` | viewer | `{"principal":{"scope","tokenId","name"},"hub":true}` |
 | `GET /hub/api/v1/projects` | viewer | the members |
 | `GET /hub/api/v1/feed?since=&limit=` | viewer | the merged event feed |
-| `GET /hub/api/v1/events` | viewer | SSE: `feed` and `projects` announcements |
+| `GET /hub/api/v1/events` | viewer | SSE: `feed` and `projects` announcements, desktop `notification` frames |
+| `GET /hub/api/v1/notifications` | admin | the notification settings, kinds, channels and projects |
+| `PUT /hub/api/v1/notifications` | admin | replace the notification settings |
+| `POST /hub/api/v1/notifications/test` | operator | send a test notification through one channel |
+| `GET /hub/api/v1/push/vapid-public-key` | viewer | `{"publicKey"}`: the hub's VAPID application server key (#231) |
+| `POST /hub/api/v1/push/subscribe` | operator | subscribe this browser to Web Push under a device name |
+| `GET /hub/api/v1/push/devices` | operator | the push devices (name and push service only) |
+| `DELETE /hub/api/v1/push/devices/{id}` | operator | stop pushing to a device |
+| `POST /hub/api/v1/pairing` | admin | a one-time phone pairing code (10 minutes) |
+| `POST /hub/api/v1/pairing/exchange` | none (the code) | trade a pairing code for the device's operator token |
+| `GET /hub/api/v1/devices` | admin | the paired devices |
+| `DELETE /hub/api/v1/devices/{id}` | admin | revoke a paired device's token and its pushes |
 | `* /hub/p/{project}/api/v1/...` | the member route's | the member's API through the proxy |
-| `GET /hub/`, `/hub/p/{project}/...`, `/assets/...` | none | the dashboard |
+| `GET /hub/`, `/hub/m`, `/hub/pair`, `/hub/p/{project}/...`, `/assets/...`, `/manifest.webmanifest`, `/sw.js`, `/icons/...` | none | the dashboard, its phone layout and the installable web app |
 
 ### `GET /hub/api/v1/projects`
 
@@ -916,6 +927,110 @@ Server-sent events. On connect and on every change: `event: projects`
 (`{"count":N}`, the member count) and `event: feed` (`{"headSeq":N}`, the
 merged feed's newest `seq`); `: ping` comments every 25 s. Read the events
 themselves with `GET /hub/api/v1/feed?since=`.
+
+#229: every notification the settings route to the desktop channel is sent
+as `event: notification` with `id: <n>` and the notification as data:
+
+```
+event: notification
+id: 12
+data: {"id":12,"channel":"desktop","kind":"guardrail_approval","urgent":true,"project":"web","identifier":"ENG-12","title":"ENG-12 needs approval","body":"web","url":"/hub/p/web/?issue=ENG-12","seq":1203,"ts":"2026-10-22T10:00:00Z"}
+```
+
+`kind` is a notification kind, `digest` (with `items`, the batched
+notifications) or `test`. Titles are built from the kind, identifier and
+enum payload fields only, never agent output. The stream starts after
+`?notify_since=<id>` or the `Last-Event-ID` header, else at the newest
+notification (nothing old is replayed); an id above the hub's newest (the
+hub restarted) replays the up to 100 it kept. In `GET /hub/api/v1/feed`,
+each event that notifies carries `notifyKind` and `channels`, the channels
+the settings route it to at read time.
+
+### `GET` / `PUT /hub/api/v1/notifications`
+
+Admin. The hub's notification settings
+(`~/.itervox/hub/notifications.json`, `0600`, schema
+[`notifications.schema.json`](https://itervox.dev/schema/notifications.schema.json);
+guide: [Notifications](../site/src/content/docs/guides/hub.mdx#notifications)):
+
+```json
+{
+  "settings": {
+    "$schema": "https://itervox.dev/schema/notifications.schema.json",
+    "version": 1,
+    "digest_interval_minutes": 15,
+    "channels": { "push": { "enabled": true }, "slack": { "enabled": true }, "desktop": { "enabled": true } },
+    "defaults": { "input_required": ["push", "slack", "desktop"], "guardrail_approval": ["push", "slack", "desktop"],
+                  "run_failed": ["push", "slack", "desktop"], "review_verdict": [], "pr_merged": [],
+                  "lesson_proposed": [], "dispatch_paused": [] },
+    "projects": { "web": { "routes": { "pr_merged": ["desktop"] }, "snooze_until": "2026-10-23T08:00:00Z" } }
+  },
+  "kinds": [ { "name": "input_required", "urgent": true }, { "name": "run_failed", "urgent": false } ],
+  "channels": [ { "name": "push", "available": false }, { "name": "slack", "available": false }, { "name": "desktop", "available": true } ],
+  "projects": ["api", "web"]
+}
+```
+
+`PUT` takes the `settings` document (unknown fields, kinds and channels are
+400 `invalid_settings`; `digest_interval_minutes` is 1–1440), saves it and
+applies it at once; it answers like `GET`. A project's `routes` override
+`defaults` per kind (an empty list turns a kind off); `snooze_until`
+suppresses the project's notifications until then. `available` is false for
+a channel not set up on this hub.
+
+### `POST /hub/api/v1/notifications/test`
+
+Operator. Body `{"channel": "push" | "slack" | "desktop"}`: sends one test
+notification through that channel, whatever the routes and snoozes say.
+`200 {"sent":true,"channel":"desktop"}`; 400 `unknown_channel`; 409
+`channel_unavailable` when the channel is not set up; 502 `send_failed`.
+
+### Phones: Web Push and pairing (#231)
+
+Guide: Your phone (site guides).
+
+**`POST /hub/api/v1/push/subscribe`** (operator) takes a device name and the
+browser's `PushSubscription.toJSON()`:
+
+```json
+{ "name": "Pixel", "subscription": { "endpoint": "https://fcm.googleapis.com/fcm/send/…",
+  "keys": { "p256dh": "<base64url P-256 key>", "auth": "<base64url 16 bytes>" } } }
+```
+
+201 `{"device":{"id","name","service","tokenId","created"}}`. The endpoint
+must be https on a known push service (Google, Mozilla, Apple, Microsoft;
+400 `invalid_subscription` otherwise); re-subscribing the same endpoint
+updates that device. The device is bound to the caller's hub token: revoking
+the token removes it. At most 50 devices (409 `too_many_devices`). The list
+(`GET /hub/api/v1/push/devices`) never returns an endpoint or key.
+
+Every notification the notification settings
+route to the `push` channel is sent to every device, encrypted per RFC 8291
+(`Content-Encoding: aes128gcm`) and signed with the hub's VAPID key
+(`~/.itervox/hub/push_vapid.pem`, `0600`, created on first use). The
+decrypted payload is exactly
+`{"kind","project","issue","title","url"}`: a notification kind (or
+`digest`, `test`), a redacted title of at most 80 characters and a
+hub-relative link (`/hub/p/{project}/m/{issue}`, else `/hub/m`). A device the
+push service answers 404 or 410 for is removed.
+
+**`POST /hub/api/v1/pairing`** (admin) answers 201
+`{"code","expiresAt","path"}`: a 160-bit one-time code, valid for 10
+minutes, and the link path `/hub/pair#code=<code>`. At most 20 codes are
+pending (429 `too_many_pairings`). **`POST /hub/api/v1/pairing/exchange`**
+takes `{"code","name"}` without a token and answers 201
+`{"token","device":{"id","name","created"}}`: a new operator hub token named
+`device: <name>`, shown once. A wrong, used or expired code is 400
+`invalid_code`; after 10 wrong codes in a minute the exchange answers 429
+`too_many_attempts` until the minute is over. **`GET /hub/api/v1/devices`**
+(admin) lists the paired devices (`id`, `name`, `created`, `lastUsed`,
+`pushDevices`); **`DELETE /hub/api/v1/devices/{id}`** revokes one (204; 404
+for a token that is not a paired device).
+
+**CORS.** `server.allowed_origins` of the hosting daemon applies to every
+hub route (and to that daemon's own API): a listed origin gets
+`Access-Control-Allow-Origin` for itself and its preflights answered; any
+other cross-origin preflight is refused with 403 `origin_not_allowed`.
 
 ### The proxy: `/hub/p/{project}/api/v1/...`
 
@@ -1519,7 +1634,7 @@ message) when the tracker refuses.
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
 | `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
-| `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true}` | `{"ok":true}` |
+| `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true,"via"?:"slack"}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
 | `POST` | `/issues/{identifier}/comment` | `{"body":"..."}` | `202 {"queued":true,"identifier":"ENG-1"}` or `200 {"ok":true,"identifier":"ENG-1"}` |
@@ -1555,6 +1670,13 @@ it answers an ordinary input request but never a guardrail approval (the
 event loop ignores it for an approval entry, so the refusal holds even when
 an approval appears after the caller's check), and the feed records it with
 `via: "agent"`. Guardrail approvals stay human-only.
+
+`via: "slack"` (#230) marks a human reply the hub's Slack app relays for an
+allow-listed Slack user: it answers input requests and guardrail approvals
+like a dashboard reply, is mirrored to the tracker the same way, and the
+`input_answered`, `guardrail_approved` and `guardrail_blocked` feed events
+record `via: "slack"`. `via` is optional and a closed enum: any other value,
+or `via` together with `fromAgent`, is `400 bad_request` (`field: "via"`).
 
 Operator comments are plain comments (no managed marker): they can fire
 `tracker_comment_added` automations and are delivered through the write-ahead

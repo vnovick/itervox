@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use crate::client;
 use crate::events::Alert;
 use crate::prompt::{ask_choice, ask_text};
-use crate::remote::{token_key, IapMode, Remotes, Transport, REMOTES_FILE};
-use crate::remote_model::{ConnectionView, DashboardTarget, RemoteCore};
+use crate::remote::{hub_key, token_key, IapMode, Remotes, Transport, REMOTES_FILE};
+use crate::remote_model::{hubs_down, ConnectionView, DashboardTarget, RemoteCore};
 use crate::remote_ops::{
-    add_connection, forget_tokens, obtain_token, rediscover, tunnel_specs, AddRequest,
+    add_connection, forget_tokens, obtain_token, rediscover, tunnel_specs_with, AddRequest,
 };
 use crate::sessions::SessionsJob;
 use crate::shellpath::{resolve_tools_for_app, Tools};
@@ -127,10 +127,13 @@ impl RemoteShared {
                 let tools = me.tools().clone();
                 let mut mgr = TunnelManager::new(tools, log_dir, TunnelTiming::default());
                 let mut events = PollingSystemEvents::new();
-                me.sync(&mut mgr);
+                // #232: connections whose hub stopped answering; their
+                // members get their own tunnels until it serves again.
+                let mut down = HashSet::new();
+                me.sync(&mut mgr, &down);
                 loop {
                     match rx.recv_timeout(TUNNEL_TICK) {
-                        Ok(TunnelCmd::Sync) => me.sync(&mut mgr),
+                        Ok(TunnelCmd::Sync) => me.sync(&mut mgr, &down),
                         Ok(TunnelCmd::Restart(ids)) => {
                             for id in ids {
                                 mgr.restart(&id, Instant::now());
@@ -153,6 +156,11 @@ impl RemoteShared {
                     let changed = mgr.tick(now, &health_probe);
                     let statuses = mgr.statuses(now);
                     me.remember_ports(&statuses);
+                    let now_down = hubs_down(&lock(&me.remotes), &statuses);
+                    if now_down != down {
+                        down = now_down;
+                        me.sync(&mut mgr, &down);
+                    }
                     *lock(&me.statuses) = statuses;
                     if changed {
                         on_change();
@@ -162,8 +170,8 @@ impl RemoteShared {
             .map(|_| ())
     }
 
-    fn sync(&self, mgr: &mut TunnelManager) {
-        let specs = tunnel_specs(&lock(&self.remotes));
+    fn sync(&self, mgr: &mut TunnelManager, hub_down: &HashSet<String>) {
+        let specs = tunnel_specs_with(&lock(&self.remotes), hub_down);
         let ids: HashSet<String> = specs.iter().map(|s| s.id.clone()).collect();
         mgr.retain(&ids);
         let now = Instant::now();
@@ -425,6 +433,7 @@ impl RemoteShared {
                 c.daemons
                     .iter()
                     .map(|d| token_key(&c.id, &d.workflow))
+                    .chain(c.hub.as_ref().map(|_| hub_key(&c.id)))
                     .collect()
             })
             .unwrap_or_default();

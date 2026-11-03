@@ -2159,6 +2159,7 @@ export const HubMemberSummarySchema = z.object({
       retrying: z.number().optional(),
       paused: z.number().optional(),
       inputRequired: z.number().optional(),
+      recentFailures: z.number().optional(), // #231 the phone's attention list
     })
     .optional(),
 });
@@ -2198,3 +2199,93 @@ export const HubProjectsResponseSchema = z.object({
     .transform((v) => v ?? []),
 });
 export type HubProjectsResponse = z.infer<typeof HubProjectsResponseSchema>;
+
+// #229 — GET/PUT /hub/api/v1/notifications (internal/hub notify_api.go
+// NotificationsResponse; the settings are notifications.json, schema at
+// site/public/schema/notifications.schema.json).
+const HubChannelRoutesSchema = z.record(z.string(), z.array(z.string()));
+export const HubNotificationSettingsSchema = z.object({
+  $schema: z.string().optional(),
+  version: z.number(),
+  digest_interval_minutes: z.number(),
+  channels: z.record(z.string(), z.object({ enabled: z.boolean() })),
+  defaults: HubChannelRoutesSchema,
+  projects: z.record(
+    z.string(),
+    z.object({
+      routes: HubChannelRoutesSchema.optional(),
+      snooze_until: z.string().optional(),
+    }),
+  ),
+});
+export type HubNotificationSettings = z.infer<typeof HubNotificationSettingsSchema>;
+
+export const HubNotificationsResponseSchema = z.object({
+  settings: HubNotificationSettingsSchema,
+  kinds: z.array(z.object({ name: z.string(), urgent: z.boolean() })),
+  channels: z.array(z.object({ name: z.string(), available: z.boolean() })),
+  projects: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type HubNotificationsResponse = z.infer<typeof HubNotificationsResponseSchema>;
+
+// #231 — phones: push devices (GET /hub/api/v1/push/devices, internal/hub
+// push.go PushDeviceRow), paired devices (GET /hub/api/v1/devices,
+// pairing.go DeviceRow), a pairing code and its exchange.
+export const HubPushDeviceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  service: z.string(),
+  tokenId: z.string(),
+  created: z.string(),
+});
+export type HubPushDevice = z.infer<typeof HubPushDeviceSchema>;
+export const HubPushDevicesResponseSchema = z.object({
+  devices: z
+    .array(HubPushDeviceSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+
+export const HubDeviceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  created: z.string(),
+  lastUsed: z.string().optional(),
+  pushDevices: z.number().default(0),
+});
+export type HubDevice = z.infer<typeof HubDeviceSchema>;
+export const HubDevicesResponseSchema = z.object({
+  devices: z
+    .array(HubDeviceSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+
+export const HubPairingSchema = z.object({
+  code: z.string(),
+  expiresAt: z.string(),
+  path: z.string(),
+});
+export type HubPairing = z.infer<typeof HubPairingSchema>;
+
+export const HubPairingExchangeSchema = z.object({
+  token: z.string().min(1),
+  device: HubDeviceSchema,
+});
+
+// The slice of a member's GET /api/v1/state the phone's needs-attention
+// list reads through the hub proxy (the rest of the snapshot is ignored).
+export const HubAttentionStateSchema = z.object({
+  inputRequired: z
+    .array(InputRequiredEntrySchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  recentFailures: z
+    .array(FailureRowSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type HubAttentionState = z.infer<typeof HubAttentionStateSchema>;

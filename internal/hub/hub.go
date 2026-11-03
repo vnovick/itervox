@@ -26,12 +26,30 @@
 // Merged events go to every enabled Notifier, at least once, with a
 // per-notifier cursor and backoff.
 //
+// Phones (#231). The hub serves the dashboard as an installable web app
+// (manifest, icons and service worker come with the embedded bundle) with
+// a mobile layout at /hub/m. A built-in "push" channel sends Web Push
+// (RFC 8291 encryption, a local VAPID key) to the devices subscribed with
+// POST /hub/api/v1/push/subscribe; a phone pairs by exchanging a one-time
+// QR code for its own operator token (pairing.go); server.allowed_origins
+// lets a dashboard hosted on another origin call the hub (internal/cors).
+//
+// Notifications (#229). StateDir/notifications.json routes each
+// notification kind per project to the channels push, slack and desktop,
+// with a per-project snooze and a digest interval (NotificationSettings,
+// GET/PUT /hub/api/v1/notifications). Every registered Channel (desktop
+// built in, Config.Channels for the rest) gets a channel notifier that
+// sends urgent kinds at once and batches the others into digests; the
+// desktop channel publishes on GET /hub/api/v1/events for the Mac app.
+// Snooze and digests are hub state, never a member's.
+//
 // Event-loop rule: the hub runs in a daemon process but outside its
 // orchestrator event loop. It never touches the hosting project's state
 // except through that project's HTTP API, exactly like any other member.
 //
 // The package imports the standard library, chi, fsnotify and
-// internal/apitokens, internal/atomicfs and internal/metrics only.
+// internal/apitokens, internal/atomicfs, internal/cors, internal/logging
+// and internal/metrics only.
 package hub
 
 import (
@@ -42,6 +60,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -105,6 +124,23 @@ type Config struct {
 	SPA http.Handler
 	// Notifiers receive the merged feed.
 	Notifiers []Notifier
+	// Channels are the notification channels set up besides the built-in
+	// desktop and push ones (#229; Slack #230). Each is routed by the
+	// notification settings in StateDir/notifications.json. A channel name
+	// outside ChannelNames, or a repeat, is skipped.
+	Channels []Channel
+	// AllowedOrigins is the hosting daemon's server.allowed_origins (#231):
+	// the origins (normalized, internal/cors) whose pages may call the hub
+	// cross-origin. Empty: same-origin only.
+	AllowedOrigins []string
+	// PushSubject is the VAPID contact (DefaultVAPIDSubject when empty).
+	PushSubject string
+	// PushHTTPClient sends Web Push requests (a 15 s timeout client when
+	// nil); redirects are never followed. Tests point it at a fake.
+	PushHTTPClient *http.Client
+	// PushEndpointAllowed decides which subscription endpoints the hub
+	// accepts and sends to (https on DefaultPushServices when nil).
+	PushEndpointAllowed func(*url.URL) bool
 
 	// Tunables; zero means the default in parentheses.
 	ElectionPoll    time.Duration // how often a follower retries the lock (1s)

@@ -39,7 +39,16 @@ pub struct TunnelSpec {
     pub remote_port: u16,
     /// The local port to try first (the last one used), 0 for any.
     pub preferred_port: u16,
+    /// The unauthenticated path the health probe reads through the tunnel:
+    /// [`DAEMON_HEALTH_PATH`] for a daemon, [`HUB_HEALTH_PATH`] for a
+    /// remote machine's hub (#232).
+    pub health_path: String,
 }
+
+/// A daemon's health route.
+pub const DAEMON_HEALTH_PATH: &str = "/api/v1/health";
+/// The hub's health route (#232).
+pub const HUB_HEALTH_PATH: &str = "/hub/api/v1/health";
 
 /// Where a tunnel is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,15 +185,16 @@ pub fn port_is_free(port: u16) -> bool {
 }
 
 /// How a probe is done; the default is [`health_probe`].
-pub type Probe = dyn Fn(u16) -> Result<(), String> + Sync;
+pub type Probe = dyn Fn(u16, &str) -> Result<(), String> + Sync;
 
 /// Per-probe bound.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// TCP connect to `127.0.0.1:port`, then `GET /api/v1/health` through it
-/// (no token needed). A tunnel can accept connections while its far end is
-/// gone; only the HTTP answer proves the daemon is reachable.
-pub fn health_probe(port: u16) -> Result<(), String> {
+/// TCP connect to `127.0.0.1:port`, then `GET <path>` (the daemon's or the
+/// hub's health route) through it (no token needed). A tunnel can accept
+/// connections while its far end is gone; only the HTTP answer proves the
+/// daemon is reachable.
+pub fn health_probe(port: u16, path: &str) -> Result<(), String> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).map_err(|e| format!("port closed: {e}"))?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -194,7 +204,7 @@ pub fn health_probe(port: u16) -> Result<(), String> {
         .build()
         .into();
     let resp = agent
-        .get(&format!("http://127.0.0.1:{port}/api/v1/health"))
+        .get(&format!("http://127.0.0.1:{port}{path}"))
         .call()
         .map_err(|e| format!("daemon unreachable: {e}"))?;
     match resp.status().as_u16() {
@@ -248,7 +258,8 @@ impl TunnelManager {
         if let Some(t) = self.tunnels.get_mut(&spec.id) {
             let same = t.spec.transport == spec.transport
                 && t.spec.daemon_host == spec.daemon_host
-                && t.spec.remote_port == spec.remote_port;
+                && t.spec.remote_port == spec.remote_port
+                && t.spec.health_path == spec.health_path;
             t.spec.preferred_port = spec.preferred_port;
             if !same {
                 t.spec = spec;
@@ -341,16 +352,16 @@ impl TunnelManager {
             }
         }
         // Probe running tunnels in parallel.
-        let targets: Vec<(String, u16)> = self
+        let targets: Vec<(String, u16, String)> = self
             .tunnels
             .iter()
             .filter(|(_, t)| t.child.is_some())
-            .map(|(k, t)| (k.clone(), t.port))
+            .map(|(k, t)| (k.clone(), t.port, t.spec.health_path.clone()))
             .collect();
         let results: Vec<(String, Result<(), String>)> = std::thread::scope(|s| {
             let hs: Vec<_> = targets
                 .iter()
-                .map(|(k, p)| s.spawn(move || (k.clone(), probe(*p))))
+                .map(|(k, p, path)| s.spawn(move || (k.clone(), probe(*p, path))))
                 .collect();
             hs.into_iter().filter_map(|h| h.join().ok()).collect()
         });

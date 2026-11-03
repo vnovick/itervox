@@ -9,8 +9,9 @@
 #       terminal, re-panic — cmd/itervox/gosafe.go), or
 #       recoverServerGoroutine(...) (internal/server's one-shot sibling of
 #       RecoverGoroutine; server must not import orchestrator), or
-#       recoverHubGoroutine(...) (internal/hub: logs and counts the panic and
-#       ends only that hub goroutine, never the hosting daemon), or
+#       recoverHubGoroutine(...) (internal/hub and internal/hub/slack: logs
+#       and counts the panic and ends only that hub goroutine, never the
+#       hosting daemon), or
 #   (b) appear on the reasoned ALLOWLIST below, with the exact number of
 #       occurrences expected in that file.
 # goSafe(&o.<wg>, ...) launches are not `go` statements at their call sites;

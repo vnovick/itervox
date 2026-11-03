@@ -4,7 +4,14 @@ import { getToken, useTokenStore } from './tokenStore';
 import { TokenEntryScreen } from './TokenEntryScreen';
 import { ServerDownScreen } from './ServerDownScreen';
 import { AUTH_PROBE_TIMEOUT_MS } from '../utils/timings';
-import { authProbeUrl, healthUrl } from './apiBase';
+import { authProbeUrl, getApiContext, healthUrl } from './apiBase';
+import { PairDeviceScreen } from './PairDeviceScreen';
+
+/** #231 — /hub/pair is the phone's pairing page: shown before any token. */
+function isPairingPage(): boolean {
+  const ctx = getApiContext();
+  return ctx.mode === 'hub' && ctx.view === 'pair';
+}
 
 /**
  * Top-level wrapper that gates the app on successful authentication.
@@ -57,11 +64,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
     captureTokenFromUrl();
   }, []);
 
+  const pairing = isPairingPage();
   useEffect(() => {
-    if (status === 'unknown') {
+    if (status === 'unknown' && !pairing) {
       void probe();
     }
-  }, [status, probe]);
+  }, [status, probe, pairing]);
+
+  if (pairing) return <PairDeviceScreen />;
 
   if (status === 'authorized') return <>{children}</>;
   if (status === 'needsToken') return <TokenEntryScreen />;

@@ -30,6 +30,11 @@ type Event struct {
 	Identifier string    `json:"identifier,omitempty"`
 	// Payload is the member's redacted feed payload, passed through as is.
 	Payload json.RawMessage `json:"payload,omitempty"`
+	// NotifyKind and Channels (#229) are set on GET /hub/api/v1/feed only:
+	// the event's notification kind and the channels the hub's settings
+	// route it to at read time (none when snoozed or off).
+	NotifyKind string   `json:"notifyKind,omitempty"`
+	Channels   []string `json:"channels,omitempty"`
 }
 
 // FeedPage is the response of GET /hub/api/v1/feed, the same shape as a

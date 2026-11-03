@@ -103,7 +103,7 @@ pub fn list_daemons(sidecar: &Path) -> Result<Vec<DaemonRecord>, String> {
     parse_status(&out.stdout).map_err(|e| e.to_string())
 }
 
-fn wait_output(
+pub(crate) fn wait_output(
     mut child: std::process::Child,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {

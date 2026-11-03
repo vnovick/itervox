@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://itervox.dev/schema/notifications.schema.json",
+  "title": "Itervox hub notification settings",
+  "description": "The hub's notification settings: ~/.itervox/hub/notifications.json (0600). Per project and per event kind, which channels (push, slack, desktop) an event of the merged feed goes to; per-project snooze; and the digest interval of low-priority kinds. The hub rewrites this file when the settings are saved from the dashboard (Hub -> Notifications) or PUT /hub/api/v1/notifications, and reads it when it starts.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "https://itervox.dev/schema/notifications.schema.json",
+      "description": "The schema URL, for editor support."
+    },
+    "version": {
+      "type": "integer",
+      "enum": [1],
+      "description": "The settings format version."
+    },
+    "digest_interval_minutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1440,
+      "default": 15,
+      "description": "Low-priority kinds are batched into a digest sent at most once per this many minutes. Input required and guardrail approval are never batched."
+    },
+    "channels": {
+      "type": "object",
+      "description": "A switch per channel for every project. A channel left out is on.",
+      "additionalProperties": false,
+      "properties": {
+        "push": { "$ref": "#/$defs/channel" },
+        "slack": { "$ref": "#/$defs/channel" },
+        "desktop": { "$ref": "#/$defs/channel" }
+      }
+    },
+    "defaults": {
+      "$ref": "#/$defs/routes",
+      "description": "The route of each kind for a project without its own. A kind left out uses the built-in default: input_required, guardrail_approval and run_failed go to every channel; the other kinds are off."
+    },
+    "projects": {
+      "type": "object",
+      "description": "Per-project settings, keyed by the hub project name (the /hub/p/{project} segment).",
+      "additionalProperties": { "$ref": "#/$defs/project" }
+    }
+  },
+  "$defs": {
+    "channelName": {
+      "type": "string",
+      "enum": ["push", "slack", "desktop"]
+    },
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "channelList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/channelName" },
+      "description": "The channels a kind goes to; empty turns the kind off."
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_required": { "$ref": "#/$defs/channelList" },
+        "guardrail_approval": { "$ref": "#/$defs/channelList" },
+        "run_failed": { "$ref": "#/$defs/channelList" },
+        "review_verdict": { "$ref": "#/$defs/channelList" },
+        "pr_merged": { "$ref": "#/$defs/channelList" },
+        "lesson_proposed": { "$ref": "#/$defs/channelList" },
+        "dispatch_paused": { "$ref": "#/$defs/channelList" }
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "routes": {
+          "$ref": "#/$defs/routes",
+          "description": "Overrides the defaults per kind."
+        },
+        "snooze_until": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Every notification of the project is suppressed until this time (RFC 3339)."
+        }
+      }
+    }
+  }
+}

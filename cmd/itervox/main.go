@@ -1170,6 +1170,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			// mode only); read-only after startup.
 			BindHost:     cfg.Server.Host,
 			AllowedHosts: cfg.Server.AllowedHosts,
+			// #231: the CORS allow-list (server.allowed_origins).
+			AllowedOrigins: cfg.Server.AllowedOrigins,
 			// CORE-043 — /api/v1/ready: event-loop atomics + the tracker
 			// rate-limit gate + the reload loop's config status. No cfgMu,
 			// no snapshot build.
