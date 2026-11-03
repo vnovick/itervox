@@ -206,6 +206,7 @@ func (a *orchestratorAdapter) SaveSettingsLayer(layer string, req server.Setting
 	if err := a.applyLiveSettings(cfg, applied); err != nil {
 		return res, fmt.Errorf("settings: %s was saved but applying it failed (it applies at the next reload): %w", path, err)
 	}
+	clearConfigInvalidAfterSave(a.workflowPath) // #245
 	slog.Info("settings: layer saved from the dashboard", "layer", layer, "path", path, "applied", applied, "restart_required", restart)
 	if a.notify != nil {
 		a.notify()

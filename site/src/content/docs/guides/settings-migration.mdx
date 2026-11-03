@@ -138,10 +138,16 @@ refuse to write an inline secret.
   comment-preserving writer as every other setting. The Settings page's
   **All settings** section lists the new sections, and its layer tab picks the
   file a save writes.
-- **Reloads.** As before, the daemon reloads when `WORKFLOW.md` changes. A
-  hand edit of a settings file applies at the next restart or `WORKFLOW.md`
-  reload (`itervox config set` says so), exactly as for the sections that
-  were layered before.
+- **Reloads.** The daemon watches `.itervox/settings.jsonc`,
+  `.itervox/settings.local.jsonc` and `~/.itervox/settings.jsonc` together
+  with `WORKFLOW.md`, so a hand edit of any of them is applied live, with the
+  same debounce, validation and drain-then-reload as a `WORKFLOW.md` edit. A
+  file that does not exist yet is picked up when you create it; deleting one
+  reloads without it. Saves from the Settings page never reload, and
+  `itervox config set` or `itervox init --update` reload a running daemon
+  once. An edit that does not load keeps the running config and shows on the
+  dashboard banner, naming the file and line. See
+  [What an edit to `WORKFLOW.md` or a settings file does](/configuration/#what-an-edit-to-workflowmd-or-a-settings-file-does).
 - **Commit** `.itervox/settings.jsonc` with `WORKFLOW.md`. Keep
   `.itervox/settings.local.jsonc` and `.itervox/.env` out of git (`itervox init
   --update` makes sure they are ignored).

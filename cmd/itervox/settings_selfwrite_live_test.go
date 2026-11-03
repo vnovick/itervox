@@ -18,7 +18,6 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
-	"github.com/vnovick/itervox/internal/workflow"
 )
 
 // CORE-160 — the last three settings saves that went through
@@ -39,7 +38,7 @@ func watchNoReload(t *testing.T, path string) func() int32 {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = workflow.WatchFrom(ctx, path, cfg.WorkflowHash, func() { fired.Add(1) })
+		_ = watchConfigFiles(ctx, path, cfg, func() { fired.Add(1) }, configWatchOptions{})
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 	return func() int32 {

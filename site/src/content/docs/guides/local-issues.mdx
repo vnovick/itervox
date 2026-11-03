@@ -65,7 +65,7 @@ The schema is in docs/report.md.
 | `priority` | no | A number; lower is more urgent, as with Linear (1 urgent … 4 low). |
 | `labels` | no | A list. Read in lower case, like the other trackers. |
 | `blocked_by` | no | Identifiers of issues that block this one. A blocker that is not terminal keeps this issue from being dispatched; a blocker with no file also keeps it blocked. |
-| `branch` | no | The issue's branch. Itervox records it when an agent starts; [stacked work](/configuration/#tracker) builds on a blocker's branch. |
+| `branch` | no | The issue's branch. Itervox records it when an agent starts; [stacked work](/guides/stacked-prs/) builds on a blocker's branch. |
 | `created`, `updated` | no | RFC 3339 times. Itervox sets `updated` on every write. |
 | `remote` | no | The linked Linear or GitHub issue (`ENG-42`, or `"#42"` — quoted, since `#` starts a YAML comment), written by the [sync](#sync-with-linear-or-github). |
 
