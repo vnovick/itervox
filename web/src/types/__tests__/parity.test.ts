@@ -19,6 +19,7 @@ import {
   SyncStatusRowSchema,
   TrackerErrorRowSchema,
   TrackerIssueSchema,
+  TrackerPollRowSchema,
   TotalsSchema,
 } from '../schemas';
 
@@ -64,6 +65,9 @@ const schemas: Record<string, SchemaLike> = {
   // #117 (Go-emitted)
   'SyncStatusRow.json': SyncStatusRowSchema,
   'SyncStatusRowDirect.json': SyncStatusRowSchema,
+  // #187 (Go-emitted)
+  'TrackerPollRow.json': TrackerPollRowSchema,
+  'TrackerPollRowIdle.json': TrackerPollRowSchema,
   // CORE-091 / CORE-175 (Go-emitted, M6-G4)
   'Totals.json': TotalsSchema,
   'TotalsCostUnknown.json': TotalsSchema,

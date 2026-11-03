@@ -75,6 +75,10 @@ const (
 	// FailureKindAutomation — an automation could not be dispatched, e.g.
 	// pr_merged after a successful merge_pr (M6-close BH-M6-2).
 	FailureKindAutomation FailureKind = "automation"
+	// FailureKindWorkspaceFetch — the shared bare clone's fetch failed, so
+	// new worktrees branch from a stale base (#195). Recorded once per
+	// distinct failure until a fetch succeeds.
+	FailureKindWorkspaceFetch FailureKind = "workspace_fetch"
 )
 
 // RecentFailuresCap bounds State.RecentFailures.
@@ -271,6 +275,14 @@ func (o *Orchestrator) recordWorkerFailure(state *State, ev OrchestratorEvent, a
 			Kind:       FailureKindWorkerStalled,
 			Identifier: issue.Identifier,
 			Message:    fmt.Sprintf("worker stalled on attempt %d (no agent output within the stall timeout)", attempt+1),
+			OccurredAt: now,
+		}, now)
+	case TerminalBranchInUse:
+		// #193: a deterministic setup refusal, recorded once per hold.
+		appendRecentFailure(state, FailureRecord{
+			Kind:       FailureKindWorkerFailed,
+			Identifier: issue.Identifier,
+			Message:    "workspace setup: the worktree branch is checked out in another worktree; holding the issue (branch_in_use) until it is freed",
 			OccurredAt: now,
 		}, now)
 	case TerminalRateLimited:

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workflow"
@@ -19,34 +20,90 @@ import (
 // #182 — the combined tracker scope (projects AND assignee AND labels): the
 // dashboard's scope filter and the TUI picker save it here.
 
-// linearScopeManager adapts tracker.ScopeManager to server.ScopeManager.
-type linearScopeManager struct {
-	sm           tracker.ScopeManager
+// trackerScopeManager adapts the tracker's scope to server.ScopeManager:
+// the #182 combined scope (Linear) and the #198 tracker filter (Linear and
+// GitHub).
+type trackerScopeManager struct {
+	sm           tracker.ScopeManager // nil: no legacy scope (GitHub)
+	fm           tracker.FilterManager
 	workflowPath string
 	// settingsGen fences saves from a superseded generation (CORE-160).
 	settingsGen uint64
 }
 
 // GetScope implements server.ScopeManager.
-func (m *linearScopeManager) GetScope() server.TrackerScope {
-	sc := m.sm.Scope()
-	return server.TrackerScope{Projects: nonNil(sc.Projects), Assignee: sc.Assignee, Labels: nonNil(sc.Labels)}
+func (m *trackerScopeManager) GetScope() server.TrackerScope {
+	var out server.TrackerScope
+	if m.sm != nil {
+		sc := m.sm.Scope()
+		out = server.TrackerScope{Projects: nonNil(sc.Projects), Assignee: sc.Assignee, Labels: nonNil(sc.Labels)}
+	} else {
+		out = server.TrackerScope{Projects: []string{}, Labels: []string{}}
+	}
+	out.Filter = m.fm.Filter()
+	if out.Filter == nil {
+		out.Filter = issuefilter.Filter{}
+	}
+	out.FilterMode = m.fm.FilterMode()
+	out.Conditions = m.fm.FilterConditions()
+	return out
 }
 
 // SetScope implements server.ScopeManager.
-func (m *linearScopeManager) SetScope(ctx context.Context, sc server.TrackerScope) error {
+func (m *trackerScopeManager) SetScope(ctx context.Context, sc server.TrackerScope) error {
+	if m.sm == nil {
+		return fmt.Errorf("%w: this tracker's scope is a filter; send \"filter\"", server.ErrFilterInvalid)
+	}
 	return saveTrackerScope(ctx, m.sm, m.workflowPath, m.settingsGen,
 		tracker.Scope{Projects: sc.Projects, Assignee: sc.Assignee, Labels: sc.Labels}, "dashboard")
 }
 
+// SetFilter implements server.ScopeManager.
+func (m *trackerScopeManager) SetFilter(ctx context.Context, f issuefilter.Filter) error {
+	return saveTrackerFilter(ctx, m.fm, m.workflowPath, m.settingsGen, f, m.sm != nil, "dashboard")
+}
+
+// filterPreviewLimit is how many identifiers a preview lists.
+const filterPreviewLimit = 10
+
+// PreviewFilter implements server.ScopeManager: validated and resolved like
+// a save, then counted by the tracker; nothing changes.
+func (m *trackerScopeManager) PreviewFilter(ctx context.Context, f issuefilter.Filter) (server.FilterPreview, error) {
+	f = f.Normalize()
+	if err := checkFilter(m.fm, f); err != nil {
+		return server.FilterPreview{}, err
+	}
+	if err := resolveFilterAssignees(ctx, m.fm, f); err != nil {
+		return server.FilterPreview{}, err
+	}
+	p, err := m.fm.PreviewFilter(ctx, f, filterPreviewLimit)
+	if err != nil {
+		return server.FilterPreview{}, err
+	}
+	return server.FilterPreview{Count: p.Count, Identifiers: p.Identifiers}, nil
+}
+
 // FetchLabels implements server.ScopeManager.
-func (m *linearScopeManager) FetchLabels(ctx context.Context) ([]string, error) {
-	return m.sm.FetchLabels(ctx)
+func (m *trackerScopeManager) FetchLabels(ctx context.Context) ([]string, error) {
+	return m.fm.FetchLabels(ctx)
+}
+
+// FetchTeams implements server.ScopeManager.
+func (m *trackerScopeManager) FetchTeams(ctx context.Context) ([]server.TrackerTeam, error) {
+	teams, err := m.fm.FetchTeams(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]server.TrackerTeam, len(teams))
+	for i, t := range teams {
+		out[i] = server.TrackerTeam{ID: t.ID, Key: t.Key, Name: t.Name}
+	}
+	return out, nil
 }
 
 // FetchUsers implements server.ScopeManager.
-func (m *linearScopeManager) FetchUsers(ctx context.Context) ([]server.TrackerUser, error) {
-	users, err := m.sm.FetchUsers(ctx)
+func (m *trackerScopeManager) FetchUsers(ctx context.Context) ([]server.TrackerUser, error) {
+	users, err := m.fm.FetchUsers(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -111,13 +168,14 @@ func saveTrackerScope(ctx context.Context, sm tracker.ScopeManager, path string,
 }
 
 // newScopeManager is the server's scope API for tr, nil when tr has no
-// combinable scope (the endpoints then answer 501).
+// tracker filter (the endpoints then answer 501).
 func newScopeManager(tr tracker.Tracker, workflowPath string, gen uint64) server.ScopeManager {
-	sm, ok := tr.(tracker.ScopeManager)
+	fm, ok := tr.(tracker.FilterManager)
 	if !ok {
 		return nil
 	}
-	return &linearScopeManager{sm: sm, workflowPath: workflowPath, settingsGen: gen}
+	sm, _ := tr.(tracker.ScopeManager)
+	return &trackerScopeManager{sm: sm, fm: fm, workflowPath: workflowPath, settingsGen: gen}
 }
 
 // tuiProjectFilterSaver is the TUI picker's save: with a combinable scope
@@ -125,6 +183,12 @@ func newScopeManager(tr tracker.Tracker, workflowPath string, gen uint64) server
 // otherwise the plain project filter save.
 func tuiProjectFilterSaver(tpm tracker.ProjectManager, cfg *config.Config, path string, gen uint64) func([]string) {
 	return func(slugs []string) {
+		// #198: the picker edits projects; with tracker.filter in effect
+		// the filter is edited in the dashboard or WORKFLOW.md instead.
+		if fm, ok := tpm.(tracker.FilterManager); ok && fm.FilterMode() {
+			slog.Warn("tui: project filter not saved; tracker.filter is in effect — edit it in Settings → Tracker Scope or WORKFLOW.md")
+			return
+		}
 		if sm, ok := tpm.(tracker.ScopeManager); ok {
 			ctx, cancel := context.WithTimeout(context.Background(), assigneeResolveTimeout)
 			defer cancel()
@@ -166,6 +230,10 @@ func updateWorkflowScope(path string, sc tracker.Scope) error {
 			return nil, err
 		}
 		if frontLines, err = setTrackerKey(frontLines, "assignee", sc.Assignee); err != nil {
+			return nil, err
+		}
+		// #198: the legacy keys and tracker.filter cannot both be set.
+		if frontLines, err = setTrackerBlock(frontLines, "filter", ""); err != nil {
 			return nil, err
 		}
 		labels := ""

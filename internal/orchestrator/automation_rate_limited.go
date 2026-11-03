@@ -264,6 +264,7 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomationsNote(
 			rule.MatchMode,
 			rule.States,
 			rule.LabelsAny,
+			rule.Groups,
 			rule.IdentifierRegex,
 			nil,
 			"",
