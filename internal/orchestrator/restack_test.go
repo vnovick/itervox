@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 func newRestackCfg(base string) *config.Config {
@@ -25,14 +28,16 @@ func restackState(running ...string) State {
 		Running:        map[string]*RunEntry{},
 		TerminalStates: []string{"Done"},
 	}
-	for _, id := range running {
-		st.Running[id] = &RunEntry{}
+	// Keyed by issue ID, as the event loop keys it (dispatch stores
+	// state.Running[issue.ID]).
+	for _, identifier := range running {
+		st.Running["id-"+identifier] = &RunEntry{Issue: domain.Issue{ID: "id-" + identifier, Identifier: identifier}}
 	}
 	return st
 }
 
 func blocked(identifier string, blockers ...domain.BlockerRef) domain.Issue {
-	return domain.Issue{Identifier: identifier, BlockedBy: blockers}
+	return domain.Issue{ID: "id-" + identifier, Identifier: identifier, BlockedBy: blockers}
 }
 
 func restackBlocker(id, state string) domain.BlockerRef {
@@ -119,4 +124,170 @@ func TestMarkRestackConflictDoesNotClobberExistingContext(t *testing.T) {
 	o.markRestackConflict(&st, domain.Issue{Identifier: "ENG-2"}, time.Now())
 
 	assert.Equal(t, "original question", st.InputRequiredIssues["ENG-2"].Context)
+}
+
+// restackFakeProvider is a workspace provider whose RestackWorktree returns a
+// fixed outcome.
+type restackFakeProvider struct {
+	outcome workspace.RestackOutcome
+}
+
+func (p *restackFakeProvider) EnsureWorkspace(_ context.Context, identifier, _ string) (workspace.Workspace, error) {
+	return workspace.Workspace{Path: "/tmp/ws", Identifier: identifier}, nil
+}
+func (p *restackFakeProvider) RemoveWorkspace(context.Context, string, string) error { return nil }
+func (p *restackFakeProvider) ResolvePath(string) string                             { return "/tmp/ws-ENG-2" }
+func (p *restackFakeProvider) RestackWorktree(context.Context, string, string, string) (workspace.RestackOutcome, error) {
+	return p.outcome, nil
+}
+
+// TestRestackRetargetsPullRequestToBaseBranch (#73): once a dependent has been
+// restacked onto workspace.base_branch (or already sits there), its open pull
+// request is pointed at base_branch too. A conflicted or skipped restack
+// leaves the PR alone.
+func TestRestackRetargetsPullRequestToBaseBranch(t *testing.T) {
+	issue := blocked("ENG-2", restackBlocker("ENG-1", "Done"))
+	for _, tc := range []struct {
+		outcome    workspace.RestackOutcome
+		wantEdited bool
+	}{
+		{workspace.RestackRebased, true},
+		{workspace.RestackUpToDate, true},
+		{workspace.RestackSkippedDirty, false},
+		{workspace.RestackConflict, false},
+	} {
+		var mu sync.Mutex
+		var lookups []string
+		var edits [][2]string
+		o := &Orchestrator{cfg: newRestackCfg("main"), workspace: &restackFakeProvider{outcome: tc.outcome}}
+		o.findOpenPRURL = func(_ context.Context, wsPath string) string {
+			mu.Lock()
+			defer mu.Unlock()
+			lookups = append(lookups, wsPath)
+			return "https://github.com/o/r/pull/2"
+		}
+		o.setPRBase = func(_ context.Context, prURL, base string) (bool, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			edits = append(edits, [2]string{prURL, base})
+			return true, nil
+		}
+		state := restackState()
+		conflicted := o.restackUnblockedIssue(context.Background(), &state, issue)
+		o.prRetargetWg.Wait()
+		assert.Equal(t, tc.outcome == workspace.RestackConflict, conflicted, "outcome %v", tc.outcome)
+		if tc.wantEdited {
+			assert.Equal(t, []string{"/tmp/ws-ENG-2"}, lookups, "outcome %v", tc.outcome)
+			assert.Equal(t, [][2]string{{"https://github.com/o/r/pull/2", "main"}}, edits, "outcome %v", tc.outcome)
+		} else {
+			assert.Empty(t, edits, "outcome %v must not touch the PR", tc.outcome)
+		}
+	}
+}
+
+// TestRestackRetargetSkipsWhenNoPullRequest: no open PR for the worktree, no
+// edit.
+func TestRestackRetargetSkipsWhenNoPullRequest(t *testing.T) {
+	o := &Orchestrator{cfg: newRestackCfg("main"), workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "" }
+	edited := false
+	o.setPRBase = func(context.Context, string, string) (bool, error) { edited = true; return true, nil }
+	state := restackState()
+	o.restackUnblockedIssue(context.Background(), &state, blocked("ENG-2", restackBlocker("ENG-1", "Done")))
+	o.prRetargetWg.Wait()
+	assert.False(t, edited)
+}
+
+// TestBlockerLandingRetargetsDependentPullRequest drives #73's second case
+// through the dependency-audit transition the event loop uses: the dependent
+// is first audited while its blocker is live, then again once the blocker is
+// Done. The unblock transition restacks the worktree and points its pull
+// request at workspace.base_branch.
+func TestBlockerLandingRetargetsDependentPullRequest(t *testing.T) {
+	var mu sync.Mutex
+	var edits [][2]string
+	o := &Orchestrator{cfg: newRestackCfg("main"), workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "https://github.com/o/r/pull/2" }
+	o.setPRBase = func(_ context.Context, prURL, base string) (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		edits = append(edits, [2]string{prURL, base})
+		return true, nil
+	}
+	state := restackState()
+	now := time.Now()
+
+	o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state,
+		blocked("ENG-2", restackBlocker("ENG-1", "In Progress")), now)
+	o.prRetargetWg.Wait()
+	assert.Empty(t, edits, "nothing happens while the blocker is live")
+
+	o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state,
+		blocked("ENG-2", restackBlocker("ENG-1", "Done")), now.Add(time.Minute))
+	o.prRetargetWg.Wait()
+	assert.Equal(t, [][2]string{{"https://github.com/o/r/pull/2", "main"}}, edits,
+		"the blocker landing must retarget the dependent's PR to base_branch")
+}
+
+// TestRestackDeferredWhileRunningRunsOnceIdle (#73 review): when a
+// dependent's blocker lands while it runs, the unblock transition is consumed
+// without a restack (rebasing under an agent is never safe). The restack and
+// pull-request retarget then run on the first audit that finds the issue
+// idle, and only once.
+func TestRestackDeferredWhileRunningRunsOnceIdle(t *testing.T) {
+	cfg := newRestackCfg("main")
+	var mu sync.Mutex
+	var edits [][2]string
+	o := &Orchestrator{cfg: cfg, workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "https://github.com/o/r/pull/2" }
+	o.setPRBase = func(_ context.Context, prURL, base string) (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		edits = append(edits, [2]string{prURL, base})
+		return true, nil
+	}
+	editCount := func() int {
+		o.prRetargetWg.Wait()
+		mu.Lock()
+		defer mu.Unlock()
+		return len(edits)
+	}
+	state := NewState(cfg)
+	state.TerminalStates = []string{"Done"}
+	now := time.Now()
+	audit := func(blockerState string) {
+		o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state, blocked("ENG-2", restackBlocker("ENG-1", blockerState)), now)
+		now = now.Add(time.Second)
+	}
+
+	audit("In Progress") // blocked
+	state.Running["id-ENG-2"] = &RunEntry{Issue: domain.Issue{ID: "id-ENG-2", Identifier: "ENG-2"}}
+	audit("Done") // unblocked while running
+	assert.Zero(t, editCount(), "no restack under a running agent")
+	assert.Contains(t, state.PendingRestacks, "ENG-2")
+
+	audit("Done") // still running
+	assert.Zero(t, editCount())
+
+	delete(state.Running, "id-ENG-2")
+	audit("Done") // idle: the deferred restack runs
+	assert.Equal(t, 1, editCount())
+	assert.NotContains(t, state.PendingRestacks, "ENG-2")
+
+	audit("Done")
+	assert.Equal(t, 1, editCount(), "only once")
+}
+
+// TestRestackDeferredDroppedWhenBlockedAgain: a deferred restack is dropped
+// once the dependent is blocked again; its next unblock restacks it anyway.
+func TestRestackDeferredDroppedWhenBlockedAgain(t *testing.T) {
+	cfg := newRestackCfg("main")
+	o := &Orchestrator{cfg: cfg, workspace: &restackFakeProvider{outcome: workspace.RestackRebased}}
+	o.findOpenPRURL = func(context.Context, string) string { return "" }
+	state := NewState(cfg)
+	state.TerminalStates = []string{"Done"}
+	state.PendingRestacks = map[string]struct{}{"ENG-2": {}}
+	o.auditFetchedIssueDependenciesAndDispatch(context.Background(), &state,
+		blocked("ENG-2", restackBlocker("ENG-1", "In Progress")), time.Now())
+	assert.NotContains(t, state.PendingRestacks, "ENG-2")
 }

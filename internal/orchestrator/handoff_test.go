@@ -418,3 +418,27 @@ func TestOrchestratorMarkHandoffPartialNilRunEntryNoOp(t *testing.T) {
 	o.markStalledHandoffPartial(nil, domain.Issue{Identifier: "X"})
 	o.markFailedHandoffPartial(nil, nil, domain.Issue{Identifier: "X"})
 }
+
+// TestMarkLatestHandoffPartialToleratesCoarseMtime: a handoff written at the
+// very start of a run carries an mtime from the kernel's coarse clock, a few
+// milliseconds before the run's StartedAt; it is still the run's own file and
+// is marked partial. A predecessor's handoff from well before stays.
+func TestMarkLatestHandoffPartialToleratesCoarseMtime(t *testing.T) {
+	ws := t.TempDir()
+	startedAt := time.Now()
+	writeHandoff(t, ws, "2026-05-25T15-00-00Z_backend.md", "this run")
+	own := filepath.Join(ws, HandoffDirRelPath, "2026-05-25T15-00-00Z_backend.md")
+	early := startedAt.Add(-5 * time.Millisecond) // as a coarse mtime reads
+	require.NoError(t, os.Chtimes(own, early, early))
+	writeHandoff(t, ws, "2026-05-25T14-00-00Z_backend.md", "predecessor")
+	old := filepath.Join(ws, HandoffDirRelPath, "2026-05-25T14-00-00Z_backend.md")
+	long := startedAt.Add(-time.Hour)
+	require.NoError(t, os.Chtimes(old, long, long))
+
+	require.NoError(t, markLatestHandoffPartial(ws, "backend", startedAt))
+
+	_, err := os.Stat(strings.TrimSuffix(own, ".md") + ".partial.md")
+	require.NoError(t, err, "the run's own handoff is marked partial")
+	_, err = os.Stat(old)
+	require.NoError(t, err, "a predecessor's handoff is left alone")
+}

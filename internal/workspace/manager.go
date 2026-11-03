@@ -38,6 +38,12 @@ type Workspace struct {
 	Path       string
 	Identifier string
 	CreatedNow bool
+	// StackedOn is the branch this worktree is stacked on (#73): the start
+	// point EnsureWorkspaceFrom was asked for, when that branch is in the
+	// worktree's history (new or reused) and has commits that
+	// workspace.base_branch lacks. Empty otherwise, in directory mode, and
+	// for EnsureWorkspace.
+	StackedOn string
 }
 
 // Manager handles creation, reuse, and removal of per-issue workspace directories.

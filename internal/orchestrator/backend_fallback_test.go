@@ -182,7 +182,7 @@ func TestBackendFallback_ReviewerHeldIsRetriedNotLost(t *testing.T) {
 	o.dispatchReviewerForIssue(ctx, &state, a, "reviewer", now)
 	assert.NotContains(t, state.Running, a.ID)
 	require.Contains(t, state.RetryAttempts, a.ID, "the review is retried when the breaker admits it")
-	assert.True(t, o.exitedRunIsReviewer(nil, a.Identifier), "the retry runs the reviewer profile")
+	assert.Equal(t, "reviewer", state.RetryAttempts[a.ID].ReviewerProfile, "the retry runs the reviewer profile")
 	cancel()
 }
 

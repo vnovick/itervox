@@ -394,47 +394,6 @@ func TestCronAutomationFetchStates_IncludesExplicitStatesInAnyMode(t *testing.T)
 	assert.ElementsMatch(t, []string{"Backlog", "Todo", "In Progress", "Needs Clarification", "Ready for QA"}, states)
 }
 
-func TestAutomationPollStates_IncludesFilterStates(t *testing.T) {
-	cfg := &config.Config{
-		Tracker: config.TrackerConfig{
-			BacklogStates:   []string{"Backlog"},
-			ActiveStates:    []string{"Todo", "In Progress"},
-			TerminalStates:  []string{"Done"},
-			CompletionState: "Done",
-		},
-	}
-	entries := []compiledAutomation{
-		{
-			cfg: config.AutomationConfig{
-				ID: "comment-watch",
-				Trigger: config.AutomationTriggerConfig{
-					Type: config.AutomationTriggerTrackerComment,
-				},
-				Filter: config.AutomationFilterConfig{
-					MatchMode: config.AutomationFilterMatchAny,
-					States:    []string{"Needs Clarification"},
-				},
-			},
-		},
-		{
-			cfg: config.AutomationConfig{
-				ID: "state-entry",
-				Trigger: config.AutomationTriggerConfig{
-					Type:  config.AutomationTriggerIssueEnteredState,
-					State: "Ready for QA",
-				},
-				Filter: config.AutomationFilterConfig{
-					States: []string{"Ready for QA", "Needs Clarification"},
-				},
-			},
-		},
-	}
-
-	states := automationPollStates(cfg, entries, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState)
-
-	assert.ElementsMatch(t, []string{"Backlog", "Todo", "In Progress", "Done", "Needs Clarification", "Ready for QA"}, states)
-}
-
 func TestAutomationManagedCommentMarkers(t *testing.T) {
 	body := "QA failed. Moving back to Todo."
 	marked := tracker.MarkManagedComment(body)
@@ -485,8 +444,17 @@ func (t *pollTracker) FetchIssuesByStates(context.Context, []string) ([]domain.I
 	return append([]domain.Issue(nil), t.issuesByRun[index]...), nil
 }
 
-func (t *pollTracker) FetchIssueStatesByIDs(context.Context, []string) ([]domain.Issue, error) {
-	return nil, nil
+// FetchIssueStatesByIDs answers from the current poll's details, like
+// FetchIssueDetail: the claim check (#116) reads an issue by ID before an
+// automation run starts.
+func (t *pollTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]domain.Issue, error) {
+	var out []domain.Issue
+	for _, id := range ids {
+		if iss, err := t.FetchIssueDetail(ctx, id); err == nil {
+			out = append(out, *iss)
+		}
+	}
+	return out, nil
 }
 
 func (t *pollTracker) CreateComment(context.Context, string, string) (*domain.Comment, error) {
@@ -636,8 +604,8 @@ func TestPollAutomationEvents_TrackerCommentRequiresNewEligibleComment(t *testin
 	time.Sleep(20 * time.Millisecond)
 
 	state := automationPollState{issues: make(map[string]observedAutomationIssue)}
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now())
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(time.Minute))
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now())
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now().Add(time.Minute))
 
 	select {
 	case <-runner.done:
@@ -645,12 +613,12 @@ func TestPollAutomationEvents_TrackerCommentRequiresNewEligibleComment(t *testin
 	default:
 	}
 
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(2*time.Minute))
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now().Add(2*time.Minute))
 	require.Eventually(t, func() bool {
 		return len(orch.RunHistory()) == 1
 	}, 3*time.Second, 25*time.Millisecond, "expected new comment id to dispatch automation")
 
-	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(3*time.Minute))
+	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now().Add(3*time.Minute))
 	time.Sleep(250 * time.Millisecond)
 	assert.Len(t, orch.RunHistory(), 1, "editing the latest comment body with the same id should not dispatch again")
 }
@@ -719,10 +687,10 @@ func TestPollAutomationEvents_DropsIssueSnapshotsWhenIssueIsAbsent(t *testing.T)
 	time.Sleep(20 * time.Millisecond)
 
 	state := automationPollState{issues: make(map[string]observedAutomationIssue)}
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now())
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now())
 	require.Contains(t, state.issues, "id-1")
 
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(time.Minute))
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now().Add(time.Minute))
 	assert.Empty(t, state.issues, "issues absent from the current poll should not keep stale snapshots")
 }
 
@@ -1185,8 +1153,8 @@ func TestPollAutomationEvents_PlanDrivenLabelGate(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	state := automationPollState{issues: make(map[string]observedAutomationIssue)}
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now())
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(time.Minute))
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now())
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now().Add(time.Minute))
 
 	require.Eventually(t, func() bool {
 		return len(orch.RunHistory()) == 1
@@ -1202,7 +1170,7 @@ func TestPollAutomationEvents_PlanDrivenLabelGate(t *testing.T) {
 
 	// One more poll with no further state changes — must not produce a second
 	// dispatch for the same transition.
-	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(2*time.Minute))
+	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, time.Now().Add(2*time.Minute))
 	time.Sleep(150 * time.Millisecond)
 	assert.Len(t, orch.RunHistory(), 1, "a steady-state poll must not re-dispatch the same transition")
 }

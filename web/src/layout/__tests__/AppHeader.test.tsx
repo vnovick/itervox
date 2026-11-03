@@ -36,6 +36,17 @@ function setupStore(snapshotOverride: Record<string, unknown> = {}) {
 }
 
 describe('AppHeader', () => {
+  it('shows the demo mode badge only while itervox demo is running (#76)', () => {
+    setupStore({ demoMode: true });
+    const { unmount } = renderWithRouter(<AppHeader />);
+    expect(screen.getByTestId('header-demo-mode')).toHaveTextContent('Demo mode');
+    unmount();
+
+    setupStore({});
+    renderWithRouter(<AppHeader />);
+    expect(screen.queryByTestId('header-demo-mode')).toBeNull();
+  });
+
   it('shows pending resume instead of idle when a reply is queued', () => {
     setupStore({
       inputRequired: [

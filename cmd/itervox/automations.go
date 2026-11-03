@@ -37,6 +37,17 @@ type observedAutomationComment struct {
 type automationPollState struct {
 	issues          map[string]observedAutomationIssue
 	trackerComments map[string]map[string]observedAutomationComment
+	// states and polledAt describe the last successful poll (#155): the
+	// state set it fetched and when. An issue it did not list that now sits
+	// in one of those states moved there from a state the poll does not
+	// fetch (see enteredFromUnpolledState). Zero polledAt: no poll yet.
+	states   []string
+	polledAt time.Time
+	// scope is the tracker's project filter during that poll
+	// (automationPollScope). An issue the previous poll did not list may
+	// only have been outside the filter then, so a scope change disables
+	// enteredFromUnpolledState for the next poll.
+	scope string
 }
 
 type compiledAutomationSet struct {
@@ -78,6 +89,11 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 		defer failFastOnPanic("automation-scheduler")
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
+		// #155: the event poll lists issues from the tracker, so it runs on
+		// its own cadence (polling.automation_interval_ms, stretched while
+		// the request budget is low), not on the 15s cron tick.
+		cadence := newAutomationPollCadence(cfg.Polling.AutomationIntervalMs)
+		var polledEvents []compiledAutomation
 
 		lastFired := make(map[string]string)
 		pollState := automationPollState{
@@ -112,6 +128,7 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			orch.SetTrackerCommentAutomations(compiled.trackerComments)
 			orch.SetRateLimitedAutomations(compiled.rateLimited)
 			orch.SetBlockersResolvedAutomations(compiled.blockersResolved)
+			polledEvents = compiled.polledEvents
 			inputRequiredState = replayInputRequiredAutomations(ctx, tr, orch, compiled.inputRequired, inputRequiredState, now)
 
 			// Drop lastFired entries for automations no longer present so a
@@ -132,7 +149,7 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 			// Snapshot cfgMu-guarded tracker states once per tick so downstream
 			// helpers read a consistent view without racing concurrent HTTP
 			// updates via orch.SetTrackerStatesCfg.
-			activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
+			activeStates, _, _ := orch.TrackerStatesCfg()
 			for _, entry := range compiled.cron {
 				if !entry.cfg.Enabled {
 					continue
@@ -150,20 +167,33 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 				runCronAutomation(execCtx, cfg, tr, orch, entry, activeStates, now)
 				cancel()
 			}
-			if len(compiled.polledEvents) > 0 {
+		}
+		// runPoll runs the event poll over the rules the last tick compiled
+		// and returns the wait before the next one. With no event-polled
+		// rule nothing is fetched; the next check is one interval away, so a
+		// hot-added rule starts polling within it.
+		runPoll := func(now time.Time) time.Duration {
+			if len(polledEvents) > 0 {
+				activeStates, _, _ := orch.TrackerStatesCfg()
 				execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				pollState = pollAutomationEvents(execCtx, cfg, tr, orch, compiled.polledEvents, pollState, activeStates, terminalStates, completionState, now)
+				pollState = pollAutomationEvents(execCtx, cfg, tr, orch, polledEvents, pollState, activeStates, now)
 				cancel()
 			}
+			return cadence.nextDelay(tr)
 		}
 
-		runOnce(time.Now())
+		start := time.Now()
+		runOnce(start)
+		pollTimer := time.NewTimer(runPoll(start))
+		defer pollTimer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case now := <-ticker.C:
 				runOnce(now)
+			case now := <-pollTimer.C:
+				pollTimer.Reset(runPoll(now))
 			}
 		}
 	}()
@@ -498,8 +528,7 @@ func pollAutomationEvents(
 	orch *orchestrator.Orchestrator,
 	entries []compiledAutomation,
 	prev automationPollState,
-	activeStates, terminalStates []string,
-	completionState string,
+	activeStates []string,
 	now time.Time,
 ) automationPollState {
 	// v0.2.0 audit P2-1 — gate on the live paused-producers bool before
@@ -509,7 +538,7 @@ func pollAutomationEvents(
 		return prev
 	}
 	snap := orch.Snapshot()
-	states := automationPollStates(cfg, entries, activeStates, terminalStates, completionState)
+	states := automationPollStates(cfg, entries, activeStates)
 	if len(states) == 0 {
 		return prev
 	}
@@ -521,10 +550,21 @@ func pollAutomationEvents(
 	slices.SortFunc(issues, func(a, b domain.Issue) int {
 		return cmp.Compare(a.Identifier, b.Identifier)
 	})
+	// A project-filter change (dashboard or TUI, applied without a reload)
+	// makes issues visible that never moved: rebaseline instead of reading
+	// their first sighting as a move from an unpolled state. The scope is
+	// read after the fetch, so a change during it also rebaselines.
+	scope := automationPollScope(tr)
+	if scope != prev.scope {
+		prev.polledAt = time.Time{}
+	}
 
 	next := automationPollState{
 		issues:          make(map[string]observedAutomationIssue, len(issues)),
 		trackerComments: make(map[string]map[string]observedAutomationComment, len(prev.trackerComments)),
+		states:          states,
+		polledAt:        now,
+		scope:           scope,
 	}
 
 	detailCache := make(map[string]*domain.Issue)
@@ -568,7 +608,13 @@ func pollAutomationEvents(
 			}
 			prevIssue, seenBefore := prev.issues[issue.ID]
 			if !seenBefore {
-				continue
+				// A state-change trigger also fires for an issue that
+				// arrived from a state the poll does not fetch (#155); its
+				// previous state is then unknown and left empty. A comment
+				// trigger needs a comment baseline from an earlier poll.
+				if entry.cfg.Trigger.Type == config.AutomationTriggerTrackerComment || !enteredFromUnpolledState(prev, issue) {
+					continue
+				}
 			}
 			switch entry.cfg.Trigger.Type {
 			case config.AutomationTriggerIssueEnteredState:
@@ -706,18 +752,51 @@ func pollAutomationEvents(
 	return next
 }
 
-// automationPollStates computes the tracker states to poll for event-driven
-// automations. activeStates / terminalStates / completionState must be a
-// consistent snapshot obtained via orch.TrackerStatesCfg() — reading
-// cfg.Tracker.* directly races with HTTP-handler updates.
-func automationPollStates(cfg *config.Config, entries []compiledAutomation, activeStates, terminalStates []string, completionState string) []string {
-	states := deduplicateStates(cfg.Tracker.BacklogStates, activeStates, terminalStates, completionState)
+// automationPollStates computes the tracker states the event poll fetches
+// (#155): only what the event-polled rules can fire on. activeStates must be
+// a snapshot obtained via orch.TrackerStatesCfg() — reading
+// cfg.Tracker.ActiveStates directly races with HTTP-handler updates.
+//
+//   - every rule's filter.states (a rule that names a state gets it, terminal
+//     or not);
+//   - issue_entered_state: its trigger.state, plus active_states, so the
+//     common active → trigger move reports its previous state;
+//   - issue_moved_to_backlog: backlog_states (where it fires) plus
+//     active_states (the usual previous state);
+//   - tracker_comment_added: active_states, unless filter.states bound the
+//     match (match_mode all with states set): then only those states.
+//
+// terminal_states, completion_state and backlog_states are never added on
+// their own. A move into a polled state from one the poll does not fetch is
+// still seen (enteredFromUnpolledState). blockers_resolved is fired by the
+// dependency audit and cron rules fetch at their own time, so neither is
+// polled here; the other triggers are event-loop driven.
+func automationPollStates(cfg *config.Config, entries []compiledAutomation, activeStates []string) []string {
+	var named []string
+	needActive, needBacklog := false, false
 	for _, entry := range entries {
-		states = append(states, entry.cfg.Filter.States...)
-		if entry.cfg.Trigger.State != "" {
-			states = append(states, entry.cfg.Trigger.State)
+		f := entry.cfg.Filter
+		named = append(named, f.States...)
+		switch entry.cfg.Trigger.Type {
+		case config.AutomationTriggerIssueEnteredState:
+			named = append(named, entry.cfg.Trigger.State)
+			needActive = true
+		case config.AutomationTriggerIssueMovedBacklog:
+			needActive, needBacklog = true, true
+		case config.AutomationTriggerTrackerComment:
+			if len(f.States) == 0 || f.MatchMode == config.AutomationFilterMatchAny {
+				needActive = true
+			}
 		}
 	}
+	var states []string
+	if needBacklog {
+		states = append(states, cfg.Tracker.BacklogStates...)
+	}
+	if needActive {
+		states = append(states, activeStates...)
+	}
+	states = append(states, named...)
 	seen := make(map[string]struct{}, len(states))
 	out := make([]string, 0, len(states))
 	for _, state := range states {
@@ -731,6 +810,45 @@ func automationPollStates(cfg *config.Config, entries []compiledAutomation, acti
 		out = append(out, state)
 	}
 	return out
+}
+
+// automationPollScope identifies the tracker's runtime project filter, the
+// other input besides the state set that decides which issues the poll can
+// see. Trackers without one have a single, fixed scope.
+func automationPollScope(tr tracker.Tracker) string {
+	pm, ok := tr.(tracker.ProjectManager)
+	if !ok {
+		return ""
+	}
+	filter := pm.GetProjectFilter()
+	if filter == nil {
+		return "default"
+	}
+	sorted := slices.Clone(filter)
+	slices.Sort(sorted)
+	return "filter:" + strings.Join(sorted, "\x00")
+}
+
+// automationCreationMargin is how long before the previous poll an issue
+// must have been created for enteredFromUnpolledState to count it as moved:
+// it absorbs clock skew with the tracker and a listing that lags a create.
+const automationCreationMargin = time.Minute
+
+// enteredFromUnpolledState reports whether issue, absent from the previous
+// poll, moved into its current state since then from a state the poll does
+// not fetch (#155): the previous poll fetched the issue's current state, so
+// the issue was elsewhere then, and it already existed (created before that
+// poll), so it was not created in this state. Without a previous poll, a
+// creation time, or with the state newly added to the poll (a hot-added
+// rule), it reports false: a first sighting never fires.
+func enteredFromUnpolledState(prev automationPollState, issue domain.Issue) bool {
+	if prev.polledAt.IsZero() || issue.CreatedAt == nil {
+		return false
+	}
+	if !slices.ContainsFunc(prev.states, func(s string) bool { return strings.EqualFold(s, issue.State) }) {
+		return false
+	}
+	return issue.CreatedAt.Before(prev.polledAt.Add(-automationCreationMargin))
 }
 
 func latestAutomationComment(comments []domain.Comment) (domain.Comment, bool) {

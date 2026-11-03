@@ -184,6 +184,10 @@ func isPersistCall(sel string) bool {
 		return true
 	case sel == "persistTrackerStates":
 		return true
+	// #129: layered settings persist to .itervox/settings.jsonc and move the
+	// key out of WORKFLOW.md in the same step.
+	case sel == "persistSettings", sel == "persistMaxWorkers", sel == "persistSSHHosts":
+		return true
 	case sel == "persistReviewerConfig":
 		return true
 	case sel == "persistMaxRetries":

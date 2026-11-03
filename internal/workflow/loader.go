@@ -123,95 +123,6 @@ func parseFrontMatter(path string, lines []string) (map[string]any, error) {
 // and captures the leading whitespace, the key, and the value.
 var keyLineRE = regexp.MustCompile(`^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:\s*)(.*)$`)
 
-// PatchIntField rewrites the first occurrence of `key: <int>` inside the
-// YAML front matter of the file at path, replacing the integer value with n.
-// The rest of the file (comments, formatting, body) is preserved byte-for-byte.
-// Returns an error if the key is not found in the front matter or the file
-// cannot be read/written.
-//
-// T-46 (06.G-01): grabs editMu via lockForPath so concurrent calls for the
-// same path serialize. Without this, two callers (e.g. HTTP SetWorkers and
-// TUI AdjustWorkers, which both invoke PatchIntField with `max_concurrent_agents`)
-// could read the same starting bytes and have one rename clobber the other's
-// edit. The Patch{Agent,Workspace,Profiles,Automations}* helpers already
-// route through ApplyAndWriteFrontMatter for the same guarantee; this
-// function predated that pattern.
-func PatchIntField(path, key string, n int) error {
-	unlock, err := lockForPath(path)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("workflow patch: read %s: %w", path, err)
-	}
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-
-	// Only patch within the front matter (between the first pair of --- markers).
-	frontEnd := -1
-	if strings.HasPrefix(content, "---\n") {
-		idx := strings.Index(content[4:], "\n---")
-		if idx >= 0 {
-			frontEnd = 4 + idx + 1 // index of the closing '\n---'
-		}
-	}
-	searchRegion := content
-	if frontEnd > 0 {
-		searchRegion = content[:frontEnd]
-	}
-
-	lines := strings.Split(searchRegion, "\n")
-	replaced := false
-	for i, line := range lines {
-		m := keyLineRE.FindStringSubmatch(line)
-		if m == nil || m[2] != key {
-			continue
-		}
-		// Preserve everything except the value; strip inline comment from old value.
-		oldVal := m[4]
-		comment := ""
-		if ci := strings.Index(oldVal, " #"); ci >= 0 {
-			comment = " " + strings.TrimSpace(oldVal[ci+1:])
-			comment = " #" + comment[2:]
-		}
-		lines[i] = m[1] + m[2] + m[3] + strconv.Itoa(n) + comment
-		replaced = true
-		break
-	}
-	if !replaced {
-		return fmt.Errorf("workflow patch: key %q not found in front matter of %s", key, path)
-	}
-
-	patched := strings.Join(lines, "\n")
-	if frontEnd > 0 {
-		patched = patched + content[frontEnd:]
-	}
-	return writeLocked(path, data, []byte(patched), true)
-}
-
-// PatchAgentBoolField sets a boolean key under the agent: block of the YAML front matter.
-// If the key already exists it is updated in place; if it does not exist it is appended
-// inside the agent: block. Setting enabled=false removes the key entirely.
-//
-// Routed through ApplyAndWriteFrontMatter (CORE-006) so concurrent callers
-// for the same path (e.g. an HTTP settings PUT racing the TUI) are
-// serialized by editMu instead of racing a bare read-modify-write.
-func PatchAgentBoolField(path, key string, enabled bool) error {
-	return ApplyAndWriteFrontMatter(path, MutateAgentBoolField(key, enabled))
-}
-
-// PatchWorkspaceBoolField sets a boolean key under the workspace: block of the YAML front matter.
-// Behaves identically to PatchAgentBoolField but targets the workspace: block.
-// There is no MutateWorkspaceBoolField export (no caller needs to compose it
-// with other mutators today); it calls the package-private
-// mutateBlockBoolField directly instead of MutateAgentBoolField, which is
-// hardcoded to the agent: block.
-func PatchWorkspaceBoolField(path, key string, enabled bool) error {
-	return ApplyAndWriteFrontMatter(path, mutateBlockBoolField("workspace", key, enabled))
-}
-
 // defaultBlockIndent matches the convention written by `itervox init` for
 // freshly-scaffolded workflows. Used as the fallback when the target block
 // has no existing children to learn from.
@@ -315,14 +226,6 @@ func insertAfterBlockHeader(frontLines []string, blockLine int, line string) []s
 	return out
 }
 
-// PatchAgentStringField sets or removes a string key under the agent: block of the YAML front matter.
-// If the key already exists it is updated in place; if value == "" the key is removed.
-//
-// Routed through ApplyAndWriteFrontMatter (CORE-006); see PatchAgentBoolField.
-func PatchAgentStringField(path, key, value string) error {
-	return ApplyAndWriteFrontMatter(path, MutateAgentStringField(key, value))
-}
-
 // MutateDependenciesStringField returns a Mutator that sets or removes a
 // string key under the dependencies: block. See PatchDependenciesStringField.
 func MutateDependenciesStringField(key, value string) Mutator {
@@ -405,6 +308,10 @@ type ProfileEntry struct {
 	AllowedActions []string
 	// CreateIssueState is the target tracker state/column for the create_issue action.
 	CreateIssueState string
+	// PermissionMode is the profile's permission_mode ("" omits the key).
+	PermissionMode string
+	// RequireEvidence is the profile's require_evidence list (#80).
+	RequireEvidence []string
 }
 
 type AutomationTriggerEntry = automationdef.Trigger
@@ -491,6 +398,17 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				if entry.CreateIssueState != "" {
 					replacement = append(replacement, lvl3+"create_issue_state: "+strconv.Quote(entry.CreateIssueState))
+				}
+				if entry.PermissionMode != "" {
+					replacement = append(replacement, lvl3+"permission_mode: "+strconv.Quote(entry.PermissionMode))
+				}
+				if len(entry.RequireEvidence) > 0 {
+					replacement = append(replacement, lvl3+"require_evidence:")
+					for _, check := range entry.RequireEvidence {
+						if check != "" {
+							replacement = append(replacement, lvl4+"- "+strconv.Quote(check))
+						}
+					}
 				}
 				if entry.Prompt != "" {
 					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))

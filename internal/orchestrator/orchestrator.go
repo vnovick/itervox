@@ -137,6 +137,9 @@ type Orchestrator struct {
 	// (CORE-053), next to autoSwitchedFile. Guarded by autoSwitchedMu; set
 	// before Run.
 	backendHealthFile string
+	// spendFile is issue_spend.json (#136); guarded by autoSwitchedMu like
+	// the other ledger paths.
+	spendFile string
 
 	// inputRequiredMu guards inputRequiredFile.
 	inputRequiredMu   sync.RWMutex
@@ -229,18 +232,13 @@ type Orchestrator struct {
 	userTerminatedMu  sync.Mutex
 	userTerminatedIDs map[string]struct{} // like userCancelledIDs but releases claim without pausing
 
-	// issueProfilesMu guards issueProfiles AND reviewerInjectedProfiles —
-	// they're tracked together because reviewer-dispatch writes both under the
-	// same lock. issueProfiles is written by SetIssueProfile (any goroutine)
-	// and read by dispatch (event loop goroutine) and Snapshot.
+	// issueProfilesMu guards issueProfiles, the operator's per-issue profile
+	// overrides. issueProfiles is written by SetIssueProfile (any goroutine)
+	// and read by dispatch (event loop goroutine) and Snapshot. Reviewer runs
+	// never write it: a reviewer's profile is its run's own (#127).
 	// RWMutex allows concurrent Snapshot() calls without serialising each other.
 	issueProfilesMu sync.RWMutex
 	issueProfiles   map[string]string // identifier → profile name
-
-	// reviewerInjectedProfiles marks identifiers whose issueProfiles entry was
-	// set by dispatchReviewerForIssue (T-21). On reviewer-run TerminalSucceeded
-	// we clear ONLY entries we marked here, leaving user-set overrides intact.
-	reviewerInjectedProfiles map[string]struct{}
 
 	// issueBackendsMu guards issueBackends, which is written by SetIssueBackend
 	// (any goroutine) and read by dispatch (event loop goroutine) and Snapshot.
@@ -345,6 +343,23 @@ type Orchestrator struct {
 	// rewrite from stale memory.
 	commentWg sync.WaitGroup
 
+	// prRetargetWg tracks the background `gh pr edit --base` calls that
+	// retarget a stacked pull request after its dependent was restacked onto
+	// workspace.base_branch (#73), so Run waits for them like the comments.
+	prRetargetWg sync.WaitGroup
+
+	// findOpenPRURL and setPRBase are the gh seams for stacked-PR base
+	// handling (#73); nil means workspace.FindOpenPRURL / workspace.SetPRBase.
+	// Tests replace them.
+	findOpenPRURL func(ctx context.Context, wsPath string) string
+	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// ensurePRFooter is the gh seam for the agent.pr_footer footer (#81); nil
+	// means workspace.EnsurePRFooter.
+	ensurePRFooter func(ctx context.Context, prURL string) (bool, error)
+	// readPRChecks is the gh seam for require_evidence "ci" (#80); nil means
+	// workspace.ReadPRChecks.
+	readPRChecks func(ctx context.Context, prURL string) (workspace.PRChecks, error)
+
 	// transitionFailed marks issues whose completion-state tracker write
 	// failed, so the event loop can record PauseReasonTransitionFailed rather
 	// than mislabelling it a user cancel (#42-F).
@@ -385,22 +400,21 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		sshHostDescs = make(map[string]string)
 	}
 	return &Orchestrator{
-		cfg:                      cfg,
-		tracker:                  tr,
-		runner:                   runner,
-		workspace:                wm,
-		sink:                     NewDirectWriteSink(tr),
-		events:                   make(chan OrchestratorEvent, 64),
-		refresh:                  make(chan struct{}, 1),
-		workerCancels:            make(map[string]context.CancelFunc),
-		userCancelledIDs:         make(map[string]struct{}),
-		userTerminatedIDs:        make(map[string]struct{}),
-		issueProfiles:            make(map[string]string),
-		reviewerInjectedProfiles: make(map[string]struct{}),
-		issueBackends:            make(map[string]string),
-		commentCounts:            make(map[string]int),
-		sshHostDescs:             sshHostDescs,
-		daemonInstanceID:         newDaemonInstanceID(),
+		cfg:               cfg,
+		tracker:           tr,
+		runner:            runner,
+		workspace:         wm,
+		sink:              NewDirectWriteSink(tr),
+		events:            make(chan OrchestratorEvent, 64),
+		refresh:           make(chan struct{}, 1),
+		workerCancels:     make(map[string]context.CancelFunc),
+		userCancelledIDs:  make(map[string]struct{}),
+		userTerminatedIDs: make(map[string]struct{}),
+		issueProfiles:     make(map[string]string),
+		issueBackends:     make(map[string]string),
+		commentCounts:     make(map[string]int),
+		sshHostDescs:      sshHostDescs,
+		daemonInstanceID:  newDaemonInstanceID(),
 	}
 }
 
@@ -832,15 +846,6 @@ func (o *Orchestrator) reviewerChainCfg() []string {
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
 	return ReviewerProfileChain(o.cfg)
-}
-
-// reviewVerdictRelPathCfg is reviewVerdictRelPathFor read under cfgMu. Called
-// from runWorker — a worker goroutine — which must never touch o.cfg
-// directly; see reviewerChainCfg for the writer it races.
-func (o *Orchestrator) reviewVerdictRelPathCfg(identifier, profileName string) string {
-	o.cfgMu.RLock()
-	defer o.cfgMu.RUnlock()
-	return reviewVerdictRelPathFor(o.cfg, identifier, profileName)
 }
 
 // DepsAnalyzerProfileCfg returns the configured deps-analyzer profile name

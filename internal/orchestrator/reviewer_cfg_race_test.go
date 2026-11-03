@@ -50,10 +50,12 @@ func TestReviewerChainCfgIsRaceFreeAgainstSetReviewerCfg(t *testing.T) {
 			_ = o.reviewerChainCfg()
 		}
 	}()
-	go func() { // the worker goroutine's prompt assembly read
+	go func() { // the worker goroutine's read-only-reviewer decision
 		defer wg.Done()
 		for range 300 {
-			_ = o.reviewVerdictRelPathCfg("ENG-1", "reviewer-a")
+			o.cfgMu.RLock()
+			_ = isReviewerProfile(o.cfg, "reviewer-a")
+			o.cfgMu.RUnlock()
 		}
 	}()
 	wg.Wait()

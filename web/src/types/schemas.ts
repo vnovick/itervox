@@ -694,7 +694,8 @@ export const StateSnapshotSchema = z.object({
   paused: z.array(z.string()),
   pausedWithPR: z.record(z.string(), z.string()).optional(),
   // M6-close BH-M6-3 — why each paused issue is paused: 'user_cancelled' |
-  // 'user_dismissed_input' | 'retries_exhausted' | 'transition_failed'
+  // 'user_dismissed_input' | 'retries_exhausted' | 'transition_failed' |
+  // 'budget_exceeded'
   // (open set; unknown values are opaque). Absent on older daemons.
   pauseReasons: z.record(z.string(), z.string()).optional(),
   maxConcurrentAgents: z.number(),
@@ -712,6 +713,7 @@ export const StateSnapshotSchema = z.object({
   switchWindowHours: z.number(),
   rateLimits: RateLimitInfoSchema.nullable(),
   trackerKind: z.string().optional(),
+  demoMode: z.boolean().optional(),
   activeProjectFilter: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),
@@ -877,6 +879,34 @@ export const IssueStatusChangeSchema = z.object({
   at: z.string(),
 });
 
+// #135 — an issue's latest review: each reviewer's verdict and the quorum.
+export const ReviewCommentSchema = z.object({
+  path: z.string(),
+  line: z.number().optional(),
+  body: z.string(),
+});
+
+export const ReviewVerdictSchema = z.object({
+  profile: z.string(),
+  verdict: z.string(),
+  reasons: z.array(z.string()).optional(),
+  comments: z.array(ReviewCommentSchema).optional(),
+  recordedAt: z.string(),
+});
+
+export const ReviewOutcomeSchema = z.object({
+  blocked: z.boolean(),
+  approvals: z.number(),
+  blocks: z.number(),
+  quorum: z.string().optional(),
+});
+
+export const IssueReviewSchema = z.object({
+  verdicts: z.array(ReviewVerdictSchema),
+  outcome: ReviewOutcomeSchema.optional(),
+  inProgress: z.boolean().optional(),
+});
+
 export const TrackerIssueSchema = z.object({
   identifier: z.string(),
   title: z.string(),
@@ -900,6 +930,7 @@ export const TrackerIssueSchema = z.object({
   blockedByDetails: z.array(BlockerDetailSchema).optional(),
   comments: z.array(CommentRowSchema).optional(),
   statusChanges: z.array(IssueStatusChangeSchema).optional(),
+  review: IssueReviewSchema.optional(),
   ineligibleReason: z.string().optional(),
   agentProfile: z.string().optional(),
   agentBackend: z.string().optional(),
@@ -926,6 +957,8 @@ export type LogEventType = z.infer<typeof LogEventTypeSchema>;
 export type IssueLogEntry = z.infer<typeof IssueLogEntrySchema>;
 export type BlockerDetail = z.infer<typeof BlockerDetailSchema>;
 export type IssueStatusChange = z.infer<typeof IssueStatusChangeSchema>;
+export type IssueReview = z.infer<typeof IssueReviewSchema>;
+export type ReviewVerdict = z.infer<typeof ReviewVerdictSchema>;
 export type TrackerIssue = z.infer<typeof TrackerIssueSchema>;
 export type InputRequiredEntry = z.infer<typeof InputRequiredEntrySchema>;
 export type AutomationQueueRow = z.infer<typeof AutomationQueueRowSchema>;
@@ -956,6 +989,18 @@ export const SkillSchema = z.object({
   FilePath: z.string().optional(),
   ApproxTokens: z.number(),
   TriggerPatterns: z.array(z.string()).nullable().optional(),
+});
+
+// Claude Code subagent from .claude/agents (project / user) or a plugin (#86).
+export const SubagentSchema = z.object({
+  Name: z.string(),
+  Description: z.string().optional(),
+  Tools: z.array(z.string()).nullable().optional(),
+  Model: z.string().optional(),
+  Provider: z.string(),
+  Source: z.string(),
+  FilePath: z.string().optional(),
+  ApproxTokens: z.number(),
 });
 
 export const InstructionDocSchema = z.object({
@@ -1036,6 +1081,7 @@ export const InventorySchema = z.object({
   ScanError: z.string().optional(),
   Stale: z.boolean().optional(),
   Skills: z.array(SkillSchema).nullable().optional(),
+  Subagents: z.array(SubagentSchema).nullable().optional(),
   Plugins: z.array(PluginSchema).nullable().optional(),
   MCPServers: z.array(MCPServerSchema).nullable().optional(),
   Hooks: z.array(HookEntrySchema).nullable().optional(),
@@ -1046,6 +1092,7 @@ export const InventorySchema = z.object({
 });
 
 export type Skill = z.infer<typeof SkillSchema>;
+export type Subagent = z.infer<typeof SubagentSchema>;
 export type InstructionDocEntry = z.infer<typeof InstructionDocSchema>;
 export type HookEntry = z.infer<typeof HookEntrySchema>;
 export type MCPServer = z.infer<typeof MCPServerSchema>;

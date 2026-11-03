@@ -22,6 +22,7 @@ The two halves combine into a single dashboard surface. Understanding the differ
 |---|---|---|
 | Claude skills (project) | `<project>/.claude/skills/<name>/SKILL.md` | claude |
 | Claude skills (user) | `~/.claude/skills/<name>/SKILL.md` | claude |
+| Claude subagents | `<project>/.claude/agents/**/*.md`, `~/.claude/agents/**/*.md`, plus agents declared by plugin manifests (source `plugin:<name>`) | claude |
 | Codex skills | `~/.codex/skills/`, `~/.codex/skills/.system/`, `~/.codex/superpowers/skills/`, `~/.agents/skills/` | codex |
 | Plugins | `<project>/.claude/plugins/`, `~/.claude/plugins/` | claude |
 | MCP servers | `<project>/.claude/settings.json`, `~/.claude/settings.json`, `<project>/.mcp.json` | claude |
@@ -34,7 +35,7 @@ Each source is projected into a common inventory snapshot so cross-cutting check
 
 ## Static analyzer rules (Phase 1)
 
-Seven production rules ship today in `internal/skills/analyze.go`. They run synchronously against the inventory the moment a scan completes.
+Ten production rules ship today in `internal/skills/analyze.go`. They run synchronously against the inventory the moment a scan completes.
 
 | Rule | Severity | What it flags |
 |---|---|---|
@@ -45,6 +46,9 @@ Seven production rules ship today in `internal/skills/analyze.go`. They run sync
 | `LARGE_CONTEXT` | warn | Estimated profile context cost exceeds the default 50K-token threshold |
 | `INSTRUCTION_SHADOWING` | info | Same instruction filename in multiple scopes |
 | `ORPHAN_MCP` | info | Configured MCP server name never referenced in any skill name, description, or body |
+| `MISSING_SKILL_REF` | warn | A profile's `SOUL.md` / `INSTRUCTIONS.md` names a skill that is not found for that profile's backend (see [Agent Profiles → Skills and subagents in prompts](/guides/agent-profiles/#skills-and-subagents-in-prompts)) |
+| `MISSING_SUBAGENT_REF` | warn | A profile prompt names a subagent that is not found, or any subagent from a Codex profile |
+| `USER_SCOPE_REF_ON_SSH` | info | A referenced skill or subagent exists only in user scope or a user-installed plugin while SSH hosts are configured, so remote hosts may not have it |
 
 `STALE_SCHEDULE` remains in code as a reserved analyzer for future schedule inventory sources, but v0.2.0 does not populate schedules from the validated `WORKFLOW.md` automations config.
 
@@ -102,9 +106,9 @@ Scanner failures are best-effort. If one source fails but another succeeds, Iter
 
 ### Scan freshness
 
-The Settings card shows the last scan timestamp plus a status badge next to **Re-scan**. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since the last scan; click **Re-scan** to refresh the inventory and recommendations.
+The Settings card shows the last scan timestamp plus a status badge next to **Re-scan**. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since the last scan, or a watched file that was missing then has appeared (a file missing then and now does not count); click **Re-scan** to refresh the inventory and recommendations.
 
-Automatic stale detection covers only the files the scanner tracks from known roots. Newly-created files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred to avoid a noisy watcher in the launch release.
+Automatic stale detection covers only the files the scanner tracks from known roots. Subagents are the exception: every `.claude/agents` directory (and each subfolder in it) is watched, so adding an agent file marks the inventory stale. Newly-created skill files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred to avoid a noisy watcher in the launch release.
 
 ---
 

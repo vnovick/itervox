@@ -146,7 +146,7 @@ Use this when you want to react to new human comments or async feedback.
 Important caveat:
 
 - this trigger is currently **poll-derived**, not webhook-driven
-- the automation loop polls every 15 seconds
+- the event poll runs every `polling.automation_interval_ms` (default 15 seconds) and, without `filter.states`, watches comments on issues in the active states only (see [Automation event poll](/configuration/#automation-event-poll))
 - Itervox detects it by comparing the latest known comment with the latest currently fetched comment
 - if multiple comments arrive between polls, only the latest observed comment is available to the trigger
 

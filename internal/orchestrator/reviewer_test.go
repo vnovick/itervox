@@ -394,7 +394,13 @@ func TestAutoReview_DoesNotTriggerForAutomationRuns(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 
 	assert.Equal(t, 1, countingRunner.CallCount(), "automation success should not dispatch reviewer")
-	assert.NotContains(t, logBuf.String(), "orchestrator: dispatching reviewer")
+	// The default logger is process-wide: an earlier test's orchestrator
+	// that is still stopping can log into it. Only lines from this test's
+	// automation dispatch on count.
+	logs := logBuf.String()
+	start := strings.Index(logs, "orchestrator: dispatching automation worker")
+	require.GreaterOrEqual(t, start, 0, "the automation dispatch is logged")
+	assert.NotContains(t, logs[start:], "orchestrator: dispatching reviewer")
 }
 
 func TestAutoReview_UsesSSHHostSelection(t *testing.T) {
@@ -721,23 +727,6 @@ func (t *noCandidateTracker) SetIssueBranch(ctx context.Context, issueID, branch
 var _ = strings.Split
 var _ = bytes.Buffer{}
 
-// TestMultiReviewerConfigFallsBackToSingleReviewer pins that reviewer
-// fan-out is DISABLED for this release and, critically, that a config which
-// requests it degrades to the working single-reviewer path instead of
-// misbehaving.
-//
-// Three reproduced failures gate the feature (see
-// orchestrator.ReviewerProfileChain). The one this test guards is the worst:
-// with tracker.completion_state set — the realistic configuration — the
-// worker moves the issue terminal before the reviewer finishes,
-// ReconcileTrackerStates stops the reviewer, and because that is not a
-// TerminalSucceeded exit the chain never advances, so chain[0] is
-// re-dispatched forever. Measured before the gate: 10+ RunTurn calls in ~1s,
-// against 2 for a single-reviewer config that was otherwise identical.
-//
-// The assertion is therefore an upper bound on dispatches, not a lower one:
-// a regression here shows up as runaway agent spawning, which on a real
-// tracker means real API spend and real duplicated work.
 // TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping is issue #58's
 // end-to-end acceptance, and the test that the two gated lifecycle defects
 // made impossible to pass.
