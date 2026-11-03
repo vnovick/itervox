@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import Settings from '../index';
 
 const workspaceCardMock = vi.fn(() => <div data-testid="workspace-card" />);
@@ -20,10 +21,6 @@ vi.mock('../ProjectFilterCard', () => ({
 
 vi.mock('../SSHHostsCard', () => ({
   SSHHostsCard: () => <div data-testid="ssh-hosts-card" />,
-}));
-
-vi.mock('../SkillsCard', () => ({
-  SkillsCard: () => <div data-testid="skills-card" />,
 }));
 
 vi.mock('../GeneralCard', () => ({
@@ -101,7 +98,7 @@ describe('Settings page', () => {
   });
 
   it('passes the live autoReview flag through to WorkspaceCard', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
 
     expect(workspaceCardMock).toHaveBeenCalled();
     expect(workspaceCardMock.mock.calls[0][0]).toEqual(
@@ -112,7 +109,7 @@ describe('Settings page', () => {
   });
 
   it('renders the Dependencies section with the live mode', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
 
     expect(dependenciesCardMock).toHaveBeenCalled();
     expect(dependenciesCardMock.mock.calls[0][0]).toEqual(
@@ -124,7 +121,7 @@ describe('Settings page', () => {
 
   // CORE-093
   it('renders Rate limits & failover section', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
     const section = screen.getByRole('region', { name: 'Rate limits & failover' });
     expect(section).not.toBeNull();
     expect(section).toContainElement(screen.getByTestId('rate-limits-card'));
@@ -134,7 +131,7 @@ describe('Settings page', () => {
   });
 
   it('Capacity card renders adjacent to Retries', () => {
-    const { container } = render(<Settings />);
+    const { container } = render(<Settings />, { wrapper: MemoryRouter });
     const retries = container.querySelector('#section-retries')?.closest('section');
     const next = retries?.nextElementSibling;
     expect(next?.querySelector('h2')).toHaveTextContent('Capacity');
@@ -142,15 +139,26 @@ describe('Settings page', () => {
   });
 
   it('renders the schema-driven All settings section (#158)', () => {
-    const { container } = render(<Settings />);
+    const { container } = render(<Settings />, { wrapper: MemoryRouter });
     const section = container.querySelector('#section-all-settings')?.closest('section');
     expect(section).toContainElement(screen.getByTestId('schema-settings-card'));
   });
 
   it('page description names what Settings holds (no stale "profiles")', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
     expect(pageMetaMock.mock.calls[0][0]).toEqual(
       expect.objectContaining({ description: expect.not.stringContaining('profiles') }),
+    );
+  });
+
+  it('links the Skills Inventory to Repo Analysis instead of rendering it (#200)', () => {
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.queryByText('Skills Inventory')).not.toBeInTheDocument();
+    expect(screen.queryByText(/loading skills inventory/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/skills inventory moved to/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Repo Analysis' })).toHaveAttribute(
+      'href',
+      '/repo#capabilities',
     );
   });
 });

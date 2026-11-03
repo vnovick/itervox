@@ -1,0 +1,75 @@
+---
+title: Memory
+description: The dashboard's Memory page — what agents carry from one run to the next, private or shared with the project, ranked into each run's prompt within a token budget.
+sidebar:
+  order: 10
+---
+
+Itervox forgets everything between runs except the handoff files. **Memory** fixes the most common case: you correct an agent once ("this repo uses pnpm, not npm") and every later run is told, without you repeating it.
+
+An entry is a short piece of text with a type:
+
+| Type | Example |
+|---|---|
+| Preference | "Keep my PR descriptions under 10 lines." |
+| Fact | "The staging DB is read-only on Fridays." |
+| Decision | "We chose Tauri over Electron for the Mac app." |
+| Lesson | "pnpm test flakes on the SSE test; rerun once before failing." |
+
+Entries live in two files: **private** (`~/.itervox/memory.json`, only you, never committed) and **project shared** (`.itervox/memory.json`, committed with the code, so every run on the repository uses it). The file format, the size caps and the selection rules are in the [configuration reference](/configuration/#memory-files); the budget settings are under [`memory`](/configuration/#memory).
+
+## How a run uses memory
+
+At every dispatch the daemon reads both files again (no restart after an edit) and builds the run's `## Memory` block:
+
+1. Only `active` entries whose `profiles` match the run are considered. Proposed lessons and archived entries are never used.
+2. **Pinned** entries are always included.
+3. The rest are ranked by how many of their words and tags also appear in the issue's title, description and labels and the profile name, and added best first while they fit `memory.token_budget` (default 2000 tokens). Rules and memory together stay within `memory.prompt_share_tokens` (default 8000): memory gets what the rules leave, so the lowest-ranked memories are dropped first and rules never are.
+
+The prompt is assembled as: the `WORKFLOW.md` template and the daemon's blocks (reply envelope, handoffs, run context), then the profile tail — **rules → memory → SOUL.md → INSTRUCTIONS.md** — and the automation instructions and sub-agent roster after them.
+
+Each finished run lists the memory it was given (`memoryIds` in run history), and the memory is part of its [prompt version](/guides/repo-analysis/#prompt-versions). Once the block reaches the agent, each entry's **last used** time and **use count** are updated.
+
+## The Memory page
+
+Open **Memory** in the sidebar (after Repo Analysis), with `g m`, from the command palette, or from the [Mac app](/guides/mac-app/)'s per-daemon menu.
+
+- **Add memory**: write the text, pick a type, private or project scope, and tags. Text over 2000 bytes is refused. Secrets (tokens, keys, passwords) are redacted before the entry is saved.
+- **Search and filter** by text, type, scope, profile, tag and usage (used by a run / never used).
+- **Select an entry** to see its full text, provenance (where it came from: issue, runs, PR or comment links), when it was created, updated and last used, how many runs used it, and the most recent runs whose prompt carried it.
+- **Edit** the text, type, tags and profiles inline. **Pin** an entry so every run gets it. **Archive** keeps an entry without using it. **Delete** removes it; **Undo** in the banner puts it back exactly as it was.
+- **Share with the project** moves a private entry into `.itervox/memory.json` and shows the file's git diff (or the whole file while it is not committed yet). Commit it to share it with the team.
+- **Open in editor**: the dashboard cannot launch your editor, so it shows the file's path with a copy button; open it in your editor, where the `$schema` gives completion. The daemon rewrites the files to record usage, so comments are not kept.
+
+The **Lessons** tab is the review queue for the lessons Itervox proposes (below), with a count on the tab and on the Memory item in the sidebar.
+
+## Lessons
+
+Most of what is worth remembering comes out of corrections and failures, and nobody writes memories by hand after every run. So Itervox proposes **lessons** itself, and a human approves them. A proposed lesson is a `lesson` entry with `status: proposed`: **no run uses it until it is approved.**
+
+Itervox proposes a lesson when:
+
+1. **A human corrected an agent**: a reply to an input-required question (from the dashboard or a tracker comment) or a steering message from the Sessions panel that tells the agent to do something differently ("don't add a dependency, use the csv helper instead"). Replies that only answer or agree ("yes, go ahead", "port 8080") propose nothing.
+2. **A failed run was followed by a success**: a worker run on an issue failed or stalled and a later run on the same issue succeeded. The lesson records what changed in between: the steering messages and input replies since the failure, and blocking reviewer feedback. A retry that simply worked the second time, with nothing changed, proposes nothing.
+
+**Drafting.** The daemon notices these on its event loop, but the wording is drafted off it: one short call to the backend of the lesson profile (`memory.lessons.profile`, by default the reviewer profile) with the evidence attached, no tools, an empty temporary directory and a hard budget (`draft_token_budget`, `draft_timeout_ms`). With no profile, or when the call fails or runs over budget, the lesson is filled in from a template: "When *situation*, *what worked*. Instead of: *what went wrong*." Secrets are redacted before anything is saved.
+
+**One lesson, not ten.** A proposal that is a near-duplicate of an existing proposed or approved lesson (by normalized-word similarity of its text, or of the correction it came from) does not add a second entry: it bumps the existing lesson's evidence (its runs and links, the "seen" count and its confidence) and skips the drafting call. Each issue proposes at most `memory.lessons.max_per_issue` lessons (default 3) per `rate_window_hours` (default 24).
+
+**Reviewing.** Each proposal in the Lessons tab shows what triggered it, the situation, what went wrong and what worked, the issue, the runs and links it came from, how confident Itervox is and how often it was seen. Then:
+
+- **Approve** into **Private** or **Project shared** (moving it between the files when needed). From then on runs use it like any other entry.
+- **Edit**, then **Save and approve**, to fix the wording first.
+- **Reject** removes it and remembers it, so the same lesson, or a near-duplicate of it, is not proposed again. Rejections are kept in `.itervox/lessons-rejected.json` (only the normalized words and a fingerprint, never the text; gitignored with the other runtime files under `.itervox/`).
+
+`memory.lessons.auto_approve` (default `false`, per scope) approves proposals as they land.
+
+**Not helping.** The **Not helping** filter lists approved lessons that none of the last `memory.lessons.stale_after_runs` runs (default 20) used, and lessons whose recent runs mostly failed, so you can edit or archive them in Entries.
+
+## Git and remote daemons
+
+`itervox init`, `itervox init --update` and the daemon's startup add the carve-outs that keep `.itervox/memory.json` committable when `.itervox/` is otherwise ignored, and `itervox doctor`'s repo readiness warns when a root `.gitignore` hides it. On a remote daemon, private memory is the daemon user's `~/.itervox/memory.json` (set `ITERVOX_USER_MEMORY` to move it, `off` to disable it).
+
+## API
+
+`GET /api/v1/memory`, `POST /api/v1/memory`, `PUT` and `DELETE /api/v1/memory/{id}`, `POST /api/v1/memory/{id}/pin`, `POST /api/v1/memory/{id}/promote`, and for lessons `POST /api/v1/memory/{id}/approve` and `POST /api/v1/memory/{id}/reject`; see the [API reference](/api-reference/#memory).

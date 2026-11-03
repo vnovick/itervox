@@ -334,6 +334,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
+	// #204: guardrails for this run's agent (local runs). The runner applies
+	// their environment after the command's own assignments (the action
+	// bridge's PATH below), so the shims stay first on PATH.
+	guardEnv, guard, guardToken := o.prepareRunGuardrails(ctx, issue.Identifier, runLogID, wsPath, workerHost,
+		activeBranchName, turnTimeoutMs, maxTurns)
+	if guard != nil {
+		ctx = agent.WithRunEnv(ctx, guardEnv)
+	}
+	defer func() {
+		o.agentActionTokens.Revoke(guardToken)
+		guard.Remove()
+	}()
+
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
 	// Resolved once from the same cfgMu snapshot as the rest of the profile,
 	// so every turn of this run launches with a consistent permission mode
@@ -366,6 +379,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			pathValue := shimDir
 			if currentPath := os.Getenv("PATH"); currentPath != "" {
 				pathValue = shimDir + string(os.PathListSeparator) + currentPath
+			}
+			if guard != nil { // #204: this assignment replaces PATH; the guardrail shims stay first
+				pathValue = guard.BinDir() + string(os.PathListSeparator) + pathValue
 			}
 			agentCommand = prependEnvToCommand(agentCommand, map[string]string{
 				"ITERVOX_ACTION_TOKEN":       token,
@@ -469,6 +485,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	ruleSet := o.runRules(ctx, profileName, backend)
 	runVars["rules"] = ruleSet.Binding()
 	o.reportRuleProblems(ruleSet, issue.Identifier, runLogID)
+	// #202: the memory this run was dispatched with, as a `## Memory` block
+	// after the rules. Its use is reported once, when it first reaches the
+	// agent.
+	memSel := o.runMemory(ctx, profileName, issue, ruleSet)
+	memoryReported := false
 	// Result of the most recent after_run hook invocation. When
 	// hooks.after_run_required is set, the final turn's hook result gates
 	// TerminalSucceeded (spec F3: a unit is not done on the agent's
@@ -591,6 +612,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// the profile sections a dispatched worker sees.
 		renderedPrompt += profilePromptTail(profileTailInput{
 			Rules:         ruleSet,
+			Memory:        memSel,
 			Template:      promptTemplate,
 			ProfileName:   profileName,
 			Profiles:      profilesSnap,
@@ -706,6 +728,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
 		}
+		// #202: this turn's prompt carries the run's memory block (a resumed
+		// turn whose prompt is an operator reply does not): report its use
+		// once, through the event loop.
+		if !memoryReported && len(memSel.Entries) > 0 && strings.Contains(renderedPrompt, memSel.Block()) {
+			memoryReported = true
+			o.reportMemoryUsed(ctx, issue.Identifier, memSel.IDs())
+		}
 		turnStart := time.Now()
 		logDir := ""
 		if o.agentLogDir != "" {
@@ -757,6 +786,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 						issue.BranchName = &b
 						activeBranchName = currentBranch
 						workerLog.Info("worker: branch tracked on issue", "branch", currentBranch)
+						if err := guard.SetIssueBranch(currentBranch); err != nil { // #204
+							workerLog.Warn("guardrails: issue branch not updated", "branch", currentBranch, "error", err)
+						}
 					}
 				}
 			}

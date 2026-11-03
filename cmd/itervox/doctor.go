@@ -13,6 +13,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
+	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/skills"
 	"github.com/vnovick/itervox/internal/tracker/local"
 )
@@ -199,6 +200,10 @@ type DoctorReport struct {
 	// BareFetch is the shared bare clone's fetch check (#195): a failing
 	// fetch fails doctor; a stale one or the pre-#195 refspec warns.
 	BareFetch BareFetchCheck
+	// Readiness is the repo readiness summary (#200), the same rows as
+	// GET /api/v1/repo/readiness. Its failures repeat checks above; it does
+	// not change the exit code on its own.
+	Readiness []server.RepoReadinessCheck
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -242,6 +247,7 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 	report := DoctorReport{Workflow: workflowPath}
 
 	cfg, err := config.Load(workflowPath)
+	loadErr := err
 	if err == nil {
 		err = config.ValidateDispatch(cfg)
 	}
@@ -405,6 +411,12 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// Repo readiness (#200): the rows GET /api/v1/repo/readiness serves,
+	// built from the checks above.
+	report.Readiness = buildRepoReadiness(context.Background(), workflowPath, repoReadinessInputs{
+		cfg: cfg, loadErr: loadErr, bareFetch: report.BareFetch, refIssues: report.ProfileRefIssues,
+	}, doctorReadinessEnv())
+
 	return report, cfg
 }
 
@@ -537,6 +549,7 @@ func renderDoctorReport(r DoctorReport) string {
 	for _, p := range r.LocalIssueProblems {
 		fmt.Fprintf(&b, "WARNING: issue file does not parse (Itervox keeps using its last good version and will not write to it until it is fixed): %s\n", p)
 	}
+	renderRepoReadiness(&b, r.Readiness)
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)

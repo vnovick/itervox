@@ -31,7 +31,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 	// depsSidecar is mtime-cached; Latest() reads the sidecar only when the
 	// file has changed since the last successful load. v0.2.0 todolist6.
 	depsSidecar := depsanalysis.NewSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
-	syncSrc := newSyncStatusSource(cfg, tr, ob, orch) // #117
+	syncSrc := newSyncStatusSource(cfg, tr, ob, orch)     // #117
+	lessons := newProposedLessonCounter(cfg.WorkflowPath) // #203: the Memory nav count
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
 		now := time.Now()
@@ -160,6 +161,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				CommentCount: r.CommentCount,
 				RulesHash:    r.RulesHash,
 				RuleIDs:      r.RuleIDs,
+				MemoryIDs:    r.MemoryIDs, // #202
 				ProfileName:  r.ProfileName,
 				// #186: prompt version, run ID and steering history.
 				RunID:         r.RunID,
@@ -292,6 +294,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// CORE-055 — agent backend breakers and auto-switch provenance.
 			BackendHealth: backendHealthRows(s, knownBackends(cfg, profiles)),
 			AutoSwitches:  autoSwitchRows(s),
+			// #203 — proposed lessons waiting in the Memory page's queue.
+			ProposedLessons: lessons.Count(),
 		}
 		// Stale threshold for the dashboard badge: pick the longest
 		// MaxAgeMinutes across all enabled input_required automations. If no
@@ -318,7 +322,7 @@ func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
 	if p == (orchestrator.PromptParts{}) {
 		return nil
 	}
-	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Template: p.Template}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Template: p.Template}
 }
 
 // historySteers maps a run's delivered operator messages (#186).

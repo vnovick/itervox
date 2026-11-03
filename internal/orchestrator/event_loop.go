@@ -148,6 +148,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.discardWg.Wait()
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
+	o.memoryWg.Wait() // #202: memory usage writes
+	o.lessonWg.Wait() // #203: lesson drafting
 	o.depsRefreshWg.Wait()
 	o.trackerReadsWg.Wait() // #187: off-loop polls and claim reads (ctx cancelled)
 	o.extSessionsWg.Wait()
@@ -1107,6 +1109,10 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		if !replied || strings.TrimSpace(replyComment.Body) == "" {
 			continue // no reply yet
 		}
+		if entry.GuardrailApprovalID != "" { // #204: the reply decides the approval
+			o.resolveGuardrailApproval(&state, entry, replyComment.Body, "tracker")
+			continue
+		}
 		slog.Info("orchestrator: tracker comment reply detected, queuing pending resume",
 			"identifier", identifier, "reply_length", len(replyComment.Body))
 		if o.logBuf != nil {
@@ -1115,6 +1121,7 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		}
 		delete(state.InputRequiredIssues, identifier)
 		state.PendingInputResumes[identifier] = buildPendingInputResumeEntry(entry, replyComment.Body)
+		o.observeInputReply(&state, entry, replyComment.Body) // #203
 	}
 	return state
 }
@@ -1850,10 +1857,20 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Warn("orchestrator: provide-input for unknown identifier", "identifier", ev.Identifier)
 			return state
 		}
+		if entry.GuardrailApprovalID != "" { // #204
+			if ev.FromAgent {
+				slog.Warn("guardrails: an agent tried to answer a guardrail approval; ignored",
+					"identifier", ev.Identifier)
+				return state
+			}
+			o.resolveGuardrailApproval(&state, entry, ev.Message, "dashboard")
+			return state
+		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
+		o.observeInputReply(&state, entry, ev.Message) // #203
 		// Post the user's reply so the conversation is visible in the
 		// tracker. Enqueued after the question (see postInputRequiredComment).
 		// A failed reply enqueue only loses the tracker mirror: the resume
@@ -1872,6 +1889,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		entry, ok := state.InputRequiredIssues[ev.Identifier]
 		if !ok {
 			slog.Warn("orchestrator: dismiss-input for unknown identifier", "identifier", ev.Identifier)
+			return state
+		}
+		if entry.GuardrailApprovalID != "" { // #204: dismissing rejects; the run keeps going
+			o.resolveGuardrailApproval(&state, entry, "dismissed", "dismiss")
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
@@ -2029,11 +2050,20 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		now := time.Now()
 		applySessionDelivery(&state, ev.SessionDelivery, now)
 		recordRunSteers(state, ev.RunID, ev.SessionDelivery, now) // #186
+		o.observeSteers(&state, ev.RunID, ev.SessionDelivery)     // #203
+
+	case EventMemoryUsed: // #202
+		o.applyMemoryUsed(ev)
+
+	case EventLessonDrafted: // #203
+		o.applyLessonDrafted(&state, ev)
 
 	case EventTrackerPolled: // #187
 		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
 	case EventClaimChecked: // #187
 		return o.applyClaimBatch(ctx, state, ev.ClaimBatch, time.Now())
+	case EventGuardrailApproval: // #204
+		o.handleGuardrailApproval(&state, ev)
 	case EventWorkerExited:
 		// #187: a poll in flight may have listed this issue before its run
 		// moved it; that list must not dispatch it again.
@@ -2051,6 +2081,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			o.handleStaleExit(ev, current)
 			return state
 		}
+		// #204: an approval the run was waiting for dies with it.
+		o.dropGuardrailApprovals(&state, exitIdentifier(liveEntry, ev))
 		if liveEntry != nil {
 			liveEntry.Phase = RunExited
 		}
@@ -2067,6 +2099,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// claim and retry already managed by the reconcile function.
 			return state
 		}
+		noteRunExit(liveEntry, ev.RunEntry) // #201: branch and PR for history
 		if ev.RunEntry.TerminalReason != TerminalCanceledByReconciliation {
 			// Reconcile's own stop event precedes the run's exit; only the
 			// run's exit closes its record.
@@ -2241,6 +2274,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// #58 — collect this reviewer's verdict and either dispatch
 				// the next reviewer in the chain or close the quorum.
 				state = o.advanceReviewChainForIssue(ctx, state, issue, finished.ProfileName, now)
+				noteReviewVerdict(state, liveEntry, issue.Identifier, finished.ProfileName) // #201
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -2294,6 +2328,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				o.saveAutoSwitchedToDisk(&state)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
+			o.observeRunSucceeded(&state, liveEntry, issue) // #203
 			// Auto-clear workspace if configured.
 			//
 			// New semantics (v0.2.0): clear only when the issue reaches a
@@ -2964,11 +2999,14 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.TriggerType = liveEntry.TriggerType
 		run.RulesHash = liveEntry.RulesHash
 		run.RuleIDs = liveEntry.RuleIDs
+		run.MemoryIDs = liveEntry.MemoryIDs         // #202
 		run.RunID = liveEntry.RunID                 // #186
 		run.PromptDigest = liveEntry.PromptDigest   // #186
 		run.PromptParts = liveEntry.PromptParts     // #186
 		run.Steers = slices.Clone(liveEntry.Steers) // #186
 		run.SteersDropped = liveEntry.SteersDropped
+		run.PRURL = liveEntry.PRURL                 // #201
+		run.ReviewVerdict = liveEntry.reviewVerdict // #201
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the
@@ -2983,6 +3021,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 	} else {
 		run.StartedAt = finishedAt
 	}
+	run.BranchName = historyBranch(liveEntry, issue) // #201
 	o.addCompletedRun(run)
 	// Reset the per-identifier counter so the next run starts fresh — without
 	// this a long-lived issue accumulates comment counts across multiple runs.

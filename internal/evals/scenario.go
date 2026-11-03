@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -76,6 +77,10 @@ type ScenarioExpect struct {
 type Recording struct {
 	Actions  []string
 	Comments []string
+	// PromptDigest is the prompt version a live recording was made with,
+	// from its meta line (#201); empty for hand-written fixtures and live
+	// recordings made before #201.
+	PromptDigest string
 }
 
 // LoadScenarios walks the fixture root and returns all Scenarios it can read.
@@ -156,24 +161,36 @@ func IsRecordingStale(scenario Scenario, soulMtime, instructionsMtime int64) boo
 
 // JudgeVerdict is the result of evaluating one scenario against its
 // expectation. A passing scenario reports pass=true; the reason field is the
-// one-line explanation surfaced in the report.
+// one-line explanation surfaced in the report. Failures lists every
+// assertion that failed (#201), in the order the judge checks them; Reason
+// is the first of them.
 type JudgeVerdict struct {
-	Pass   bool
-	Reason string
+	Pass     bool
+	Reason   string
+	Failures []string
+}
+
+// failedVerdict is the verdict for a non-empty list of failed assertions.
+func failedVerdict(failures []string) JudgeVerdict {
+	return JudgeVerdict{Pass: false, Reason: failures[0], Failures: failures}
 }
 
 // JudgeDeterministic is the Tier-1 judge: check that the recorded transcript
 // called the required actions and omitted the forbidden ones.
 func JudgeDeterministic(scenario Scenario, recording Recording) JudgeVerdict {
+	var failures []string
 	for _, want := range scenario.Expect.RequiredActionCalls {
 		if !containsString(recording.Actions, want) {
-			return JudgeVerdict{Pass: false, Reason: "missing required action: " + want}
+			failures = append(failures, "missing required action: "+want)
 		}
 	}
 	for _, banned := range scenario.Expect.ForbiddenActions {
 		if containsString(recording.Actions, banned) {
-			return JudgeVerdict{Pass: false, Reason: "forbidden action called: " + banned}
+			failures = append(failures, "forbidden action called: "+banned)
 		}
+	}
+	if len(failures) > 0 {
+		return failedVerdict(failures)
 	}
 	return JudgeVerdict{Pass: true, Reason: "all required actions present"}
 }
@@ -182,24 +199,19 @@ func JudgeDeterministic(scenario Scenario, recording Recording) JudgeVerdict {
 // one comment containing each marker phrase the scenario expects, and that
 // no comment contains a forbidden phrase (the absence check, #189).
 func JudgeStructural(scenario Scenario, recording Recording) JudgeVerdict {
+	var failures []string
 	for _, banned := range scenario.Expect.ForbiddenPhrases {
-		for _, c := range recording.Comments {
-			if strings.Contains(c, banned) {
-				return JudgeVerdict{Pass: false, Reason: "forbidden phrase present in comments: " + banned}
-			}
+		if slices.ContainsFunc(recording.Comments, func(c string) bool { return strings.Contains(c, banned) }) {
+			failures = append(failures, "forbidden phrase present in comments: "+banned)
 		}
 	}
 	for _, phrase := range scenario.Expect.MarkerPhrases {
-		found := false
-		for _, c := range recording.Comments {
-			if strings.Contains(c, phrase) {
-				found = true
-				break
-			}
+		if !slices.ContainsFunc(recording.Comments, func(c string) bool { return strings.Contains(c, phrase) }) {
+			failures = append(failures, "marker phrase missing from comments: "+phrase)
 		}
-		if !found {
-			return JudgeVerdict{Pass: false, Reason: "marker phrase missing from comments: " + phrase}
-		}
+	}
+	if len(failures) > 0 {
+		return failedVerdict(failures)
 	}
 	return JudgeVerdict{Pass: true, Reason: "marker phrases present"}
 }
@@ -229,6 +241,14 @@ type ScenarioVerdict struct {
 	// judged as a complete run: the backend failed, the run hit its budget,
 	// or the suite budget ran out before it started. Empty in recorded mode.
 	Error string
+	// PromptDigest is the prompt version the transcript was produced with
+	// (#201), computed with the daemon's prompt digest (#186). A live run
+	// computes it from the workflow it ran (DigestSource "live"); recorded
+	// mode reads it from the recording's meta line (DigestSource
+	// "recording"), which only recordings made by a live run since #201
+	// carry. Empty when unknown.
+	PromptDigest string
+	DigestSource string
 }
 
 // Pass returns true when every judge verdict on this scenario passes and

@@ -1,8 +1,9 @@
-// SubagentsList — the expanded "Subagents" section of SkillsCard (#86).
-// Lists Claude Code subagents from .claude/agents (project, user) and plugin
-// manifests, with their source, model, tools and file size.
+// SubagentsList — the expanded "Subagents" section of SkillsCard (#86), on
+// the Repo Analysis page's Capabilities section (#200). Lists Claude Code
+// subagents from .claude/agents (project, user) and plugin manifests, with
+// their source, model, tools and file size.
 
-import type { Subagent } from '../../types/schemas';
+import type { Subagent } from '../../../types/schemas';
 
 const EMPTY_SUBAGENTS: readonly Subagent[] = [];
 

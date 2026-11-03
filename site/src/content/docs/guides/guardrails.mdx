@@ -1,0 +1,123 @@
+---
+title: Guardrails
+description: How Itervox keeps the agents it starts to their issue branch, stops them merging their own pull requests, and holds deploy commands for a human approval — and what these guardrails cannot stop.
+sidebar:
+  order: 10
+---
+
+Agents run with their backend's own permissions in Itervox's worktrees and in
+the tmux sessions you start with **New session**. Without limits, an agent can
+`git push --force`, push to `main`, merge its own pull request or run a deploy.
+Itervox's **guardrails** (on by default, [`guardrails:`](/configuration/#guardrails))
+refuse those operations, or hold them for a human:
+
+| The agent tries to… | What happens |
+|---|---|
+| push its issue branch (a fast-forward) | allowed |
+| push to `main`, `master`, `develop`, the base branch or any other branch | refused |
+| push a tag | refused |
+| force-push or delete its issue branch | refused, unless `guardrails.allow_force_push` |
+| `git push --no-verify`, or `git -c core.hooksPath=…` | refused (it would skip the guardrail hook) |
+| `gh pr merge`, `glab mr merge`, a merge through `gh api` / `glab api` | refused |
+| `git merge` while the default branch is checked out | refused |
+| a command in `guardrails.approval_commands` (`vercel --prod`, `kubectl apply`, …) | waits for a human; runs once on approve |
+| anything else | runs unchanged |
+
+Every refusal tells the agent what to do instead — push with
+`git push origin HEAD:refs/heads/<issue branch>`, merge the base into the issue
+branch rather than rebasing, leave merging to Itervox's
+[merge policy](/guides/agent-profiles/#what-gates-a-merge_pr-merge) or a human.
+
+## The issue branch
+
+The issue branch is the branch Itervox checked out for the issue (the
+worktree's `itervox/<issue>` branch, the issue's tracked branch, or the branch
+of its open pull request). An agent that creates a branch of its own for the
+issue may push it once it has it checked out: the first push of a **new**
+branch that is not protected is accepted, and that branch then takes the
+run's pushes (Itervox also tracks it as the issue's branch after the turn). A
+second new branch in the same run is refused.
+
+For a tmux session started with **New session**, the issue branch is the branch
+checked out in the session's folder when it starts; on `main` (or another
+protected branch) there is none, and the agent may only push a new branch it
+creates.
+
+## Approving a deploy
+
+When an agent runs a command that matches `guardrails.approval_commands`, the
+command blocks and the issue shows an input request — on the dashboard, in the
+Sessions panel, in the Mac app and as a tracker comment:
+
+> Agent wants to run: `vercel --prod`
+
+Reply `approve` (or `yes`, `ok`, `allow`) to run it **once**; any other reply
+rejects it, and the agent is told your reply as the reason (so
+`no, deploy to staging first` is useful). Dismissing the request rejects it
+too. The run keeps going while it waits — nothing is paused or resumed.
+
+- An agent cannot answer its own request: `itervox action provide-input` is
+  ignored for it, and the guarded agent's environment has no
+  `ITERVOX_API_TOKEN`.
+- If the agent's tool times out while waiting, the request stays open. When
+  the agent runs the exact same command again it joins that request, and an
+  approval given in the meantime runs it then — still once.
+- When the run ends, an open request is dropped and the command is refused.
+- Tmux sessions have no approval channel: matching commands are refused there,
+  and the agent is told to ask you to run them.
+
+Patterns are glob tokens: the first matches the program name, the rest must
+each match an argument, in order, with other arguments allowed between them.
+`kubectl apply` matches `kubectl -n prod apply -f k8s/`; `helm upgrade *-prod`
+matches `helm upgrade api-prod ./chart`. Setting `approval_commands` replaces
+the default list.
+
+## Audit
+
+Every refused or approved operation is logged (`guardrails: refused …`,
+`guardrails: approved …`; the command is redacted, never a URL with
+credentials), written to the issue's log, and every refusal is recorded in
+Recent failures (kind `guardrail`) and counted in
+`itervox_guardrail_blocks_total{kind}` — `branch`, `force_push`, `delete`,
+`tag`, `hook_bypass`, `self_merge`, `approval_rejected`,
+`approval_unavailable`.
+
+## How it works
+
+Each guarded run gets a private directory with:
+
+- **shims** — small scripts named `git`, `gh`, `glab` and the programs of
+  `approval_commands`, put first on the agent's `PATH`. A shim runs the
+  itervox binary, which inspects the arguments and either refuses, asks for an
+  approval, or replaces itself with the real program (found on `PATH` past the
+  shims), passing the same arguments, input, environment and exit status;
+- **git hooks** — `core.hooksPath` points at the directory through
+  `GIT_CONFIG_PARAMETERS`. Its `pre-push` checks every ref the push updates;
+  every hook then chains to your repository's own hooks directory (its
+  `core.hooksPath` or `.git/hooks`), so your hooks still run.
+
+Shims and hooks reach the daemon only through two token-gated endpoints
+(`/api/v1/agent-actions/{issue}/guardrail/…`) with a per-run token: one
+records a refusal, the other raises and reads an approval request. Nothing on
+the daemon runs a command for an agent. Itervox's own git commands are not
+affected.
+
+## Known limits
+
+:::caution[Guidance, not a sandbox]
+An agent that runs git by an absolute path (`/usr/bin/git push --force`),
+rewrites its own `PATH` or environment, or reaches the remote another way
+(an HTTP API with its own token) is not stopped. **Branch protection on your
+remote** is what makes a protected-branch push impossible; keep it on.
+:::
+
+- Runs on [SSH worker hosts](/configuration/#ssh-dispatch) are not guarded in
+  this version; a warning is logged at startup and for each such run.
+- Sessions you start by hand are never touched.
+- An agent CLI running in its own sandbox that blocks network access (for
+  example Codex with `permission_mode: sandbox`) cannot reach the daemon:
+  refusals still apply but are not reported, and approval commands are
+  refused once the shim gives up waiting.
+- An agent with tracker write access through its own credentials could post a
+  tracker reply to its own approval request; for strict approvals, answer on
+  the dashboard and keep agents' tracker credentials read-only.

@@ -15,6 +15,8 @@ import {
   AutomationsIcon,
   DashboardIcon,
   LogsIcon,
+  MemoryIcon,
+  RepoIcon,
   RulesIcon,
   SessionsIcon,
   SettingsIcon,
@@ -38,6 +40,8 @@ const Timeline = lazy(() => import('./pages/Timeline'));
 const Agents = lazy(() => import('./pages/Agents'));
 const Automations = lazy(() => import('./pages/Automations'));
 const Rules = lazy(() => import('./pages/Rules'));
+const RepoAnalysis = lazy(() => import('./pages/Repo'));
+const Memory = lazy(() => import('./pages/Memory'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 
@@ -52,6 +56,8 @@ const NAV_ITEMS = [
   { to: '/agents', icon: <AgentsIcon />, label: 'Agents' },
   { to: '/automations', icon: <AutomationsIcon />, label: 'Automations' },
   { to: '/rules', icon: <RulesIcon />, label: 'Rules' },
+  { to: '/repo', icon: <RepoIcon />, label: 'Repo Analysis' },
+  { to: '/memory', icon: <MemoryIcon />, label: 'Memory' },
   { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
@@ -64,6 +70,16 @@ function SidebarContent() {
       s.snapshot?.inputRequired?.filter((r) => inputRequiredRowState(r) === 'input_required')
         .length ?? 0,
   );
+  // #203 — proposed lessons waiting for review badge the Memory item.
+  const proposedLessons = useItervoxStore((s) => s.snapshot?.proposedLessons ?? 0);
+  const badgeFor = (to: string): number =>
+    to === '/'
+      ? attention
+      : to === '/sessions'
+        ? waitingSessions
+        : to === '/memory'
+          ? proposedLessons
+          : 0;
   return (
     <>
       {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
@@ -75,7 +91,8 @@ function SidebarContent() {
             to={item.to}
             icon={item.icon}
             label={item.label}
-            badge={item.to === '/' ? attention : item.to === '/sessions' ? waitingSessions : 0}
+            badge={badgeFor(item.to)}
+            badgeLabel={item.to === '/memory' ? 'lessons to review' : undefined}
           />
         ))}
       </nav>
@@ -266,6 +283,26 @@ export function AppRouteTable() {
             <Suspense fallback={<PageLoader />}>
               <PageErrorBoundary>
                 <Rules />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/memory"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Memory />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/repo"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <RepoAnalysis />
               </PageErrorBoundary>
             </Suspense>
           }

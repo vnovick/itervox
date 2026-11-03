@@ -1,3 +1,4 @@
+import { Link } from 'react-router';
 import PageMeta from '../../components/common/PageMeta';
 import { GeneralCard } from './GeneralCard';
 import { TrackerStatesCard } from './TrackerStatesCard';
@@ -6,7 +7,6 @@ import { DependenciesCard } from './DependenciesCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
 import { TrackerFilterCard } from './trackerFilter/TrackerFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
-import { SkillsCard } from './SkillsCard';
 import { RetriesCard } from './RetriesCard';
 import { CapacityCard } from './CapacityCard';
 import { RateLimitsFailoverCard } from './RateLimitsFailoverCard';
@@ -184,12 +184,14 @@ export default function Settings() {
           <SSHHostsCard />
         </section>
 
-        <section aria-labelledby="section-skills">
-          <h2 id="section-skills" className="mb-3 text-xs font-semibold tracking-widest uppercase">
-            Skills Inventory
-          </h2>
-          <SkillsCard />
-        </section>
+        {/* #200 — the inventory is analysis, not a setting. */}
+        <p className="text-theme-muted text-sm">
+          Skills inventory moved to{' '}
+          <Link to="/repo#capabilities" className="text-theme-accent hover:underline">
+            Repo Analysis
+          </Link>
+          .
+        </p>
 
         {/* #158 — every layered setting, rendered from the settings schema. */}
         <section aria-labelledby="section-all-settings">

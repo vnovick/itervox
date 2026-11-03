@@ -103,3 +103,47 @@ func TestHistoryPromptVersionsGroupsOutcomes(t *testing.T) {
 	empty := server.GroupHistoryByPrompt(nil)
 	assert.NotNil(t, empty.Versions, "an empty history is an empty list, not null")
 }
+
+// TestPromptVersionStats (#200): the Repo Analysis page's prompt-version
+// table reads, per digest, the run count, the success rate, the first and
+// last time the version was seen and the mean run duration, from history
+// rows that arrive in any order.
+func TestPromptVersionStats(t *testing.T) {
+	t0 := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	digestX := "c0ffee" + strings.Repeat("3", 58)
+	digestY := "d00d" + strings.Repeat("4", 60)
+	snap := baseSnap()
+	snap.History = []server.HistoryRow{
+		// Deliberately out of order: first/last seen come from StartedAt,
+		// not from the row order.
+		{Identifier: "ENG-11", Status: "failed", StartedAt: t0.Add(5 * time.Hour), ElapsedMs: 3000, PromptDigest: digestX, ProfileName: "implementer"},
+		{Identifier: "ENG-10", Status: "succeeded", StartedAt: t0, ElapsedMs: 1000, PromptDigest: digestX, ProfileName: "implementer"},
+		{Identifier: "ENG-12", Status: "succeeded", StartedAt: t0.Add(2 * time.Hour), ElapsedMs: 2000, PromptDigest: digestX, ProfileName: "implementer"},
+		{Identifier: "ENG-13", Status: "cancelled", StartedAt: t0.Add(time.Hour), ElapsedMs: 6000, PromptDigest: digestX, ProfileName: "implementer"},
+		{Identifier: "ENG-20", Status: "succeeded", StartedAt: t0.Add(6 * time.Hour), ElapsedMs: 500, PromptDigest: digestY, ProfileName: "reviewer"},
+	}
+	srv := server.New(makeTestConfig(snap))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/history/prompt-versions", nil))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var body server.PromptVersionsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body.Versions, 2)
+
+	y, x := body.Versions[0], body.Versions[1]
+	assert.Equal(t, digestY, y.PromptDigest, "newest last-seen first")
+	assert.Equal(t, digestX, x.PromptDigest)
+
+	assert.Equal(t, 4, x.Runs)
+	assert.InDelta(t, 0.5, x.SuccessRate, 1e-9, "2 of 4 runs succeeded")
+	assert.Equal(t, map[string]int{"succeeded": 2, "failed": 1, "cancelled": 1}, x.Statuses)
+	assert.True(t, x.FirstSeenAt.Equal(t0), "first seen: %s", x.FirstSeenAt)
+	assert.True(t, x.LastSeenAt.Equal(t0.Add(5*time.Hour)), "last seen: %s", x.LastSeenAt)
+	assert.Equal(t, int64(3000), x.AvgDurationMs, "(1000+2000+3000+6000)/4")
+	assert.Equal(t, []string{"implementer"}, x.Profiles)
+
+	assert.Equal(t, 1, y.Runs)
+	assert.InDelta(t, 1.0, y.SuccessRate, 1e-9)
+	assert.True(t, y.FirstSeenAt.Equal(y.LastSeenAt))
+	assert.Equal(t, int64(500), y.AvgDurationMs)
+}

@@ -234,6 +234,7 @@ var bootCrash crashReport
 var noPrintToken bool
 
 func main() {
+	runGuardrailEntrypoint(os.Args) // #204: shims and hooks, before any daemon start-up work
 	// TTY recovery safety net (T-12) for panics on the MAIN goroutine only.
 	// recover() cannot see a panic on any other goroutine: those are handled
 	// where they start — orchestrator.RecoverGoroutine for one-shot tasks and
@@ -1137,8 +1138,11 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
 			Rules:            &rulesAdapter{cfg: cfg, orch: orch}, // #157
+			Memory:           newMemoryAdapter(cfg, orch),         // #202, #203
 			SettingsLayers:   adapter,                             // #158
 			DepsAnalyzer:     depsSvc,
+			// #204: the guardrail endpoints of agent shims and hooks.
+			Guardrails: wireGuardrails(cfg, orch, sessTmux, actionTokenStore, actualAddr),
 			// gaps_11 G-3 — merge_pr policy is read-only after startup, so it
 			// is passed by value rather than via cfgMu-guarded accessors.
 			MergeStrategy:       cfg.Agent.MergeStrategy,
@@ -1161,7 +1165,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Webhooks:          webhooks,        // #131: signed tracker deliveries
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
-			Sessions: sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
+			Sessions:      sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
+			RepoReadiness: repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
+			RepoEvals:     repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
+			RepoHotspots:  repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

@@ -79,6 +79,10 @@ const (
 	// new worktrees branch from a stale base (#195). Recorded once per
 	// distinct failure until a fetch succeeds.
 	FailureKindWorkspaceFetch FailureKind = "workspace_fetch"
+	// FailureKindGuardrail — a guardrail refused an agent's operation or a
+	// human rejected a command that needed approval (#204). Source is the
+	// guardrail kind.
+	FailureKindGuardrail FailureKind = "guardrail"
 )
 
 // RecentFailuresCap bounds State.RecentFailures.

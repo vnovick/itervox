@@ -42,3 +42,11 @@ func fatalExit(code int) {
 	restoreTerminal()
 	os.Exit(code)
 }
+
+// exitWithoutTerminalRestore exits with code and nothing else: no cleanup
+// hook, no `stty sane`. Only for the guardrail shim and hook entrypoints
+// (#204), which run inside an agent's terminal — often a raw-mode
+// interactive CLI in tmux — and must leave it exactly as they found it.
+func exitWithoutTerminalRestore(code int) {
+	os.Exit(code)
+}
