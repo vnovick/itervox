@@ -29,6 +29,18 @@ const inventory = {
       TriggerPatterns: ['/graphify'],
     },
   ],
+  Subagents: [
+    {
+      Name: 'code-reviewer',
+      Description: 'Reviews diffs.',
+      Tools: ['Read', 'Grep'],
+      Model: 'sonnet',
+      Provider: 'claude',
+      Source: 'project',
+      FilePath: '/repo/.claude/agents/code-reviewer.md',
+      ApproxTokens: 300,
+    },
+  ],
   Plugins: [
     {
       Name: 'github-tools',
@@ -102,6 +114,51 @@ describe('SkillsCard', () => {
     });
     rerender(<SkillsCard />);
     expect(screen.getByText(/failed to load skills inventory/i)).toBeInTheDocument();
+  });
+
+  it('explains the profile reference rules when expanded', () => {
+    skillMocks.useSkillsIssues.mockReturnValue({
+      data: [
+        {
+          ID: 'MISSING_SUBAGENT_REF',
+          Severity: 'warn',
+          Title: 'Profile "impl" references unknown subagent "ghost"',
+          Description: 'No subagent named ghost.',
+          Affected: ['impl', 'ghost'],
+        },
+        {
+          ID: 'MISSING_SKILL_REF',
+          Severity: 'warn',
+          Title: 'Profile "impl" references unknown skill "verify"',
+          Description: 'No skill named verify.',
+          Affected: ['impl', 'verify'],
+        },
+        {
+          ID: 'USER_SCOPE_REF_ON_SSH',
+          Severity: 'info',
+          Title: 'Profile "impl" references skill "notes" that only exists outside the repository',
+          Description: 'Only in user scope.',
+          Affected: ['impl', 'notes'],
+        },
+      ],
+    });
+    render(<SkillsCard />);
+
+    fireEvent.click(screen.getByText('Profile "impl" references unknown subagent "ghost"'));
+    expect(
+      screen.getByText(/Add the definition as \.claude\/agents\/<name>\.md/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Profile "impl" references unknown skill "verify"'));
+    expect(
+      screen.getByText(/Check the name for a typo against the Skills list/),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByText(
+        'Profile "impl" references skill "notes" that only exists outside the repository',
+      ),
+    );
+    expect(screen.getByText(/so it travels with the repo/)).toBeInTheDocument();
+    expect(screen.getByText(/Codex reads no skills from the repository/)).toBeInTheDocument();
   });
 
   it('offers a first scan when inventory is unavailable', () => {
@@ -193,6 +250,9 @@ describe('SkillsCard', () => {
 
     render(<SkillsCard />);
 
+    fireEvent.click(screen.getByRole('button', { name: /subagents/i }));
+    expect(screen.getByText('@agent-code-reviewer')).toBeInTheDocument();
+    expect(screen.getByText(/project · sonnet · Read, Grep · 300 tok/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /plugins/i }));
     expect(screen.getByText('github-tools')).toBeInTheDocument();
     expect(screen.getByText(/Plugin \(github\)/)).toBeInTheDocument();

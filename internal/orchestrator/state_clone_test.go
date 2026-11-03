@@ -37,6 +37,7 @@ var cloneAllowlist = map[string]string{
 	"BlockerRef.Identifier": "immutable *string from the tracker adapter",
 	"BlockerRef.State":      "immutable *string from the tracker adapter",
 	"BlockerRef.URL":        "immutable *string from the tracker adapter",
+	"BlockerRef.BranchName": "immutable *string from the tracker adapter",
 }
 
 // TestStateCloneDeepCopiesAllReferenceFields fills every settable field of

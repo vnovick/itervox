@@ -61,7 +61,7 @@ and `make deploy-smoke` builds the image and requires `/api/v1/health` and
 2. SSH in and run the bootstrap:
 
    ```bash
-   sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.0 \
+   sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.1 \
      --data-disk <stable device path printed by provision.sh>
    ```
 

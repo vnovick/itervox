@@ -405,6 +405,10 @@ type ProfileEntry struct {
 	AllowedActions []string
 	// CreateIssueState is the target tracker state/column for the create_issue action.
 	CreateIssueState string
+	// PermissionMode is the profile's permission_mode ("" omits the key).
+	PermissionMode string
+	// RequireEvidence is the profile's require_evidence list (#80).
+	RequireEvidence []string
 }
 
 type AutomationTriggerEntry = automationdef.Trigger
@@ -491,6 +495,17 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				if entry.CreateIssueState != "" {
 					replacement = append(replacement, lvl3+"create_issue_state: "+strconv.Quote(entry.CreateIssueState))
+				}
+				if entry.PermissionMode != "" {
+					replacement = append(replacement, lvl3+"permission_mode: "+strconv.Quote(entry.PermissionMode))
+				}
+				if len(entry.RequireEvidence) > 0 {
+					replacement = append(replacement, lvl3+"require_evidence:")
+					for _, check := range entry.RequireEvidence {
+						if check != "" {
+							replacement = append(replacement, lvl4+"- "+strconv.Quote(check))
+						}
+					}
 				}
 				if entry.Prompt != "" {
 					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))

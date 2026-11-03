@@ -39,7 +39,7 @@ func restackEligible(state State, issue domain.Issue) bool {
 	if issue.Identifier == "" {
 		return false
 	}
-	if _, running := state.Running[issue.Identifier]; running {
+	if issueRunning(state, issue) {
 		slog.Debug("orchestrator: skipping restack for a running issue",
 			"identifier", issue.Identifier)
 		return false
@@ -50,6 +50,21 @@ func restackEligible(state State, issue domain.Issue) bool {
 		}
 	}
 	return true
+}
+
+// issueRunning reports whether issue has a run in state.Running. Running is
+// keyed by issue ID; the identifier scan covers an issue value that carries
+// no ID.
+func issueRunning(state State, issue domain.Issue) bool {
+	if _, ok := state.Running[issue.ID]; ok && issue.ID != "" {
+		return true
+	}
+	for _, entry := range state.Running {
+		if entry != nil && entry.Issue.Identifier == issue.Identifier {
+			return true
+		}
+	}
+	return false
 }
 
 // restackUnblockedIssue replays this issue's worktree onto the base branch now
@@ -82,7 +97,22 @@ func (o *Orchestrator) restackUnblockedIssue(
 		return false
 	}
 	base := o.baseBranchForRestack()
-	if base == "" || !restackEligible(*state, issue) {
+	if base == "" {
+		return false
+	}
+	// A running dependent is never rebased under its agent. The unblock
+	// transition that called us is consumed, so remember the restack and
+	// run it on the first audit that finds the issue idle (#73 review).
+	if issue.Identifier != "" && issueRunning(*state, issue) {
+		if state.PendingRestacks == nil {
+			state.PendingRestacks = map[string]struct{}{}
+		}
+		state.PendingRestacks[issue.Identifier] = struct{}{}
+		slog.Info("orchestrator: dependent is running; restack deferred until it is idle",
+			"identifier", issue.Identifier)
+		return false
+	}
+	if !restackEligible(*state, issue) {
 		return false
 	}
 
@@ -101,13 +131,33 @@ func (o *Orchestrator) restackUnblockedIssue(
 	case workspace.RestackRebased:
 		slog.Info("orchestrator: restacked dependent onto merged base",
 			"identifier", issue.Identifier, "onto", base)
+		o.retargetRestackedPR(issue.Identifier, base)
 	case workspace.RestackSkippedDirty:
 		slog.Info("orchestrator: skipped restack, worktree has uncommitted changes",
 			"identifier", issue.Identifier)
 	case workspace.RestackUpToDate:
-		// Nothing to say: the common case once a stack has settled.
+		// The branch already sits on base, but its pull request may still
+		// target the blocker's branch.
+		o.retargetRestackedPR(issue.Identifier, base)
 	}
 	return false
+}
+
+// retargetRestackedPR points the dependent's open pull request at base now
+// that it has been restacked there (#73). It runs off the event loop — `gh`
+// is a network call — on a goroutine Run joins, and touches no State.
+func (o *Orchestrator) retargetRestackedPR(identifier, base string) {
+	wsPath := o.workspace.ResolvePath(identifier)
+	if wsPath == "" {
+		return
+	}
+	goSafe(&o.prRetargetWg, "restack-pr-retarget", identifier, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
+		defer cancel()
+		if prURL := o.prURLFinder()(ctx, wsPath); prURL != "" {
+			o.retargetPRBase(ctx, identifier, prURL, base, "restacked onto base_branch")
+		}
+	}, nil)
 }
 
 // baseBranchForRestack resolves the branch dependents are replayed onto.

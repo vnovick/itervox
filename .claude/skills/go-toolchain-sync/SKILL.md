@@ -1,6 +1,6 @@
 ---
 name: go-toolchain-sync
-description: Use when editing go.mod, Makefile, bumping the Go toolchain version, addressing govulncheck stdlib vulnerabilities, or when `make verify` fails with `go: go.mod requires go >= X.Y.Z (running go X.Y.Z; GOTOOLCHAIN=goX.Y.Z)`. Keeps the two Go version pins (`go.mod` and `Makefile`) in lockstep.
+description: 'Use when editing go.mod, Makefile, bumping the Go toolchain version, addressing govulncheck stdlib vulnerabilities, or when `make verify` fails with `go: go.mod requires go >= X.Y.Z (running go X.Y.Z; GOTOOLCHAIN=goX.Y.Z)`. Keeps the two Go version pins (`go.mod` and `Makefile`) in lockstep.'
 ---
 
 # go-toolchain-sync
@@ -9,8 +9,8 @@ itervox pins the Go toolchain in **two** places. They MUST match byte-for-byte.
 
 | File | Line | Current |
 |---|---|---|
-| `go.mod` | 3 | `go 1.25.9` |
-| `Makefile` | 6 | `export GOTOOLCHAIN := go1.25.9` |
+| `go.mod` | 3 | `go 1.26.9` |
+| `Makefile` | 6 | `export GOTOOLCHAIN := go1.26.9` |
 
 CI is the single-source-of-truth pattern: `.github/workflows/ci-go.yml` and `release.yml` use `actions/setup-go@v6` with `go-version-file: go.mod`. **Never** hardcode `go-version:` in workflow YAML.
 

@@ -201,6 +201,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			SwitchWindowHours:            orch.SwitchWindowHoursCfg(),
 			RateLimits:                   rateLimits,
 			TrackerKind:                  cfg.Tracker.Kind,
+			DemoMode:                     demoSession != nil,
 			ProjectName:                  projectName,
 			ActiveProjectFilter:          activeProjectFilter,
 			AvailableProfiles:            availableProfiles,

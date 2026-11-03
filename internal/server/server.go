@@ -571,6 +571,9 @@ type StateSnapshot struct {
 	// TrackerKind is "linear" or "github" — lets the web UI decide whether to
 	// show the project picker.
 	TrackerKind string `json:"trackerKind,omitempty"`
+	// DemoMode is true while `itervox demo` serves fake issues and a scripted
+	// agent (#76); the dashboard shows a "Demo mode" badge.
+	DemoMode bool `json:"demoMode,omitempty"`
 	// ProjectName is a human-readable label for the project this daemon is
 	// serving. Populated from the tracker project slug when available, else
 	// the directory basename of the WORKFLOW.md file. Rendered in the web

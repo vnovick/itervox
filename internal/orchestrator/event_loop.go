@@ -130,6 +130,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
 	o.commentWg.Wait()
+	o.prRetargetWg.Wait()
 	o.depsRefreshWg.Wait()
 	return loopErr
 }
@@ -144,6 +145,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
 	state.ActiveStates = append([]string{}, o.cfg.Tracker.ActiveStates...)
 	state.TerminalStates = append([]string{}, o.cfg.Tracker.TerminalStates...)
+	state.CompletionState = o.cfg.Tracker.CompletionState
+	state.StackOnReviewState = stackOnReviewState(o.cfg)
 	o.cfgMu.RUnlock()
 
 	// Gap D (Task 6 review): run the dependency-refresh watchdog before the
@@ -174,7 +177,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// release the workerCancels-map entry even if the EventWorkerExited
 	// send drops under load (T-09).
 	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
-	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
+	state = reconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.pendingExits, o.logBuf)
 
 	// 4. Fetch candidates and dispatch eligible issues.
 	//
@@ -221,6 +224,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// whenever cfg.Tracker.Outbox is false (the kill switch), in which
 	// case this returns an empty set and mutates nothing.
 	state.OutboxSyncing = o.reconcileAndOverlayOutbox(issues, now)
+	pruneStackUnavailable(&state, issues)
 
 	// unified-dependency-graph Task 4 — recompute the inferred-dependency
 	// gating layer against this tick's candidate set before the audit/dispatch
@@ -1829,6 +1833,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.applyClearBackendBreaker(&state, ev.Identifier)
 
 	case EventWorkerExited:
+		o.exitsSent.Delete(ev.IssueID)
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
 		delete(state.Running, ev.IssueID)
@@ -2183,6 +2188,18 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "input_required")
 
+		case TerminalStackUnavailable:
+			// No agent ran. Remember the blocker so the dependent waits for
+			// it instead of being admitted (and backing out) every tick.
+			delete(state.Claimed, ev.IssueID)
+			if state.StackUnavailable == nil {
+				state.StackUnavailable = make(map[string]string)
+			}
+			if key := reviewStackKey(ev.RunEntry.Issue, state); key != "" {
+				state.StackUnavailable[issue.Identifier] = key
+			}
+			slog.Info("orchestrator: dependent not stacked on its in-review blocker; waiting for the blocker",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 		case TerminalRateLimited:
 			// CORE-051: a quota limit is classified on the first failure. The
 			// rate_limited fallback is evaluated now, without consuming a retry;

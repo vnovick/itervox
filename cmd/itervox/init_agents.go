@@ -178,6 +178,9 @@ func detectMigrationRunner(profiles map[string]any) string {
 }
 
 func initSoulContent(profile string) string {
+	if strings.HasPrefix(profile, "reviewer-") {
+		profile = "reviewer" // preset reviewers (#79) share the read-only reviewer files
+	}
 	switch profile {
 	case initDepsAnalyzerProfileName:
 		return `# deps-analyzer SOUL
@@ -212,7 +215,8 @@ You are the code review engineer for this repository.
 Find correctness, safety, test coverage, and integration risks before changes merge.
 
 ## Boundaries
-Do not rewrite unrelated implementation. Do not commit secrets.
+You are read-only: never edit files, commit, push or move the issue. Your
+output is a verdict; the implementer makes the fixes you ask for.
 
 ## Collaboration Style
 Be direct, evidence-driven, and specific about required fixes.
@@ -265,6 +269,9 @@ const handoffProtocolSection = `## Handoff Protocol
 `
 
 func initInstructionsContent(profile string, runner string) string {
+	if strings.HasPrefix(profile, "reviewer-") {
+		profile = "reviewer" // preset reviewers (#79) share the read-only reviewer files
+	}
 	switch profile {
 	case initDepsAnalyzerProfileName:
 		return `# deps-analyzer INSTRUCTIONS
@@ -310,13 +317,14 @@ the dashboard miss an inferred relation over showing a false one.
 - Read project agent instructions such as AGENTS.md, CLAUDE.md, and README.md before reviewing.
 
 ## Workflow
-- Inspect the diff and related tests.
+- Read the "## Changes to Review" block (the diff against the base branch) and the latest handoff in your prompt; open files in the workspace for context.
 - Prioritize real bugs, regressions, race conditions, missing tests, and security issues.
-- Fix only narrow review findings when the tracker issue or workflow asks you to do so.
+- Do not edit files, commit, push or move the issue. Itervox flags a reviewer that changes the branch and counts its verdict as a block.
+- Record your verdict at the path the "## Review Verdict (required)" block names: approve, or block with reasons and line comments the implementer must address. Itervox posts it on the issue.
 
 ## Done Criteria
-- Findings are specific and actionable.
-- Verification commands are named with their results.
+- The verdict file is written; every block reason is specific and actionable.
+- Line comments name the file and line they refer to.
 
 ` + handoffProtocolSection
 	case "input-responder":

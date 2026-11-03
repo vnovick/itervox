@@ -23,6 +23,9 @@ type Cache struct {
 	tracked   []string // file paths whose mtime gates re-scan
 }
 
+// missingMtime records a tracked path that did not exist at Refresh.
+const missingMtime int64 = -1
+
 // NewCache builds an empty cache. Refresh() must be called once before Get
 // returns useful data.
 func NewCache() *Cache {
@@ -44,7 +47,8 @@ func (c *Cache) Get() *Inventory {
 }
 
 // Stale returns true if any tracked file's mtime has moved since the last
-// successful Refresh. A file becoming missing also counts as stale.
+// successful Refresh, a tracked file disappeared, or one that was missing at
+// Refresh has appeared. A path missing then and now is unchanged.
 func (c *Cache) Stale() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -53,13 +57,19 @@ func (c *Cache) Stale() bool {
 
 func (c *Cache) staleLocked() bool {
 	for _, p := range c.tracked {
+		mt, recorded := c.mtimes[p]
 		fi, err := os.Stat(p)
 		if err != nil {
-			// Tracked file disappeared → stale.
-			return true
+			// Missing now: stale unless it was already missing at Refresh
+			// (an optional file that does not exist must not keep the
+			// inventory permanently stale).
+			if !errors.Is(err, fs.ErrNotExist) || mt != missingMtime {
+				return true
+			}
+			continue
 		}
-		if mt, ok := c.mtimes[p]; !ok || mt != fi.ModTime().UnixNano() {
-			return true
+		if !recorded || mt != fi.ModTime().UnixNano() {
+			return true // changed, or appeared since Refresh
 		}
 	}
 	return false
@@ -99,9 +109,9 @@ func (c *Cache) store(inv *Inventory, trackedFiles []string) {
 		fi, statErr := os.Stat(p)
 		if statErr != nil {
 			if errors.Is(statErr, fs.ErrNotExist) {
-				continue
+				mtimes[p] = missingMtime
 			}
-			// Surface unexpected stat errors but don't fail the whole refresh.
+			// Other stat errors leave the path unrecorded, so it reads stale.
 			continue
 		}
 		mtimes[p] = fi.ModTime().UnixNano()
@@ -150,6 +160,12 @@ func trackedInventoryFiles(inv *Inventory, base []string) []string {
 	}
 	for _, doc := range inv.Instructions {
 		add(doc.FilePath)
+	}
+	for _, agent := range inv.Subagents {
+		add(agent.FilePath)
+	}
+	for _, dir := range inv.WatchDirs {
+		add(dir)
 	}
 	return out
 }

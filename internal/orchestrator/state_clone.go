@@ -28,6 +28,7 @@ func (s State) Clone() State {
 	c.TerminalStates = cloneSlice(s.TerminalStates)
 	c.PauseDispatchWhenAnyInState = cloneSlice(s.PauseDispatchWhenAnyInState)
 	c.Running = copyRunningMap(s.Running)
+	c.ExitPending = maps.Clone(s.ExitPending)
 	c.Claimed = maps.Clone(s.Claimed)
 	c.RetryAttempts = copyRetryMap(s.RetryAttempts)
 	c.PausedIdentifiers = maps.Clone(s.PausedIdentifiers)
@@ -44,6 +45,7 @@ func (s State) Clone() State {
 	c.BackendHealth = maps.Clone(s.BackendHealth)
 	c.BackendLimitedHolds = maps.Clone(s.BackendLimitedHolds)
 	c.ForceReanalyze = maps.Clone(s.ForceReanalyze)
+	c.PendingRestacks = maps.Clone(s.PendingRestacks)
 	c.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
 	c.PrevIssueStates = maps.Clone(s.PrevIssueStates)
 	c.IssueStatusHistory = copyIssueStatusHistoryMap(s.IssueStatusHistory)
@@ -60,6 +62,7 @@ func (s State) Clone() State {
 	c.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)
+	c.StackUnavailable = maps.Clone(s.StackUnavailable)
 	c.PendingReviews = maps.Clone(s.PendingReviews) // value type, no reference fields
 	c.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
 	c.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
@@ -111,6 +114,7 @@ func copyReviewVerdictsMap(m map[string][]ReviewVerdict) map[string][]ReviewVerd
 		for i, rv := range v {
 			vs[i] = rv
 			vs[i].Reasons = cloneSlice(rv.Reasons)
+			vs[i].Comments = cloneSlice(rv.Comments)
 		}
 		cp[k] = vs
 	}

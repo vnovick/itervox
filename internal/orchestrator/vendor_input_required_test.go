@@ -84,7 +84,19 @@ func startVendorRun(t *testing.T, runner agent.Runner, command string, mutate ..
 	orch.SetOutbox(ob)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	go orch.Run(ctx) //nolint:errcheck
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = orch.Run(ctx)
+	}()
+	// Registered after the TempDirs, so it runs before their removal: the
+	// stopping orchestrator still writes the workspace (the retry worker, the
+	// partial-handoff rename, the ledger flush), and removing the directory
+	// under it failed with "directory not empty".
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 	return &vendorRunHarness{orch: orch, ob: ob, mt: mt, wsDir: wsDir}, cancel
 }
 

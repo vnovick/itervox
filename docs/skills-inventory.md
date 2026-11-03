@@ -12,6 +12,7 @@ The feature lives at **Settings → Skills Inventory**. No external dependencies
 |---|---|---|
 | Claude skills (project) | `<project>/.claude/skills/<name>/SKILL.md` | claude |
 | Claude skills (user) | `~/.claude/skills/<name>/SKILL.md` | claude |
+| Claude subagents | `<project>/.claude/agents/**/*.md`, `~/.claude/agents/**/*.md`, plus agents declared by plugin manifests (source `plugin:<name>`) | claude |
 | Claude plugins | `<dir>/.claude/plugins/<name>/plugin.json` | claude |
 | MCP servers | `.claude/settings.json::mcpServers`, `.mcp.json::mcpServers` | claude |
 | Hooks | `.claude/settings.json::hooks` (flat or nested form) | claude |
@@ -27,7 +28,7 @@ The feature lives at **Settings → Skills Inventory**. No external dependencies
 
 ## Static analyzer (Phase 1)
 
-Seven production rules ship in `internal/skills/analyze.go`:
+Ten production rules ship in `internal/skills/analyze.go`:
 
 | Issue ID | Severity | What it catches |
 |---|---|---|
@@ -38,6 +39,9 @@ Seven production rules ship in `internal/skills/analyze.go`:
 | `LARGE_CONTEXT` | warn | Estimated profile cost > 50K tokens |
 | `INSTRUCTION_SHADOWING` | info | Same filename in multiple scopes (project / user / system) |
 | `ORPHAN_MCP` | info | Configured MCP server name never appears in any skill name, description, or body |
+| `MISSING_SKILL_REF` | warn | A profile's `SOUL.md` / `INSTRUCTIONS.md` names a skill that is not found for that profile's backend (`internal/skills/validate_refs.go`) |
+| `MISSING_SUBAGENT_REF` | warn | A profile prompt names a subagent that is not found, or any subagent from a Codex profile |
+| `USER_SCOPE_REF_ON_SSH` | info | A referenced skill or subagent exists only in user scope or a user-installed plugin while SSH hosts are configured, so remote hosts may not have it |
 
 `STALE_SCHEDULE` remains in code as a reserved analyzer for future schedule
 inventory sources, but v0.2.0 does not populate `Inventory.Schedules` from the
@@ -91,9 +95,9 @@ Scanner failures are best-effort. If one scanner fails but another source succee
 
 ### Scan freshness
 
-The Settings UI shows the last scan timestamp plus a status badge next to the **Re-scan** button. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since `ScanTime`; click **Re-scan** to refresh the inventory and recommendations.
+The Settings UI shows the last scan timestamp plus a status badge next to the **Re-scan** button. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since `ScanTime`, or a watched file that was missing then has appeared (a file missing then and now does not count); click **Re-scan** to refresh the inventory and recommendations.
 
-Automatic stale detection is intentionally limited to the files the scanner tracks from known roots. Newly-created files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred so v0.2.0 does not add a noisy filesystem watcher.
+Automatic stale detection is intentionally limited to the files the scanner tracks from known roots. Subagents are the exception: every `.claude/agents` directory (and each subfolder in it) is watched, so adding an agent file marks the inventory stale. Newly-created skill files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred so v0.2.0 does not add a noisy filesystem watcher.
 
 ---
 
@@ -129,7 +133,7 @@ internal/skills/
 ├── runtime_claude.go    # Session-log JSONL parser
 ├── runtime_codex.go     # ~/.codex/history.jsonl + sessions/** parser
 ├── context_budget.go    # Per-profile cost estimator
-├── analyze.go           # Static analyzer (7 production rules + reserved schedule rule)
+├── analyze.go           # Static analyzer (10 production rules + reserved schedule rule)
 ├── analytics.go         # BuildAnalytics(inv, runtime, profiles)
 ├── recommend.go         # Runtime-side recommendation engine
 └── cache.go             # Cache + mtime-based Stale() check

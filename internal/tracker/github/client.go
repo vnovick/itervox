@@ -36,7 +36,12 @@ type ClientConfig struct {
 	ActiveStates   []string
 	TerminalStates []string
 	BacklogStates  []string
-	Endpoint       string
+	// CompletionState is tracker.completion_state (e.g. "in-review"). An
+	// issue whose only state label is this one reads as this state rather
+	// than "" — a blocker in review must be told apart from an unlabelled
+	// one for stacked PRs (#103). Snapshotted when the client is built.
+	CompletionState string
+	Endpoint        string
 }
 
 // rateLimitSnapshot holds the most recent X-RateLimit-* values observed.
@@ -324,6 +329,9 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		return nil, fmt.Errorf("github_fetch_issue_detail: unexpected issue shape")
 	}
 	derived := deriveState(raw, c.activeStates(), c.terminalStates())
+	if derived == "" {
+		derived = matchStateLabel(raw, c.otherStateLabels())
+	}
 	issue := normalizeIssue(raw, derived)
 	if issue == nil {
 		return nil, fmt.Errorf("issue %s not found or missing required fields", issueID)
@@ -352,12 +360,9 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				continue
 			}
 			// Extract branch name from hidden itervox marker; skip adding to Comments.
-			if branch, ok := strings.CutPrefix(body, itervoxBranchPrefix); ok {
-				branch = strings.TrimSuffix(strings.TrimSpace(branch), "-->")
-				branch = strings.TrimSpace(branch)
-				if branch != "" {
-					b := branch
-					issue.BranchName = &b // last marker wins (most recent)
+			if strings.HasPrefix(body, itervoxBranchPrefix) {
+				if branch, ok := parseBranchMarker(body); ok {
+					issue.BranchName = &branch // last marker wins (most recent)
 				}
 				continue
 			}
@@ -411,8 +416,34 @@ func (c *Client) fetchSingleIssue(ctx context.Context, issueNumber string) (*dom
 	}
 
 	derived := deriveState(raw, c.activeStates(), c.terminalStates())
+	if derived == "" {
+		derived = matchStateLabel(raw, c.otherStateLabels())
+	}
 	issue := normalizeIssue(raw, derived)
 	return issue, nil
+}
+
+// otherStateLabels are the configured state labels that are neither active
+// nor terminal: backlog states and the completion state.
+func (c *Client) otherStateLabels() []string {
+	out := append([]string{}, c.cfg.BacklogStates...)
+	if s := strings.TrimSpace(c.cfg.CompletionState); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+// matchStateLabel returns the first of states the issue carries as a label
+// (case-insensitive), or "".
+func matchStateLabel(raw map[string]any, states []string) string {
+	for _, label := range extractLabels(raw) {
+		for _, st := range states {
+			if strings.EqualFold(label, st) {
+				return st
+			}
+		}
+	}
+	return ""
 }
 
 // fetchPaginated follows Link header pagination for a GitHub list endpoint.
@@ -436,6 +467,11 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, extraState
 		for _, item := range rawItems {
 			raw, ok := item.(map[string]any)
 			if !ok {
+				continue
+			}
+			if isPullRequest(raw) {
+				// GitHub's issues endpoint also lists pull requests; they are
+				// never dispatch candidates or terminal issues (#70).
 				continue
 			}
 			derived := deriveState(raw, c.activeStates(), c.terminalStates())
@@ -473,6 +509,14 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, extraState
 	return all, nil //nolint:nilerr // link-parse errors mean end of pagination, not a real error
 }
 
+// isPullRequest reports whether an item from GitHub's issues list endpoint is
+// a pull request. The endpoint returns both; only pull requests carry a
+// non-null `pull_request` object.
+func isPullRequest(raw map[string]any) bool {
+	v, ok := raw["pull_request"]
+	return ok && v != nil
+}
+
 // UpdateIssueState manages labels to simulate workflow state transitions.
 // It removes any existing active/terminal state labels and adds the target label.
 func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string) error {
@@ -484,6 +528,11 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	allStateLabels = append(allStateLabels, c.activeStates()...)
 	allStateLabels = append(allStateLabels, c.terminalStates()...)
 	allStateLabels = append(allStateLabels, c.cfg.BacklogStates...)
+	// The completion label too: an issue sent back from review must not
+	// keep reading as in review (#103).
+	if cs := strings.TrimSpace(c.cfg.CompletionState); cs != "" {
+		allStateLabels = append(allStateLabels, cs)
+	}
 	for _, label := range allStateLabels {
 		if strings.EqualFold(label, stateName) {
 			continue
@@ -539,10 +588,54 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 // comment so it survives round-trips without polluting the issue UI.
 const itervoxBranchPrefix = "<!-- itervox:branch:"
 
+// parseBranchMarker returns the branch named by a hidden itervox branch
+// marker comment body, or ok=false when body is not a marker.
+func parseBranchMarker(body string) (branch string, ok bool) {
+	rest, isMarker := strings.CutPrefix(body, itervoxBranchPrefix)
+	if !isMarker {
+		return "", false
+	}
+	branch = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest), "-->"))
+	return branch, branch != ""
+}
+
+// latestBranchMarker scans every comment page of issueID and returns the
+// branch named by the most recent marker ("" when there is none).
+func (c *Client) latestBranchMarker(ctx context.Context, issueID string) (string, error) {
+	latest := ""
+	for page := 1; ; page++ {
+		comments, link, err := c.fetchCommentPage(ctx, issueID, page)
+		if err != nil {
+			return "", err
+		}
+		for _, cm := range comments {
+			body, _ := cm["body"].(string)
+			if branch, ok := parseBranchMarker(body); ok {
+				latest = branch
+			}
+		}
+		// No Link header parses as ("", nil); a header without rel="next"
+		// as ErrMissingPageLink. Either way this was the last page.
+		if next, err := ParseNextLink(link); err != nil || next == "" {
+			return latest, nil //nolint:nilerr // a missing next link ends pagination, it is not a failure
+		}
+	}
+}
+
 // SetIssueBranch posts a hidden HTML comment recording the branch name on the
 // GitHub issue. FetchIssueDetail scans for this comment to restore BranchName
 // on subsequent fetches, enabling retried workers to resume the correct branch.
+//
+// It posts only when the latest marker names a different branch (#72): every
+// comment notifies the issue's watchers, and a worker that starts without the
+// stored branch (its first-turn FetchIssueDetail failed, so it fell back to the
+// list-fetched issue, which never carries one) would otherwise re-post an
+// identical marker on each retry. A failed marker read fails open and posts,
+// because losing the branch is worse than a duplicate comment.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
+	if latest, err := c.latestBranchMarker(ctx, issueID); err == nil && latest == branchName {
+		return nil
+	}
 	body := itervoxBranchPrefix + branchName + " -->"
 	_, err := c.CreateComment(ctx, issueID, body)
 	return err

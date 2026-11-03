@@ -2,9 +2,9 @@
 
 ## What this project is
 
-**Itervox** is a long-running daemon (Go 1.25.13) that implements the
+**Itervox** is a long-running daemon (Go 1.26.9) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
-It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
+It polls Linear, GitHub Issues or local Markdown issue files (`tracker.kind: local`), spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
 
 Config lives entirely in one `WORKFLOW.md` file per project (YAML front matter +
@@ -126,6 +126,18 @@ only the event loop mutates them.
   draining. It is event-loop state persisted to `pending_reviews.json` (ledger
   writer) and re-dispatched by `resumePendingReviews` once admission reopens;
   the marker is cleared when any reviewer for that issue starts.
+- `StackOnReviewState` (tick snapshot of `tracker.completion_state` when
+  `dependencies.stacked_prs` is on) and `StackUnavailable` are event-loop
+  state. An issue whose only unresolved blocker is in review is admitted
+  (`reviewStackAdmits`) and stacked on the blocker's branch; a fresh worktree
+  that could not be stacked exits `TerminalStackUnavailable` before any agent
+  runs, and the event loop records the blocker so the issue waits for it.
+  `pruneStackUnavailable` drops a record each tick once it no longer
+  matches the candidate's blocker. Session-scoped, not persisted.
+- `PendingRestacks` holds dependents whose blockers landed while they were
+  running: the restack is never run under an agent, so it is deferred to the
+  first dependency audit that finds the issue idle (dropped if it is blocked
+  again). Event-loop state, session-scoped, not persisted.
 - `DispatchPressure` records, per tick, whether dispatch was *slot-bound*
   (no free slots with eligible work waiting) or *dependency-bound* (free
   slots that went unused because remaining candidates were blocked). It is
@@ -221,6 +233,11 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   to `<basename>.partial.md` so partials are visible to the next agent without
   being mistaken for completed work; `TerminalInputRequired` does not rename
   (the agent will resume).
+- **`.itervox/issues/*.md` is the local tracker's data (#85)** — committable
+  like `agents/` (`itervox init` adds the `!.itervox/issues/` carve-out). The
+  directory is the source of truth: `internal/tracker/local` rescans it on
+  every call, serves a malformed file's last good version and never writes
+  to it until it parses.
 
 When editing migration or schema-validation code, expect tests under
 `cmd/itervox/init_migrate.go`/`init.go` and `internal/config/validate*.go` to
@@ -231,7 +248,7 @@ gate the change.
 ## Package dependency order (no circular deps)
 
 ```
-domain ─────┬── tracker (interface + adapters: linear, github, memory)
+domain ─────┬── tracker (interface + adapters: linear, github, local, memory)
             ├── prompt (Liquid template rendering)
             ├── logbuffer (per-issue ring buffer)
             └── prdetector (PR URL detection)
@@ -329,7 +346,7 @@ useToastStore.getState().addToast({ message: 'x', type: 'error' }); // ❌
 
 **Reviewer fan-out was ungated in #58.** `ReviewerProfileChain` previously
 truncated its result to one entry, which made `AdvanceReviewChain`,
-`ReadReviewVerdict`, `reviewVerdictRelPathFor`, `State.ReviewChainIndex`,
+`ReadReviewVerdict`, `reviewVerdictRelPath`, `State.ReviewChainIndex`,
 `State.ReviewOutcomes`, and `agent.review_quorum` statically unreachable. The
 truncation is gone and every one of those now has a live read site, so they must
 NOT be treated as dead code.
