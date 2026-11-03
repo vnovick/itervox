@@ -20,6 +20,7 @@ vi.mock('../../../queries/issues', () => {
     useTriggerAIReview: mutation,
     useSetIssueProfile: mutation,
     useSetIssueBackend: mutation,
+    useSetIssuePlaybook: mutation, // #218
     useProvideInput: mutation,
     useDismissInput: mutation,
     usePostIssueComment: mutation,

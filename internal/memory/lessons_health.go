@@ -24,6 +24,10 @@ const (
 	LessonUnused LessonHealth = "unused"
 	// LessonFailing: most of the recent runs that had it failed.
 	LessonFailing LessonHealth = "failing"
+	// LessonEnforced: its enforcement suggestion was accepted (#217): an
+	// "Enforce:" issue carries it, so once that lands the lesson can be
+	// archived.
+	LessonEnforced LessonHealth = "enforced"
 )
 
 // RunUse is one finished run as lesson health reads it.
@@ -32,6 +36,8 @@ type RunUse struct {
 	FinishedAt time.Time
 	// Failed is true for a failed or stalled run.
 	Failed bool
+	// Succeeded is true for a successful run (#217 analytics).
+	Succeeded bool
 }
 
 // failingWindow is how many of the newest runs that used a lesson are
@@ -44,7 +50,17 @@ const (
 // HealthOf judges an entry against run history (oldest first). Only active
 // lessons are judged; the clock starts at their approval (else creation).
 func HealthOf(e Entry, runs []RunUse, staleAfterRuns int) (LessonHealth, string) {
-	if e.Type != TypeLesson || e.Status != StatusActive || staleAfterRuns <= 0 {
+	if e.Type != TypeLesson || e.Status != StatusActive {
+		return LessonHealthy, ""
+	}
+	if enf := enforcementOf(e); enf != nil && enf.Status == EnforcementAccepted {
+		reason := "an enforcement issue was created"
+		if enf.Issue != "" {
+			reason = "enforced by " + enf.Issue
+		}
+		return LessonEnforced, reason
+	}
+	if staleAfterRuns <= 0 {
 		return LessonHealthy, ""
 	}
 	since := e.Created
@@ -82,4 +98,11 @@ func HealthOf(e Entry, runs []RunUse, staleAfterRuns int) (LessonHealth, string)
 		}
 	}
 	return LessonHealthy, ""
+}
+
+func enforcementOf(e Entry) *Enforcement {
+	if e.Lesson == nil {
+		return nil
+	}
+	return e.Lesson.Enforcement
 }
