@@ -44,3 +44,7 @@ export const useTheme = () => {
   }
   return context;
 };
+
+/** The theme, or undefined outside a ThemeProvider (the palette's theme action). */
+// eslint-disable-next-line react-refresh/only-export-components
+export const useOptionalTheme = (): ThemeContextType | undefined => useContext(ThemeContext);

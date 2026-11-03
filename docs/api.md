@@ -706,7 +706,13 @@ Useful top-level fields include:
   client-side `total_cost_usd` estimates — counted per agent session, so a
   resumed session is not counted twice — and is `null` until a Claude run
   reports a cost. Codex reports no cost: `codexRuns > 0` means the estimate
-  covers Claude runs only.
+  covers Claude runs only. `costCoverage` also carries `runsByBackend` (runs
+  per backend name, e.g. `{ "claude": 1, "opencode": 2, "cursor": 1 }`) and
+  `costBackends` (the backends that reported a cost; OpenCode and custom
+  backends can report one). A backend with runs that is not in
+  `costBackends` is left out of the estimate. `claudeRuns` and `codexRuns`
+  count only their own backend; both new fields are omitted until a run has
+  counted.
 - `recentFailures` — always an array (possibly empty) on a current daemon:
   the last 100 operator-relevant failures, oldest recorded first. Each row is
   `{ "kind", "identifier"?, "source"?, "message", "occurredAt", "recordedAt",
@@ -2037,7 +2043,7 @@ message) when the tracker refuses.
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
 | `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
-| `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
+| `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` (any of `claude`, `codex`, `opencode`, `cursor`, `custom`) or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true,"via"?:"slack"}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
@@ -2496,7 +2502,7 @@ fields.
 | `GET` | `/settings/reviewer` | `{"profile":"reviewer","auto_review":true}` |
 | `PUT` | `/settings/reviewer` | `{"ok":true}` |
 | `GET` | `/settings/models` | `{ "<backend>": [ModelOption] }` |
-| `POST` | `/settings/models/refresh` | `{"ok":true,"models":{ "<backend>": [ModelOption] }}` — body `{"backend":"claude" \| "codex" \| "all"}` (default `all`); rewrites `agent.available_models` in `WORKFLOW.md` and the live model list, without a reload. `503 settings_reloading` like the other settings writes |
+| `POST` | `/settings/models/refresh` | `{"ok":true,"models":{ "<backend>": [ModelOption] }}` — body `{"backend":"claude" \| "codex" \| "opencode" \| "all"}` (default `all`; `opencode` lists `opencode models` and is left out of `all` when that finds none); rewrites `agent.available_models` in `WORKFLOW.md` and the live model list, without a reload. `503 settings_reloading` like the other settings writes |
 
 `PUT /settings/reviewer` request body:
 

@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router';
+import { backendFromHint } from '../../lib/backends';
 import Badge from '../ui/badge/Badge';
 import { stateBadgeColor, formatOrchestratorState } from '../../utils/format';
 import type {
@@ -70,11 +71,7 @@ export function IssueDetailBadges({
     issue.agentProfile && profileDefs?.[issue.agentProfile]
       ? profileDefs[issue.agentProfile].backend || profileDefs[issue.agentProfile].command || ''
       : '';
-  const backend =
-    runningBackend ||
-    (profileHint &&
-      (/codex/i.test(profileHint) ? 'codex' : /claude/i.test(profileHint) ? 'claude' : '')) ||
-    defaultBackend;
+  const backend = runningBackend || backendFromHint(profileHint) || defaultBackend;
 
   // T-9: latest run's automation context. Live runs win; otherwise fall back
   // to the newest matching history row.

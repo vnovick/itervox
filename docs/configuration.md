@@ -127,7 +127,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `command` | string | `"claude"` | Agent CLI command (e.g. `claude`, `codex`, `/abs/path/to/wrapper`) |
-| `backend` | string | `""` | Explicit backend override when `command` is a wrapper. One of `claude`, `codex`. Inferred from `command` when empty. A backend that disagrees with a command whose binary is `claude` or `codex` (this field, a profile `backend`, a per-issue backend pin, or a `rate_limited` `switch_to_backend`) is refused: the command keeps its own backend and the daemon logs a warning, because the other runner cannot execute it |
+| `backend` | string | `""` | Explicit backend override when `command` is a wrapper. One of `claude`, `codex`, `opencode`, `cursor`, `custom` (see the Backends guide). Inferred from `command` when empty (`claude`, `codex`, `opencode`, `cursor-agent`); always needed for `custom`. A backend that disagrees with a command whose binary is a recognised CLI (this field, a profile `backend`, a per-issue backend pin, or a `rate_limited` `switch_to_backend`) is refused: the command keeps its own backend and the daemon logs a warning, because the other runner cannot execute it |
 | `max_concurrent_agents` | int | `10` | Global cap on parallel agents |
 | `max_concurrent_agents_by_state` | map[string]int | `{}` | Per-state concurrency cap (state keys lowercased), e.g. `{"in progress": 3}` |
 | `max_automation_queue_length` | int | `100` | Maximum durable automation dispatch entries waiting for capacity or dependency resolution. `0`/negative values fall back to the default; the queue is never unlimited |
@@ -231,7 +231,7 @@ agent:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` when the block is present | `false` keeps the block but turns rerouting off. Without the block there is no rerouting, but the breaker still holds issues on a limited backend. The whole block may also be a boolean: `backend_fallback: false` is off, `true` is on with the defaults. Any other shape (`"off"`, a number, a list, `enabled: "false"`) fails config loading |
-| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known, distinct backends only |
+| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known (`claude`, `codex`, `opencode`, `cursor`, `custom`), distinct backends only |
 | `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). The reverse direction is implied: a target profile maps back through its source row |
 | `on_unmapped` | string | `hold` | For a profile with no mapping: `hold` (wait with `backend_limited`) or `backend_hint` (request the chain backend for the issue's own command; works only for wrapper commands — a `claude ...` command is never paired with codex) |
 | `default_cooldown_minutes` | int | `15` | How long a breaker stays limited when the vendor published no reset time (1–1440). Also used by the breaker when the block is absent |
@@ -282,7 +282,7 @@ script.
 | Field | Description |
 |---|---|
 | `command` | CLI command for this profile (required) |
-| `backend` | Explicit backend override (`claude` or `codex`); inferred from `command` when absent |
+| `backend` | Explicit backend override (`claude`, `codex`, `opencode`, `cursor` or `custom`); inferred from `command` when absent |
 | `soul_file` | Path to this profile's `SOUL.md`, relative to `WORKFLOW.md` when not absolute. Holds identity, purpose, boundaries, and collaboration style. |
 | `instructions_file` | Path to this profile's `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute. Holds workflow rules, checklists, and done criteria. |
 | `enabled` | Optional boolean. Disabled profiles stay in config but are hidden from normal selection and dispatch. |

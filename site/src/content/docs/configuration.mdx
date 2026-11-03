@@ -424,7 +424,7 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `command` | string | `"claude"` | CLI command used to launch the agent. Can include flags (e.g. `"claude --model claude-opus-4-6"`). |
-| `backend` | string | `""` | Explicitly sets the runner backend (`"claude"` or `"codex"`). Only needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name. A backend that disagrees with a command whose binary is `claude` or `codex` (this field, a profile `backend`, a per-issue backend pin, or a `rate_limited` `switch_to_backend`) is refused: the command keeps its own backend and the daemon logs a warning. |
+| `backend` | string | `""` | Explicitly sets the runner backend: `"claude"`, `"codex"`, `"opencode"`, `"cursor"` or `"custom"` (see the [Backends guide](/guides/backends/)). Needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name (`claude`, `codex`, `opencode` and `cursor-agent` are recognised), and always for `custom`, a command speaking the itervox agent protocol. A backend that disagrees with a command whose binary is a recognised CLI (this field, a profile `backend`, a per-issue backend pin, or a `rate_limited` `switch_to_backend`) is refused: the command keeps its own backend and the daemon logs a warning. |
 | `max_concurrent_agents` | int | `10` | Maximum number of agent workers running simultaneously across all issues. |
 | `max_concurrent_agents_by_state` | map | `{}` | Per-state concurrency limits that override `max_concurrent_agents`. Keys are lowercase state names. See example below. |
 | `max_automation_queue_length` | int | `100` | Maximum durable automation dispatch entries waiting for capacity or dependency resolution. `0`/negative values fall back to the default; the queue is never unlimited. |
@@ -594,7 +594,7 @@ agent:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` when the block is present | `false` keeps the block but turns rerouting off. Without the block there is no rerouting, but the breaker still holds issues on a limited backend. The whole block may also be a boolean: `backend_fallback: false` is off, `true` is on with the defaults. Any other shape (`"off"`, a number, a list, `enabled: "false"`) fails config loading |
-| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known, distinct backends only |
+| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known (`claude`, `codex`, `opencode`, `cursor`, `custom`), distinct backends only |
 | `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). The reverse direction is implied: a target profile maps back through its source row |
 | `on_unmapped` | string | `hold` | For a profile with no mapping: `hold` (wait with `backend_limited`) or `backend_hint` (request the chain backend for the issue's own command; works only for wrapper commands — a `claude ...` command is never paired with codex) |
 | `default_cooldown_minutes` | int | `15` | How long a breaker stays limited when the vendor published no reset time (1–1440). Also used by the breaker when the block is absent |
@@ -669,7 +669,7 @@ The `available_models` field stores the list of models available for each backen
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `available_models` | map | `{}` | Map of backend name (`"claude"`, `"codex"`) to a list of model options. Each entry has `id` (model ID string) and `label` (human-readable name). |
+| `available_models` | map | `{}` | Map of backend name (`"claude"`, `"codex"`, `"opencode"`, `"cursor"`) to a list of model options. `itervox models refresh` fills `claude` and `codex` from the vendor APIs and `opencode` from `opencode models`; a `cursor` list is written by hand. Each entry has `id` (model ID string) and `label` (human-readable name). |
 
 ```yaml
 agent:
@@ -696,7 +696,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `command` | string | CLI command for this profile (e.g. `"claude --model claude-haiku-4-5-20251001"`). |
 | `soul_file` | string | Path to `SOUL.md`, relative to `WORKFLOW.md` when not absolute. Holds identity, purpose, boundaries, and collaboration style. |
 | `instructions_file` | string | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute. Holds operational rules, checklists, and done criteria. |
-| `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field). |
+| `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field): `claude`, `codex`, `opencode`, `cursor` or `custom`. |
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |

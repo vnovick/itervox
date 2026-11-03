@@ -35,3 +35,9 @@ func setPromptFD3(cmd *exec.Cmd, f *os.File) {
 		cmd.ExtraFiles = []*os.File{f}
 	}
 }
+
+// localPromptArg is the prompt as a command-line argument in the local
+// login-shell command, for a CLI that reads its prompt from argv only
+// (Cursor): the prompt file passed as fd 3, expanded by the shell. The
+// expansion drops trailing newlines, which no prompt depends on.
+const localPromptArg = ` "$(cat /dev/fd/3)"`

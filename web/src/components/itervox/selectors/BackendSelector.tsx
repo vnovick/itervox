@@ -1,9 +1,4 @@
-/** The agent backends the daemon accepts (server config.IsSupportedBackend). */
-const KNOWN_BACKENDS = ['claude', 'codex'] as const;
-const BACKEND_LABELS: Record<(typeof KNOWN_BACKENDS)[number], string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-};
+import { AGENT_BACKENDS, BACKEND_LABELS } from '../../../lib/backends';
 
 interface BackendSelectorProps {
   value: string;
@@ -76,7 +71,7 @@ export function BackendSelector({
       className={`${SURFACE_CLS[size]} text-theme-text focus-visible:ring-theme-accent cursor-pointer rounded-[var(--radius-sm)] focus:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${SIZE_CLS[size]}`}
     >
       {defaultOptionLabel !== undefined && <option value="">{defaultOptionLabel}</option>}
-      {KNOWN_BACKENDS.map((b) => (
+      {AGENT_BACKENDS.map((b) => (
         <option key={b} value={b}>
           {BACKEND_LABELS[b]}
         </option>

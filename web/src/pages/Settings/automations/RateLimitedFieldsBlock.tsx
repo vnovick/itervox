@@ -4,6 +4,7 @@
 // size-budget cap and the rate_limited UX can grow independently (cooldown
 // presets, per-rule cap overrides, etc.).
 
+import { AGENT_BACKENDS, type AgentBackend } from '../../../lib/backends';
 import { checkboxCls, fieldLabelCls, helperTextCls, inputCls, selectCls } from '../formStyles';
 import type { AutomationFormValues } from './automationForm';
 
@@ -12,7 +13,7 @@ interface RateLimitedFieldsBlockProps {
   availableProfiles: string[];
   onAutoResumeChange: (value: boolean) => void;
   onSwitchToProfileChange: (value: string) => void;
-  onSwitchToBackendChange: (value: '' | 'claude' | 'codex') => void;
+  onSwitchToBackendChange: (value: '' | AgentBackend) => void;
   onCooldownMinutesChange: (value: string) => void;
 }
 
@@ -72,13 +73,16 @@ export function RateLimitedFieldsBlock({
           value={values.switchToBackend}
           disabled={values.unknownFields?.switchToBackend !== undefined}
           onChange={(event) => {
-            onSwitchToBackendChange(event.target.value as '' | 'claude' | 'codex');
+            onSwitchToBackendChange(event.target.value as '' | AgentBackend);
           }}
           className={selectCls}
         >
           <option value="">Use the new profile&rsquo;s default</option>
-          <option value="claude">claude</option>
-          <option value="codex">codex</option>
+          {AGENT_BACKENDS.map((b) => (
+            <option key={b} value={b}>
+              {b}
+            </option>
+          ))}
         </select>
         <p className={helperTextCls}>
           Power-user. Same prompt, different CLI — prompts tuned for one backend often misbehave on

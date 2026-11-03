@@ -1,9 +1,8 @@
+import { AGENT_BACKENDS } from '../../../lib/backends';
 import { Input } from '../../ui/Input';
 import { Select } from '../../ui/Select';
 import type { FieldErrors, TaskDraft, TaskWhere } from './newTaskModel';
 import { TaskField } from './TaskField';
-
-const BACKENDS = ['claude', 'codex'] as const;
 
 interface NewTaskOptionsProps {
   draft: TaskDraft;
@@ -91,7 +90,7 @@ export function NewTaskOptions({
             }}
           >
             <option value="">Default</option>
-            {BACKENDS.map((b) => (
+            {AGENT_BACKENDS.map((b) => (
               <option key={b} value={b}>
                 {b}
               </option>

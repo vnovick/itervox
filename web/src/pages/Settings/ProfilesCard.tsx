@@ -34,6 +34,8 @@ interface ProfilesCardProps {
   trackerStates?: readonly string[];
   /** Id for the section heading, so a page can link or label it. */
   headingId?: string;
+  /** Opens this profile's editor once it is listed (the palette's Edit). */
+  focusProfileName?: string;
 }
 
 type ProfileModalState = {
@@ -57,6 +59,7 @@ export function ProfilesCard({
   supportedAgentActions,
   trackerStates,
   headingId = 'profiles-card-heading',
+  focusProfileName,
 }: ProfilesCardProps) {
   const [modalState, setModalState] = useState<ProfileModalState | null>(null);
   const [status, setStatus] = useState<ProfileStatus | null>(null);
@@ -90,6 +93,16 @@ export function ProfilesCard({
       initialValues: profileValuesFromDef(name, def),
     });
   };
+
+  // Open the editor for the focused name once per name change, adjusting
+  // state during render like AutomationsCard's focusAutomationId: only marked
+  // handled once the profile is listed, so a link that arrives before the
+  // snapshot still opens it.
+  const [lastFocused, setLastFocused] = useState<string | undefined>(undefined);
+  if (focusProfileName && focusProfileName !== lastFocused && focusProfileName in profileDefs) {
+    setLastFocused(focusProfileName);
+    openEditModal(focusProfileName, profileDefs[focusProfileName]);
+  }
 
   const openTemplateModal = (suggestion: SuggestedProfile) => {
     setModalState({
