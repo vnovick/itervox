@@ -20,7 +20,7 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 
 ---
 
-Itervox is a long-running Go daemon that polls Linear, GitHub Issues or Markdown issue files in the repository, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and Bubbletea TUI while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
+Itervox is a long-running Go daemon that polls Linear, GitHub Issues or Markdown issue files in the repository, spawns Claude Code or Codex agents per issue, and gives you a live web dashboard and terminal commands (`itervox watch`, `itervox logs -f`) while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
 
 ## Spec conformance
 
@@ -186,7 +186,9 @@ The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunne
 
 ## Or stay in the terminal
 
-A full-featured Bubbletea TUI with the same real-time data as the web dashboard.
+`itervox watch` shows the running, retrying, waiting and paused issues of the daemon in any terminal, over SSH or in a pipe; `itervox logs -f <issue>` follows an issue's run log, and `itervox pause|resume|dispatch|workers|reply` act on it. See the [CLI reference](https://itervox.dev/cli/).
+
+The Bubbletea terminal UI below is **deprecated** and will be removed in v0.3. Since v0.2.4 Itervox runs headless by default; `itervox --tui` still starts it.
 
 <table>
   <tr>
