@@ -69,6 +69,7 @@ func (s State) Clone() State {
 	c.CronCursors = maps.Clone(s.CronCursors)
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)
+	c.PlaybookOverrides = maps.Clone(s.PlaybookOverrides) // #218
 	c.StackUnavailable = maps.Clone(s.StackUnavailable)
 	c.BranchInUseHolds = maps.Clone(s.BranchInUseHolds)     // value type, no reference fields
 	c.PendingReviews = maps.Clone(s.PendingReviews)         // value type, no reference fields
@@ -88,6 +89,8 @@ func (s State) Clone() State {
 	c.TmuxSessions = copyPtrValueMap(s.TmuxSessions)
 	c.LessonCorrections = copySliceMap(s.LessonCorrections) // #203
 	c.LessonProposals = copySliceMap(s.LessonProposals)     // #203
+	c.ReviewerAsks = cloneSlice(s.ReviewerAsks)             // #217
+	c.LessonRevertsSeen = maps.Clone(s.LessonRevertsSeen)   // #217
 	return c
 }
 

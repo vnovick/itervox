@@ -153,6 +153,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/issues` | viewer |
 | `GET` | `/api/v1/issues/{identifier}` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/context` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/decisions` | viewer (redacted, bounded decision logs, #218) |
 | `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
 | `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/logs` | viewer |
@@ -162,6 +163,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/logs/identifiers` | viewer |
 | `GET` | `/api/v1/memory` | viewer |
 | `GET` | `/api/v1/memory/recall` | viewer |
+| `GET` | `/api/v1/playbooks` | viewer (#218) |
 | `GET` | `/api/v1/projects` | viewer |
 | `GET` | `/api/v1/projects/filter` | viewer |
 | `GET` | `/api/v1/repo/evals` | viewer |
@@ -182,6 +184,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/skills/issues` | viewer |
 | `GET` | `/api/v1/skills/profile-backends` | viewer (Operator: run the fleet.) |
 | `GET` | `/api/v1/state` | viewer |
+| `GET` | `/api/v1/steering/phrases` | viewer (#218) |
 | `GET` | `/api/v1/summary` | viewer |
 | `GET` | `/api/v1/tracker/labels` | viewer |
 | `GET` | `/api/v1/tracker/scope` | viewer |
@@ -205,6 +208,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/issues/{identifier}/dismiss-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/failures/ack` | operator |
 | `DELETE` | `/api/v1/issues/{identifier}/logs` | operator |
+| `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
 | `POST` | `/api/v1/issues/{identifier}/profile` | operator |
 | `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |
@@ -221,9 +225,12 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/memory/{id}/pin` | operator |
 | `POST` | `/api/v1/memory/{id}/promote` | operator |
 | `POST` | `/api/v1/memory/{id}/reject` | operator |
+| `POST` | `/api/v1/memory/{id}/enforcement/accept` | operator (creates an Enforce: issue, #217) |
+| `POST` | `/api/v1/memory/{id}/enforcement/dismiss` | operator |
 | `DELETE` | `/api/v1/outbox/{id}` | operator |
 | `POST` | `/api/v1/outbox/{id}/retry` | operator |
 | `POST` | `/api/v1/refresh` | operator |
+| `POST` | `/api/v1/repo/readiness/verify-skill-issue` | operator (creates a tracker issue, #218) |
 | `POST` | `/api/v1/sessions/{id}/message` | operator (steering) |
 | `GET` | `/api/v1/sessions/{id}/screen` | operator (a live terminal pane) |
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
@@ -231,6 +238,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
 | `POST` | `/api/v1/automations/{id}/test` | admin |
 | `PUT` | `/api/v1/projects/filter` | admin |
+| `POST` | `/api/v1/memory/{id}/promote-to-rule` | admin (writes a rules layer, #217) |
 | `PUT` | `/api/v1/rules/{layer}` | admin |
 | `POST` | `/api/v1/sessions` | admin (starts a tmux session) |
 | `DELETE` | `/api/v1/sessions/{id}` | admin |
@@ -933,7 +941,7 @@ is reported as `fail` when it does not answer in time.
   "generatedAt": "2026-10-21T10:00:00Z",
   "checks": [
     { "id": "schema_version", "title": "WORKFLOW.md schema 2 marker", "status": "pass", "detail": "itervox_schema_version: 2" },
-    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable", "status": "warn",
+    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff, .itervox/playbooks and .itervox/memory.json committable", "status": "warn",
       "detail": "the root .gitignore ignores .itervox/ without the carve-outs: !.itervox/agents/** …",
       "fix": "run `itervox init --update --workflow /srv/app/WORKFLOW.md` (adds the carve-outs), or add the lines yourself" }
   ]
@@ -946,8 +954,9 @@ anything that is not a pass. Check IDs, in order:
 | ID | Checks | Not a pass when |
 |---|---|---|
 | `schema_version` | `itervox_schema_version: 2` in WORKFLOW.md, and the workflow loads | `fail`: missing, older or unloadable |
-| `gitignore_carveouts` | the root `.gitignore` keeps `.itervox/agents/**` and `.itervox/handoff/**` committable | `warn`: it ignores `.itervox/` without `!.itervox/`, `!.itervox/agents/`, `!.itervox/agents/**`, `!.itervox/handoff/`, `!.itervox/handoff/**` |
+| `gitignore_carveouts` | the root `.gitignore` keeps `.itervox/agents/**`, `.itervox/handoff/**`, `.itervox/playbooks/**` and `.itervox/memory.json` committable | `warn`: it ignores `.itervox/` without `!.itervox/`, `!.itervox/agents/`, `!.itervox/agents/**`, `!.itervox/handoff/`, `!.itervox/handoff/**`, `!.itervox/playbooks/`, `!.itervox/playbooks/**`, `!.itervox/memory.json` |
 | `instruction_docs` | `CLAUDE.md` (Claude profiles) and `AGENTS.md` (Codex profiles) at the repository root | `warn`: a backend in use has no instruction file |
+| `verify_skill` | a project verification skill or script (#218): `.claude/skills/<…verif…>/SKILL.md`, `scripts/verify*`, a `verify` Makefile target or a `verify` script in `package.json` | `warn`: none of them; `POST /api/v1/repo/readiness/verify-skill-issue` creates an issue to write one |
 | `bare_fetch_refspec` | the shared bare clone's fetch (#195) | `fail`: the last fetch failed; `warn`: still on the pre-#195 refspec, or stale |
 | `profile_refs` | skill and subagent references in profile SOUL.md / INSTRUCTIONS.md (#86) | `warn`: a reference does not resolve |
 | `tracker_reachable` | one read of the tracker API (Linear `{ viewer }`, GitHub repository access) | `fail`: the read failed or timed out; `warn`: GitHub token without push access |
@@ -1280,11 +1289,71 @@ bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
 
+### Playbooks, decisions and steering (#218)
+
+Fetched on demand; none of these are on the `/state` snapshot or the SSE
+frames. See the [Playbooks guide](/guides/playbooks/).
+
+#### `GET /api/v1/playbooks`
+
+The playbooks in `agent.playbooks.dir` (viewer):
+
+```json
+{"enabled": true, "playbooks": [
+  {"name": "bug-fix", "description": "Reproduce first, fix the root cause, prove the fix with a test.",
+   "keywords": ["bug", "crash"], "requireEvidence": ["test"]}
+]}
+```
+
+#### `POST /api/v1/issues/{identifier}/playbook`
+
+Sets the issue's playbook (operator): `{"playbook":"bug-fix"}`, `{"playbook":"none"}`
+(no playbook), or `{"playbook":""}` (automatic: label, then keyword
+classifier). `202 {"identifier":"ENG-1","playbook":"bug-fix"}`; `400
+unknown_playbook` for a name not on disk; `503` when the event queue is full.
+The choice is event-loop state, kept across restarts in
+`.itervox/playbook_overrides.json`, and applies from the issue's next run.
+`GET /api/v1/issues` and `GET /api/v1/issues/{identifier}` report it as
+`playbookOverride`, with `playbook` and `playbookSource` (`override`,
+`label`, `keyword`) naming the playbook the next (or current) run gets.
+
+#### `GET /api/v1/issues/{identifier}/decisions`
+
+Every run's decision log (`.itervox/handoff/<timestamp>_<profile>.decisions.tsv`
+in the issue's worktree), oldest run first (viewer). Fields are redacted and
+cut to 500 bytes; at most 200 rows per run and 50 runs; a file over 64 KiB is
+read up to that and flagged `truncated`; `skipped` counts lines without a
+decision.
+
+```json
+{"identifier": "ENG-1", "runs": [
+  {"path": ".itervox/handoff/2026-05-02T10-00-00.000Z_implementer.decisions.tsv",
+   "runTimestamp": "2026-05-02T10-00-00.000Z", "role": "implementer",
+   "decisions": [{"time": "2026-05-02T10:01:00Z", "at": "2026-05-02T10:01:00Z",
+     "decision": "Diff against the merge base", "why": "main moves on", "alternative": "main's tip"}]}
+]}
+```
+
+#### `GET /api/v1/steering/phrases`
+
+The steering chips (`sessions.steering_phrases`, viewer):
+`{"phrases":[{"label":"Prove it works","message":"Prove it works: …"}]}`.
+A chip is sent like any message, with `POST /api/v1/sessions/{id}/message`.
+
+#### `POST /api/v1/repo/readiness/verify-skill-issue`
+
+**Generate verify skill** (operator): creates a tracker issue asking an agent
+to write the project's verification skill, through `tracker.CreateIssue` in
+the enforcement issue state (as an accepted enforcement suggestion, #217).
+`201 {"identifier":"ENG-42","url":"…"}`; `502 issue_create_failed` (redacted
+message) when the tracker refuses.
+
 ### Per-issue overrides and human-input flow
 
 | Method | Path | Request body | Success response |
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
+| `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
@@ -1622,7 +1691,7 @@ items of 512 bytes) is refused.
 
 | Method | Path | Request body | Success response | Errors |
 |---|---|---|---|---|
-| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected"}}` | — |
+| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected","enforceThreshold"}}` | — |
 | `POST` | `/memory` | `{"text","type"?,"scope"?,"tags"?,"profiles"?,"pinned"?,"status"?,"source"?}` (`type` defaults to `fact`, `scope` to `private`, `status` to `active`; posting a deleted entry back, id and timestamps included, restores it) | `201` the entry | `400 memory_invalid`, `409 memory_conflict` (id in use), `413 memory_too_large` |
 | `PUT` | `/memory/{id}` | any of `{"text","type","tags","profiles","pinned","status"}` (omitted fields stay) | the entry | `400 memory_invalid`, `404 memory_not_found`, `413 memory_too_large` |
 | `DELETE` | `/memory/{id}` | — | the deleted entry | `404 memory_not_found` |
@@ -1630,17 +1699,24 @@ items of 512 bytes) is refused.
 | `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
 | `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
 | `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
+| `POST` | `/memory/{id}/promote-to-rule` | `{"layer":"user"\|"project","severity"?:"must"\|"should","text"?}` (admin, #217; `severity` defaults to `should`, `text` to the lesson's) | `{"entry":Entry,"layer","path","rule":{"id":"lesson-<entry id>","severity","text","description","scope"?}}`; the lesson is now `archived` with `lesson.rule` pointing at the rule | `400 rules_invalid` (bad severity, empty text, or the layer file does not parse), `404 memory_not_found`, `404 unknown_layer` (not `user` or `project`, or the layer is off), `409 memory_conflict` (not an approved lesson, or a different rule already has that id), `409 rules_stale` |
+| `POST` | `/memory/{id}/enforcement/accept` | — | `{"entry":Entry,"issue":{"identifier","title","url"?}}`: the `Enforce: <lesson>` issue created in the tracker (in `memory.lessons.enforce_issue_state`), carrying the suggestion's draft and the lesson's evidence; `lesson.enforcement.status` is now `accepted` (#217) | `404 memory_not_found`, `409 memory_conflict` (no pending suggestion), `502 enforcement_issue_failed` (the tracker refused) |
+| `POST` | `/memory/{id}/enforcement/dismiss` | — | the entry, `lesson.enforcement.status: "dismissed"` (never suggested again for it) | `404 memory_not_found`, `409 memory_conflict` (no pending suggestion) |
 | `GET` | `/memory/recall?q=&profile=&budget=` | — | `{"enabled","profile","budget","tokens","dropped","entries":[{"id","type","text","scope","tags"?,"pinned"?}],"overBudget"?,"unreadableFiles"?}` | `400 bad_request` (`q` missing or over 2000 bytes, `budget` outside 1–8000) |
 
 An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
 `text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
 `source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?,
-`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?}`)
+`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?,"verification"?,"rule"?:{"layer","id","at"},"enforcement"?:{"kind":"lint"|"type"|"test"|"docs"|"rule","status":"suggested"|"accepted"|"dismissed","title"?,"draft","draftedBy"?,"suggestedAt","decidedAt"?,"issue"?,"issueUrl"?}}`)
 plus `path` (the file that holds it), `runs` (the newest runs in history whose prompt
 carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20) and, for an approved
 lesson that is not helping (#203), `notHelping`: `"unused"` (none of the last
-`memory.lessons.stale_after_runs` runs used it) or `"failing"` (most runs that used it failed)
-with `notHelpingReason`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
+`memory.lessons.stale_after_runs` runs used it), `"failing"` (most runs that used it failed)
+or `"enforced"` (its enforcement suggestion was accepted, #217) with `notHelpingReason`, and for every
+lesson `analytics`: `{"applied","runs","succeeded","failed"}` (how many runs had it in their prompt,
+and the runs in history that used it by outcome; #217). `lessons` also carries `enforceThreshold`.
+`lesson.trigger` is `input_reply`, `steering`, `failed_then_succeeded`, or since #217
+`reviewer_ask`, `reverted_pr` or `recipe`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
 approve and reject change the snapshot's `proposedLessons`, which is pushed at once. A promote's `diff`
 is `git diff` of the project file after the move, or the whole file when git does not track it
 yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is

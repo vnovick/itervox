@@ -811,12 +811,14 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
+	orch.RevertScan = lessonRevertScan(cfg, workflowPath)                 // #217: reverted-PR lessons
 	sessTmux := wireSessions(orch, cfg, workflowPath, demoSession != nil) // #178
 	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
 	// unified-dependency-graph Task 6 — operator deps-override dismissals live
 	// under the project's .itervox/ dir (not logDir) so they persist alongside
 	// the sidecar they dismiss edges from, independent of --log placement.
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
+	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
@@ -1078,7 +1080,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			snap := orch.Snapshot()
 			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg)
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
-			ti.Review = reviewRow(snap, issue.Identifier) // #135
+			ti.Review = reviewRow(snap, issue.Identifier)                // #135
+			app.ApplyPlaybook(&ti, *issue, snap, orch.PlaybookChooser()) // #218
 			return &ti, nil
 		}
 
@@ -1174,13 +1177,15 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Webhooks:          webhooks,        // #131: signed tracker deliveries
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
-			Sessions:      sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
-			RepoReadiness: repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
-			RepoEvals:     repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
-			RepoHotspots:  repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
-			Version:       version,                                       // #212: GET /api/v1/summary
-			Dispatch:      dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
-			Changes:       changesAdapter{orch: orch},                    // #215: run context and worktree diff, off the event loop
+			Sessions:        sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
+			RepoReadiness:   repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
+			RepoEvals:       repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
+			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
+			Version:         version,                                       // #212: GET /api/v1/summary
+			Dispatch:        dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
+			Changes:         changesAdapter{orch: orch},                    // #215: run context and worktree diff, off the event loop
+			Playbooks:       playbooksAdapter{orch: orch},                  // #218: playbooks, decision logs, verify-skill issue
+			SteeringPhrases: cfg.Sessions.SteeringPhrases,                  // #218
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)

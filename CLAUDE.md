@@ -204,6 +204,10 @@ only the event loop mutates them.
   worker run (bounded, redacted) and the rate-limit stamps. Event-loop state,
   session-scoped, not persisted; a proposal that wrote nothing new gives its
   stamp back through `EventLessonDrafted`.
+- `PlaybookOverrides` (#218) holds the operator's per-issue playbook choice
+  (a name or `none`). Event-loop state set only through
+  `SetPlaybookOverride` → `EventSetPlaybookOverride`, persisted to
+  `.itervox/playbook_overrides.json` by the ledger writer.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
@@ -412,12 +416,25 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   template (WORKFLOW.md body, or `agent.reviewer_prompt` for a reviewer) and
   the daemon's blocks (reply envelope, handoffs, run context), then the
   profile tail `profilePromptTail` shares with the eval composer: `## Rules`
-  → `## Memory` (#202) → SOUL.md → INSTRUCTIONS.md → automation
-  instructions / action notice / sub-agent roster. Concatenated and passed to
-  the agent subprocess via stdin/argv depending on backend. SOUL is the
-  compact identity ("who you are"); INSTRUCTIONS is the
-  operational/behavioural rules. `TestPromptAssemblyOrderRulesMemorySoul`
-  pins the tail order.
+  → `## Memory` (#202) → SOUL.md → INSTRUCTIONS.md → `## Playbook: <name>`
+  (#218, worker runs only) → automation instructions / action notice /
+  sub-agent roster. Concatenated and passed to the agent subprocess via
+  stdin/argv depending on backend. SOUL is the compact identity ("who you
+  are"); INSTRUCTIONS is the operational/behavioural rules; the playbook is
+  how to approach this kind of task. `TestPromptAssemblyOrderRulesMemorySoul`
+  pins the tail order; `TestPlaybookInPromptAfterInstructionsAndInDigest`
+  pins the playbook's place.
+- **Playbooks (#218)** live in `.itervox/playbooks/<name>.md` (committable;
+  `itervox init` scaffolds six, `init --update` adds the missing ones,
+  `!.itervox/playbooks/` carve-out). `startRun` reads them again for every
+  run and chooses one (operator override in `State.PlaybookOverrides`, else
+  label via `agent.playbooks.labels`, else the keyword classifier, else none)
+  onto `runHandle.playbook`. The block is a prompt-digest component only when
+  present (existing digests unchanged); `ComposeEvalPrompt` and
+  `profilePromptComponents` take the same block. A playbook's
+  `require_evidence` joins the profile's in the one #80 evidence gate
+  (`runEvidenceChecks`). `agent.playbooks` is load-time config, NOT in the
+  cfgMu allowlist.
 - **Rules (#157)** go in a `## Rules` block immediately ahead of the profile's
   SOUL.md/INSTRUCTIONS.md blocks (workers, reviewers, automation runs; the
   dependency analyzer gets it at the top of its prompt). `internal/rules` reads
@@ -481,7 +498,9 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   chronologically by filename prefix, budget-truncated oldest-first) into every
   subsequent worker's prompt as a `## Prior Agent Handoffs` block. Liquid bindings
   `{{ run.timestamp }}` and `{{ run.handoff_path }}` expose the current run's
-  metadata to the agent. The directory is committable via a `.gitignore`
+  metadata to the agent; `{{ run.decisions_path }}` (#218) names the run's
+  decision log, `<ISO8601>_<role>.decisions.tsv` next to the handoff, read
+  defensively (bounded, redacted) by `GET /api/v1/issues/{identifier}/decisions`. The directory is committable via a `.gitignore`
   carve-out (`!.itervox/handoff/`, `!.itervox/handoff/**`, added alongside the
   agents carve-out by `itervox init` and `itervox init --update`). Non-success
   worker exits (`TerminalFailed`, `TerminalStalled`) rename the in-flight file
@@ -550,6 +569,9 @@ workflow ──── config ──── workspace (hooks — also imports proc
 rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
        server and cmd/itervox)
 
+playbook (task-type playbooks, #218 — imports config only; used by
+          orchestrator, app and cmd/itervox)
+
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
@@ -558,13 +580,13 @@ guardrails (agent shims, pre-push hook, approval broker — imports agent,
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, config, depsanalysis, domain, extsessions, guardrails,
-              logbuffer, logging, memory, metrics, outbox, prdetector,
+              logbuffer, logging, memory, metrics, outbox, playbook, prdetector,
               procgroup, prompt, rules, tracker, workspace)
 
 prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
          request poller — imports metrics, tracker; used by cmd/itervox)
 
-app (EnrichIssue business logic — imports domain, tracker)
+app (EnrichIssue business logic — imports domain, tracker; playbook for the card, #218)
 
 server (HTTP API — imports domain, config, apitokens, guardrails, logging, memory, rules)
 

@@ -31,6 +31,9 @@ type memoryAdapter struct {
 	// through the orchestrator's accessor): the default lesson drafter
 	// (#203). Nil in tests.
 	reviewerProfile func() string
+	// enforcement accepts / dismisses enforcement suggestions (#217); the
+	// orchestrator, which owns the tracker. Nil in tests that do not use it.
+	enforcement lessonEnforcer
 }
 
 // memoryRunRefsPerEntry bounds the runs listed per entry.

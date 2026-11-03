@@ -7,6 +7,7 @@ import type { SessionRow, TmuxStatus } from '../../types/schemas';
 import { SessionMessages } from './SessionMessages';
 import { TmuxMissingComposer } from './TmuxNotice';
 import { RequireScope } from '../../components/itervox/RequireScope';
+import { SteeringChips } from '../../components/itervox/SteeringChips';
 
 export interface SessionComposerProps {
   session: SessionRow;
@@ -96,9 +97,21 @@ export function SessionComposer({ session, inlineInput, tmux }: SessionComposerP
 
   const live = session.steering === 'live';
   const label = session.identifier || 'this session';
+  const sendMessage = (message: string, onSent?: () => void) => {
+    const text = message.trim();
+    if (!text) return;
+    send.mutate({ id: sessionKey(session), message: text }, { onSuccess: onSent });
+  };
   return (
     <div className="space-y-2" data-testid="session-composer">
       <SessionMessages messages={session.messages} />
+      {/* #218 — one-click steering phrases */}
+      <SteeringChips
+        disabled={send.isPending}
+        onSend={(message) => {
+          sendMessage(message);
+        }}
+      />
       <textarea
         value={draft}
         onChange={(e) => {
@@ -115,16 +128,9 @@ export function SessionComposer({ session, inlineInput, tmux }: SessionComposerP
           size="sm"
           disabled={send.isPending || !draft.trim()}
           onClick={() => {
-            const message = draft.trim();
-            if (!message) return;
-            send.mutate(
-              { id: sessionKey(session), message },
-              {
-                onSuccess: () => {
-                  setDraft('');
-                },
-              },
-            );
+            sendMessage(draft, () => {
+              setDraft('');
+            });
           }}
         >
           {send.isPending ? 'Sending…' : 'Send'}
