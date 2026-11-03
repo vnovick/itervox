@@ -92,9 +92,14 @@ API token. These routes are:
 - `POST /agent-actions/{identifier}/create-issue`
 - `POST /agent-actions/{identifier}/move-state`
 - `POST /agent-actions/{identifier}/provide-input`
+- `POST /agent-actions/{identifier}/guardrail/events` (#204)
+- `POST /agent-actions/{identifier}/guardrail/approvals` (#204)
+- `GET /agent-actions/{identifier}/guardrail/approvals/{id}` (#204)
 
 Profiles opt into these capabilities with `allowed_actions` and
-`create_issue_state` in `WORKFLOW.md`.
+`create_issue_state` in `WORKFLOW.md`. The guardrail routes take a separate
+per-run guardrail grant that only the guardrail shims and hooks hold (see
+[Guardrail endpoints](#guardrail-endpoints-204)).
 
 ## Supervisor contract
 
@@ -413,6 +418,8 @@ Useful top-level fields include:
   (the reset, or the cooldown end). This is the AGENT backend, unrelated to
   `rateLimits` (tracker API budget) and `outboxEntries[].rateLimitedUntil`
   (tracker writes). Absent on older daemons.
+- `proposedLessons` (#203) — how many proposed lessons wait in the Memory
+  page's review queue (the Memory nav item's count); omitted when none.
 - `autoSwitches` (CORE-055) — issues whose next run uses an automatic
   override: `{ "identifier", "source": "automation" | "backend_fallback" |
   "unknown", "fromBackend"?, "fromProfile"?, "toBackend"?, "toProfile"?,
@@ -1122,18 +1129,25 @@ items of 512 bytes) is refused.
 
 | Method | Path | Request body | Success response | Errors |
 |---|---|---|---|---|
-| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry]}` | — |
+| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected"}}` | — |
 | `POST` | `/memory` | `{"text","type"?,"scope"?,"tags"?,"profiles"?,"pinned"?,"status"?,"source"?}` (`type` defaults to `fact`, `scope` to `private`, `status` to `active`; posting a deleted entry back, id and timestamps included, restores it) | `201` the entry | `400 memory_invalid`, `409 memory_conflict` (id in use), `413 memory_too_large` |
 | `PUT` | `/memory/{id}` | any of `{"text","type","tags","profiles","pinned","status"}` (omitted fields stay) | the entry | `400 memory_invalid`, `404 memory_not_found`, `413 memory_too_large` |
 | `DELETE` | `/memory/{id}` | — | the deleted entry | `404 memory_not_found` |
 | `POST` | `/memory/{id}/pin` | `{"pinned":true\|false}` (empty body pins) | the entry | `404 memory_not_found` |
 | `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
+| `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
+| `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
 
 An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
 `text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
-`source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?)
-plus `path` (the file that holds it) and `runs` (the newest runs in history whose prompt
-carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20). A promote's `diff`
+`source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?,
+`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?}`)
+plus `path` (the file that holds it), `runs` (the newest runs in history whose prompt
+carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20) and, for an approved
+lesson that is not helping (#203), `notHelping`: `"unused"` (none of the last
+`memory.lessons.stale_after_runs` runs used it) or `"failing"` (most runs that used it failed)
+with `notHelpingReason`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
+approve and reject change the snapshot's `proposedLessons`, which is pushed at once. A promote's `diff`
 is `git diff` of the project file after the move, or the whole file when git does not track it
 yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is
 reported in `files[].error` and never rewritten (`400 memory_invalid`) until it is fixed.
@@ -1418,6 +1432,35 @@ daemon-backed permissions through profile `allowed_actions`.
 
 These routes require an `Authorization: Bearer <grant-token>` header carrying a
 short-lived action grant for the specific issue and action.
+
+`provide-input` never answers a guardrail approval request (#204): the
+request stays open and the daemon logs the attempt.
+
+### Guardrail endpoints (#204)
+
+Called by the [guardrail](https://itervox.dev/guides/guardrails/) shims and
+pre-push hook of a guarded run, with the run's guardrail grant
+(`Authorization: Bearer <grant>`, action `guardrail`, scoped to the issue — or
+the tmux session ID — and the run). None of them runs anything: the command an
+agent waits to run stays on the agent's side, and only its redacted display
+form reaches the daemon.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `POST` | `/agent-actions/{identifier}/guardrail/events` | `{"kind":"self_merge","tool":"gh","command":"gh pr merge 12"}` | `204` |
+| `POST` | `/agent-actions/{identifier}/guardrail/approvals` | `{"key":"<sha256 of the exact command>","command":"vercel --prod"}` | `{"id":"…","status":"pending"}` |
+| `GET` | `/agent-actions/{identifier}/guardrail/approvals/{id}` | — | `{"id":"…","status":"pending"\|"approved"\|"rejected"\|"unknown","message":"<reply>"}` |
+
+`kind` is one of `branch`, `force_push`, `delete`, `tag`, `hook_bypass`,
+`self_merge`, `approval_rejected`, `approval_unavailable` (anything else is
+`400`); a report is logged, written to the issue's log, recorded in
+`recentFailures` (kind `guardrail`, source = the kind) and counted in
+`itervox_guardrail_blocks_total{kind}`. A new approval request shows as an
+input-required entry of the running issue ("Agent wants to run: …") and is
+posted to the tracker; a request with the same `key` as an open one joins it.
+An `approved` status is returned to exactly one read, which spends it; later
+reads answer `unknown`, as do requests of a run that has ended. Without an
+action-grant store the routes answer `501`; a full event queue answers `503`.
 
 When the daemon spawns a **local** agent subprocess for a profile that has any
 `allowed_actions` configured, the following environment variables are injected

@@ -118,6 +118,10 @@ type Entry struct {
 	// loop).
 	LastUsed *time.Time `json:"lastUsed,omitempty"`
 	UseCount int        `json:"useCount,omitempty"`
+	// Lesson is a lesson's review record (#203): what it applies to, what
+	// went wrong and what worked, how sure Itervox is and how often it was
+	// seen. Set on lessons Itervox proposes; nil on other entries.
+	Lesson *Lesson `json:"lesson,omitempty"`
 }
 
 // SchemaURL is where the memory JSON Schema is published
@@ -157,7 +161,7 @@ var idRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 var (
 	topKeys   = []string{"$schema", "memories"}
-	entryKeys = []string{"id", "type", "text", "scope", "profiles", "tags", "pinned", "status", "source", "created", "updated", "lastUsed", "useCount"}
+	entryKeys = []string{"id", "type", "text", "scope", "profiles", "tags", "pinned", "status", "source", "created", "updated", "lastUsed", "useCount", "lesson"}
 )
 
 // fileDoc is a memory file as written.
@@ -206,6 +210,11 @@ func Parse(raw []byte, scope Scope) ([]Entry, error) {
 		}
 		if err := onlyKeys(m, entryKeys, at+"."); err != nil {
 			return nil, err
+		}
+		if l, ok := m["lesson"].(map[string]any); ok {
+			if err := onlyKeys(l, lessonKeys, at+".lesson."); err != nil {
+				return nil, err
+			}
 		}
 		b, _ := json.Marshal(m)
 		var e Entry
@@ -295,7 +304,7 @@ func validate(e Entry) error {
 			return fieldError{name, fmt.Sprintf("is %d bytes, at most %d", len(s), MaxItemBytes), true}
 		}
 	}
-	return nil
+	return validateLesson(e.Lesson)
 }
 
 // scrub redacts secrets from every free-text field of an entry and trims
@@ -309,6 +318,7 @@ func scrub(e Entry) Entry {
 	e.Source.Issue = strings.TrimSpace(logging.RedactString(e.Source.Issue))
 	e.Source.RunIDs = scrubList(e.Source.RunIDs)
 	e.Source.Links = scrubList(e.Source.Links)
+	e.Lesson = scrubLesson(e.Lesson)
 	return e
 }
 

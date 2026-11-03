@@ -199,6 +199,11 @@ only the event loop mutates them.
   pending, dispatch and retries hold the issue (`state_move_pending`). A
   person's move (dashboard/tracker) is never deferred and still stops the
   worker.
+- `LessonCorrections` / `LessonProposals` (#203) are the lesson detector's
+  per-issue ledgers: the human corrections since the issue's last successful
+  worker run (bounded, redacted) and the rate-limit stamps. Event-loop state,
+  session-scoped, not persisted; a proposal that wrote nothing new gives its
+  stamp back through `EventLessonDrafted`.
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
@@ -281,6 +286,50 @@ only the event loop mutates them.
   `ineligibleReasonShared` checks `AvailableSlots` *before* the blocker gates
   and would otherwise mask every dependency reason as `no_slots` on exactly
   the saturated ticks the metric exists to explain.
+
+### Guardrails (#204) — scope and known limit
+
+`internal/guardrails` limits what agents Itervox starts may do: pushes only to
+the issue branch (pre-push hook via `core.hooksPath` in
+`GIT_CONFIG_PARAMETERS`, chaining to the repo's own hooks dir), no force
+push / delete unless `guardrails.allow_force_push`, never a tag push, no
+self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
+`guardrails.approval_commands` (shims for those programs). Rules to keep:
+
+- **Scope**: dispatched runs on the daemon's host (`prepareRunGuardrails` in
+  the worker, applied before the action bridge so the shims stay first on
+  PATH) and tmux sessions started with **New session**
+  (`cmd/itervox/guardrails.go`). Never hand-started sessions (read-only
+  invariant). SSH worker hosts are NOT guarded in v1 — a warning at startup
+  and per run; do not claim otherwise.
+- **Known limit**: guidance, not a sandbox. An agent calling git by absolute
+  path, rewriting PATH/env, or using another channel bypasses it. Branch
+  protection on the remote is the real control; docs must keep saying so.
+- **No daemon-side execution**: the shim↔daemon channel is the token-gated
+  `/api/v1/agent-actions/{id}/guardrail/*` routes (grant action
+  `guardrail`, scoped to issue + run). They record reports and raise/read
+  approvals; the approved command runs in the shim, exactly once
+  (`guardrails.Approvals` spends an approval on the first read). Commands
+  reach the daemon only redacted (`displayCommand`); a pre-push report never
+  carries the remote URL.
+- **Approvals are input-required entries** of the *running* issue
+  (`InputRequiredEntry.GuardrailApprovalID`): the event loop creates them
+  (`EventGuardrailApproval`), a dashboard/Mac/tracker reply decides them
+  (`resolveGuardrailApproval`; nothing is resumed), the agent-actions
+  `provide-input` route (`FromAgent`) never answers them, they are never
+  persisted nor fed to input-required automations, and they are dropped when
+  the run exits. `guardrails.Approvals` is concurrency-safe and is not
+  `State`.
+- **Shim entrypoints run first in `main()`** (`runGuardrailEntrypoint`),
+  before dotenv / GIT_DIR scrubbing, forward the agent's env untouched and
+  exit via `exitWithoutTerminalRestore` (no `stty sane` on the agent's TTY).
+  Itervox's own git still goes only through `gitexec` (which scrubs
+  `GIT_CONFIG_PARAMETERS`, so the guardrail hooks never apply to it); the
+  shim's forward is a `syscall.Exec` of the agent's own command and the
+  pre-push hook's ancestry checks use `gitexec`, so
+  `TestNoRawGitExecOutsideGitexec` stays green. Test binaries that host
+  shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
+  dispatch the entrypoints in `TestMain`.
 
 ### `cfgMu` guards exactly these fields (and nothing else)
 
@@ -375,6 +424,21 @@ Profile content does NOT live in `WORKFLOW.md`. As of v0.2.0:
   by `memoryWg`. Every save redacts secrets (`logging.RedactString`) and
   rejects entries over the size caps; writes go through `atomicfs` under the
   package's process-wide lock.
+- **Lessons (#203)** are `lesson` memory entries Itervox proposes itself
+  (`status: proposed`, never used until approved). Detection is event-loop
+  only: `EventProvideInput` / a tracker reply (`applyReplyChecks`) →
+  `observeInputReply`, `EventSessionMessageDelivered` → `observeSteers`, and a
+  worker's `TerminalSucceeded` after a failed/stalled run → `observeRunSucceeded`.
+  The loop records corrections in `State.LessonCorrections`, applies the
+  per-issue rate limit in `State.LessonProposals`, resolves the drafting
+  profile (`lessonDraftPlan`, cfgMu read on the loop) and hands drafting plus
+  the proposal write to a `goSafe` goroutine joined by `lessonWg`, which
+  reports back with `EventLessonDrafted`. Drafting goes through `o.runner`
+  with the sandbox mode, an empty temp dir and a hard token/time budget,
+  falling back to `memory.TemplateDraft`. Tests must use fake runners
+  (`gateRunner`, `blockedRunner`); never a real CLI. `memory.lessons.*` is
+  load-time config, NOT in the cfgMu list. Rejections live in
+  `.itervox/lessons-rejected.json` (normalized words + fingerprint).
 - **Git policy.** `.itervox/agents/**` is committable — `itervox init` patches the
   root `.gitignore` so the files are not swept under a broad `.itervox/` ignore.
   Conversely, `.itervox/HEARTBEAT.md`, `.itervox/.env`, runtime queue files, and
@@ -463,17 +527,20 @@ rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
+guardrails (agent shims, pre-push hook, approval broker — imports agent,
+            atomicfs, gitexec, logging; never orchestrator or server)
+
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, config, depsanalysis, domain, extsessions, logbuffer, logging,
-              memory, metrics, outbox, prdetector, procgroup, prompt, rules,
-              tracker, workspace)
+              atomicfs, config, depsanalysis, domain, extsessions, guardrails,
+              logbuffer, logging, memory, metrics, outbox, prdetector,
+              procgroup, prompt, rules, tracker, workspace)
 
 prwatch (GitHub PR events for managed PRs: webhook handler + conditional-
          request poller — imports metrics, tracker; used by cmd/itervox)
 
 app (EnrichIssue business logic — imports domain, tracker)
 
-server (HTTP API — imports domain, config, memory, rules)
+server (HTTP API — imports domain, config, guardrails, memory, rules)
 
 statusui (Bubbletea TUI — imports domain)
 

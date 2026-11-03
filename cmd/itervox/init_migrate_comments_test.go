@@ -174,12 +174,16 @@ func TestMigrateWorkflowToSchema2PreservesCommentsAndKeyOrder(t *testing.T) {
 	for _, comment := range originalComments {
 		assert.Contains(t, front, comment, "comment dropped by migration: %q", comment)
 	}
-	assert.Equal(t, len(originalComments), len(commentTexts(t, front)), "comment count must not change")
+	// The only new comment is the head of the guardrails: block the
+	// migration adds (#204).
+	assert.Equal(t, len(originalComments)+len(strings.Split(guardrailsHeadComment, "\n")), len(commentTexts(t, front)),
+		"comment count changes only by the added guardrails: block")
 
 	// Key order is preserved; the schema marker is the first line.
 	order, err := frontMatterKeyOrder(front)
 	require.NoError(t, err)
-	assert.Equal(t, append([]string{"itervox_schema_version"}, originalOrder...), order)
+	assert.Equal(t, append(append([]string{"itervox_schema_version"}, originalOrder...), "guardrails"), order,
+		"existing keys keep their order; the guardrails: block (#204) is appended")
 	assert.True(t, strings.HasPrefix(front, "# Itervox workflow for this repository.\nitervox_schema_version: 2\n") ||
 		strings.HasPrefix(front, "itervox_schema_version: 2\n"),
 		"schema marker must be at the top of the front matter, got:\n%s", front)

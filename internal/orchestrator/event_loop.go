@@ -149,6 +149,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.commentWg.Wait()
 	o.prRetargetWg.Wait()
 	o.memoryWg.Wait() // #202: memory usage writes
+	o.lessonWg.Wait() // #203: lesson drafting
 	o.depsRefreshWg.Wait()
 	o.trackerReadsWg.Wait() // #187: off-loop polls and claim reads (ctx cancelled)
 	o.extSessionsWg.Wait()
@@ -1108,6 +1109,10 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		if !replied || strings.TrimSpace(replyComment.Body) == "" {
 			continue // no reply yet
 		}
+		if entry.GuardrailApprovalID != "" { // #204: the reply decides the approval
+			o.resolveGuardrailApproval(&state, entry, replyComment.Body, "tracker")
+			continue
+		}
 		slog.Info("orchestrator: tracker comment reply detected, queuing pending resume",
 			"identifier", identifier, "reply_length", len(replyComment.Body))
 		if o.logBuf != nil {
@@ -1116,6 +1121,7 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		}
 		delete(state.InputRequiredIssues, identifier)
 		state.PendingInputResumes[identifier] = buildPendingInputResumeEntry(entry, replyComment.Body)
+		o.observeInputReply(&state, entry, replyComment.Body) // #203
 	}
 	return state
 }
@@ -1851,10 +1857,20 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			slog.Warn("orchestrator: provide-input for unknown identifier", "identifier", ev.Identifier)
 			return state
 		}
+		if entry.GuardrailApprovalID != "" { // #204
+			if ev.FromAgent {
+				slog.Warn("guardrails: an agent tried to answer a guardrail approval; ignored",
+					"identifier", ev.Identifier)
+				return state
+			}
+			o.resolveGuardrailApproval(&state, entry, ev.Message, "dashboard")
+			return state
+		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
+		o.observeInputReply(&state, entry, ev.Message) // #203
 		// Post the user's reply so the conversation is visible in the
 		// tracker. Enqueued after the question (see postInputRequiredComment).
 		// A failed reply enqueue only loses the tracker mirror: the resume
@@ -1873,6 +1889,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		entry, ok := state.InputRequiredIssues[ev.Identifier]
 		if !ok {
 			slog.Warn("orchestrator: dismiss-input for unknown identifier", "identifier", ev.Identifier)
+			return state
+		}
+		if entry.GuardrailApprovalID != "" { // #204: dismissing rejects; the run keeps going
+			o.resolveGuardrailApproval(&state, entry, "dismissed", "dismiss")
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
@@ -2030,14 +2050,20 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		now := time.Now()
 		applySessionDelivery(&state, ev.SessionDelivery, now)
 		recordRunSteers(state, ev.RunID, ev.SessionDelivery, now) // #186
+		o.observeSteers(&state, ev.RunID, ev.SessionDelivery)     // #203
 
 	case EventMemoryUsed: // #202
 		o.applyMemoryUsed(ev)
+
+	case EventLessonDrafted: // #203
+		o.applyLessonDrafted(&state, ev)
 
 	case EventTrackerPolled: // #187
 		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
 	case EventClaimChecked: // #187
 		return o.applyClaimBatch(ctx, state, ev.ClaimBatch, time.Now())
+	case EventGuardrailApproval: // #204
+		o.handleGuardrailApproval(&state, ev)
 	case EventWorkerExited:
 		// #187: a poll in flight may have listed this issue before its run
 		// moved it; that list must not dispatch it again.
@@ -2055,6 +2081,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			o.handleStaleExit(ev, current)
 			return state
 		}
+		// #204: an approval the run was waiting for dies with it.
+		o.dropGuardrailApprovals(&state, exitIdentifier(liveEntry, ev))
 		if liveEntry != nil {
 			liveEntry.Phase = RunExited
 		}
@@ -2300,6 +2328,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				o.saveAutoSwitchedToDisk(&state)
 			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
+			o.observeRunSucceeded(&state, liveEntry, issue) // #203
 			// Auto-clear workspace if configured.
 			//
 			// New semantics (v0.2.0): clear only when the issue reaches a

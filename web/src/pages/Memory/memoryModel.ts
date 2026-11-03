@@ -69,3 +69,20 @@ export function splitList(value: string): string[] {
 export function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
 }
+
+/** #203 — what made Itervox propose a lesson, in words. */
+export const TRIGGER_LABELS: Record<string, string> = {
+  input_reply: 'Correction in an input reply',
+  steering: 'Correction in a steering message',
+  failed_then_succeeded: 'A failed run, then a successful one',
+};
+
+/** #203 — approved lessons the daemon flags as not helping. */
+export function notHelpingEntries(entries: readonly MemoryEntry[]): MemoryEntry[] {
+  return entries.filter((e) => e.status === 'active' && e.notHelping !== undefined);
+}
+
+/** #203 — a 0..1 confidence as a percentage, "—" when unknown. */
+export function confidenceLabel(confidence?: number): string {
+  return confidence === undefined ? '—' : `${String(Math.round(confidence * 100))}%`;
+}
