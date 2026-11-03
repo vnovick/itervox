@@ -98,8 +98,8 @@ Profiles opt into these capabilities with `allowed_actions` and
 
 ## Supervisor contract
 
-What a supervisor (the macOS menu-bar app, #128) relies on to find, start and
-talk to daemons. Stable within `schema_version` 1: fields may be added, but a
+What a supervisor (the macOS menu-bar app in `desktop/`, #128) relies on to
+find, start and talk to daemons. Stable within `schema_version` 1: fields may be added, but a
 rename, removal or change of meaning bumps the version.
 
 **Start.** Run the `itervox` binary with `--workflow <path>` and

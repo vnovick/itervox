@@ -36,6 +36,8 @@ export function resetAllStores(): void {
     rulesView: 'form',
     rulesPreviewProfile: '',
     rulesPreviewIssue: '',
+    settingsLayer: 'project',
+    settingsView: 'form',
   });
 
   // Clear browser storage so token-store cross-tab state doesn't leak.

@@ -24,6 +24,7 @@
 - [ ] Large-file changes stay within `make size-budget`
 - [ ] No new direct `os.Exit()` outside `cmd/itervox/exit.go`
 - [ ] No API tokens, secrets, or credentials in the diff
+- [ ] Every commit is signed off (`git commit -s`, [DCO](https://github.com/vnovick/itervox/blob/main/DCO)); external contributors have signed the [CLA](https://github.com/vnovick/itervox/blob/main/CLA.md)
 - [ ] Exported Go symbols have doc comments
 
 ## Related issues

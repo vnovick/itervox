@@ -230,12 +230,12 @@ func (a *orchestratorAdapter) SetDepsAnalysisMode(mode string) error {
 		return err
 	}
 	prev := a.orch.DepsAnalysisModeCfg()
-	if err := workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", mode); err != nil {
+	if err := persistDepsAnalysisMode(a.workflowPath, mode); err != nil {
 		return err
 	}
 	if err := a.orch.SetDepsAnalysisModeCfg(mode); err != nil {
 		return rollbackSettingsWrite("dependencies.analysis_mode", err, func() error {
-			return workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", prev)
+			return persistDepsAnalysisMode(a.workflowPath, prev)
 		})
 	}
 	a.notify()

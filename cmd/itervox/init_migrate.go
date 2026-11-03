@@ -515,6 +515,10 @@ var workflowLockGitignoreEntry = filepath.Base(workflow.LockFilePath("WORKFLOW.m
 // project-local rules layer (#157) out of git.
 const rulesLocalGitignoreEntry = ".itervox/rules.local.json"
 
+// settingsLocalGitignoreEntry is the root .gitignore line that keeps the
+// project-local settings layer (#158) out of git.
+const settingsLocalGitignoreEntry = ".itervox/settings.local.jsonc"
+
 func patchRootGitignoreForAgents(projectDir string) error {
 	if projectDir == "" {
 		projectDir = "."
@@ -554,9 +558,11 @@ func patchRootGitignoreForAgents(projectDir string) error {
 	}
 	// #157 — the project-local rules layer is the operator's own and is
 	// never committed (idempotent). After any carve-out above, so it wins.
-	if !containsLine(lines, rulesLocalGitignoreEntry) {
-		lines = append(lines, rulesLocalGitignoreEntry)
-		changed = true
+	for _, entry := range []string{rulesLocalGitignoreEntry, settingsLocalGitignoreEntry} {
+		if !containsLine(lines, entry) {
+			lines = append(lines, entry)
+			changed = true
+		}
 	}
 	// gaps_11 G-19 — migration backups written by `itervox init --update`
 	// must never be committed; ensure the ignore entry exists (idempotent).

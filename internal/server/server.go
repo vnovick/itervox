@@ -1296,6 +1296,9 @@ type Config struct {
 	SkillsClient SkillsClient
 	// Rules backs the Rules editor endpoints (#157). Nil → 503.
 	Rules RulesClient
+	// SettingsLayers backs the schema-driven Settings page's layer
+	// endpoints (#158). Nil → 503 (the schema endpoint always answers).
+	SettingsLayers SettingsLayersClient
 	// DepsAnalyzer backs the /api/v1/deps/analyze endpoints (Phase 2.3 of
 	// v0.2.0 todolist6). Nil makes the endpoints return 503.
 	DepsAnalyzer DepsAnalyzer
@@ -1365,7 +1368,9 @@ type Server struct {
 	actionTokens *agentactions.Store
 	skills       SkillsClient
 	rules        RulesClient
-	depsAnalyzer DepsAnalyzer
+	// settingsLayers mirrors Config.SettingsLayers (#158).
+	settingsLayers SettingsLayersClient
+	depsAnalyzer   DepsAnalyzer
 	// mergeStrategy / mergeBlockLabels mirror Config.MergeStrategy /
 	// Config.MergeBlockLabels — startup-fixed merge_pr policy. gaps_11 G-3.
 	mergeStrategy    string
@@ -1416,6 +1421,7 @@ func New(cfg Config) *Server {
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
 		rules:          cfg.Rules,
+		settingsLayers: cfg.SettingsLayers,
 		depsAnalyzer:   cfg.DepsAnalyzer,
 
 		mergeStrategy:       cfg.MergeStrategy,
@@ -1587,6 +1593,10 @@ func (s *Server) routes() {
 			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
 			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
 			r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
+			// Schema-driven Settings page (#158).
+			r.Get("/settings/schema", s.handleSettingsSchema)
+			r.Get("/settings/layers", s.handleGetSettingsLayers)
+			r.Put("/settings/layers/{layer}", s.handleSaveSettingsLayer)
 
 			// Dependency analysis (Phase 2.3 of v0.2.0 todolist6).
 			r.Post("/deps/analyze", s.handleDepsAnalyzeEnqueue)

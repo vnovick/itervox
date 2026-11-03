@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -19,12 +20,19 @@ import (
 // came from, and edits the JSONC settings files with their comments kept.
 //
 //	itervox config show [--workflow WORKFLOW.md] [--json]
-//	itervox config set KEY VALUE [--user] [--workflow WORKFLOW.md]
-//	itervox config unset KEY [--user] [--workflow WORKFLOW.md]
+//	itervox config set KEY VALUE [--user|--local] [--workflow WORKFLOW.md]
+//	itervox config unset KEY [--user|--local] [--workflow WORKFLOW.md]
+//	itervox config schema
+//
+// `config schema` (#158) prints the settings JSON Schema generated from the
+// config registry; `make settings-schema` publishes it.
+//
+//go:generate sh -c "go run . config schema > ../../site/public/schema/settings.schema.json"
 
 const configUsage = `usage: itervox config show [--workflow WORKFLOW.md] [--json]
-       itervox config set KEY VALUE [--user] [--workflow WORKFLOW.md]
-       itervox config unset KEY [--user] [--workflow WORKFLOW.md]`
+       itervox config set KEY VALUE [--user|--local] [--workflow WORKFLOW.md]
+       itervox config unset KEY [--user|--local] [--workflow WORKFLOW.md]
+       itervox config schema`
 
 func runConfig(args []string) {
 	fatalExit(configCmd(args, os.Stdout, os.Stderr))
@@ -32,6 +40,9 @@ func runConfig(args []string) {
 
 // configCmd runs `itervox config` and returns the exit code.
 func configCmd(args []string, out, errOut io.Writer) int {
+	if len(args) == 1 && args[0] == "schema" {
+		return configSchema(out, errOut)
+	}
 	if len(args) == 0 || (args[0] != "show" && args[0] != "set" && args[0] != "unset") {
 		_, _ = fmt.Fprintln(errOut, configUsage)
 		return 2
@@ -41,6 +52,7 @@ func configCmd(args []string, out, errOut io.Writer) int {
 	workflow := fs.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md")
 	asJSON := fs.Bool("json", false, "(show) print JSON")
 	user := fs.Bool("user", false, "(set, unset) edit the user file instead of the project's .itervox/settings.jsonc")
+	local := fs.Bool("local", false, "(set, unset) edit the gitignored .itervox/settings.local.jsonc instead of the project's .itervox/settings.jsonc")
 	// Flags may come before or after the positional arguments.
 	var positional []string
 	rest := args[1:]
@@ -55,6 +67,11 @@ func configCmd(args []string, out, errOut io.Writer) int {
 		rest = fs.Args()[1:]
 	}
 
+	if *user && *local {
+		_, _ = fmt.Fprintln(errOut, "itervox config: --user and --local name different files; pass one")
+		return 2
+	}
+
 	switch args[0] {
 	case "show":
 		if len(positional) > 0 {
@@ -67,14 +84,36 @@ func configCmd(args []string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintln(errOut, configUsage)
 			return 2
 		}
-		return configSet(*workflow, *user, positional[0], parseSettingValue(positional[1]), out, errOut)
+		return configSet(*workflow, layerFlag(*user, *local), positional[0], parseSettingValue(positional[1]), out, errOut)
 	default:
 		if len(positional) != 1 {
 			_, _ = fmt.Fprintln(errOut, configUsage)
 			return 2
 		}
-		return configSet(*workflow, *user, positional[0], nil, out, errOut)
+		return configSet(*workflow, layerFlag(*user, *local), positional[0], nil, out, errOut)
 	}
+}
+
+// layerFlag maps the --user/--local flags to the settings layer they edit.
+func layerFlag(user, local bool) string {
+	switch {
+	case user:
+		return config.LayerUser
+	case local:
+		return config.LayerLocal
+	}
+	return config.LayerProject
+}
+
+// configSchema prints the settings JSON Schema (#158).
+func configSchema(out, errOut io.Writer) int {
+	b, err := config.SettingsSchemaJSON()
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "itervox config schema: %v\n", err)
+		return 1
+	}
+	_, _ = out.Write(b)
+	return 0
 }
 
 func configShow(workflow string, asJSON bool, out, errOut io.Writer) int {
@@ -113,17 +152,15 @@ func configShow(workflow string, asJSON bool, out, errOut io.Writer) int {
 // configSet sets (value != nil) or removes a key in a settings file, then
 // loads the workflow with it; a change the workflow does not load with is
 // undone.
-func configSet(workflow string, user bool, key string, value any, out, errOut io.Writer) int {
+func configSet(workflow, layer string, key string, value any, out, errOut io.Writer) int {
 	verb := "set"
 	if value == nil {
 		verb = "unset"
 	}
-	path := config.ProjectSettingsPath(workflow)
-	if user {
-		if path = config.UserSettingsPath(); path == "" {
-			_, _ = fmt.Fprintf(errOut, "itervox config %s: the user settings file is off (%s=off) or there is no home directory\n", verb, config.UserSettingsEnv)
-			return 1
-		}
+	path := config.SettingsLayerPath(workflow, layer)
+	if path == "" {
+		_, _ = fmt.Fprintf(errOut, "itervox config %s: the user settings file is off (%s=off) or there is no home directory\n", verb, config.UserSettingsEnv)
+		return 1
 	}
 	before, readErr := os.ReadFile(path)
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
@@ -156,14 +193,15 @@ func configSet(workflow string, user bool, key string, value any, out, errOut io
 			return 1
 		}
 	}
+	if layer == config.LayerLocal {
+		if err := ensureItervoxGitignore(filepath.Dir(path)); err != nil {
+			_, _ = fmt.Fprintf(errOut, "warning: could not make sure %s is gitignored: %v\n", path, err)
+		}
+	}
 	if value == nil {
 		_, _ = fmt.Fprintf(out, "Removed %s from %s.\n", key, path)
 	} else {
 		_, _ = fmt.Fprintf(out, "Set %s = %s in %s.\n", key, formatSettingValue(value), path)
-	}
-	layer := config.LayerProject
-	if user {
-		layer = config.LayerUser
 	}
 	switch {
 	case value != nil && (effective == nil || effective.Unread):
@@ -171,24 +209,11 @@ func configSet(workflow string, user bool, key string, value any, out, errOut io
 	case effective == nil:
 	case value == nil:
 		_, _ = fmt.Fprintf(out, "%s is now %s (%s layer).\n", key, formatSettingValue(effective.Value), effective.Layer)
-	case layerRank(effective.Layer) > layerRank(layer):
+	case config.SettingsLayerRank(effective.Layer) > config.SettingsLayerRank(layer):
 		_, _ = fmt.Fprintf(errOut, "warning: the %s layer also sets %s (%s), and it wins over this file\n",
 			effective.Layer, key, formatSettingValue(effective.Value))
 	}
 	_, _ = fmt.Fprintln(out, "A running daemon picks it up when it next loads WORKFLOW.md: restart it, or save WORKFLOW.md.")
-	return 0
-}
-
-// layerRank orders the layers, lowest first.
-func layerRank(layer string) int {
-	switch layer {
-	case config.LayerUser:
-		return 1
-	case config.LayerProject:
-		return 2
-	case config.LayerWorkflow:
-		return 3
-	}
 	return 0
 }
 
