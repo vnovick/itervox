@@ -67,13 +67,29 @@ Commands:
 
   config  Show the effective settings and the layer each came from
           (default, ~/.itervox/settings.jsonc, .itervox/settings.jsonc,
-          WORKFLOW.md), or edit a settings file with its comments kept
+          .itervox/settings.local.jsonc, WORKFLOW.md), or edit a
+          settings file with its comments kept
              show       every value with its layer (--json for JSON)
              set KEY VALUE  set agent.*, polling.*, server.* or
                         workspace.* in .itervox/settings.jsonc (--user:
                         ~/.itervox/settings.jsonc)
              unset KEY  remove a key from that file
+             --local    (set, unset) the gitignored
+                        .itervox/settings.local.jsonc instead
+             schema     print the settings JSON Schema
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+
+  import  Convert a Symphony or Itervox v0.x WORKFLOW.md: settings move
+          to .itervox/settings.jsonc, profile prompts to prompt files;
+          writes WORKFLOW.md.bak and prints every key it could not map
+             --force    overwrite an existing WORKFLOW.md.bak
+
+  export  --symphony: write a Symphony WORKFLOW.md (core keys and the
+          worker prompt) and list the Itervox-only features it dropped
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --out      output path, or - for stdout
+                        (default: WORKFLOW.symphony.md)
+             --force    overwrite --out
 
   report  costs: tokens and estimated cost per issue and per day
              --days N   days to list (default 14)  --json  JSON output

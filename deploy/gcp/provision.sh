@@ -77,7 +77,7 @@ if ! $PUBLIC; then
   fi
   if ! gcloud compute routers nats describe itervox-nat --router=itervox-router --region="$REGION" --format='value(name)' &>/dev/null; then
     gcloud compute routers nats create itervox-nat --router=itervox-router \
-      --region="$REGION" --auto-allocate-nat-external-ip \
+      --region="$REGION" --auto-allocate-nat-external-ips \
       --nat-all-subnet-ip-ranges
   else
     echo "    (NAT already exists)"

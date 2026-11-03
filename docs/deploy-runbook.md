@@ -18,7 +18,7 @@ which run it). Paths use the defaults: `--root /srv/itervox`, service user `iter
 Upgrading from v0.2.0 or earlier: first run `itervox doctor --upgrade --workflow WORKFLOW.md` as the service user in the project directory. It prints only the v0.2.1 upgrade notes that apply to this workflow, environment and installed unit, each with the fix (exit `0` and an "all clear" line when none do).
 
 ```bash
-sudo itervox-upgrade.sh --version v0.2.4          # or --version latest
+sudo itervox-upgrade.sh --version v0.2.5          # or --version latest
 ```
 
 What it does, in order — everything before step 5 leaves the running service untouched:
@@ -99,7 +99,7 @@ Everything below lives under `--root` (the data disk mount) on a bootstrap insta
 
 | Path | Contents | Needed for |
 |---|---|---|
-| `/srv/itervox/home/.itervox/logs/<kind>/<project>/` | `history.json`, `paused.json`, `input_required.json` (incl. pending input resumes), `automation_queue.json`, `pending_reviews.json`, `auto_switched.json`, `backend_health.json`, `sessions/`, `api-token`, `itervox.log*` | paused work, input-required sessions, queued automations, run history, the dashboard token |
+| `/srv/itervox/home/.itervox/logs/<kind>/<project>/` | `history.json`, `paused.json`, `input_required.json` (incl. pending input resumes), `automation_queue.json`, `pending_reviews.json`, `auto_switched.json`, `backend_health.json`, `pr_events.json`, `sessions/`, `api-token`, `itervox.log*` | paused work, input-required sessions, queued automations, run history, the dashboard token |
 | `/srv/itervox/home/.itervox/workspaces/<project>/` | per-issue worktrees (`worktrees/<id>` or `<id>`) and the `.bare` clone | resuming paused/input-required issues on their branches |
 | `/srv/itervox/<repo>/.itervox/` | `.env` (secrets — see below), `outbox.json` (tracker writes not yet delivered), `deps_overrides.json`, `agents/**`, `handoff/**` | undelivered tracker comments, dependency overrides |
 | `/srv/itervox/home/.claude`, `.claude.json`, `.codex` | agent CLI logins (OAuth) | avoiding a re-login |

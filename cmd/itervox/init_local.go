@@ -54,4 +54,6 @@ func writeLocalTrackerBlock(b *strings.Builder) {
 	b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
 	b.WriteString("  backlog_states: [\"Backlog\"]        # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
 	b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
+	b.WriteString("  # sync:                          # Optional — two-way sync with Linear or GitHub, with the credential\n")
+	b.WriteString("  #   kind: linear                 # and project keys a linear or github tracker uses (Local issues guide).\n")
 }

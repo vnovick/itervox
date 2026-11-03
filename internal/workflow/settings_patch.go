@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -133,116 +132,6 @@ func applyAndWrite(path string, registerSelfWrite, skipUnchanged bool, mutators 
 	}
 
 	return writeLocked(path, data, []byte(renderFrontMatter(frontLines, bodyLines)), registerSelfWrite)
-}
-
-// MutateTrackerStates returns a Mutator that rewrites tracker.active_states,
-// tracker.terminal_states, and tracker.completion_state inside the tracker:
-// block. See PatchTrackerStates.
-func MutateTrackerStates(active, terminal []string, completion string) Mutator {
-	return func(frontLines []string) ([]string, error) {
-		trackerLine := -1
-		trackerEnd := len(frontLines)
-		for i, line := range frontLines {
-			if line != "tracker:" {
-				continue
-			}
-			trackerLine = i
-			for j := i + 1; j < len(frontLines); j++ {
-				next := frontLines[j]
-				if next == "" {
-					continue
-				}
-				if next[0] != ' ' {
-					trackerEnd = j
-					break
-				}
-			}
-			break
-		}
-		if trackerLine < 0 {
-			return nil, fmt.Errorf("workflow mutate tracker states: tracker block not found")
-		}
-
-		block := make([]string, 0, trackerEnd-trackerLine-1+3)
-		for _, line := range frontLines[trackerLine+1 : trackerEnd] {
-			switch {
-			case strings.HasPrefix(line, "  active_states:"):
-				continue
-			case strings.HasPrefix(line, "  terminal_states:"):
-				continue
-			case strings.HasPrefix(line, "  completion_state:"):
-				continue
-			default:
-				block = append(block, line)
-			}
-		}
-		block = append(block,
-			"  active_states: "+marshalStringSliceInline(active),
-			"  terminal_states: "+marshalStringSliceInline(terminal),
-			"  completion_state: "+strconv.Quote(completion),
-		)
-
-		newFrontLines := make([]string, 0, len(frontLines)-((trackerEnd-trackerLine-1)-len(block)))
-		newFrontLines = append(newFrontLines, frontLines[:trackerLine+1]...)
-		newFrontLines = append(newFrontLines, block...)
-		newFrontLines = append(newFrontLines, frontLines[trackerEnd:]...)
-		return newFrontLines, nil
-	}
-}
-
-// PatchTrackerFailedState atomically rewrites tracker.failed_state in the YAML
-// front matter. Empty value removes the key entirely (operator chose
-// "Pause (do not move)" in the UI). Existing occurrences are replaced.
-func PatchTrackerFailedState(path, state string) error {
-	return ApplyAndWriteFrontMatter(path, MutateTrackerStringField("failed_state", state))
-}
-
-// MutateTrackerStringField returns a Mutator that sets or removes a single
-// string key inside the tracker: block. Empty value removes; non-empty
-// value writes the quoted value. Existing occurrences are stripped first.
-func MutateTrackerStringField(key, value string) Mutator {
-	prefix := "  " + key + ":"
-	return func(frontLines []string) ([]string, error) {
-		trackerLine := -1
-		trackerEnd := len(frontLines)
-		for i, line := range frontLines {
-			if line != "tracker:" {
-				continue
-			}
-			trackerLine = i
-			for j := i + 1; j < len(frontLines); j++ {
-				next := frontLines[j]
-				if next == "" {
-					continue
-				}
-				if next[0] != ' ' {
-					trackerEnd = j
-					break
-				}
-			}
-			break
-		}
-		if trackerLine < 0 {
-			return nil, fmt.Errorf("tracker block not found")
-		}
-
-		block := make([]string, 0, trackerEnd-trackerLine)
-		for _, line := range frontLines[trackerLine+1 : trackerEnd] {
-			if strings.HasPrefix(line, prefix) {
-				continue
-			}
-			block = append(block, line)
-		}
-		if value != "" {
-			block = append(block, "  "+key+": "+strconv.Quote(value))
-		}
-
-		newFrontLines := make([]string, 0, len(frontLines)-((trackerEnd-trackerLine-1)-len(block)))
-		newFrontLines = append(newFrontLines, frontLines[:trackerLine+1]...)
-		newFrontLines = append(newFrontLines, block...)
-		newFrontLines = append(newFrontLines, frontLines[trackerEnd:]...)
-		return newFrontLines, nil
-	}
 }
 
 // renderFrontMatter reassembles a WORKFLOW.md from front-matter and body

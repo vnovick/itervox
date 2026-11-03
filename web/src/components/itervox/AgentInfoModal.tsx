@@ -287,6 +287,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
             {editing && (
               <div className="flex-1 space-y-3 overflow-y-auto">
                 <ProfileEditorFields
+                  profileName={profileName}
                   backend={backend}
                   model={model}
                   command={command}

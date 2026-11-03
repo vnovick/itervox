@@ -45,6 +45,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
+	state = o.loadPREventsFromDisk(state)           // #173
+	state = o.loadDeferredStateMovesFromDisk(state) // #177
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
@@ -345,6 +347,9 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	state = o.processPendingInputResumes(ctx, state, now)
 	// M4-close BH-M4-2: reviews refused by a drain run before new work.
 	o.resumePendingReviews(ctx, &state, now)
+	// #177: moves deferred for a worker that has exited (or loaded after a
+	// restart) are applied before new work.
+	o.applyPendingDeferredStateMoves(&state, now)
 	o.drainAutomationQueueWithCandidates(ctx, &state, now, candidateIssues)
 
 	slots := AvailableSlots(state)
@@ -578,6 +583,11 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		if now.Before(entry.DueAt) {
 			continue
 		}
+		// #177: not before the move the last run deferred has landed (or
+		// been dropped); the retry stays due and fires on a later tick.
+		if _, pending := state.DeferredStateMoves[entry.Identifier]; pending {
+			continue
+		}
 
 		refreshed, err := o.tracker.FetchIssueStatesByIDs(ctx, []string{issueID})
 		if err != nil {
@@ -694,7 +704,9 @@ func boundInputRequiredContext(text string) string {
 // nil.
 func (o *Orchestrator) postInputRequiredComment(issueID, identifier, key, body, what string) error {
 	if o.sinkEnqueuesLocally() {
-		if err := o.writeSink().CreateKeyedComment(context.Background(), issueID, identifier, key, body); err != nil {
+		// #115: a person waits on the question (and the agent on the
+		// reply), so neither waits for the push interval.
+		if err := o.writeSink().CreateKeyedComment(urgentWrite(context.Background()), issueID, identifier, key, body); err != nil {
 			return fmt.Errorf("orchestrator: enqueue input-required %s: %w", what, err)
 		}
 		return nil
@@ -1822,6 +1834,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventInputQuestionFallback:
 		state = o.handleInputQuestionFallback(state, ev)
 
+	case EventDeferStateMove: // #177
+		deferred := o.handleDeferStateMove(&state, ev, time.Now())
+		if ev.deferReply != nil {
+			ev.deferReply <- deferred
+		}
+
+	case EventDeferredStateMoveSettled: // #177
+		o.handleDeferredStateMoveSettled(&state, ev, time.Now())
+
 	case EventAckFailures: // CORE-175
 		applyFailureAck(&state, ev.Identifier, ev.AckUpTo)
 		if o.OnStateChange != nil {
@@ -1909,6 +1930,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 		o.dispatchOrQueueAutomation(ctx, &state, *ev.Issue, *ev.Automation, time.Now())
 
+	case EventDispatchCronBatch:
+		if ev.CronBatch != nil {
+			o.dispatchCronAutomationBatch(ctx, &state, *ev.CronBatch, time.Now())
+		}
+
 	case EventIssueStatusChanged:
 		if ev.StatusChange != nil {
 			appendIssueStatusChange(&state, *ev.StatusChange)
@@ -1952,6 +1978,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// detection already deleted the entry.
 		finished, finishedKnown := finishedRun(state, liveEntry, ev)
 		delete(state.Running, ev.IssueID)
+		// #177: a state move deferred for this run is settled by its exit.
+		o.settleDeferredMoveOnExit(&state, ev, liveEntry)
 
 		if ev.RunEntry == nil {
 			// Emitted by ReconcileTrackerStates (not-found/non-active path);
@@ -1997,6 +2025,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.cancelAndCleanupWorker(ev.RunEntry.Issue.Identifier)
 
 		now := time.Now()
+		// #173: the PR this run created or continued is managed from now on.
+		recordManagedPR(&state, liveEntry, ev.RunEntry, now)
 		issue := ev.RunEntry.Issue
 		attempt := 0
 		if ev.RunEntry.RetryAttempt != nil {
@@ -2658,7 +2688,8 @@ func maxRetriesExhaustedBody(attempts int, lastErr string) string {
 func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, body string) {
 	comment := tracker.MarkManagedComment(body)
 	if o.sinkEnqueuesLocally() {
-		if err := o.writeSink().CreateComment(context.Background(), issue.ID, issue.Identifier, comment); err != nil {
+		// #115: a failure notice is pushed at once, not batched.
+		if err := o.writeSink().CreateComment(urgentWrite(context.Background()), issue.ID, issue.Identifier, comment); err != nil {
 			slog.Warn("worker: failed to enqueue max-retries comment", "issue_id", issue.ID, "error", err)
 		}
 		return
@@ -2709,7 +2740,9 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 		// of the failed state would have had that move overwritten. Empty
 		// stays permitted for callers that genuinely cannot observe the
 		// state; this caller can.
-		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, fromState)
+		// #115: the move to the failed state is a failure notice a person
+		// acts on, so it is pushed at once rather than batched.
+		err := o.writeSink().UpdateIssueState(urgentWrite(updateCtx), issueID, identifier, targetState, fromState)
 		updateCancel()
 		if err != nil {
 			// Error, not Warn (CORE-044): retries are exhausted and the
@@ -2834,6 +2867,8 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.SessionID = liveEntry.SessionID
 		run.AutomationID = liveEntry.AutomationID
 		run.TriggerType = liveEntry.TriggerType
+		run.RulesHash = liveEntry.RulesHash
+		run.RuleIDs = liveEntry.RuleIDs
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the

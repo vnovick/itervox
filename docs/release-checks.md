@@ -12,6 +12,10 @@ every change; the third runs in CI already.
 
 Record each result (the run link, or the artifact) in the release's tracking issue.
 
+The Mac app and CLI are signed, notarized and checked with `spctl` by the
+release workflow itself; its secrets, the updater key and the commands to
+verify a build by hand are in [release-mac.md](release-mac.md).
+
 ## One-time setup
 
 Create a GitHub environment named **`acceptance`** (Settings → Environments) with

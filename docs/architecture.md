@@ -236,11 +236,18 @@ Assembly order at dispatch time (from `internal/orchestrator/worker.go`):
    order, budget-truncated. See **Agent handoff** below.
 3. **`## Run Context`** block — `run.timestamp` and `run.handoff_path` for
    this dispatch. The agent uses these to write its own deliverable.
-4. **SOUL.md** — compact identity ("who you are"), appended via
+4. **`## Rules`** block (#157) — the layered rules in scope for the run's
+   project, profile and backend, must rules first. `internal/rules` reads
+   `~/.itervox/rules.json`, `.itervox/rules.json` and
+   `.itervox/rules.local.json` again at every dispatch (`startRun`), so an
+   edit applies to the next run; the run records the set's hash and ids.
+   Omitted when a template prints `{{ rules }}` (or a field of it) itself.
+   The dependency analyzer gets the same block at the top of its prompt.
+5. **SOUL.md** — compact identity ("who you are"), appended via
    `renderProfilePromptBlocks`.
-5. **INSTRUCTIONS.md** — operational rules, checklists, including the
+6. **INSTRUCTIONS.md** — operational rules, checklists, including the
    "Handoff Protocol" section that points at `run.handoff_path`.
-6. Optional appends: automation instructions, action context, sub-agent
+7. Optional appends: automation instructions, action context, sub-agent
    roster, first-turn PR context.
 
 The concatenated result is passed to the agent subprocess. Inline `prompt:`
@@ -350,6 +357,37 @@ dedup ledger on `State.PRMergedDispatched`; `AutomationDispatchesPRMergedTotal`
 and `AutomationDroppedPRMergedDedupTotal` counters surface dispatch
 telemetry.
 
+### PR-event triggers (#173)
+
+`pr_check_completed`, `pr_synchronized`, `pr_review_submitted` and
+`pr_mergeable_changed` fire on GitHub activity on a **managed** PR: one whose
+URL a run's exit carried (`RunEntry.PRURL`, plus `RunEntry.HeadSHA`, the
+remote-tracking head the run left). The event loop records it in
+`State.ManagedPRs` (`recordManagedPR`, on `EventWorkerExited`).
+
+```
+ GitHub webhook (POST /api/v1/webhooks/pr-events)   poll of open managed PRs
+        │ prwatch.Handler (HMAC check)                 │ prwatch.Watcher.Poll (ETag/304)
+        └───────────────► prwatch.Event ◄──────────────┘
+                              │ cmd/itervox prEventSink: issue by identifier
+                              ▼
+        Orchestrator.DispatchPREventAutomations (off-loop: rule + PR filters)
+                              │ EventDispatchAutomation (one per matching rule)
+                              ▼
+        event loop: dispatchOrQueueAutomation → claimPREventDedup
+          managed for this issue? predates the recording run? head/mergeable
+          changed for this rule (State.PREventBaselines)? key already in
+          State.PREventDispatched? → start / queue / drop
+```
+
+`internal/prwatch` imports only stdlib, `metrics` and `tracker` (for the
+rate-limit snapshot type); it never decides dispatch. `ManagedPRs`,
+`PREventDispatched` and `PREventBaselines` are event-loop state, persisted
+together to `pr_events.json` by the ledger writer from `storeSnap`, and pruned
+by `pruneTerminalRuntimeLedgers` when the issue turns terminal. The watcher
+reads the managed PRs from the last snapshot (`Orchestrator.ManagedPRs`), never
+from live state.
+
 ### `itervox doctor` (P0-D / P0-G)
 
 A preflight subcommand that runs WORKFLOW.md schema validation + dispatch
@@ -381,6 +419,9 @@ state changes at a bounded interval (default 15 s) via
 
 - active workflow path and `itervox_schema_version`
 - dashboard URL and tracker/project
+- tracker sync status (`## Sync`, #117): mode, last pull, lag and its warn
+  threshold, pending writes, next push, last sync error. Also rewritten when
+  the sync status changes, so `itervox doctor` reads a current last pull
 - agent capacity (running / max)
 - automation queue pressure (length / max, paused producers, recent rejects)
 - dependency audit summary (blocked / unknown / unblocked counts)
@@ -425,13 +466,14 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/workflow` | WORKFLOW.md loader and content-hash file watcher |
 | `internal/workspace` | Workspace provisioning, path safety, git worktree / bare-clone helpers, PR branches, lifecycle hooks |
 | `internal/prompt` | Liquid template rendering for agent prompts |
+| `internal/rules` | Layered JSONC rules (#157): read, merge (user `must` rules locked), scope filter, `## Rules` block and `{{ rules }}` binding, comment-preserving saves for the Rules editor |
 | `internal/logbuffer` | Per-issue ring buffer for live log streaming |
 | `internal/prdetector` | Detects PR URLs in agent output |
 | `internal/app` | Cross-cutting business logic (e.g. `EnrichIssue`) |
 | `internal/server` | chi-based HTTP API, SSE broadcaster, embedded web assets |
 | `internal/statusui` | Bubbletea terminal UI; reads `Orchestrator.Snapshot()` |
 | `internal/templates` | WORKFLOW.md scaffolding and human-input template |
-| `internal/templates/scaffold` | Registry of `--template` presets for `itervox init` (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) |
+| `internal/templates/scaffold` | Registry of `itervox init --template` starter templates (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) and their one-line summaries; `cmd/itervox/init_templates.go` renders each template's profiles, review settings, backend fallback and automations |
 | `internal/logging` | slog setup and shared logging helpers |
 | `internal/profiles` | Built-in profile registry: `embed.FS` of `builtin/<name>/{SOUL,INSTRUCTIONS}.md` plus per-profile `Default{Command,Backend,Actions}` |
 | `internal/depsanalysis` | Dependency analyzer sidecar — async job that runs an analyzer profile over the snapshot graph and caches results |
