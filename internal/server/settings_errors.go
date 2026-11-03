@@ -14,10 +14,19 @@ import (
 // Retry-After so the client re-sends the save to the new generation.
 var ErrSettingsReloading = errors.New("server: WORKFLOW.md was reloaded while this save was in flight; nothing was written, retry the save")
 
+// ErrTrackerFilterInEffect is returned (wrapped) by a project-filter save
+// while tracker.filter is in effect (#198): project_slug and tracker.filter
+// cannot both be set, so the filter is edited instead (409).
+var ErrTrackerFilterInEffect = errors.New("server: tracker.filter is in effect; edit the filter (Settings → Tracker Scope) instead")
+
 // writeClientError maps an OrchestratorClient error from a settings or
 // mutation handler: ErrSettingsReloading becomes 503 settings_reloading with
 // Retry-After, anything else 500 with the handler's code.
 func writeClientError(w http.ResponseWriter, code string, err error) {
+	if errors.Is(err, ErrTrackerFilterInEffect) {
+		writeError(w, http.StatusConflict, "tracker_filter_in_effect", err.Error())
+		return
+	}
 	if errors.Is(err, ErrSettingsReloading) {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "settings_reloading", err.Error())

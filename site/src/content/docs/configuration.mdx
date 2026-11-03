@@ -94,6 +94,7 @@ Controls which issue tracker Itervox polls and how issue states are mapped.
 | `assignee` | string | `""` | Linear only (#182): only the issues assigned to this user — `me` (the API key's own user, Linear's `viewer`), a user id, or an email. Alone: that user's issues in every project of every team the key can read; with `project_slug`: the intersection. Resolved once at startup and on each `WORKFLOW.md` reload; a user nobody can see fails every poll (never widens) and `itervox doctor` exits 1. An issue reassigned away mid-run finishes its run but gets no new one, and shows as "out of scope". Itervox's own writes never set an assignee. See [Linear setup → Scope](/guides/linear-setup/#scope-project-assignee-labels). |
 | `team` | string | `""` | Linear only, with `assignee` (#182): only the issues of this team, by key (`ENG`) or id. Ignored without `assignee`. |
 | `labels` | string[] | `[]` | Linear only (#182): only the issues carrying **any** of these labels, ANDed with the project and assignee. An issue whose matching label is removed mid-run is out of scope like a reassigned one. |
+| `filter` | list of groups | none | Linear and GitHub (#198): what Itervox reads, as groups of conditions — every condition in a group must match (AND), an issue is read when **any** group matches (OR). Replaces `project_slug` (Linear), `assignee`, `team` and `labels`, which keep working as one implicit group; setting both is a config error. See [Tracker filter](#tracker-filter) below. Load-time; Settings → Tracker Scope edits it (written back as one line, no reload). |
 | `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
 | `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
 | `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
@@ -161,6 +162,44 @@ tracker:
   terminal_states: ["done", "cancelled"]
   completion_state: "in-review"
 ```
+
+### Tracker filter
+
+`tracker.filter` (#198) is a list of **groups**. Inside a group every condition must match (AND); an issue is read when **any** group matches (OR). All conditions are optional, but a group needs at least one.
+
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  filter:
+    - projects: [ENG]                 # group 1: all of these
+      labels_any: [agent, ai]
+      labels_none: [blocked, needs-human]
+    - assignee: me                    # OR group 2
+      labels_all: [urgent]
+      priority: [1, 2]
+```
+
+| Condition | Meaning | Linear | GitHub |
+|---|---|---|---|
+| `projects` | in any of these projects (slugs; `__no_project__` for none) | ✓ | — |
+| `teams` | in any of these teams (key or id) | ✓ | — |
+| `assignee` | `me` (the API key's user), a user id or an email (Linear); `me` or a login (GitHub) | ✓ | ✓ |
+| `labels_any` | has at least one of these labels | ✓ | ✓ (one search per label) |
+| `labels_all` | has every one of these labels (extra labels are fine) | ✓ | ✓ |
+| `labels_none` | has none of these labels | ✓ | ✓ |
+| `priority` | any of these priorities: 0 none, 1 urgent, 2 high, 3 normal, 4 low | ✓ | — |
+| `states` | narrows `active_states`: an issue in an active state is read only in one of these (or `working_state`, so a dispatched issue stays in scope); backlog and terminal issues are not narrowed | ✓ | ✓ |
+| `cycle` | `current` (the team's active cycle) or a cycle id | ✓ | — |
+| `milestone` | a project milestone (Linear) or milestone (GitHub) name, any case | ✓ | ✓ |
+
+- **Backward compatible.** `project_slug` / `assignee` / `team` / `labels` keep working and mean one implicit group (`team` narrows only the assignee, as before). Setting them **and** `filter` is a config error naming the keys (on GitHub `project_slug` is the repository and stays). An unknown condition, an empty group, a priority outside 0–4 or a label in both `labels_all` and `labels_none` fails the load or validation; a typo never widens the filter.
+- **One scope everywhere.** The candidate poll, the tracker store's full and incremental pulls, webhook refreshes (by-ID reads checked against the same filter in memory), the dependency analyzer's issue set and the automation poll all read the same filter. The automation poll's scope key and the store's scope cover the whole filter, so a filter change rebaselines and fires no triggers.
+- **Linear** compiles the filter to one `IssueFilter`: `{and: [<states>, {or: [<group>, …]}]}`. `labels_any` is `labels: {some: {name: {in}}}`, `labels_all` one `labels: {some: {name: {eq}}}` per label (Linear's `every` would mean "every label of the issue is in the set"), `labels_none` "no labels, or every label outside the set".
+- **GitHub** runs one issue search per group — `repo:o/r is:issue is:open label:"a" -label:"b" assignee:x milestone:"m"` — and unions and de-duplicates the results by issue number. GitHub search has no OR between labels in one query, so a group with several `labels_any` runs one search per label. States stay labels: the searches read the open issues a group matches and the state is derived from the labels as without a filter. `projects`, `teams`, `priority` and `cycle` have no GitHub equivalent and are a config error naming the condition. The search API allows 30 requests a minute and returns at most 1,000 issues per query; with the tracker store on (the default) the poll reads the store and only the store's full pulls search, while its incremental pull lists changed issues and applies the filter in memory.
+- **Leaving the filter mid-run** (a label the filter excludes is added, reassigned, moved): the run finishes, nothing is re-dispatched, and the dashboard shows it out of scope. A retry waiting when the issue leaves the filter is released too.
+- **Agent writes never change the fields a filter reads** — state moves (which the `states` condition is built around), comments, the branch name and follow-up issues only.
+- `itervox doctor` validates the filter with the rest of the workflow, resolves its assignees (exit 1 if one matches no user) and prints how many issues in the active states match.
 
 ---
 
@@ -740,6 +779,7 @@ until the queue falls below the low-water mark.
 | `filter.states` | string[] | Issue-state filter. For cron automations, leave empty to use backlog and active states. |
 | `filter.states_any` | string[] | Alias for `filter.states`; recommended for `blockers_resolved` examples to make the source-state policy explicit. |
 | `filter.labels_any` | string[] | Match issues with at least one of the listed labels. |
+| `filter.groups` | list of groups | The [tracker filter](#tracker-filter) group syntax (#198): matches when any group matches. One more check beside `states`, `labels_any` and `identifier_regex`, combined by `match_mode`. `filter:` can also be the list of groups itself. `assignee: me` is not resolved here (use a user id or login); `states` is plain membership. |
 | `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42`. |
 | `filter.limit` | int | Maximum number of issues to queue from one cron tick or event poll batch. On `cron` rules the selection rotates between ticks from a persisted per-rule cursor (see the automations guide). |
 | `filter.input_context_regex` | string | Only meaningful for `input_required`; matched against the blocked-agent question text. |

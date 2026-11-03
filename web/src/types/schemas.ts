@@ -309,10 +309,29 @@ export const AutomationTriggerSchema = z.object({
   state: z.string().optional(),
 });
 
+// #198 — one group of a tracker filter: its conditions AND; the groups of a
+// filter OR. Keys are the WORKFLOW.md condition names (snake_case), the same
+// on the wire, so tracker.filter and automation filter groups read alike.
+export const FilterGroupSchema = z.object({
+  projects: z.array(z.string()).optional(),
+  teams: z.array(z.string()).optional(),
+  assignee: z.string().optional(),
+  labels_any: z.array(z.string()).optional(),
+  labels_all: z.array(z.string()).optional(),
+  labels_none: z.array(z.string()).optional(),
+  priority: z.array(z.number()).optional(),
+  states: z.array(z.string()).optional(),
+  cycle: z.string().optional(),
+  milestone: z.string().optional(),
+});
+export type FilterGroup = z.infer<typeof FilterGroupSchema>;
+
 export const AutomationFilterSchema = z.object({
   matchMode: tolerantEnum('automations.filter.matchMode', ['all', 'any'], 'all').optional(),
   states: z.array(z.string()).optional(),
   labelsAny: z.array(z.string()).optional(),
+  // #198 — tracker-filter groups (any group matching), kept on save.
+  groups: z.array(FilterGroupSchema).optional(),
   identifierRegex: z.string().optional(),
   limit: z.number().optional(),
   inputContextRegex: z.string().optional(),
@@ -821,6 +840,10 @@ export const StateSnapshotSchema = z.object({
   scopeAssignee: z.string().optional(),
   scopeAssigneeName: z.string().optional(),
   scopeLabels: z.array(z.string()).optional(),
+  // #198 — the tracker filter conditions the tracker supports; present
+  // when the tracker reads through a filter (Settings shows the group
+  // builder).
+  filterConditions: z.array(z.string()).optional(),
   projectName: z.string().optional(),
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),

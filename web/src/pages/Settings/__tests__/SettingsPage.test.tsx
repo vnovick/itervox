@@ -70,6 +70,7 @@ vi.mock('../useSettingsPageData', () => ({
     inlineInput: false,
     trackerKind: 'linear',
     activeProjectFilter: [],
+    filterSupported: false,
     maxRetries: 5,
     failedState: '',
     maxSwitchesPerIssuePerWindow: 2,

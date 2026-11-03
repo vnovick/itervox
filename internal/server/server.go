@@ -14,6 +14,7 @@ import (
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/automationdef"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -363,7 +364,33 @@ type TrackerScope struct {
 	Projects []string `json:"projects"`
 	Assignee string   `json:"assignee"`
 	Labels   []string `json:"labels"`
+	// Filter is the effective tracker filter (#198) as groups: tracker.filter,
+	// or the legacy keys above as one implicit group (empty: every issue).
+	Filter issuefilter.Filter `json:"filter"`
+	// FilterMode is set when a filter (not the legacy keys) is in effect.
+	FilterMode bool `json:"filterMode"`
+	// Conditions lists the filter conditions the tracker supports.
+	Conditions []string `json:"conditions"`
 }
+
+// TrackerTeam is one teams choice of a filter group (#198).
+type TrackerTeam struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+// FilterPreview is what a proposed filter would read (#198): the number of
+// issues in the active states it matches and the first identifiers.
+type FilterPreview struct {
+	Count       int      `json:"count"`
+	Identifiers []string `json:"identifiers"`
+}
+
+// ErrFilterInvalid is returned (wrapped) by ScopeManager.SetFilter and
+// PreviewFilter for a filter the tracker cannot read (an empty group, an
+// unsupported condition, ...): a 422.
+var ErrFilterInvalid = errors.New("invalid tracker filter")
 
 // TrackerUser is one assignee choice.
 type TrackerUser struct {
@@ -386,8 +413,16 @@ type ScopeManager interface {
 	// ErrScopeAssigneeNotFound an unknown user (422), anything else a
 	// failed resolve or persist (500).
 	SetScope(ctx context.Context, scope TrackerScope) error
+	// SetFilter (#198) validates and resolves the filter, persists it as
+	// tracker.filter (commenting the legacy scope keys out) and applies it;
+	// an empty filter reads every issue. Errors as SetScope, plus a wrapped
+	// ErrFilterInvalid (422).
+	SetFilter(ctx context.Context, filter issuefilter.Filter) error
+	// PreviewFilter counts what filter would read now, read-only.
+	PreviewFilter(ctx context.Context, filter issuefilter.Filter) (FilterPreview, error)
 	FetchLabels(ctx context.Context) ([]string, error)
 	FetchUsers(ctx context.Context) ([]TrackerUser, error)
+	FetchTeams(ctx context.Context) ([]TrackerTeam, error)
 }
 
 // OrchestratorClient abstracts the orchestrator and workflow operations called
@@ -671,6 +706,10 @@ type StateSnapshot struct {
 	ScopeAssigneeName string `json:"scopeAssigneeName,omitempty"`
 	// ScopeLabels is the scope's label filter (any of them; #182).
 	ScopeLabels []string `json:"scopeLabels,omitempty"`
+	// FilterConditions lists the tracker filter conditions the tracker
+	// supports (#198); absent for trackers without a filter. The dashboard
+	// shows the group builder when it is present.
+	FilterConditions []string `json:"filterConditions,omitempty"`
 	// AvailableProfiles is the list of named agent profile names defined in WORKFLOW.md.
 	// Empty/absent means no profiles are configured.
 	AvailableProfiles []string `json:"availableProfiles,omitempty"`
@@ -1711,10 +1750,12 @@ func (s *Server) routes() {
 			r.Get("/projects", s.handleListProjects)
 			r.Get("/projects/filter", s.handleGetProjectFilter)
 			r.Put("/projects/filter", s.handleSetProjectFilter)
-			r.Get("/tracker/scope", s.handleGetTrackerScope) // #182
-			r.Put("/tracker/scope", s.handleSetTrackerScope) // #182
-			r.Get("/tracker/labels", s.handleTrackerLabels)  // #182
-			r.Get("/tracker/users", s.handleTrackerUsers)    // #182
+			r.Get("/tracker/scope", s.handleGetTrackerScope)                // #182
+			r.Put("/tracker/scope", s.handleSetTrackerScope)                // #182
+			r.Get("/tracker/labels", s.handleTrackerLabels)                 // #182
+			r.Get("/tracker/users", s.handleTrackerUsers)                   // #182
+			r.Get("/tracker/teams", s.handleTrackerTeams)                   // #198
+			r.Post("/tracker/filter/preview", s.handleTrackerFilterPreview) // #198
 			r.Post("/settings/workers", s.handleSetWorkers)
 			r.Delete("/workspaces", s.handleClearAllWorkspaces)
 			r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
