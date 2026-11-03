@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/vnovick/itervox/internal/sysmon"
 )
 
 // summary.go — GET /api/v1/summary (#212): a few hundred bytes a supervisor
@@ -52,7 +54,44 @@ type Summary struct {
 	Paused      bool       `json:"paused"`
 	PauseReason string     `json:"pauseReason,omitempty"`
 	PausedUntil *time.Time `json:"pausedUntil,omitempty"`
-	GeneratedAt time.Time  `json:"generatedAt"`
+	// System is the run monitor's summary (system visibility): the live
+	// runs' memory and the workspace disk warning, rounded so the ETag
+	// moves only when the tray's text would. Absent without the monitor.
+	System      *SummarySystem `json:"system,omitempty"`
+	GeneratedAt time.Time      `json:"generatedAt"`
+}
+
+// Summary rounding steps: the live runs' memory to 64 MiB, free disk to
+// 256 MiB.
+const (
+	summaryRSSStep  = 64 << 20
+	summaryDiskStep = 256 << 20
+)
+
+// SummarySystem is Summary.System.
+type SummarySystem struct {
+	// RunsRSSBytes is the live local runs' resident memory, rounded down
+	// to 64 MiB.
+	RunsRSSBytes uint64 `json:"runsRssBytes"`
+	// DiskLow / DiskCritical: free space on the workspace volume is below
+	// workspace.disk_warn_free_gb / disk_pause_free_gb; DiskFreeBytes is
+	// that free space, rounded down to 256 MiB (0 when unknown).
+	DiskLow       bool   `json:"diskLow,omitempty"`
+	DiskCritical  bool   `json:"diskCritical,omitempty"`
+	DiskFreeBytes uint64 `json:"diskFreeBytes,omitempty"`
+}
+
+// summarySystem rounds the snapshot's system block for the summary.
+func summarySystem(sys *sysmon.SystemStatus) *SummarySystem {
+	if sys == nil {
+		return nil
+	}
+	out := &SummarySystem{RunsRSSBytes: sys.Runs.RSSBytes / summaryRSSStep * summaryRSSStep,
+		DiskLow: sys.Machine.DiskLow, DiskCritical: sys.Machine.DiskCritical}
+	if d := sys.Machine.Disk; d != nil {
+		out.DiskFreeBytes = d.FreeBytes / summaryDiskStep * summaryDiskStep
+	}
+	return out
 }
 
 // summaryDigestInput is what the ETag is computed over. It never holds
@@ -66,6 +105,7 @@ type summaryDigestInput struct {
 	Paused       bool
 	PauseReason  string
 	PausedUntil  *time.Time
+	System       *SummarySystem
 	Input        []summaryDigestInputRow
 	Failures     []summaryDigestFailure
 }
@@ -93,6 +133,7 @@ func buildSummary(snap StateSnapshot, version string) Summary {
 			RecentFailures: len(snap.RecentFailures),
 		},
 		GeneratedAt: snap.GeneratedAt,
+		System:      summarySystem(snap.System),
 	}
 	if p := snap.DispatchPaused; p != nil { // #213
 		sum.Paused, sum.PauseReason, sum.PausedUntil = true, p.Reason, p.Until
@@ -110,6 +151,7 @@ func buildSummary(snap StateSnapshot, version string) Summary {
 		in.Failures = append(in.Failures, summaryDigestFailure{f.Kind, f.Identifier, f.Source, f.Message, f.OccurredAt, f.Count})
 	}
 	in.Counts, in.Paused, in.PauseReason, in.PausedUntil = sum.Counts, sum.Paused, sum.PauseReason, sum.PausedUntil
+	in.System = sum.System
 	raw, _ := json.Marshal(in) // plain strings, ints and times: cannot fail
 	digest := sha256.Sum256(raw)
 	sum.ETag = hex.EncodeToString(digest[:16])

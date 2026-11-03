@@ -177,6 +177,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				// Review and continue: the run took an operator review.
 				ContinuedFromReview: r.ContinuedFromReview,
 				ReviewComments:      r.ReviewComments,
+				Resources:           r.Resources, // system visibility
 			})
 		}
 

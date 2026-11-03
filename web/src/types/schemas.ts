@@ -113,6 +113,166 @@ export const CommentRowSchema = z.object({
   createdAt: z.string().optional(), // omitempty — absent when nil
 });
 
+// System visibility — a run's resource use (sampled every 2s by the
+// daemon; RSS is summed over the run's processes) and the machine status.
+export const ChildCommandSchema = z.object({
+  pid: z.number(),
+  name: z.string(),
+  args: z.string().optional(), // absent below operator scope
+  cpuPercent: z.number(),
+  rssBytes: z.number(),
+});
+export type ChildCommand = z.infer<typeof ChildCommandSchema>;
+
+export const RunUsageSchema = z.object({
+  runId: z.string().optional(),
+  identifier: z.string(),
+  live: z.boolean(),
+  remote: z.boolean().optional(), // an SSH worker: only the local ssh client is seen
+  cpuPercent: z.number(),
+  cpuSeconds: z.number(),
+  rssBytes: z.number(),
+  peakRssBytes: z.number(),
+  processes: z.number(),
+  peakProcesses: z.number(),
+  diskReadBytes: z.number(),
+  diskWriteBytes: z.number(),
+  diskIoKnown: z.boolean(), // false where the OS does not report it (macOS)
+  netConnections: z.number(),
+  topCommands: z
+    .array(ChildCommandSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  samples: z.number(),
+  startedAt: z.string().optional(),
+  sampledAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+});
+export type RunUsage = z.infer<typeof RunUsageSchema>;
+
+export const RunSummarySchema = z.object({
+  cpuSeconds: z.number(),
+  peakCpuPercent: z.number(),
+  lastRssBytes: z.number(),
+  peakRssBytes: z.number(),
+  peakProcesses: z.number(),
+  diskReadBytes: z.number().optional(),
+  diskWriteBytes: z.number().optional(),
+  commands: z.number().optional(),
+  filesWritten: z.number().optional(),
+  connections: z.number().optional(),
+  activityMode: z.string().optional(),
+  samples: z.number(),
+});
+export type RunSummary = z.infer<typeof RunSummarySchema>;
+
+export const MachineStatusSchema = z.object({
+  load1: z.number(),
+  load5: z.number(),
+  load15: z.number(),
+  loadKnown: z.boolean(), // false on Windows
+  cpuCount: z.number(),
+  memTotalBytes: z.number(),
+  memAvailableBytes: z.number(),
+  memPressure: z.string(), // ok | moderate | high (a string: a new level never fails the parse)
+  disk: z.object({ path: z.string(), freeBytes: z.number(), totalBytes: z.number() }).optional(),
+  diskWarnBytes: z.number(),
+  diskPauseBytes: z.number(),
+  diskLow: z.boolean(),
+  diskCritical: z.boolean(),
+  sampledAt: z.string().optional(),
+});
+export type MachineStatus = z.infer<typeof MachineStatusSchema>;
+
+export const SystemStatusSchema = z.object({
+  machine: MachineStatusSchema,
+  runs: z.object({
+    runs: z.number(),
+    cpuPercent: z.number(),
+    rssBytes: z.number(),
+    processes: z.number(),
+  }),
+  activityMode: z.string(), // off | sampled | precise
+  activityModeReason: z.string().optional(),
+  platform: z.string(),
+});
+export type SystemStatus = z.infer<typeof SystemStatusSchema>;
+
+const ActivityTimesSchema = {
+  count: z.number(),
+  firstAt: z.string(),
+  lastAt: z.string(),
+};
+
+export const ActivityReportSchema = z.object({
+  identifier: z.string(),
+  runId: z.string().optional(),
+  live: z.boolean(),
+  mode: z.string(),
+  modeReason: z.string().optional(),
+  platform: z.string(),
+  supports: z.object({ commands: z.boolean(), files: z.boolean(), connections: z.boolean() }),
+  notes: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  workspace: z.string().optional(),
+  remote: z.boolean().optional(),
+  startedAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+  commands: z
+    .array(
+      z.object({
+        name: z.string(),
+        args: z.string().optional(),
+        pid: z.number(),
+        ...ActivityTimesSchema,
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+  files: z
+    .array(
+      z.object({
+        path: z.string(),
+        write: z.boolean(),
+        outsideWorkspace: z.boolean().optional(),
+        command: z.string().optional(),
+        ...ActivityTimesSchema,
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+  connections: z
+    .array(
+      z.object({
+        protocol: z.string(),
+        remote: z.string(),
+        state: z.string().optional(),
+        command: z.string().optional(),
+        ...ActivityTimesSchema,
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+  dropped: z
+    .object({ commands: z.number(), files: z.number(), connections: z.number() })
+    .optional(),
+  runs: z
+    .array(
+      z.object({
+        runId: z.string(),
+        startedAt: z.string().optional(),
+        finishedAt: z.string().optional(),
+        live: z.boolean().optional(),
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type ActivityReport = z.infer<typeof ActivityReportSchema>;
+
 export const RunningRowSchema = z.object({
   identifier: z.string(),
   state: z.string(),
@@ -149,6 +309,9 @@ export const RunningRowSchema = z.object({
   // #258 — the sandbox the run's agent runs in ("bubblewrap", "landlock",
   // "sandbox-exec"); absent when it runs unsandboxed.
   isolation: z.string().optional(),
+  // System visibility — the latest resource sample; absent before the
+  // first one or on daemons without the run monitor.
+  resources: RunUsageSchema.optional(),
 });
 
 // #186 — per-component digests of a run's prompt version (hashes only).
@@ -216,6 +379,8 @@ export const HistoryRowSchema = z.object({
   // run was live; reviewComments counts its line comments.
   continuedFromReview: z.boolean().optional(),
   reviewComments: z.number().optional(),
+  // System visibility — the run's resource summary; absent without the monitor.
+  resources: RunSummarySchema.optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -1000,6 +1165,9 @@ export const StateSnapshotSchema = z.object({
   // (GET /api/v1/feed?since=).
   dispatchPaused: DispatchPauseRowSchema.nullable().optional(),
   feedSeq: z.number().optional(),
+  // System visibility — machine load, memory, workspace disk, the live
+  // runs' totals and the activity mode. Absent without the run monitor.
+  system: SystemStatusSchema.optional(),
   // #214 — the requesting token's scope (viewer | operator | admin), set per
   // caller by GET /state and /events. Absent on daemons predating scopes,
   // which treat every caller as admin. A string, not an enum, so a future
@@ -2088,6 +2256,7 @@ export const RunContextRunSchema = z.object({
   guardrailBlocks: z.number().default(0),
   lastGuardrailKind: z.string().optional(),
   playbook: z.string().optional(), // #218
+  resources: RunUsageSchema.optional(), // system visibility
 });
 export type RunContextRun = z.infer<typeof RunContextRunSchema>;
 

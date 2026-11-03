@@ -13,6 +13,7 @@ import { useItervoxStore } from '../../store/itervoxStore';
 import { useIssues, useUpdateIssueState, useSetIssueProfile } from '../../queries/issues';
 import { HeroStats } from './components/HeroStats';
 import { LiveOpsStrip } from './components/LiveOpsStrip';
+import { SystemHealthBanner } from './components/SystemHealthBanner';
 import { AutomationQueueList } from './components/AutomationQueueList';
 import { AutomationQueueDetailPanel } from './components/AutomationQueueDetailPanel';
 import { OutboxList } from './components/OutboxList';
@@ -211,6 +212,7 @@ export default function Dashboard() {
         <FirstRunChecklist />
         <AttentionInbox onSelectIssue={handleIssueSelect} />
         <LiveOpsStrip />
+        <SystemHealthBanner />
 
         {/* Hero: product line + the live stat tiles. */}
         <section

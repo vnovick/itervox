@@ -1,0 +1,14 @@
+{
+  "cpuSeconds": 120.5,
+  "peakCpuPercent": 180,
+  "lastRssBytes": 536870912,
+  "peakRssBytes": 1073741824,
+  "peakProcesses": 12,
+  "diskReadBytes": 1048576,
+  "diskWriteBytes": 2097152,
+  "commands": 41,
+  "filesWritten": 12,
+  "connections": 3,
+  "activityMode": "sampled",
+  "samples": 300
+}

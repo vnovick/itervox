@@ -249,3 +249,37 @@ func TestCountersAreConcurrencySafe(t *testing.T) {
 	assert.Equal(t, 8000.0, fams["itervox_tracker_requests_total"].samples[`{adapter="github",outcome="ok"}`])
 	assert.Equal(t, 8000.0, fams["itervox_events_dropped_total"].samples[""])
 }
+
+// TestSystemFamiliesOnlyWithMonitor: the run monitor's families appear
+// only when the view carries it; per-run gauges are labelled by issue.
+func TestSystemFamiliesOnlyWithMonitor(t *testing.T) {
+	resetForTest()
+	var b strings.Builder
+	require.NoError(t, WriteText(&b, sampleView()))
+	assert.NotContains(t, b.String(), "itervox_run_", "no monitor, no system families")
+	assert.NotContains(t, b.String(), "itervox_host_")
+
+	v := sampleView()
+	v.System = &SystemView{LoadKnown: true, Load1: 1.5, MemTotalBytes: 8 << 30, MemAvailableBytes: 2 << 30,
+		DiskKnown: true, DiskFreeBytes: 3 << 30, DiskLow: true,
+		Runs: []RunGauge{{Identifier: "ENG-1", CPUPercent: 42.5, RSSBytes: 1 << 20, Processes: 3}, {Identifier: "ENG-2"}}}
+	b.Reset()
+	require.NoError(t, WriteText(&b, v))
+	fams := parseExposition(t, b.String())
+	assert.Equal(t, 1.5, fams["itervox_host_load1"].samples[""])
+	assert.Equal(t, float64(2<<30), fams["itervox_host_memory_available_bytes"].samples[""])
+	assert.Equal(t, float64(3<<30), fams["itervox_workspace_disk_free_bytes"].samples[""])
+	assert.Equal(t, 1.0, fams["itervox_workspace_disk_low"].samples[""])
+	assert.Equal(t, 42.5, fams["itervox_run_cpu_percent"].samples[`{identifier="ENG-1"}`])
+	assert.Equal(t, float64(1<<20), fams["itervox_run_memory_rss_bytes"].samples[`{identifier="ENG-1"}`])
+	assert.Equal(t, 3.0, fams["itervox_run_processes"].samples[`{identifier="ENG-1"}`])
+	assert.Contains(t, fams["itervox_run_processes"].samples, `{identifier="ENG-2"}`)
+
+	v.System = &SystemView{}
+	b.Reset()
+	require.NoError(t, WriteText(&b, v))
+	fams = parseExposition(t, b.String())
+	assert.NotContains(t, fams, "itervox_host_load1", "no load average on Windows")
+	assert.NotContains(t, fams, "itervox_workspace_disk_free_bytes", "an unread disk has no series")
+	assert.Empty(t, fams["itervox_run_cpu_percent"].samples, "no live runs")
+}
