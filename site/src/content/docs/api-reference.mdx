@@ -295,8 +295,9 @@ Useful top-level fields include:
   `/api/v1/issues` rows carry the same object as `autoSwitch`, and an issue
   held by an open breaker has `ineligibleReason: "backend_limited"`.
 - `pauseReasons` — `{ "<identifier>": "<reason>" }` for currently paused
-  issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted` or
-  `transition_failed` (treat unknown values as opaque). An issue paused by an
+  issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted`,
+  `transition_failed` or `budget_exceeded` (the issue reached
+  `agent.budget`; treat unknown values as opaque). An issue paused by an
   older daemon without a recorded reason is absent. Omitted when empty.
 - `failureAcks` (CORE-175) — `[{ "identifier", "upTo" }]`, sorted by
   identifier: the operator's acknowledgements of worker failures (see
@@ -393,7 +394,7 @@ apply).
 | `POST` | `/issues/{identifier}/resume` | — | `{"resumed":true,"identifier":"ENG-1"}` | `404 not_paused` if not paused |
 | `POST` | `/issues/{identifier}/reanalyze` | — | `{"queued":true,"identifier":"ENG-1"}` | `404 not_paused` if not paused |
 | `POST` | `/issues/{identifier}/terminate` | — | `{"terminated":true,"identifier":"ENG-1"}` | `404 not_found` if not running or paused |
-| `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch |
+| `POST` | `/issues/{identifier}/ai-review` | — | `202 {"queued":true,"identifier":"ENG-1"}` | Reviewer dispatch: a fresh review by the configured reviewers (the whole `reviewer_profiles` chain, previous verdicts cleared) |
 | `PATCH` | `/issues/{identifier}/state` | `{"state":"In Review"}` | `{"ok":true,"identifier":"ENG-1","state":"In Review"}` | Triggers immediate refresh |
 
 While the daemon is draining (see `draining` under `/ready`), `resume`,
@@ -861,6 +862,11 @@ Important fields include:
 - `blockedByDetails`: richer blocker metadata for UI/API clients. Each entry has
   `identifier` and may include `state` and `url`. `blockedBy` remains the
   compatibility string-array form.
+- `review` (`GET /issues/{identifier}` only): the issue's latest review, when it
+  has one. `verdicts` lists each finished reviewer (`profile`, `verdict`
+  `approve`/`block`, `reasons`, line `comments`, `recordedAt`); `outcome`
+  (`blocked`, `approvals`, `blocks`, `quorum`) appears once every reviewer has
+  run; `inProgress` is set while a multi-reviewer chain is still running.
 
 ### `IssueLogEntry`
 

@@ -55,8 +55,9 @@ git init -q
 
 **Expect:**
 
-- The TUI starts and shows a status row with `● LIVE` and capacity `0/3` (or whatever `max_concurrent_agents` defaults to)
+- No terminal UI starts (headless is the default since v0.2.4); the logs stream on stderr
 - The dashboard URL is printed (`http://localhost:8090`)
+- `itervox watch --once` in another shell shows capacity `0/3` (or whatever `max_concurrent_agents` defaults to)
 - `.itervox/HEARTBEAT.md` exists and refreshes every ~15s
 - `.itervox/agents/implementer/SOUL.md`, `INSTRUCTIONS.md`, and the same for `reviewer` and `input-responder` are present
 - Root `.gitignore` (if present) was either created or has carve-outs `!.itervox/agents/**` and `!.itervox/handoff/**`
@@ -605,8 +606,10 @@ Walk through each dashboard view and confirm visual coverage.
 
 ## TUI surfaces (memory + LLM)
 
+The terminal UI is deprecated and will be removed in v0.3; it starts only with `--tui`, and its header shows the deprecation notice.
+
 ```bash
-./itervox    # default TUI mode
+./itervox --tui
 ```
 
 **Header:**

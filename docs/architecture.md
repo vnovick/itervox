@@ -307,6 +307,13 @@ identifier is absent from the candidate set AND whose most-recent change is
 older than `issueStatusHistoryRetention` (default 7 days). Live issues are
 preserved regardless of age. Janitor runs at the tail of every `onTick`.
 
+The latest finished review shown in issue detail (`ReviewVerdicts` and
+`ReviewOutcomes`, #135) shares this retention: `pruneReviewLedgers` keeps an
+untracked issue's verdicts and outcome while it still has a status-history
+entry, and drops them with it. `ReviewChainIndex`, the in-flight marker, is
+not retained that way, so an abandoned chain's marker is still pruned as soon
+as the issue is untracked and no review is mid-chain.
+
 The ledger is session-local in v0.2.0. Cross-restart persistence is gated on
 the queue-persistence v2 envelope described in the next section.
 
