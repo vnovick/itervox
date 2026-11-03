@@ -137,6 +137,9 @@ type Orchestrator struct {
 	// (CORE-053), next to autoSwitchedFile. Guarded by autoSwitchedMu; set
 	// before Run.
 	backendHealthFile string
+	// spendFile is issue_spend.json (#136); guarded by autoSwitchedMu like
+	// the other ledger paths.
+	spendFile string
 
 	// inputRequiredMu guards inputRequiredFile.
 	inputRequiredMu   sync.RWMutex

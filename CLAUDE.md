@@ -286,7 +286,10 @@ gate the change.
 ## Package dependency order (no circular deps)
 
 ```
-domain ─────┬── tracker (interface + adapters: linear, github, local, memory)
+domain ─────┬── tracker (interface + adapters: linear, github, local, memory;
+            │            tracker/store is the local store, tracker/webhook the
+            │            signed Linear/GitHub webhook receiver that refreshes
+            │            it by issue — imports metrics, not store; #131)
             │     └── tracker/store (local tracker store, #113: wraps a Linear
             │         or GitHub adapter; imports tracker, domain, atomicfs)
             ├── prompt (Liquid template rendering)

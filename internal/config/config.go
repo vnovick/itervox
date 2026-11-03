@@ -221,18 +221,60 @@ type TrackerConfig struct {
 	// background sync refreshes it from the tracker. Linear and GitHub only.
 	// Read once at startup.
 	Store TrackerStoreConfig
+	// Webhooks is tracker.webhooks (#131): signed Linear/GitHub deliveries
+	// refresh the store by issue, and the store's periodic pull slows to the
+	// safety-net interval.
+	Webhooks TrackerWebhooksConfig
 }
 
 // TrackerStoreConfig configures the local tracker store (#113).
 type TrackerStoreConfig struct {
-	// Enabled turns the store on. Default false: until the claim check
-	// (#116) lands, an issue a person moves out of an active state can be
-	// dispatched once more within one sync interval.
+	// Enabled turns the store on (Linear and GitHub only). Default true
+	// (#132): the claim check (#116) re-reads each issue by ID before an
+	// agent starts, so a change a person made since the last sync is seen.
+	// `enabled: false` restores direct polling.
 	Enabled bool
 	// SyncIntervalMs is how often the store re-pulls from the tracker
-	// (default 60000). Reads between syncs cost no tracker requests.
+	// (default 60000). Reads between syncs cost no tracker requests. On
+	// Linear and GitHub a pull asks only for what changed since the last one
+	// (#114).
 	SyncIntervalMs int
+	// FullSyncIntervalMs is how often a pull is a full one even so (#114,
+	// default 3600000): it catches what a changes listing cannot show, such
+	// as an issue moved to another project or repository, or deleted on
+	// GitHub.
+	FullSyncIntervalMs int
 }
+
+// TrackerWebhooksConfig is tracker.webhooks (#131).
+type TrackerWebhooksConfig struct {
+	// Enabled serves POST /api/v1/webhooks/<kind> and slows the store's
+	// periodic pull to SafetyNetIntervalMs. Needs tracker.store.enabled and
+	// a Secret.
+	Enabled bool
+	// Secret signs deliveries ($VAR resolves from the environment); an
+	// unsigned or wrongly signed delivery is dropped.
+	Secret string
+	// SafetyNetIntervalMs is the store's pull interval while webhooks are on
+	// (default 600000): it repairs missed deliveries.
+	SafetyNetIntervalMs int
+}
+
+// DefaultTrackerWebhookSafetyNetMs is tracker.webhooks.safety_net_interval_ms
+// when unset.
+const DefaultTrackerWebhookSafetyNetMs = 600000
+
+// BudgetConfig is agent.budget (#136). Zero (the default) means no limit.
+type BudgetConfig struct {
+	// Tokens is the most input plus output tokens one issue may use.
+	Tokens int
+	// CostUSD is the most estimated cost one issue may run up (Claude runs
+	// only: Codex reports no cost).
+	CostUSD float64
+}
+
+// Enabled reports whether any limit is set.
+func (b BudgetConfig) Enabled() bool { return b.Tokens > 0 || b.CostUSD > 0 }
 
 // PollingConfig holds polling settings.
 type PollingConfig struct {
@@ -272,6 +314,10 @@ type WorkspaceConfig struct {
 // DefaultTrackerStoreSyncIntervalMs is tracker.store.sync_interval_ms when
 // unset.
 const DefaultTrackerStoreSyncIntervalMs = 60000
+
+// DefaultTrackerStoreFullSyncIntervalMs is tracker.store.full_sync_interval_ms
+// when unset or not positive (#114).
+const DefaultTrackerStoreFullSyncIntervalMs = 3600000
 
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
 //
@@ -545,6 +591,9 @@ type AgentConfig struct {
 	// moved to the failed state. 0 means unlimited retries (legacy behavior).
 	// Default: 5.
 	MaxRetries int
+	// Budget is agent.budget (#136): the most one issue may spend, across
+	// all its runs and retries, before it is paused with budget_exceeded.
+	Budget BudgetConfig
 	// BaseBranch is the remote branch used as the base for git diffs when
 	// enriching PR context (e.g. "origin/main", "origin/develop", "origin/master").
 	// When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
@@ -787,8 +836,18 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
 	store := nestedMap(tracker, "store")
 	cfg.Tracker.Store = TrackerStoreConfig{
-		Enabled:        boolField(store, "enabled", false),
-		SyncIntervalMs: positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
+		Enabled:            boolField(store, "enabled", true), // #132: on by default
+		SyncIntervalMs:     positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
+		FullSyncIntervalMs: positiveIntField(store, "full_sync_interval_ms", DefaultTrackerStoreFullSyncIntervalMs),
+	}
+	wh := nestedMap(tracker, "webhooks")
+	cfg.Tracker.Webhooks = TrackerWebhooksConfig{
+		Enabled:             boolField(wh, "enabled", false),
+		Secret:              resolveSecret(strField(wh, "secret", "")),
+		SafetyNetIntervalMs: positiveIntField(wh, "safety_net_interval_ms", DefaultTrackerWebhookSafetyNetMs),
+	}
+	if err := validateTrackerWebhooks(cfg.Tracker); err != nil {
+		return nil, err
 	}
 	cc := nestedMap(tracker, "comment_commands")
 	cfg.Tracker.CommentCommands = CommentCommandsConfig{
@@ -867,6 +926,11 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
+	budget := nestedMap(agent, "budget")
+	cfg.Agent.Budget = BudgetConfig{
+		Tokens:  max(0, intField(budget, "tokens", 0)),
+		CostUSD: max(0, floatField(budget, "cost_usd", 0)),
+	}
 	// Gap E — per-issue switch cap defaults: 2 switches per 6h window.
 	cfg.Agent.MaxSwitchesPerIssuePerWindow = intField(agent, "max_switches_per_issue_per_window", 2)
 	// Gap §6.2 — operator-configurable TTL for auto-switched overrides.
@@ -1368,6 +1432,30 @@ func parseAvailableModels(raw map[string]any) map[string][]ModelOption {
 	}
 	return result
 }
+
+// validateTrackerWebhooks refuses webhooks that could not work or would
+// accept unsigned deliveries.
+func validateTrackerWebhooks(t TrackerConfig) error {
+	if !t.Webhooks.Enabled {
+		return nil
+	}
+	switch {
+	case t.Kind != "linear" && t.Kind != "github":
+		return fmt.Errorf("config: tracker.webhooks is for linear and github trackers, not %q", t.Kind)
+	case !t.Store.Enabled:
+		return errors.New("config: tracker.webhooks needs tracker.store.enabled: true (webhooks refresh the store)")
+	case t.Webhooks.Secret == "":
+		return errors.New("config: tracker.webhooks.secret is empty (set it, e.g. secret: $ITERVOX_WEBHOOK_SECRET, and use the same value in the tracker's webhook settings)")
+	case len(t.Webhooks.Secret) < MinWebhookSecretLength:
+		return fmt.Errorf("config: tracker.webhooks.secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
+	}
+	return nil
+}
+
+// MinWebhookSecretLength is the shortest tracker.webhooks.secret accepted: a
+// guessable secret would let anyone trigger refreshes, and log redaction
+// skips very short values.
+const MinWebhookSecretLength = 16
 
 // --- helpers ---
 
