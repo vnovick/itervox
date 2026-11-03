@@ -104,6 +104,7 @@ var routeScopes = map[string]routeAccess{
 
 	// Operator: run the fleet.
 	"GET /api/v1/sessions/{id}/screen":                       accessOperator, // a live terminal pane
+	"GET /api/v1/issues/{identifier}/activity":               accessOperator, // command lines, paths, remote addresses
 	"POST /api/v1/sessions/{id}/message":                     accessOperator, // steering
 	"POST /api/v1/dispatch/pause":                            accessOperator,
 	"POST /api/v1/dispatch/resume":                           accessOperator,

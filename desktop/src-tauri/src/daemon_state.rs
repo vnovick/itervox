@@ -34,6 +34,31 @@ pub struct StateSummary {
     /// All dispatch is paused (#213: `dispatchPaused` is not null): running
     /// agents continue, nothing new starts.
     pub dispatch_paused: bool,
+    /// System visibility: the live local runs' resident memory in bytes
+    /// (`system.runs.rssBytes`), 0 when unknown.
+    pub runs_rss_bytes: u64,
+    /// System visibility: free space on the workspace volume is below the
+    /// configured warning threshold (`system.machine.diskLow`).
+    pub disk: Option<DiskWarning>,
+}
+
+/// The workspace volume's low-disk warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskWarning {
+    pub free_bytes: u64,
+    /// Below `workspace.disk_pause_free_gb`: dispatch pauses.
+    pub critical: bool,
+}
+
+/// A byte count as the tray shows it: "740 MB", "1.2 GB".
+pub fn fmt_bytes(b: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let mb = b as f64 / MB;
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{} MB", mb.round() as u64)
+    }
 }
 
 /// `inputRequired[].state` that needs a human.
@@ -94,6 +119,35 @@ struct RawState {
     recent_failures: Option<Vec<RawFailure>>,
     /// #213: null (or absent, on older daemons) unless paused.
     dispatch_paused: Option<serde_json::Value>,
+    /// System visibility (absent on daemons without the run monitor).
+    system: Option<RawSystem>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct RawSystem {
+    runs: RawRunsTotal,
+    machine: RawMachine,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct RawRunsTotal {
+    rss_bytes: u64,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct RawMachine {
+    disk_low: bool,
+    disk_critical: bool,
+    disk: Option<RawDisk>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct RawDisk {
+    free_bytes: u64,
 }
 
 /// Parses a `/api/v1/state` body. Missing fields are empty: an older or
@@ -106,7 +160,13 @@ pub fn parse_state(body: &[u8]) -> Result<StateSummary, String> {
     } else {
         raw.running.map(|r| r.len()).unwrap_or(0)
     };
+    let system = raw.system.unwrap_or_default();
     Ok(StateSummary {
+        runs_rss_bytes: system.runs.rss_bytes,
+        disk: system.machine.disk_low.then(|| DiskWarning {
+            free_bytes: system.machine.disk.map(|d| d.free_bytes).unwrap_or(0),
+            critical: system.machine.disk_critical,
+        }),
         dispatch_paused: raw.dispatch_paused.is_some_and(|v| v.is_object()),
         project_name: raw.project_name,
         running,
@@ -181,6 +241,38 @@ mod tests {
             !parse_state(b"{}").unwrap().dispatch_paused,
             "an older daemon is not paused"
         );
+    }
+
+    /// System visibility: the live runs' memory and the low-disk warning;
+    /// an older daemon has neither.
+    #[test]
+    fn reads_the_system_block() {
+        let s = parse_state(
+            br#"{"system": {"runs": {"runs": 2, "rssBytes": 1288490188, "cpuPercent": 50, "processes": 7},
+                 "machine": {"diskLow": true, "diskCritical": false, "disk": {"path": "/w", "freeBytes": 3435973836, "totalBytes": 1}},
+                 "activityMode": "sampled", "platform": "linux"}}"#,
+        )
+        .unwrap();
+        assert_eq!(s.runs_rss_bytes, 1_288_490_188);
+        assert_eq!(
+            s.disk,
+            Some(DiskWarning {
+                free_bytes: 3_435_973_836,
+                critical: false
+            })
+        );
+        let fine = parse_state(br#"{"system": {"machine": {"diskLow": false}}}"#).unwrap();
+        assert_eq!(fine.disk, None);
+        let old = parse_state(b"{}").unwrap();
+        assert_eq!((old.runs_rss_bytes, old.disk), (0, None));
+    }
+
+    #[test]
+    fn formats_bytes_for_the_tray() {
+        assert_eq!(fmt_bytes(0), "0 MB");
+        assert_eq!(fmt_bytes(775 * 1024 * 1024), "775 MB");
+        assert_eq!(fmt_bytes(1_288_490_188), "1.2 GB");
+        assert_eq!(fmt_bytes(5 * 1024 * 1024 * 1024), "5.0 GB");
     }
 
     #[test]

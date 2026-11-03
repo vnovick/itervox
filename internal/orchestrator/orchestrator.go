@@ -348,6 +348,9 @@ type Orchestrator struct {
 	// so Claude Code writes full session logs (including sub-agents) to disk.
 	// Set via SetAgentLogDir before calling Run.
 	agentLogDir string
+	// runMonitor is the system-visibility store (run_monitor.go); nil
+	// when not installed. Set before Run, read-only after.
+	runMonitor RunMonitor
 
 	// depsSidecarCache is the mtime-cached reader over
 	// `.itervox/dependencies.json`, read once per tick by onTick to feed

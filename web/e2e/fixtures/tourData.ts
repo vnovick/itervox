@@ -539,3 +539,164 @@ export function installDiffData(api: MockApiHandle): void {
     );
   });
 }
+
+// System visibility — a live run's resource sample, its activity audit and
+// the snapshot's system block (the workspace disk below the warning
+// threshold), for the issue view, the issue detail and the dashboard.
+const GIB = 1024 ** 3;
+
+export const SYSTEM_USAGE = {
+  runId: 'run-DEMO-RUN-1',
+  identifier: 'DEMO-RUN-1',
+  live: true,
+  cpuPercent: 82.5,
+  cpuSeconds: 41.2,
+  rssBytes: 734_003_200,
+  peakRssBytes: 912_261_120,
+  processes: 6,
+  peakProcesses: 9,
+  diskReadBytes: 12_582_912,
+  diskWriteBytes: 3_145_728,
+  diskIoKnown: true,
+  netConnections: 2,
+  topCommands: [
+    {
+      pid: 4242,
+      name: 'node',
+      args: 'cli.js --print --output-format stream-json',
+      cpuPercent: 61.2,
+      rssBytes: 536_870_912,
+    },
+    {
+      pid: 4301,
+      name: 'go',
+      args: 'test ./internal/greeting/...',
+      cpuPercent: 18.4,
+      rssBytes: 150_994_944,
+    },
+    { pid: 4300, name: 'git', args: 'status --short', cpuPercent: 0.4, rssBytes: 8_388_608 },
+  ],
+  samples: 30,
+  startedAt: T,
+  sampledAt: T,
+};
+
+export const SYSTEM_STATUS = (diskFreeGB: number, critical = false) => ({
+  platform: 'linux',
+  activityMode: 'sampled',
+  runs: { runs: 1, cpuPercent: 82.5, rssBytes: 734_003_200, processes: 6 },
+  machine: {
+    load1: 2.1,
+    load5: 1.7,
+    load15: 1.2,
+    loadKnown: true,
+    cpuCount: 8,
+    memTotalBytes: 16 * GIB,
+    memAvailableBytes: 6 * GIB,
+    memPressure: 'ok',
+    disk: {
+      path: '/home/dev/.itervox/workspaces/web-app',
+      freeBytes: diskFreeGB * GIB,
+      totalBytes: 500 * GIB,
+    },
+    diskWarnBytes: 5 * GIB,
+    diskPauseBytes: critical ? 2 * GIB : 0,
+    diskLow: diskFreeGB < 5,
+    diskCritical: critical,
+    sampledAt: T,
+  },
+});
+
+const at = { firstAt: T, lastAt: T };
+export const SYSTEM_ACTIVITY = (identifier: string) => ({
+  identifier,
+  runId: `run-${identifier}`,
+  live: true,
+  mode: 'sampled',
+  platform: 'linux',
+  supports: { commands: true, files: true, connections: true },
+  notes: [
+    'Sampled every 2s from /proc: short-lived processes, files and connections between two samples may be missed.',
+  ],
+  workspace: `/work/${identifier}`,
+  startedAt: T,
+  updatedAt: T,
+  commands: [
+    {
+      name: 'node',
+      args: 'cli.js --print --output-format stream-json',
+      pid: 4242,
+      count: 1,
+      ...at,
+    },
+    { name: 'git', args: 'status --short', pid: 4300, count: 4, ...at },
+    { name: 'go', args: 'test ./internal/greeting/...', pid: 4301, count: 2, ...at },
+    { name: 'gofmt', args: '-l internal/greeting', pid: 4310, count: 1, ...at },
+  ],
+  files: [
+    {
+      path: `/work/${identifier}/internal/greeting/greeting.go`,
+      write: true,
+      command: 'node',
+      count: 3,
+      ...at,
+    },
+    {
+      path: `/work/${identifier}/internal/greeting/greeting_test.go`,
+      write: true,
+      command: 'node',
+      count: 2,
+      ...at,
+    },
+    { path: `/work/${identifier}/go.mod`, write: false, command: 'go', count: 2, ...at },
+    {
+      path: '/home/dev/.cache/go-build/trim.txt',
+      write: true,
+      outsideWorkspace: true,
+      command: 'go',
+      count: 1,
+      ...at,
+    },
+  ],
+  connections: [
+    {
+      protocol: 'tcp',
+      remote: '160.79.104.10:443',
+      state: 'ESTABLISHED',
+      command: 'node',
+      count: 6,
+      ...at,
+    },
+    {
+      protocol: 'tcp',
+      remote: '140.82.112.3:443',
+      state: 'TIME_WAIT',
+      command: 'git',
+      count: 1,
+      ...at,
+    },
+  ],
+  dropped: { commands: 0, files: 0, connections: 0 },
+  runs: [{ runId: `run-${identifier}`, startedAt: T, live: true }],
+});
+
+/**
+ * The run context with its resources, the activity route, and the diff:
+ * the issue view and the issue detail with system visibility on. The
+ * context override is registered first so it answers before the plain one.
+ */
+export function installSystemVisibilityData(api: MockApiHandle): void {
+  const idOf = (url: string, tail: string) =>
+    decodeURIComponent(new URL(url).pathname.split('/issues/')[1]?.replace(tail, '') ?? '');
+  api.override(/\/api\/v1\/issues\/[^/]+\/context$/, (route) => {
+    const ctx = liveRunContext(idOf(route.request().url(), '/context'));
+    return route.fulfill(json({ ...ctx, run: { ...ctx.run, resources: SYSTEM_USAGE } }));
+  });
+  api.override(/\/api\/v1\/issues\/[^/]+\/activity(\?|$)/, (route) =>
+    route.fulfill(
+      json(SYSTEM_ACTIVITY(idOf(route.request().url().split('?')[0] ?? '', '/activity'))),
+    ),
+  );
+  installRunContextData(api);
+  installDiffData(api);
+}
