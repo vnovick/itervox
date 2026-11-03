@@ -42,8 +42,9 @@ type IssueStatusChange struct {
 	ProfileName  string
 	Backend      string
 	WorkerHost   string
-	// Reason is a short tag carried by janitor-source rows
-	// (codex-B2 / B9). Empty for non-janitor sources.
+	// Reason is a short tag carried by janitor-source rows (codex-B2 /
+	// B9) and by the claim check's tracker_observed rows (#116). Empty
+	// otherwise.
 	Reason string
 	At     time.Time
 }

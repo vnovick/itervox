@@ -276,13 +276,22 @@ func (o *Orchestrator) startReview(ctx context.Context, state *State, issue doma
 	if len(chain) <= 1 {
 		return
 	}
+	closeChainIfNotStarted(state, issue, reviewerProfile)
+}
+
+// closeChainIfNotStarted closes issue's reviewer chain when the reviewer just
+// dispatched did not start and nothing will start it later (no run, retry or
+// pending review), so the chain never sits "in flight" with no reviewer:
+// a missing or disabled profile, a dry run, or a claim check that refused
+// the issue (#116).
+func closeChainIfNotStarted(state *State, issue domain.Issue, reviewerProfile string) {
 	_, running := state.Running[issue.ID]
 	_, retrying := state.RetryAttempts[issue.ID]
 	_, pending := state.PendingReviews[issue.Identifier]
 	if !running && !retrying && !pending {
 		delete(state.ReviewChainIndex, issue.Identifier)
 		slog.Warn("orchestrator: review not started; the reviewer chain is closed",
-			"identifier", issue.Identifier, "first_reviewer", reviewerProfile)
+			"identifier", issue.Identifier, "reviewer", reviewerProfile)
 	}
 }
 
@@ -331,6 +340,7 @@ func (o *Orchestrator) advanceReviewChainForIssue(
 		slog.Info("orchestrator: review chain advancing",
 			"identifier", issue.Identifier, "finished", finishedProfile, "next", next)
 		o.dispatchReviewerForIssue(ctx, &state, issue, next, now)
+		closeChainIfNotStarted(&state, issue, next)
 		return state
 	}
 
