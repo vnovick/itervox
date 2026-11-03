@@ -49,7 +49,7 @@ Then ask Claude Code to "deploy itervox to GCP" (or AWS, or Azure). The skill fe
 
 # 2. On the VM: install deps, itervox, the systemd unit and the data disk
 #    (provision.sh prints the stable --data-disk path for your cloud)
-sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.7 \
+sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.8 \
   --data-disk /dev/disk/by-id/google-itervox-data
 
 # 3. Fill in secrets, re-run the read-only deploy doctor until it reports no [fail], start

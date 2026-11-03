@@ -287,6 +287,17 @@ itervox secret list [--workflow WORKFLOW.md]
 
 ---
 
+## `itervox token` — Scoped API tokens
+
+```bash
+itervox token create --name NAME --scope viewer|operator|admin [--expires 90d]
+itervox token list [--json]
+itervox token revoke ID
+itervox token rotate [ID]
+```
+
+Manages the stored API tokens in `.itervox/tokens.json` next to `--workflow` (default `WORKFLOW.md`): named tokens with a `viewer`, `operator` or `admin` scope, kept as SHA-256 hashes only (mode 0600, gitignored). It writes the file directly, so it works with or without a running daemon; a running daemon picks up the change within a second, without a restart. `create` and `rotate` print the new secret (`itx_…`) once, alone on stdout, with the details on stderr — store it right away. `--expires` takes `90d`, `12h`, a date or an RFC 3339 time (default: never). `rotate` keeps the token's id, name, scope and expiry; with no `ID` it rotates the one stored admin token. `ITERVOX_API_TOKEN` (or the auto-generated token) is always admin and not in the store. A stored token also works as `ITERVOX_API_TOKEN` for `itervox watch` and the quick actions, within its scope. See [Security & access tokens](/guides/security/).
+
 ## `itervox config` — Settings and where they come from
 
 ```bash
@@ -383,6 +394,32 @@ itervox reply <issue> <text>   # answer an agent's question; queued, applied if 
 ```
 
 The same actions as the dashboard and the (deprecated) terminal UI's `x`, `r`, `d` and `+`/`-` keys, through the API. Each prints what it did, or the daemon's reason for refusing (for example `issue ENG-1 is not running (404)`).
+
+### Pause and resume all dispatch
+
+```bash
+itervox pause                              # pause ALL dispatch until itervox resume
+itervox pause --reason "deploy" --for 2h   # with a reason; resumes by itself after 2h
+itervox resume                             # resume all dispatch
+```
+
+Without an issue, `pause` and `resume` act on the whole daemon (#213): running agents continue, and nothing new starts — no dispatch, retries, reviewers, automations or input resumes — until you resume or the `--for` window ends. The work is held, not dropped, and starts again as slots allow. The pause survives a restart. `itervox watch` shows `ALL DISPATCH PAUSED` while it lasts; the dashboard's status strip and the Mac app's "Pause all agents" tray item do the same through `POST /api/v1/dispatch/pause` and `/resume`.
+
+---
+
+## `itervox mcp` — A local MCP server for the board and memory
+
+```bash
+itervox mcp [--project DIR | --workflow WORKFLOW.md] [--url URL] [--token-scope viewer|operator] [--token TOKEN]
+```
+
+Serves the [Model Context Protocol](https://modelcontextprotocol.io) over stdin/stdout for the running daemon of this project, so Claude Code, Claude Desktop, Codex and other MCP clients can read the board and memory (#216). Register it once, e.g. `claude mcp add itervox -- itervox mcp`; the [MCP guide](/guides/mcp/) has the setup for each client and the tool list.
+
+- **Daemon.** `--url`, else the daemon whose project directory is `--project` (default: the `--workflow` directory, i.e. the current directory) in the host registry `itervox status --json` reads, else `.itervox/dashboard_url`. When several daemons serve the project it uses the newest. If the daemon restarts on a new port the server finds it again.
+- **Token.** `--token`, else `ITERVOX_TOKEN`, used as given. Otherwise, on first use, it creates a stored token named `mcp` (scope `viewer`, or `operator` with `--token-scope operator`) through the token store and remembers the secret in `.itervox/mcp-token.json` (mode 0600, gitignored); later starts reuse it, and one that was revoked, rotated, expired or has another scope is replaced (the old one revoked). The secret is never printed or logged. A daemon running with `server.allow_unauthenticated` needs no token; `--token-scope` still decides which tools are offered.
+- **Tools.** A viewer token gets the read tools only; write tools (`dispatch`, `pause_dispatch`, `resume_dispatch`, `reply_input`, `steer`, `remember`) are listed for an operator token. `--token-scope admin` is refused.
+
+Stdout carries protocol messages only; diagnostics go to stderr. It exits `0` when the client closes stdin, `1` when no daemon is found or the token cannot be created, `2` on a usage error.
 
 ---
 

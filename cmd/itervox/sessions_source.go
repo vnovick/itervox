@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os/exec"
 	"runtime"
 	"sort"
 	"sync"
@@ -27,18 +28,32 @@ type tmuxStatus struct {
 	Version   string
 }
 
-// tmuxDetector caches whether tmux is installed. Every discovery pass and
-// every write re-detects (`tmux -V`), so installing tmux lifts the warning
-// without a restart.
+// tmuxDetector caches whether tmux is installed. Once tmux is found its
+// `tmux -V` answer is kept for the daemon's lifetime (#210): it was a
+// fork/exec on every 15 s discovery pass and every write, for a version
+// that does not change under a running daemon. Until tmux is found, every
+// pass and write re-detects — a PATH lookup that starts no process while
+// tmux is missing — so installing tmux lifts the warning without a restart.
 type tmuxDetector struct {
 	client tmuxctl.Client
-	mu     sync.Mutex
-	st     tmuxStatus
-	at     time.Time
+	// probeMu serializes detections, so concurrent callers share one probe.
+	probeMu sync.Mutex
+	mu      sync.Mutex
+	st      tmuxStatus
+	at      time.Time
 }
 
-// refresh detects tmux now.
+// refresh returns the lifetime answer once tmux was found, else detects
+// tmux now.
 func (d *tmuxDetector) refresh() tmuxStatus {
+	if st, ok := d.found(); ok {
+		return st
+	}
+	d.probeMu.Lock()
+	defer d.probeMu.Unlock()
+	if st, ok := d.found(); ok { // another caller's probe found it meanwhile
+		return st
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxctl.DefaultTimeout)
 	defer cancel()
 	v, err := d.client.Version(ctx)
@@ -49,8 +64,27 @@ func (d *tmuxDetector) refresh() tmuxStatus {
 	return st
 }
 
-// current returns the last detection, re-detecting when it is stale.
+// found returns the cached detection when it found tmux and the binary is
+// still on PATH. The PATH lookup is a stat, not a process, so the lifetime
+// cache keeps its saving while still noticing tmux being uninstalled or
+// dropped from PATH (that answer is then re-detected like any miss).
+func (d *tmuxDetector) found() (tmuxStatus, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.st.Available {
+		if _, err := exec.LookPath("tmux"); err != nil {
+			d.st, d.at = tmuxStatus{}, time.Time{}
+		}
+	}
+	return d.st, d.st.Available
+}
+
+// current returns the last detection, re-detecting a "not installed"
+// answer once it is stale.
 func (d *tmuxDetector) current() tmuxStatus {
+	if st, ok := d.found(); ok {
+		return st
+	}
 	d.mu.Lock()
 	st, at := d.st, d.at
 	d.mu.Unlock()
@@ -77,11 +111,18 @@ type sessionSource struct {
 }
 
 // Discover runs one pass. Reads only: transcript files, the process list,
-// `tmux -V` and `tmux list-panes`.
+// `tmux -V` (until tmux is found) and `tmux list-panes` — skipped when no
+// tmux server socket exists, since there are no panes to list (#210).
 func (s sessionSource) Discover(now time.Time) (orchestrator.ExternalScan, error) {
 	scan := orchestrator.ExternalScan{ScannedAt: time.Now()}
 	var panes []tmuxctl.Pane
-	if st := s.detect.refresh(); st.Available {
+	switch {
+	case !s.detect.refresh().Available:
+	case !s.detect.client.ServerMayRun():
+		// No server: the listing is known to be empty, as list-panes
+		// reports it (TmuxListed lets a vanished session end).
+		scan.TmuxListed = true
+	default:
 		ctx, cancel := context.WithTimeout(context.Background(), tmuxctl.DefaultTimeout)
 		list, err := s.detect.client.ListPanes(ctx)
 		cancel()

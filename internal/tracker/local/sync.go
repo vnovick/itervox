@@ -49,7 +49,7 @@ func (t *Tracker) SyncIssues() ([]SyncIssue, error) {
 		return nil, err
 	}
 	var out []SyncIssue
-	for _, id := range t.sortedIdentifiersLocked() {
+	for _, id := range t.sortedIdentifiersLocked(func(string, string) bool { return true }) {
 		e := t.entries[id]
 		if e.problem != "" {
 			continue

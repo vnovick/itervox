@@ -272,7 +272,10 @@ func TestQuickActionsCallTheirAPI(t *testing.T) {
 
 	t.Run("usage", func(t *testing.T) {
 		d := newFakeDaemon(t, func(http.ResponseWriter, *http.Request) {})
-		for _, args := range [][]string{{"pause"}, {"workers", "0"}, {"reply", "ENG-1"}, {"logs"}} {
+		for _, args := range [][]string{
+			{"pause", "ENG-1", "ENG-2"}, {"pause", "ENG-1", "--for", "2h"}, {"resume", "--reason", "x"},
+			{"pause", "--for", "-1h"}, {"workers", "0"}, {"reply", "ENG-1"}, {"logs"},
+		} {
 			code, _, _ := runClient(t, t.Context(), d, args[0], args[1:]...)
 			assert.Equal(t, 2, code, "%v", args)
 		}

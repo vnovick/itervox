@@ -10,6 +10,7 @@ vi.mock('../../lib/clientErrorReporter', () => ({
   reportClientError: (...args: unknown[]) => {
     reportClientError(...args);
   },
+  setClientErrorReportGate: () => {},
 }));
 
 const authedFetch = vi.fn();

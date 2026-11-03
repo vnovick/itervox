@@ -34,6 +34,10 @@ pub enum MenuAction {
     RemoveRemote(String),
     /// The Sessions window: every daemon's agent sessions (#178).
     OpenSessions,
+    /// Pause / resume ALL dispatch on every reachable local daemon (#213).
+    /// Running agents continue; nothing new starts until resumed.
+    PauseAll,
+    ResumeAll,
     RefreshNow,
     CheckForUpdates,
     InstallUpdate,
@@ -245,6 +249,7 @@ pub fn build_menu<'a>(
     }
 
     entries.push(MenuEntry::Separator);
+    entries.push(pause_all_item(&mut b, views));
     entries.push(b.item(
         if waiting > 0 {
             format!("Sessions… ({waiting} waiting)")
@@ -277,6 +282,23 @@ pub fn build_menu<'a>(
         } else {
             format!("Itervox — {running} running")
         },
+    }
+}
+
+/// The "Pause all agents" item (#213): it pauses every reachable local
+/// daemon, and becomes "Resume all agents" once all of them are paused.
+/// Disabled when no daemon can be reached.
+fn pause_all_item(b: &mut Builder, views: &[ProjectView]) -> MenuEntry {
+    let reachable: Vec<&ProjectView> = views.iter().filter(|v| v.reachable()).collect();
+    let all_paused = !reachable.is_empty() && reachable.iter().all(|v| v.dispatch_paused());
+    if all_paused {
+        b.item("Resume all agents", true, MenuAction::ResumeAll)
+    } else {
+        b.item(
+            "Pause all agents",
+            !reachable.is_empty(),
+            MenuAction::PauseAll,
+        )
     }
 }
 
@@ -584,6 +606,74 @@ mod tests {
             label_of(&build_menu(&[v], &[], [].iter(), None)),
             "Sessions… (1 waiting)"
         );
+    }
+
+    /// #213: one tray item pauses all agents on every reachable daemon and
+    /// turns into "Resume all agents" once they are all paused; it is
+    /// disabled while no daemon can be reached.
+    #[test]
+    fn pause_all_agents_item_follows_the_daemons() {
+        let item = |spec: &MenuSpec| {
+            spec.entries
+                .iter()
+                .find_map(|e| match e {
+                    MenuEntry::Item { id, label, enabled }
+                        if matches!(
+                            spec.actions.get(id),
+                            Some(MenuAction::PauseAll | MenuAction::ResumeAll)
+                        ) =>
+                    {
+                        Some((label.clone(), *enabled, spec.actions[id].clone()))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let paused = |key: &str, on: bool| {
+            let mut v = view(key, true);
+            v.health = Health::Ok(StateSummary {
+                dispatch_paused: on,
+                ..Default::default()
+            });
+            v
+        };
+        assert_eq!(
+            item(&build_menu(&[view("/down", false)], &[], [].iter(), None)),
+            ("Pause all agents".into(), false, MenuAction::PauseAll),
+            "nothing to pause"
+        );
+        assert_eq!(
+            item(&build_menu(
+                &[paused("/a", false), view("/down", false)],
+                &[],
+                [].iter(),
+                None
+            )),
+            ("Pause all agents".into(), true, MenuAction::PauseAll)
+        );
+        assert_eq!(
+            item(&build_menu(
+                &[paused("/a", true), paused("/b", false)],
+                &[],
+                [].iter(),
+                None
+            )),
+            ("Pause all agents".into(), true, MenuAction::PauseAll),
+            "one daemon still dispatches"
+        );
+        let all = build_menu(
+            &[paused("/a", true), paused("/b", true), view("/down", false)],
+            &[],
+            [].iter(),
+            None,
+        );
+        assert_eq!(
+            item(&all),
+            ("Resume all agents".into(), true, MenuAction::ResumeAll)
+        );
+        assert!(paused("/a", true)
+            .status_line()
+            .ends_with("dispatch paused"));
     }
 
     #[test]

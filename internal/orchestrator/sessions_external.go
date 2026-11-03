@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/vnovick/itervox/internal/extsessions"
@@ -95,6 +96,32 @@ func ownedSessionIDs(state State) map[string]bool {
 		}
 	}
 	return owned
+}
+
+// applyDiscoveryScan applies one discovery pass (tmux panes, then
+// hand-started sessions) and reports whether it changed State: the panes of
+// itervox's tmux sessions, which of them are left, or the listed sessions.
+// Event loop only.
+func applyDiscoveryScan(state *State, scan ExternalScan) bool {
+	panes := make(map[string]extsessions.TmuxPane, len(state.TmuxSessions))
+	for id, s := range state.TmuxSessions {
+		if s != nil {
+			panes[id] = s.Pane
+		}
+	}
+	before := state.ExternalSessions
+	applyTmuxPanes(state, scan)
+	applyExternalSessions(state, scan.Sessions)
+	if len(panes) != len(state.TmuxSessions) {
+		return true
+	}
+	for id, s := range state.TmuxSessions {
+		if p, ok := panes[id]; !ok || s == nil || p != s.Pane {
+			return true
+		}
+	}
+	after := state.ExternalSessions
+	return len(before) != len(after) || (len(after) > 0 && !reflect.DeepEqual(before, after))
 }
 
 // applyExternalSessions stores a discovery pass, minus owned sessions: the

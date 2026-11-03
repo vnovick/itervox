@@ -27,6 +27,8 @@ const EXACT: Record<string, string> = {
   // #193: the worktree branch is checked out in another worktree; released
   // when that worktree frees it.
   branch_in_use: 'Branch checked out elsewhere',
+  // #213: the operator paused all dispatch.
+  dispatch_paused: 'Dispatch paused',
   missing_fields: 'Missing required fields',
   // Filtered out by enrich.go today; mapped so they stay readable if not.
   terminal_state: 'Not in an active state',

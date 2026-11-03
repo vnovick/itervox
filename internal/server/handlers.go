@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
@@ -37,14 +38,25 @@ func writeSSEFrame(w http.ResponseWriter, format string, args ...any) error {
 	return err
 }
 
+// sseKeepaliveFrame is the /events keepalive, a named event the client's
+// silence watchdog sees (see handleEvents).
+var sseKeepaliveFrame = []byte("event: keepalive\ndata: {}\n\n")
+
+// writeSSEBytes writes an already-formatted frame with a plain Write — no
+// format parsing or copy on the hot /events path (#210).
+func writeSSEBytes(w http.ResponseWriter, frame []byte) error {
+	setSSEWriteDeadline(w)
+	_, err := w.Write(frame)
+	return err
+}
+
 func flushSSE(w http.ResponseWriter, flusher http.Flusher) {
 	setSSEWriteDeadline(w)
 	flusher.Flush()
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	snap := s.snapshot()
-	writeJSON(w, http.StatusOK, snap)
+	writeJSON(w, http.StatusOK, snapshotForScope(s.snapshot(), callerScope(r)))
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -70,14 +82,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send initial snapshot immediately.
-	if err := s.writeSSEEvent(w, flusher); err != nil {
-		return
-	}
-
-	// Subscribe to state-change signals.
+	// Subscribe to state-change signals before the initial snapshot, so a
+	// change delivered while the first frame is being written still wakes
+	// this client (subscribing after it could miss that delivery).
 	sub := s.bc.subscribe()
 	defer s.bc.unsubscribe(sub)
+
+	// Send initial snapshot immediately. lastFeed is the feed seq this
+	// client was last told (#213); -1 so the first frame announces it.
+	lastFeed := int64(-1)
+	scope := callerScope(r) // #214: the frame carries it; below admin it is redacted
+	if err := s.writeSSEEvent(w, flusher, scope, &lastFeed); err != nil {
+		return
+	}
 
 	// Keep-alive ticker (every 25s) to prevent proxy timeouts. Reset on
 	// every real event sent so a busy stream (one snapshot per second)
@@ -95,7 +112,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-s.streamsDone: // generation shut down (CORE-025); the client reconnects
 			return
 		case <-sub:
-			if err := s.writeSSEEvent(w, flusher); err != nil {
+			if err := s.writeSSEEvent(w, flusher, scope, &lastFeed); err != nil {
 				return
 			}
 			ticker.Reset(keepaliveInterval) // §7.2 — defer keepalive after activity
@@ -108,7 +125,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			// "Reconnecting…" banner kept appearing on quiet systems. The
 			// payload is intentionally tiny; the client checks event type
 			// and short-circuits without re-parsing the snapshot.
-			if err := writeSSEFrame(w, "event: keepalive\ndata: {}\n\n"); err != nil {
+			if err := writeSSEBytes(w, sseKeepaliveFrame); err != nil {
 				return
 			}
 			flushSSE(w, flusher)
@@ -116,14 +133,23 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) error {
-	snap := s.snapshot()
-	b, err := json.Marshal(snap)
+// writeSSEEvent writes the current snapshot frame. The frame is encoded
+// once per broadcaster version and shared by every client (#210). When the
+// snapshot's feed seq differs from *lastFeed, a `feed` event with the new
+// seq follows it in the same flush (#213).
+func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, scope apitokens.Scope, lastFeed *int64) error {
+	frame, feedSeq, err := s.sseFrame(scope)
 	if err != nil {
 		return err
 	}
-	if err := writeSSEFrame(w, "data: %s\n\n", b); err != nil {
+	if err := writeSSEBytes(w, frame); err != nil {
 		return err
+	}
+	if feedSeq != *lastFeed {
+		if err := writeSSEBytes(w, feedFrame(feedSeq)); err != nil {
+			return err
+		}
+		*lastFeed = feedSeq
 	}
 	flushSSE(w, flusher)
 	return nil
@@ -631,6 +657,10 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
 		Message string `json:"message"`
+		// FromAgent marks a reply relayed for an agent (`itervox mcp`,
+		// #216): like the agent-actions route it never answers a guardrail
+		// approval, decided atomically in the event loop.
+		FromAgent bool `json:"fromAgent"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
@@ -640,11 +670,15 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
 		return
 	}
+	provide := s.client.ProvideInput
+	if body.FromAgent && s.guardrails != nil {
+		provide = s.guardrails.ProvideAgentInput
+	}
 	// ProvideInput performs no lookup of its own (CORE-005): the only error
 	// it can return is ErrBusy (event channel full). There is no "not found"
 	// branch here any more — whether the issue is actually waiting for input
 	// is the event loop's decision, so success means "queued", not "applied".
-	if err := s.client.ProvideInput(identifier, body.Message); err != nil {
+	if err := provide(identifier, body.Message); err != nil {
 		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}
@@ -892,7 +926,7 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 // handleListProfiles returns the current profile definitions.
 // GET /api/v1/settings/profiles
 func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
-	defs := s.client.ProfileDefs()
+	defs := profileDefsForScope(s.client.ProfileDefs(), callerScope(r))
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": defs})
 }
 

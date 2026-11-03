@@ -31,6 +31,9 @@ pub struct StateSummary {
     pub paused: usize,
     pub input_required: Vec<InputRequired>,
     pub failures: Vec<Failure>,
+    /// All dispatch is paused (#213: `dispatchPaused` is not null): running
+    /// agents continue, nothing new starts.
+    pub dispatch_paused: bool,
 }
 
 /// `inputRequired[].state` that needs a human.
@@ -89,6 +92,8 @@ struct RawState {
     running: Option<Vec<serde_json::Value>>,
     input_required: Option<Vec<RawInput>>,
     recent_failures: Option<Vec<RawFailure>>,
+    /// #213: null (or absent, on older daemons) unless paused.
+    dispatch_paused: Option<serde_json::Value>,
 }
 
 /// Parses a `/api/v1/state` body. Missing fields are empty: an older or
@@ -102,6 +107,7 @@ pub fn parse_state(body: &[u8]) -> Result<StateSummary, String> {
         raw.running.map(|r| r.len()).unwrap_or(0)
     };
     Ok(StateSummary {
+        dispatch_paused: raw.dispatch_paused.is_some_and(|v| v.is_object()),
         project_name: raw.project_name,
         running,
         retrying: counts.retrying,
@@ -162,6 +168,19 @@ mod tests {
         assert_eq!(waiting, vec!["ENG-1"]);
         let failed: Vec<_> = s.run_failures().map(|f| f.identifier.as_str()).collect();
         assert_eq!(failed, vec!["ENG-3"]);
+    }
+
+    #[test]
+    fn reads_the_dispatch_pause() {
+        let paused =
+            parse_state(br#"{"dispatchPaused": {"reason": "deploy", "pausedAt": "t"}}"#).unwrap();
+        assert!(paused.dispatch_paused);
+        let running = parse_state(br#"{"dispatchPaused": null}"#).unwrap();
+        assert!(!running.dispatch_paused);
+        assert!(
+            !parse_state(b"{}").unwrap().dispatch_paused,
+            "an older daemon is not paused"
+        );
     }
 
     #[test]
