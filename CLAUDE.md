@@ -147,7 +147,9 @@ only the event loop mutates them.
   explicitly adds restart durability.
 - `RecentFailures` (CORE-046) is a bounded (100) event-loop ring. Off-loop
   producers (ledger writer, outbox flusher, recovered panics, the
-  `/api/v1/client-errors` handler) call `Orchestrator.RecordFailure`, a
+  `/api/v1/client-errors` handler, a worker whose shared bare-clone fetch
+  failed — #195, deduplicated in `internal/workspace` until a fetch
+  succeeds) call `Orchestrator.RecordFailure`, a
   NON-blocking send of `EventFailureRecorded`; a dropped failure is counted,
   never re-sent. Messages come from classified errors only (never agent
   output or prompt text) and are redacted before truncation. Not persisted;

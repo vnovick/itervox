@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AutomationDef } from '../../../types/schemas';
+import { FilterGroupSchema, type AutomationDef } from '../../../types/schemas';
 import { AUTOMATION_TRIGGER_TYPES } from '../../../types/automationTriggers';
 import {
   PR_EVENT_FILTER_FIELDS,
@@ -35,6 +35,8 @@ export const automationFormSchema = z
     matchMode: z.enum(['all', 'any']),
     states: z.array(z.string().min(1)),
     labelsAny: z.array(z.string().min(1)),
+    // #198 — tracker-filter groups from WORKFLOW.md; carried, not edited here.
+    groups: z.array(FilterGroupSchema).optional(),
     identifierRegex: z.string(),
     limit: z.string().refine((value) => value.trim() === '' || /^\d+$/.test(value.trim()), {
       message: 'Limit must be a non-negative integer.',
@@ -133,6 +135,7 @@ export function automationValuesFromDef(automation: AutomationDef): AutomationFo
     matchMode: automation.filter?.matchMode ?? 'all',
     states: automation.filter?.states ?? [],
     labelsAny: automation.filter?.labelsAny ?? [],
+    groups: automation.filter?.groups ?? [],
     identifierRegex: automation.filter?.identifierRegex ?? '',
     limit:
       automation.filter?.limit !== undefined && automation.filter.limit > 0
@@ -164,6 +167,7 @@ export function automationDefFromValues(values: AutomationFormValues): Automatio
   if (values.matchMode !== 'all') filter.matchMode = values.matchMode;
   if (values.states.length > 0) filter.states = values.states;
   if (values.labelsAny.length > 0) filter.labelsAny = values.labelsAny;
+  if (values.groups?.length) filter.groups = values.groups;
   if (values.identifierRegex.trim()) filter.identifierRegex = values.identifierRegex.trim();
   if (!Number.isNaN(parsedLimit) && parsedLimit > 0) filter.limit = parsedLimit;
   if (values.inputContextRegex.trim()) filter.inputContextRegex = values.inputContextRegex.trim();
@@ -242,6 +246,7 @@ export function emptyAutomationValues(
     matchMode: 'all',
     states: [],
     labelsAny: [],
+    groups: [],
     identifierRegex: '',
     limit: '',
     inputContextRegex: '',
@@ -276,6 +281,7 @@ export function automationValuesFromSuggestion(
     matchMode: suggestion.matchMode ?? 'all',
     states: suggestion.states ?? [],
     labelsAny: suggestion.labelsAny ?? [],
+    groups: [],
     identifierRegex: suggestion.identifierRegex ?? '',
     limit: suggestion.limit ? String(suggestion.limit) : '',
     inputContextRegex: suggestion.inputContextRegex ?? '',

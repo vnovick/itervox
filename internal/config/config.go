@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/workflow"
 )
@@ -208,7 +209,14 @@ type TrackerConfig struct {
 	// Labels narrows a Linear tracker to the issues carrying ANY of these
 	// labels (#182), ANDed with the project and assignee. Empty: no label
 	// filter. Load-time only, like Assignee.
-	Labels         []string
+	Labels []string
+	// Filter is tracker.filter (#198): groups of conditions, ANDed inside a
+	// group and ORed between groups. When set it replaces ProjectSlug (for
+	// Linear), Assignee, Team and Labels, which act as one implicit group
+	// otherwise; setting both is a validation error. Load-time config: the
+	// dashboard's scope save changes the tracker client's runtime filter
+	// (and WORKFLOW.md, reload-fenced), not this field.
+	Filter         issuefilter.Filter
 	ActiveStates   []string
 	TerminalStates []string
 	// WorkingState is the state name to transition an issue to when it is
@@ -898,6 +906,16 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Assignee = conn.Assignee // #182
 	cfg.Tracker.Team = conn.Team
 	cfg.Tracker.Labels = conn.Labels
+	// #198: tracker.filter. A malformed filter fails the load, so a typo
+	// never silently widens what Itervox reads.
+	filter, err := issuefilter.Parse(tracker["filter"], "tracker.filter")
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	cfg.Tracker.Filter = filter
+	if filter != nil {
+		noteSetting(tracker, "filter", tracker["filter"])
+	}
 	cfg.Tracker.ActiveStates = conn.ActiveStates
 	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")

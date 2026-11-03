@@ -1,6 +1,10 @@
 package config
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/vnovick/itervox/internal/issuefilter"
+)
 
 const (
 	AutomationTriggerCron              = "cron"
@@ -82,9 +86,17 @@ type AutomationTriggerConfig struct {
 }
 
 type AutomationFilterConfig struct {
-	MatchMode         string
-	States            []string
-	LabelsAny         []string
+	MatchMode string
+	States    []string
+	LabelsAny []string
+	// Groups is the tracker-filter group syntax (#198): an issue passes
+	// when any group matches (conditions ANDed inside a group). It is one
+	// more check beside states / labels_any / identifier_regex, combined by
+	// match_mode. Written as `filter: [ {...}, ... ]` (groups only) or
+	// `filter: {groups: [...], ...}`.
+	Groups issuefilter.Filter
+	// GroupsError is why the groups did not parse; validation reports it.
+	GroupsError       string
 	IdentifierRegex   string
 	Limit             int
 	InputContextRegex string
@@ -196,6 +208,16 @@ func parseAutomations(raw any) []AutomationConfig {
 			continue
 		}
 		filter := nestedMap(m, "filter")
+		// #198: a list is the group syntax alone; a map may carry groups.
+		rawGroups := filter["groups"]
+		if list, ok := m["filter"].([]any); ok {
+			rawGroups = list
+		}
+		groups, groupsErr := issuefilter.Parse(rawGroups, "filter.groups")
+		groupsError := ""
+		if groupsErr != nil {
+			groupsError = groupsErr.Error()
+		}
 		policy := nestedMap(m, "policy")
 		limit := intField(filter, "limit", 0)
 		if limit < 0 {
@@ -224,6 +246,8 @@ func parseAutomations(raw any) []AutomationConfig {
 				MatchMode:         normalizeAutomationMatchMode(strField(filter, "match_mode", "")),
 				States:            states,
 				LabelsAny:         strSliceField(filter, "labels_any", nil),
+				Groups:            groups,
+				GroupsError:       groupsError,
 				IdentifierRegex:   strField(filter, "identifier_regex", ""),
 				Limit:             limit,
 				InputContextRegex: strField(filter, "input_context_regex", ""),

@@ -1136,6 +1136,47 @@ Notes:
 - Empty array means “all issues”.
 - Omitting `slugs` resets to the `WORKFLOW.md` default.
 
+## Tracker scope and filter (#198, Linear and GitHub)
+
+The tracker filter generalises the scope: a list of groups, conditions
+ANDed inside a group, groups ORed (see the configuration reference, "Tracker
+filter"). Keys are the `WORKFLOW.md` condition names: `projects`, `teams`,
+`assignee`, `labels_any`, `labels_all`, `labels_none`, `priority`, `states`,
+`cycle`, `milestone`. `501 not_supported` for trackers without one.
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/tracker/scope` | — | `{"scope":{"projects":[],"assignee":"","labels":[],"filter":[{"labels_any":["agent"]}],"filterMode":true,"conditions":["assignee","labels_any",…]}}` |
+| `PUT` | `/tracker/scope` | `{"filter":[{"projects":["ENG"],"labels_none":["blocked"]},{"assignee":"me"}]}` | `{"scope":{...},"ok":true}` |
+| `POST` | `/tracker/filter/preview` | `{"filter":[...]}` | `{"count":12,"identifiers":["ENG-1","ENG-4",…]}` |
+| `GET` | `/tracker/teams` | — | `{"teams":[{"id":"…","key":"ENG","name":"Engineering"}]}` (`[]` on GitHub) |
+
+- `GET /tracker/scope` always returns `filter`: `tracker.filter`, or the
+  legacy keys as one implicit group (`filterMode: false`), `[]` for every
+  issue. `conditions` lists what the tracker supports (every condition on
+  Linear; `assignee`, the label conditions, `states` and `milestone` on
+  GitHub).
+- `PUT` with `filter` validates it with the `WORKFLOW.md` parser (an
+  unknown condition, an empty group, a bad priority or an unsupported
+  condition: `422 invalid_filter`), resolves its assignees (`422
+  assignee_not_found`), writes `tracker.filter` as one flow-style line,
+  comments the legacy keys out (`project_slug` only on Linear) and applies
+  the filter without a reload; the tracker store pulls again and the
+  automation poll rebaselines. `[]` reads every issue. The reload fence
+  answers `503 settings_reloading`. A legacy body (`projects` / `assignee` /
+  `labels`, Linear only) comments `tracker.filter` out.
+- `POST /tracker/filter/preview` is read-only: it counts the issues in the
+  active states the filter matches, through the same compiled query the poll
+  uses, and lists the first 10 identifiers. Nothing is saved.
+- While a filter is in effect, `PUT /projects/filter` answers `409
+  tracker_filter_in_effect` (project_slug and tracker.filter cannot both be
+  set) and the TUI picker does not save.
+- The snapshot's `trackerScope` is the filter's summary (e.g.
+  `ENG · agent|ai · ¬blocked  OR  me · urgent`) and `filterConditions` the
+  supported conditions (present when the tracker has a filter).
+
+Also: `GET /tracker/labels` → `{"labels":[...]}` and `GET /tracker/users` → `{"users":[{"id","name","email"}]}` (on GitHub, the repository's labels and assignable logins).
+
 ---
 
 ## Agent actions

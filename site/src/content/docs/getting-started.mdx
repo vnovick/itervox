@@ -109,6 +109,20 @@ tracker:
 
 With `assignee: me` a dedicated "Itervox" Linear user can own the agent lane: assign a ticket to it to hand it to the agents, reassign it to take it back. Itervox never changes an issue's assignee or labels itself, so a run never moves its own issue out of scope. Change the scope at runtime in the dashboard's **Settings → Tracker Scope**. `itervox doctor` checks that the assignee resolves and its issues are readable. See [Linear setup → Scope](/guides/linear-setup/#scope-project-assignee-labels).
 
+Need OR, exclusions or more fields? Replace those keys with `tracker.filter`, a list of groups: every condition in a group must match, any group matching reads the issue (Linear and GitHub):
+
+```yaml
+tracker:
+  filter:
+    - projects: [ENG]
+      labels_any: [agent, ai]
+      labels_none: [blocked]
+    - assignee: me
+      labels_all: [urgent]
+```
+
+See [Tracker filter](/configuration/#tracker-filter); Settings → Tracker Scope builds it with a live match count, and `itervox doctor` prints how many issues it matches.
+
 Commit `.itervox/agents/**`; those files define your project agent profiles. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, or runtime queue files.
 
 ### 3. Run
