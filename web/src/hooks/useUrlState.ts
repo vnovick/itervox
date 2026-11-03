@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { useLocation, useNavigate, useParams, type Location } from 'react-router';
+import { useCallback, useContext, useEffect, useRef } from 'react';
+import {
+  UNSAFE_NavigationContext,
+  useHref,
+  useLocation,
+  useNavigate,
+  useParams,
+  type Location,
+} from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../store/itervoxStore';
 import { useUIStore, type AutomationsTab } from '../store/uiStore';
@@ -293,8 +300,17 @@ export function useLogsUrlSelection({ union, visible, settled }: LogsUrlSelectio
   const storeId = useItervoxStore((s) => s.activeIssueId);
   const setStoreId = useItervoxStore((s) => s.setActiveIssueId);
 
+  // The router's history may already be somewhere else while this page is
+  // still mounted: a link to a lazy route (the header's status pills) keeps
+  // the old page on screen inside a transition until the new chunk loads. An
+  // automatic REPLACE fired from that stale page would overwrite the user's
+  // navigation, so it only runs while history still points at this page.
+  const { navigator } = useContext(UNSAFE_NavigationContext);
+  const renderedHref = useHref({ pathname: location.pathname });
   const go = useCallback(
     (identifier: string | null, replace: boolean) => {
+      const live = (navigator as { location?: { pathname?: string } }).location?.pathname;
+      if (replace && live !== undefined && live !== renderedHref) return;
       void navigate(
         {
           pathname: logsPath(identifier),
@@ -304,7 +320,7 @@ export function useLogsUrlSelection({ union, visible, settled }: LogsUrlSelectio
         { replace },
       );
     },
-    [navigate, location.search, location.hash],
+    [navigate, navigator, renderedHref, location.search, location.hash],
   );
 
   const inUnion = (id: string) => union.includes(id);

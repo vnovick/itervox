@@ -20,10 +20,10 @@ export function HotspotsSection() {
   const computed = Boolean(data?.generatedAt);
 
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
+    <div className="glass-panel px-5 py-[18px]">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-theme-text text-sm font-medium">Failure hotspots</p>
+          <p className="section-title">Failure hotspots</p>
           <p className="text-theme-muted text-[11px]">
             Where agent runs went wrong, by the files their branch changed.
             {data &&
@@ -32,7 +32,7 @@ export function HotspotsSection() {
             {data?.refreshing && ' Refreshing…'}
           </p>
         </div>
-        <div role="group" aria-label="Hotspot view" className="flex gap-1">
+        <div role="group" aria-label="Hotspot view" className="segmented">
           {(['files', 'directories'] as const).map((v) => (
             <button
               key={v}
@@ -41,9 +41,7 @@ export function HotspotsSection() {
               onClick={() => {
                 setView(v);
               }}
-              className={`border-theme-line rounded border px-2 py-1 text-[11px] ${
-                view === v ? 'text-theme-text bg-[var(--bg-soft)]' : 'text-theme-muted'
-              }`}
+              className="text-[13px]"
             >
               {v === 'files' ? 'Files' : 'Directories'}
             </button>

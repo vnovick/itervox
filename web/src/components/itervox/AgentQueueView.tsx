@@ -102,7 +102,7 @@ export default function AgentQueueView({
 
   if (totalBacklog === 0) {
     return (
-      <div className="border-theme-line bg-theme-bg-elevated text-theme-muted rounded-[var(--radius-md)] border px-6 py-12 text-center text-sm">
+      <div className="glass-card text-theme-muted px-6 py-12 text-center text-sm">
         No backlog issues to route
       </div>
     );
@@ -123,7 +123,7 @@ export default function AgentQueueView({
         onDragOver={onDragOver}
         onDragEnd={onDragEnd}
       >
-        <div className="flex min-h-[200px] gap-3 overflow-x-auto pb-2">
+        <div className="flex min-h-[200px] items-start gap-3 overflow-x-auto pb-2">
           {columns.map((col) => {
             const isUnassigned = col.id === UNASSIGNED;
             return (

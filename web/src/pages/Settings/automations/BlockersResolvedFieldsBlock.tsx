@@ -13,7 +13,7 @@ export function BlockersResolvedFieldsBlock({
   onMoveToStateChange,
 }: BlockersResolvedFieldsBlockProps) {
   return (
-    <div className="border-theme-line bg-theme-bg-soft rounded-[var(--radius-sm)] border px-3 py-3">
+    <div className="field-group">
       <label htmlFor="automation-move-to-state" className={fieldLabelCls}>
         Move to state
       </label>

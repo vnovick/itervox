@@ -73,7 +73,7 @@ The menu lists, sorted by name:
 - every daemon `itervox status --all --json` reports — started by the app, from a terminal, or by launchd;
 - every project you added with **Add Project…** (choose its `WORKFLOW.md`), also while its daemon is stopped.
 
-Each project shows its state and running agents, for example `running · 2 agents · 1 needs input`. The list refreshes every 3 seconds while any daemon has an agent running or retrying, a question waiting, or a start or stop in progress, and every 15 seconds when everything is idle; pointing at or clicking the menu-bar icon, and focusing an app window, refresh it at once. The number next to the menu-bar icon counts the issues waiting for your input across projects.
+Each project shows its state and running agents, for example `running · 2 agents · 1.2 GB · 1 needs input` (the memory its live agent runs hold, from [system visibility](/guides/system-visibility/)). A project whose workspace disk is below `workspace.disk_warn_free_gb` adds a line under the menu's header, for example `⚠ web-app: low disk — 3.2 GB free`. The list refreshes every 3 seconds while any daemon has an agent running or retrying, a question waiting, or a start or stop in progress, and every 15 seconds when everything is idle; pointing at or clicking the menu-bar icon, and focusing an app window, refresh it at once. The number next to the menu-bar icon counts the issues waiting for your input across projects.
 
 To do as little as possible while idle, the app reads the daemon registry (`~/.itervox/daemons/`) itself instead of running `itervox status --all --json` on every refresh. It still runs that command at start, when you open the menu (at most every 30 seconds) or choose **Refresh Now**, and whenever the registry holds a format it does not know, so daemons started by an itervox older than the registry still show. Each daemon is read over one kept-alive connection: a small `GET /api/v1/summary` with the last `ETag`, and the full state only when the daemon answers that something changed ([`GET /summary`](/api-reference/#get-summary)).
 
@@ -139,7 +139,11 @@ The first notification may ask for permission; you can change it later in **Syst
 
 **Memory** opens it at the dashboard's [Memory](/guides/memory/) page (`<dashboard>/memory`) the same way.
 
-**New Task…** opens it with the dashboard's [New task](/guides/new-task/) form open (`<dashboard>/?newTask=1`) the same way.
+**New Task…** opens the dashboard's [New task](/guides/new-task/) form (`/?newTask=1`). A window already showing the project comes forward and its dashboard opens the form in place, the way the **Go** menu navigates, without reloading the page; a dashboard from an older daemon without the in-app navigation loads `<dashboard>/?newTask=1` instead. Without such a window, a new one opens at `<dashboard>/?newTask=1`, with the token handed over the same way.
+
+**Sessions…** in a project's submenu opens the [Sessions window](#sessions-window). The window lists every daemon's sessions and has no per-project filter, so it opens as the top-level **Sessions…** does; that project's sessions are under its name.
+
+**Quit Itervox (daemons keep running)** is the menu's last item, with <kbd>⌘Q</kbd> on macOS and <kbd>Ctrl</kbd>+<kbd>Q</kbd> on Linux and Windows while the menu is open (on Linux, where the panel shows menu shortcuts; see [Platform differences](#platform-differences)). It quits the app only: the daemons it started keep running.
 
 ### Project rail
 
@@ -166,6 +170,16 @@ The rail is keyboard and screen-reader accessible: <kbd>Tab</kbd> reaches it, th
 
 The rail is a page of the app itself, shown beside the dashboard in the same window but kept apart from it: it has no access to the network or to the app's internals, it never sees a token, and the dashboard gets no new permissions from it.
 
+### Embedded dashboard
+
+In an app window the dashboard drops its own sidebar, since the rail and the menu bar already do that job. It opens on the [issue view](/guides/now-and-changes/#issue-view): what the issue that needs you most is doing now, and its changes. The top bar reads `project · ISSUE` and has **Board**, **Sessions**, **+ New task**, **Commands** (<kbd>⌘K</kbd>) and **More**, a menu of every page; the status chips show when the window is wide enough. **Board** goes to the full board and stays there; a notification's issue link still opens on the board with the issue's detail panel.
+
+The window's initialization script, the one that hands over the token, also marks the page as the app's (only on the daemon's own address). The same dashboard in a browser keeps its sidebar.
+
+### Go menu
+
+The **Go** menu (in the menu bar while a window is open; in each window's menu bar on Linux and Windows) opens a page of the dashboard in the window in front, in place: **Board**, **Issue View**, **Sessions**, **Timeline**, **Logs**, **Agents**, **Automations**, **Rules**, **Repo Analysis**, **Memory**, **Settings**, and **New Task…** (the board with the [New task](/guides/new-task/) form open). The app asks the page to navigate; the page accepts only paths of the dashboard itself. A dashboard served by an older daemon ignores the menu.
+
 ## Sessions window
 
 **Sessions…** in the menu opens one window listing every running agent session of every daemon the app can read — local projects and remote daemons through their tunnels — grouped by daemon. A session waiting for input is badged **needs input** and listed first, and the daemon groups with a waiting session come first; the menu item shows how many are waiting, for example **Sessions… (2 waiting)**. Each daemon reports the sessions on its own host: the app reads its `GET /api/v1/sessions` with the same token it uses for the daemon's state, every few seconds while the window is open. A daemon the app cannot read shows why (for example **token required**); a daemon from a release without the Sessions API says so.
@@ -177,6 +191,21 @@ Claude Code and Codex sessions you started by hand on a daemon's host — in a t
 A session running in a tmux pane carries a **tmux** badge (hover it for the pane), highlighted when the dashboard can control it — a session the daemon started with **New session**, or one you run in tmux with [`sessions.tmux_control`](/configuration/#sessions) on (see [Sessions in tmux](/guides/sessions/#sessions-in-tmux)). Under a daemon that has tmux, **New session…** opens its dashboard at the New session form. Under a daemon whose host has no tmux, the window says **tmux not found — install it to control sessions from here**, with the install command, instead.
 
 The window only reads. It never types into a terminal or drives another app: messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
+
+### System material
+
+On a Mac and on Windows 11 the project rail and the Sessions window sit on the system's own material instead of the drawn translucent panels: the window is transparent there, the system draws the material behind the page, and the page lets it show through, with its panels lightly tinted. Only those two pages do this; the dashboard beside the rail stays opaque.
+
+| System | Material |
+|---|---|
+| macOS 26 and later | Liquid Glass (`NSGlassEffectView`) |
+| macOS 11 to 15 | Vibrancy (`NSVisualEffectView`): the *sidebar* material behind the rail, *HUD window* behind Sessions |
+| Windows 11 | Mica |
+| Windows 10, Linux | None: the drawn panels, as before |
+
+With **Reduce transparency** or **Increase contrast** on (System Settings → Accessibility → Display on a Mac), or with **Transparency effects** off or a contrast theme on Windows, the app uses no material and the pages draw opaque panels. The app reads these settings when it opens a window, so close and reopen the window after changing one; the page also follows them itself where the webview reports them. If the system refuses the material, the page falls back to its drawn look.
+
+Transparent windows on macOS use Tauri's `macOSPrivateApi` option (`macos-private-api`), which relies on a private AppKit setting. Apple does not accept apps that use private APIs in the Mac App Store; the app is distributed outside it (the signed DMG and Homebrew), where this does not apply. Liquid Glass needs an app built with the macOS 26 SDK (Xcode 26); built with an older SDK, the app uses vibrancy on macOS 26 too.
 
 ## Remote daemons
 
@@ -220,7 +249,8 @@ Each remote shows its state, for example `Prod VM — 2/2 connected · 1 needs i
 - **Open Dashboard** opens its dashboard through the tunnel (`http://127.0.0.1:<local>/`) in a window, with the token handed over exactly as for a local daemon.
 - **Repo Analysis** opens that dashboard's [Repo Analysis](/guides/repo-analysis/) page (`/repo`) through the tunnel, the same way.
 - **Memory** opens that dashboard's [Memory](/guides/memory/) page (`/memory`) through the tunnel, the same way.
-- **New Task…** opens that dashboard's [New task](/guides/new-task/) form (`/?newTask=1`) through the tunnel, the same way.
+- **New Task…** opens that dashboard's [New task](/guides/new-task/) form (`/?newTask=1`) through the tunnel, the same way (in place when a window already shows it).
+- **Sessions…** opens the Sessions window, which lists remote daemons' sessions too.
 - **Enter Token… / Update Token…** reads the token file again, or asks for the token. Use it after the remote daemon restarted with a new auto-generated token (it then shows **token required**).
 
 and for the remote:
@@ -342,10 +372,12 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Daemon bundled in the app; **Stop** sends `SIGTERM` | Same | No native daemon yet ([local projects](#windows-local-projects)); with `itervox.exe`, **Stop** runs `itervox stop` |
 | Wake detected from the clocks, network change from `getifaddrs` | Same | Network change from the default routes' source addresses; a wake that keeps the address is caught by the tunnel health checks |
 | `open` for logs and links | `xdg-open` | `explorer` |
+| Liquid Glass (macOS 26) or vibrancy behind the rail and Sessions ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
+| Tray **Quit Itervox** with <kbd>⌘Q</kbd> | <kbd>Ctrl</kbd>+<kbd>Q</kbd>, shown and bound only where the panel's menu supports shortcuts (AppIndicator menus often do not) | <kbd>Ctrl</kbd>+<kbd>Q</kbd> |
 
 ## Development
 
-The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), the project rail of the dashboard windows (`rail.rs`, its page `desktop/dist/rail.html`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on macOS, Linux and Windows; `app.rs` (with `app_dash.rs` for the dashboard windows) is the Tauri glue. What differs per platform is in `platform.rs` and `autostart.rs`, keyed by the target OS so the tests check every platform's choice from any one. CI runs the tests and builds unsigned bundles on macOS, Linux (x86_64 and arm64) and Windows.
+The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), the project rail of the dashboard windows (`rail.rs`, its page `desktop/dist/rail.html`), which system material goes behind the rail and the Sessions window (`material.rs`, applied by `app_material.rs`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on macOS, Linux and Windows; `app.rs` (with `app_dash.rs` for the dashboard windows) is the Tauri glue. What differs per platform is in `platform.rs` and `autostart.rs`, keyed by the target OS so the tests check every platform's choice from any one. CI runs the tests and builds unsigned bundles on macOS, Linux (x86_64 and arm64) and Windows.
 
 ```bash
 make desktop-test   # fmt, clippy -D warnings, unit tests, end-to-end tests against a real daemon, and dry runs of the release scripts, the Homebrew cask's included (needs jq)

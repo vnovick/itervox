@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/playbook"
 	"github.com/vnovick/itervox/internal/server"
@@ -70,8 +71,8 @@ func (a tasksAdapter) resolveTaskRequest(req server.TaskCreateRequest) (orchestr
 			return out, inputError("unknown_profile", "profile", "no agent profile named %q", out.Profile)
 		}
 	}
-	if out.Backend != "" && out.Backend != "claude" && out.Backend != "codex" {
-		return out, inputError("unknown_backend", "backend", `backend must be "claude" or "codex", got %q`, out.Backend)
+	if out.Backend != "" && !config.IsSupportedBackend(out.Backend) {
+		return out, inputError("unknown_backend", "backend", "backend must be one of %s, got %q", config.SupportedBackendsText(), out.Backend)
 	}
 	if out.Playbook != "" && out.Playbook != playbook.None &&
 		!slices.ContainsFunc(a.orch.Playbooks(), func(p playbook.Playbook) bool { return p.Name == out.Playbook }) {

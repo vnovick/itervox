@@ -1,6 +1,6 @@
 import { ConfirmModal } from '../../../components/ui/modal';
 import { Select } from '../../../components/ui/Select';
-import { dotStyle } from '../../../components/itervox/timeline/types';
+import { dotClass } from '../../../components/itervox/timeline/types';
 import type { IssueGroup } from '../../../components/itervox/timeline/types';
 
 interface TimelineSidebarProps {
@@ -38,18 +38,12 @@ export function TimelineSidebar({
     <>
       <aside
         data-testid="timeline-sidebar"
-        className="border-theme-line bg-theme-panel hidden w-[180px] flex-shrink-0 flex-col border-r md:flex"
+        aria-label="Issues"
+        className="glass-panel hidden max-h-full w-[250px] flex-shrink-0 flex-col gap-1.5 p-3 md:flex"
       >
-        <div className="border-theme-line border-b px-3 py-3">
-          <p className="text-theme-muted text-[10px] font-bold tracking-[0.08em] uppercase">
-            Issues
-          </p>
-        </div>
+        <h2 className="section-title px-1.5 pt-1 pb-1">Issues</h2>
 
-        <div
-          className="flex-1 overflow-y-auto p-2"
-          style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
-        >
+        <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto">
           {issueGroups.length === 0 ? (
             <p className="text-theme-muted px-2 py-4 text-xs italic">No sessions yet</p>
           ) : (
@@ -59,59 +53,37 @@ export function TimelineSidebar({
               return (
                 <div key={group.identifier} className="group relative">
                   <button
+                    type="button"
+                    aria-current={isSelected ? 'true' : undefined}
                     onClick={() => {
                       onSelectIssue(group.identifier);
                     }}
-                    className="w-full text-left transition-all"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                      padding: '11px 12px',
-                      borderRadius: 'var(--radius-md)',
-                      border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--line)'}`,
-                      background: isSelected ? 'var(--accent-soft)' : 'var(--bg-elevated)',
-                      cursor: 'pointer',
-                      font: 'inherit',
-                    }}
+                    className="list-row min-h-11 pr-8"
                   >
                     <span
-                      className={`flex-shrink-0 rounded-full ${isLive ? 'animate-pulse' : ''}`}
-                      style={{ width: 8, height: 8, ...dotStyle(group.latestStatus) }}
+                      aria-hidden="true"
+                      className={`status-dot h-[7px] w-[7px] ${dotClass(group.latestStatus)}`}
                     />
-                    <div className="min-w-0 pr-4">
-                      <div
-                        className="text-theme-text truncate font-mono font-semibold"
-                        style={{ fontSize: 14 }}
-                      >
-                        {group.identifier}
-                      </div>
-                      <div
-                        className="text-theme-text-secondary"
-                        style={{ fontSize: 12, marginTop: 2 }}
-                      >
-                        {statusLabel(group)}
-                      </div>
-                    </div>
+                    <span className="text-theme-text truncate font-mono text-xs font-semibold">
+                      {group.identifier}
+                    </span>
+                    <span className="text-theme-text-secondary ml-auto truncate text-xs">
+                      {statusLabel(group)}
+                    </span>
                   </button>
                   {!isLive && (
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         onRequestClear(group.identifier);
                       }}
                       title="Clear all session logs"
-                      className="absolute top-1/2 right-2 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100"
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: 4,
-                        color: 'var(--muted)',
-                        lineHeight: 1,
-                      }}
+                      aria-label={`Clear all session logs for ${group.identifier}`}
+                      className="text-theme-muted hover:text-theme-danger-text absolute top-1/2 right-1.5 -translate-y-1/2 p-1 leading-none opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                     >
                       <svg
+                        aria-hidden="true"
                         width="13"
                         height="13"
                         viewBox="0 0 16 16"
@@ -136,8 +108,8 @@ export function TimelineSidebar({
       </aside>
       {/* CORE-087 — below md the list collapses to a select above the detail pane
           (after the aside in DOM order, so desktop text lookups find the list first). */}
-      <div className="bg-theme-panel border-theme-line flex flex-shrink-0 items-center gap-2 border-b px-3 py-2 md:hidden">
-        <label htmlFor="timeline-issue-select" className="text-theme-text-secondary text-[11px]">
+      <div className="glass-panel flex flex-shrink-0 items-center gap-2 px-3 py-2 md:hidden">
+        <label htmlFor="timeline-issue-select" className="text-theme-text-secondary text-xs">
           Issue
         </label>
         <Select
@@ -147,7 +119,7 @@ export function TimelineSidebar({
           onChange={(event) => {
             onSelectIssue(event.target.value);
           }}
-          className="h-8 min-w-0 flex-1 text-xs"
+          className="h-9 min-w-0 flex-1 text-xs"
         >
           {selectedId === null && <option value="">Select an issue</option>}
           {issueGroups.map((group) => (

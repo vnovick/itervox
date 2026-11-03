@@ -1,0 +1,188 @@
+---
+title: Agent backends
+description: Run issues on Claude Code, Codex, OpenCode, the Cursor CLI, or any command that speaks the itervox agent protocol — how each backend is launched, resumed, and mapped onto permission modes, and the JSON-lines protocol for your own agent.
+sidebar:
+  order: 9
+---
+
+A **backend** is the agent CLI a run executes on. Itervox ships five:
+
+| Backend | Program | Selected by |
+|---|---|---|
+| `claude` | `claude` (Claude Code) | the default; a command whose program is `claude` |
+| `codex` | `codex` | a command whose program is `codex` |
+| `opencode` | `opencode` | a command whose program is `opencode` |
+| `cursor` | `cursor-agent` (Cursor CLI) | a command whose program is `cursor-agent` |
+| `custom` | your command | `backend: custom` only |
+
+The backend comes from the command's program name, or from `backend:` on
+`agent` or on a profile when the command is a wrapper script (and always for
+`custom`). A `backend:` that disagrees with a recognised program is refused —
+the command keeps its own backend and the daemon logs a warning.
+
+```yaml
+agent:
+  command: claude
+  profiles:
+    coder-opencode:
+      command: opencode --model anthropic/claude-sonnet-4-5
+    coder-cursor:
+      command: cursor-agent --model gpt-5
+    coder-mine:
+      command: ./scripts/my-agent.sh
+      backend: custom
+```
+
+Every backend runs the same way around the CLI: directly when the command
+is a plain absolute path, otherwise through your login shell (so `nvm`,
+`asdf` and friends resolve it); under `isolation: process` the whole command
+runs inside the sandbox; on an SSH worker it runs in the remote workspace
+through the same wrapper as Claude and Codex. The new backends also work
+with per-issue backend pins, `rate_limited` automations'
+`switch_to_backend`, `agent.backend_fallback` (any of them in `chain` and
+`profile_map`), `agent.rate_limit_error_patterns` (matched on the failure
+text) and the dashboard's backend selectors.
+
+At startup the daemon checks each configured CLI with `--version` (a custom
+command only needs to be found; it is not run). `itervox doctor` lists each
+agent program it finds on `PATH`, and `itervox doctor --deploy` says how to
+confirm the OpenCode and Cursor logins on the daemon's machine.
+
+> **Check each tool's terms.** Itervox starts the CLI exactly as you
+> configure it. Whether unattended, automated use is allowed on your account
+> is set by each tool's own terms of service — check them before you run it
+> this way.
+
+## OpenCode
+
+Each turn runs:
+
+```sh
+opencode run --format json [--session <id>] [--auto]   # prompt on stdin
+```
+
+- **Flags in your command are `run` flags.** Itervox puts `run` right after
+  the program, so `opencode --model openai/gpt-5 --agent build` becomes
+  `opencode run --model openai/gpt-5 --agent build --format json …`. Choose a
+  model with `--model provider/model`.
+- **Resume.** The session id from the stream (`ses_…`) is passed back with
+  `--session` on the next turn and when an answered question resumes the run.
+- **Permissions.** OpenCode cannot show a permission prompt in a headless
+  run. `permission_mode: bypass` (the default) passes `--auto`, which approves
+  every request your OpenCode permission rules do not deny.
+  `permission_mode: sandbox` leaves `--auto` off, so every request your rules
+  leave at `ask` is rejected (the model is told and carries on). OpenCode has
+  no filesystem sandbox: sandbox mode confines a run only as far as your
+  `opencode.json` `permission` rules do. Use `isolation: process` for real
+  containment.
+- **Tokens and cost.** OpenCode reports tokens and cost per step; Itervox
+  sums them per turn (reasoning tokens count as output, cache reads as cached
+  input) and reports the session's running cost, like Claude's.
+- **Questions.** In a headless run OpenCode cancels the model's own
+  question tool and continues, so its stream has no input-required event. An
+  issue parks for an answer only when the agent prints the
+  `<!-- itervox:needs-input -->` sentinel, which the default prompt asks for.
+- **Models.** `itervox models refresh --backend opencode` (and the
+  dashboard's Refresh) fills `agent.available_models.opencode` from
+  `opencode models`. It is part of `--backend all` when the CLI is installed.
+- **Not used:** `opencode serve` / `--attach`; each turn starts its own
+  process.
+
+## Cursor
+
+Each turn runs:
+
+```sh
+cursor-agent [your flags] -p --output-format stream-json [--resume <id>] --force --trust -- "<prompt>"
+```
+
+- **The prompt is an argument.** The Cursor CLI reads its prompt from the
+  command line only, so it is the last argument (after `--`). Locally the
+  login shell expands it from a file descriptor and over SSH from a shell
+  variable, so it is never re-parsed — but the operating system still limits
+  a single argument (128 KiB on Linux). Long prompts with many prior handoffs
+  can exceed it; Claude, Codex, OpenCode and custom take the prompt on stdin
+  and have no such limit.
+- **Edits need `--force`.** Without it the Cursor CLI only *proposes* file
+  changes in print mode, so both permission modes pass `--force` (and
+  `--trust`, so an untrusted workspace does not stop the run). The CLI has
+  no headless mode that edits files but confines commands, so
+  `permission_mode: sandbox` is not a confinement on Cursor — use
+  `isolation: process`.
+- **Resume** with `--resume <session_id>`; a model with `--model` in your
+  command. `cursor-agent` is recognised from the command; Cursor's newer
+  `agent` alias is not (the name is too generic), so a command starting with
+  `agent` needs `backend: cursor`.
+- **Stream.** Cursor's stream-json is Claude's (`system`, `assistant`,
+  `result` with `session_id`) plus `tool_call` started/completed lines, so
+  Itervox reads it with the Claude parser and maps the tool calls (`read`,
+  `edit`, `shell`, …). Token usage is read from the result line when the CLI
+  reports it; Cursor reports no cost.
+- **Questions:** as for OpenCode, only the sentinel parks an issue.
+
+## Custom backends: the itervox agent protocol
+
+`backend: custom` runs any command as an agent, as long as it speaks this
+protocol (version 1). Use it to wrap an agent Itervox does not ship a
+backend for, or your own loop around an API.
+
+```yaml
+agent:
+  backend: custom
+  command: ./docs/examples/custom-agent.sh
+```
+
+### Input
+
+The command runs in the issue's workspace (on an SSH worker: in the remote
+workspace) with:
+
+| What | Value |
+|---|---|
+| stdin | the whole prompt, then end of file |
+| `ITERVOX_AGENT_PROTOCOL` | `1` |
+| `ITERVOX_PERMISSION_MODE` | `bypass` or `sandbox` — the profile's `permission_mode`, for your wrapper to map |
+| `ITERVOX_SESSION_ID` | on a continuation turn only: the session id your command reported, to resume |
+| `ITERVOX_AGENT` | `1`, as for every agent Itervox starts |
+
+### Output
+
+One JSON object per line on stdout. Lines that are not JSON, and unknown
+`type`s, are ignored, so a future event never breaks an older daemon.
+
+| Event | Meaning |
+|---|---|
+| `{"type":"session","session_id":"abc"}` | the session id — what `ITERVOX_SESSION_ID` carries back |
+| `{"type":"text","text":"…"}` | assistant text (shown in the log; the last one is the turn's summary) |
+| `{"type":"tool_call","name":"bash","input":{"command":"make test"}}` | a tool call started |
+| `{"type":"tool_result","name":"bash","input":{…},"output":"…","is_error":false}` | a tool call finished (counted) |
+| `{"type":"usage","input_tokens":1200,"cached_input_tokens":0,"output_tokens":80,"cost_usd":0.012}` | tokens and cost since the previous `usage` line; Itervox keeps the session total |
+| `{"type":"input_required","question":"Which database?"}` | the agent needs a human answer: the issue waits, and the reply resumes the session |
+| `{"type":"rate_limit","kind":"quota","message":"…","resets_at":"2026-11-03T09:00:00Z","retry_after_seconds":60}` | a usage limit (`quota`) or transient throttle (`throttle`); feeds the backend breaker and `backend_fallback` |
+| `{"type":"done","result":"summary"}` | the turn succeeded |
+| `{"type":"failed","reason":"…"}` | the turn failed; `reason` is the failure text |
+
+`kind` defaults to what `message` says, else `quota`; `resets_at` is RFC
+3339; every field but `type` is optional.
+
+### Exit status
+
+`0` ends the turn — a success unless a `failed` line was printed. Any other
+status fails it, with the tail of stderr as the failure text. `75`
+(`EX_TEMPFAIL`) without a `rate_limit` line means "usage limit reached".
+
+### Example wrapper
+
+[`docs/examples/custom-agent.sh`](https://github.com/vnovick/itervox/blob/main/docs/examples/custom-agent.sh)
+wraps any tool that reads a prompt on stdin and prints text
+(`CUSTOM_AGENT_TOOL`, `cat` by default): it reports a session, runs the tool
+as one tool call, turns each output line into a text event, and ends with
+`done` or `failed`. Itervox's own tests run it through the custom backend.
+
+## What needs a real CLI to confirm
+
+Itervox's tests drive every backend with fake CLIs that print the documented
+formats. Before relying on a backend, run one issue end to end and check:
+OpenCode's `--auto` flag name on your version (older releases may differ);
+that your Cursor CLI accepts `--trust` and `--` before the prompt; and that
+the session id each CLI prints resumes the session it belongs to.

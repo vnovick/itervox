@@ -22,7 +22,7 @@ export function RunningRowMeta({
   return (
     <span
       data-testid={`running-row-meta-${row.identifier}`}
-      className="text-theme-muted flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px]"
+      className="text-theme-muted flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs"
     >
       <span title="Backend">{row.backend || '—'}</span>
       <span aria-hidden="true">@</span>

@@ -68,51 +68,60 @@ function NotificationEditor({ initial }: { initial: HubNotificationsResponse }) 
 
   return (
     <section className="flex flex-col gap-4" aria-label="Notification settings">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="text-theme-text flex flex-col gap-1 text-xs">
-          <label htmlFor="hub-digest-interval">Digest interval (minutes)</label>
-          <Input
-            id="hub-digest-interval"
-            type="number"
-            min={1}
-            max={1440}
-            className="w-28"
-            value={draft.digest_interval_minutes}
-            onChange={(e) => {
-              setDraft({
-                ...draft,
-                digest_interval_minutes: Math.min(1440, Math.max(1, Number(e.target.value) || 1)),
-              });
-            }}
-          />
-        </div>
-        <p className="text-theme-muted max-w-sm text-xs">
-          Input required and guardrail approvals are sent at once; other events are batched into one
-          digest per interval.
-        </p>
-        <Button
-          className="ml-auto"
-          variant="primary"
-          disabled={!dirty || save.isPending}
-          onClick={onSave}
-        >
-          {save.isPending ? 'Saving…' : 'Save'}
-        </Button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2" aria-label="Test notifications">
-        {initial.channels.map((ch) => (
+      <div className="glass-panel flex flex-col gap-3 px-5 py-[18px]">
+        <h2 className="section-title text-base">Notifications</h2>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col">
+            <label htmlFor="hub-digest-interval" className="field-label">
+              Digest interval (minutes)
+            </label>
+            <Input
+              id="hub-digest-interval"
+              type="number"
+              min={1}
+              max={1440}
+              className="w-28"
+              value={draft.digest_interval_minutes}
+              onChange={(e) => {
+                setDraft({
+                  ...draft,
+                  digest_interval_minutes: Math.min(1440, Math.max(1, Number(e.target.value) || 1)),
+                });
+              }}
+            />
+          </div>
+          <p className="text-theme-text-secondary max-w-sm text-xs">
+            Input required and guardrail approvals are sent at once; other events are batched into
+            one digest per interval.
+          </p>
           <Button
-            key={ch.name}
-            size="sm"
-            disabled={!ch.available || test.isPending}
-            title={ch.available ? undefined : `${CHANNEL_LABELS[ch.name] ?? ch.name} is not set up`}
-            onClick={() => {
-              onTest(ch.name);
-            }}
+            className="ml-auto"
+            variant="primary"
+            pill
+            disabled={!dirty || save.isPending}
+            onClick={onSave}
           >
-            Send test {CHANNEL_LABELS[ch.name] ?? ch.name}
+            {save.isPending ? 'Saving…' : 'Save'}
           </Button>
-        ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-2" aria-label="Test notifications">
+          {initial.channels.map((ch) => (
+            <Button
+              key={ch.name}
+              size="sm"
+              pill
+              disabled={!ch.available || test.isPending}
+              title={
+                ch.available ? undefined : `${CHANNEL_LABELS[ch.name] ?? ch.name} is not set up`
+              }
+              onClick={() => {
+                onTest(ch.name);
+              }}
+            >
+              Send test {CHANNEL_LABELS[ch.name] ?? ch.name}
+            </Button>
+          ))}
+        </div>
       </div>
       {projects.length === 0 && (
         <EmptyState

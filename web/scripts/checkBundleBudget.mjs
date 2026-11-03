@@ -17,10 +17,18 @@ export const BUDGET = {
    * All JavaScript in assets/ (before #211: 2,118,115 bytes). Raised from
    * 1900 KiB by #251: the New task form (+8.4 KiB in the Dashboard chunk)
    * and its lazy issue-detail and query chunks took the total to ~1901 KiB.
+   * Raised from 1920 KiB for the issue view, the embedded desktop shell and
+   * the diff review upgrades, which together leave the visual refresh no
+   * headroom under the old cap.
    */
-  totalJsBytes: 1920 * KB,
-  /** The entry script plus its modulepreloads from index.html (before #211: 499,682). */
-  initialJsBytes: 520 * KB,
+  totalJsBytes: 2200 * KB,
+  /**
+   * The entry script plus its modulepreloads from index.html (before #211:
+   * 499,682). Raised from 520 KiB with the total: the visual refresh's shell
+   * sat at ~515 KiB, and the embedded shell's top bar and More menu load
+   * with it.
+   */
+  initialJsBytes: 600 * KB,
   /** Any single chunk (the CodeMirror prompt editor is the largest, ~393 kB). */
   maxChunkBytes: 410 * KB,
   /** Per-chunk caps and forbidden markers, matched on the hashed file name. */

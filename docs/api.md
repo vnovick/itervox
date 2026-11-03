@@ -211,6 +211,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/issues/{identifier}/pr-review` | operator (one GitHub review, never merges, #238) |
 | `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
 | `POST` | `/api/v1/issues/{identifier}/review-comments` | operator (to the running agent or the PR, #238) |
+| `POST` | `/api/v1/issues/{identifier}/review-continue` | operator (the whole draft review to the agent: steer the live run, or queue it for a new run) |
 | `POST` | `/api/v1/issues/{identifier}/profile` | operator |
 | `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |
@@ -501,8 +502,16 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" http://localhost:8090/metrics
 | `itervox_tracker_poll_consecutive_failures` | gauge | | Consecutive failed (non-rate-limited) candidate polls. |
 | `itervox_tracker_last_error_timestamp_seconds` | gauge | `kind` | Unix time of the last tracker failure (`outage` or `rate_limited`); absent when none. |
 | `itervox_event_loop_last_idle_timestamp_seconds` | gauge | | Unix time the event loop last finished an iteration. |
+| `itervox_host_load1` | gauge | | Host one-minute load average (system visibility; absent on Windows). |
+| `itervox_host_memory_total_bytes` | gauge | | Host physical memory. |
+| `itervox_host_memory_available_bytes` | gauge | | Host memory available to new work. |
+| `itervox_workspace_disk_free_bytes` | gauge | | Free space on the volume holding `workspace.root`. |
+| `itervox_workspace_disk_low` | gauge | | `1` while free workspace disk is below `workspace.disk_warn_free_gb` (or the pause threshold). |
+| `itervox_run_cpu_percent` | gauge | `identifier` | A live local run's CPU use, percent of one core, summed over its process tree. |
+| `itervox_run_memory_rss_bytes` | gauge | `identifier` | A live local run's resident memory, summed over its process tree. |
+| `itervox_run_processes` | gauge | `identifier` | A live local run's process count. |
 
-No series carries an issue identifier. The process-wide counters survive a
+Only the `itervox_run_*` gauges carry an issue identifier, and only for runs that are live now (bounded by `agent.max_concurrent_agents`); the system families appear only on a daemon with the run monitor ([System visibility](https://itervox.dev/guides/system-visibility/)). The process-wide counters survive a
 `WORKFLOW.md` reload; the ones marked "resets on reload" belong to the
 orchestrator generation and restart from zero, which `rate()` handles as a
 counter reset. A scrape never waits on a settings save: it reads the
@@ -697,7 +706,13 @@ Useful top-level fields include:
   client-side `total_cost_usd` estimates — counted per agent session, so a
   resumed session is not counted twice — and is `null` until a Claude run
   reports a cost. Codex reports no cost: `codexRuns > 0` means the estimate
-  covers Claude runs only.
+  covers Claude runs only. `costCoverage` also carries `runsByBackend` (runs
+  per backend name, e.g. `{ "claude": 1, "opencode": 2, "cursor": 1 }`) and
+  `costBackends` (the backends that reported a cost; OpenCode and custom
+  backends can report one). A backend with runs that is not in
+  `costBackends` is left out of the estimate. `claudeRuns` and `codexRuns`
+  count only their own backend; both new fields are omitted until a run has
+  counted.
 - `recentFailures` — always an array (possibly empty) on a current daemon:
   the last 100 operator-relevant failures, oldest recorded first. Each row is
   `{ "kind", "identifier"?, "source"?, "message", "occurredAt", "recordedAt",
@@ -722,6 +737,37 @@ with a lower- or mixed-case name (`password=`, `api_key=`, `"apiKey":`,
 user), and long random-looking tokens (also inside a path) appear as `***`.
 Vendor request ids (`req_…`, `msg_…`), SRI hashes, git SHAs, UUIDs and
 ordinary paths stay readable.
+
+**System visibility.** On a daemon with the run monitor (capability
+`"system_visibility"`), each `running[]` row carries `resources` (the run's
+latest sample: `cpuPercent`, `cpuSeconds`, `rssBytes`, `peakRssBytes`,
+`processes`, `peakProcesses`, `diskReadBytes`, `diskWriteBytes`,
+`diskIoKnown`, `netConnections`, `topCommands[]` of `{pid, name, args,
+cpuPercent, rssBytes}`, `samples`, `sampledAt`; absent before the first
+sample), each `history[]` row `resources` (`cpuSeconds`, `peakCpuPercent`,
+`lastRssBytes`, `peakRssBytes`, `peakProcesses`, `diskReadBytes`,
+`diskWriteBytes`, `commands`, `filesWritten`, `connections`,
+`activityMode`, `samples`), and the snapshot a `system` block:
+
+```json
+"system": {
+  "machine": {
+    "load1": 2.1, "load5": 1.7, "load15": 1.2, "loadKnown": true, "cpuCount": 8,
+    "memTotalBytes": 17179869184, "memAvailableBytes": 6442450944, "memPressure": "ok",
+    "disk": {"path": "/home/dev/.itervox/workspaces/web-app", "freeBytes": 3435973836, "totalBytes": 536870912000},
+    "diskWarnBytes": 5368709120, "diskPauseBytes": 0, "diskLow": true, "diskCritical": false,
+    "sampledAt": "2026-11-02T10:00:00Z"
+  },
+  "runs": {"runs": 1, "cpuPercent": 82.5, "rssBytes": 734003200, "processes": 6},
+  "activityMode": "sampled",
+  "platform": "linux"
+}
+```
+
+`memPressure` is `ok`, `moderate` or `high`; `loadKnown` is `false` on
+Windows; `activityModeReason` says why precise mode fell back. Below
+operator scope each `topCommands[]` entry keeps its `name` but not its
+`args`. See [System visibility](https://itervox.dev/guides/system-visibility/).
 
 ### `GET /summary`
 
@@ -769,6 +815,13 @@ token like `/state`, and built from the same snapshot.
   question, queued time) and each recent failure (kind, identifier, source,
   message, time, count), so a new question or failure changes it even when
   the counts do not. Responses carry `Cache-Control: no-cache`.
+
+- `system` (system visibility; absent without the run monitor):
+  `{"runsRssBytes": 1207959552, "diskLow": true, "diskCritical": false,
+  "diskFreeBytes": 3221225472}` — the live runs' memory rounded down to
+  64 MiB and the workspace disk warning with its free space rounded down to
+  256 MiB, so the ETag moves only when the tray's text would. It is part of
+  the ETag digest.
 
 Send the tag back as `If-None-Match: "<etag>"` (a list, `W/` tags and `*`
 are accepted): while it is current the answer is `304` with the `ETag`
@@ -1554,6 +1607,62 @@ not_supported` (a daemon built without the endpoint). Every git call runs
 through `internal/gitexec` on the request's goroutine — never on the
 orchestrator's event loop — under a 15-second timeout.
 
+### System visibility
+
+A run's resource use rides on the run context and the snapshot (see
+[`GET /state`](#get-state)); its activity audit has its own route. The
+daemon advertises both with `"system_visibility"` in `capabilities`. Guide:
+[System visibility](https://itervox.dev/guides/system-visibility/).
+
+`GET /issues/{identifier}/context` gains `run.resources` (the latest sample
+of a live run, the last one of a finished run the monitor still holds; the
+fields of `running[].resources` on `/state`). Below operator scope its
+`topCommands[].args` are removed.
+
+#### `GET /issues/{identifier}/activity`
+
+**Operator.** The activity audit of the issue's run `?run=<runId>`, or of
+its latest run (the live one, else the newest recorded) without `run`.
+
+```json
+{
+  "identifier": "ENG-12", "runId": "r-8f2c", "live": true,
+  "mode": "sampled", "platform": "linux",
+  "supports": {"commands": true, "files": true, "connections": true},
+  "notes": ["Sampled every 2s from /proc: short-lived processes, files and connections between two samples may be missed."],
+  "workspace": "/home/dev/.itervox/workspaces/web-app/ENG-12",
+  "startedAt": "2026-11-02T10:00:00Z", "updatedAt": "2026-11-02T10:04:31Z",
+  "commands": [{"name": "git", "args": "status --short", "pid": 4300, "count": 4,
+                "firstAt": "2026-11-02T10:01:00Z", "lastAt": "2026-11-02T10:04:00Z"}],
+  "files": [{"path": "/home/dev/.cache/go-build/trim.txt", "write": true, "outsideWorkspace": true,
+             "command": "go", "count": 1, "firstAt": "…", "lastAt": "…"}],
+  "connections": [{"protocol": "tcp", "remote": "140.82.112.3:443", "state": "ESTABLISHED",
+                   "command": "git", "count": 1, "firstAt": "…", "lastAt": "…"}],
+  "dropped": {"commands": 0, "files": 0, "connections": 0},
+  "runs": [{"runId": "r-8f2c", "startedAt": "2026-11-02T10:00:00Z", "live": true}]
+}
+```
+
+- `mode` is `off`, `sampled` or `precise` (`modeReason` says why precise
+  mode fell back); `supports` and `notes` say what the platform and mode
+  can record (no file activity on macOS or Windows; sampled mode may miss
+  short-lived activity; an SSH run shows only its local `ssh` client).
+- Each distinct command line, path and remote address is one entry with a
+  `count`. Precise mode lists files opened for writing and connect
+  attempts (`protocol` `inet` / `inet6`); sampled mode lists open files
+  (`write` from the open flags) and established connections.
+- `outsideWorkspace` marks a write outside the run's workspace.
+- At most 500 commands, 1000 files and 300 connections per run;
+  `dropped` counts distinct entries the caps refused.
+- Command lines and paths are redacted at the source (the log redaction
+  plus `NAME=value` values, credential-named flag values and URL user
+  info).
+- `runs` lists the issue's recorded runs, newest first (at most 20).
+
+Errors: `404 no_activity` (nothing recorded for the issue or that run),
+`403 insufficient_scope` below operator, `503 not_supported` without the
+run monitor.
+
 ### Change review (#238)
 
 Act on the diff above without leaving Itervox: comment on a line or range
@@ -1642,6 +1751,85 @@ One line or range comment, sent to the running agent or posted on the PR.
   `422 github_rejected`, with GitHub's message). `409 no_pr`, `409
   pr_closed` (closed or merged), `404 pr_not_found` (the credentials cannot
   read the PR), `502 github_failed`.
+
+#### `POST /issues/{identifier}/review-continue`
+
+The operator's whole draft review — line and range comments plus an
+overall note — sent to the agent in one action (the dashboard's **Send to
+agent**). Operator scope; advertised as the `review_continue` capability.
+
+```json
+{
+  "comments": [
+    {"path": "internal/server/changes.go", "startLine": 12, "line": 14, "side": "RIGHT",
+     "body": "This should return 404, not 500.", "quote": "+\twriteError(w, 500, …)"},
+    {"path": "web/src/a.ts", "line": 3, "side": "LEFT", "body": "Keep this check."}
+  ],
+  "note": "Close. Also cover the empty case in a test.",
+  "moveToActive": true,
+  "alsoPostOnPR": true
+}
+```
+
+- Each comment has the fields of `review-comments` (`line`, `startLine`,
+  `side`, `startSide`, `body` at most 8 KiB, `quote` cut to 4 KiB). At most
+  50 comments; `note` is at most 8 KiB; a comment or a note is required
+  (`400 bad_request` with `field`).
+- **A live run** gets the review as steering (the [Sessions](#sessions)
+  path): ONE message listing every comment (file and lines, the quoted
+  lines in a fenced block, the comment) after the note. Quotes are
+  shortened to fit the 10 KiB message limit; only a review whose comments
+  alone do not fit is split into numbered parts (`[Operator review, part 1
+  of 2]`). `agent` is `{"delivery":"steered","runId":"…","messages":1}`.
+- **No live run**: the review is queued for the issue's next worker run and
+  `agent` is `{"delivery":"queued","queuedAt":"…","movedTo":"In Progress"}`.
+  The queue is runtime state (`review_continuations.json` next to the
+  daemon log, written by the ledger writer), so it survives a restart until
+  a run takes it. That run writes it into the issue's worktree as
+  `.itervox/handoff/<ISO8601>_operator-review.md` before its first prompt,
+  so the **Prior Agent Handoffs** block carries it; the record is dropped
+  once the file is written (a run that exits before writing it leaves it
+  for the next run). A paused issue is resumed (`"resumed": true`).
+  - `moveToActive` (default `true`): an issue outside the active states is
+    moved to the first active state through the same path as the board's
+    **Dispatch** (`PATCH .../state`), and the normal tick starts it.
+    `movedTo` names the state; a failed move takes the review back and
+    answers with the tracker's error.
+  - `moveToActive: false`: no tracker write. The issue is dispatched in
+    its own state on a tick whose gates admit it — free slots, no dispatch
+    pause, no `pause_dispatch_when_any_in_state` hit, the per-state limit,
+    tracker and gating inferred blockers, branch in use, then the backend
+    breaker and `agent.budget` — and stays queued until then. That run does
+    not move the issue to the working state, keeps taking turns like any run
+    although the issue is outside the active states (until the agent is done,
+    `agent.max_turns`, input required, a stall or turn timeout, or a stop),
+    reconciliation does not stop it for being outside the active states (a
+    terminal state other than `tracker.completion_state` still does, and so
+    does the turn loop), and it makes no completion move: the issue stays in
+    its state. An issue in another terminal state is refused
+    (`409 issue_closed`).
+  - The run works on the issue's own branch (an open PR's branch, else the
+    issue's branch). When `workspace.auto_clear_workspace` removed the
+    worktree and its local branch after the last run, the worktree is
+    recreated from `origin/<branch>` (in a `workspace.clone_url` bare clone
+    and in the operator's own clone), not from the base branch.
+- `alsoPostOnPR: true` and the issue has a PR: the comments (and the note
+  as the body) are also posted as ONE GitHub review with event `comment`
+  (the `pr-review` path). `pr` reports it — `{"posted":true,"url":"…",
+  "comments":2}` or `{"posted":false,"error":"github_rejected","message":
+  "…"}` (`no_pr`, `pr_closed`, `pr_not_found`, `github_timeout`,
+  `github_failed`). A PR failure never undoes the agent delivery; the
+  response is still `202`.
+- Errors (nothing is sent anywhere): `409 input_required` (answer with
+  `provide-input`), `409 issue_closed`, `409 no_active_state`, `404
+  not_found`, `503 not_configured`.
+
+The run that took a queued review has `continuedFromReview: true` and
+`reviewComments` in its history row (the Timeline shows "Continued from
+your review (N comments)"), and `/api/v1/state` lists waiting reviews in
+`queuedReviews` (`identifier`, `comments`, `hasNote`, `moveToActive`,
+`queuedAt`; never the text). A feed event `review_comment_posted` (`via:
+agent`, `count`) is recorded; the comment text is never logged.
 
 #### `POST /issues/{identifier}/pr-review`
 
@@ -1855,7 +2043,7 @@ message) when the tracker refuses.
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
 | `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
-| `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
+| `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` (any of `claude`, `codex`, `opencode`, `cursor`, `custom`) or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true,"via"?:"slack"}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/failures/ack` | `{"upTo":"2026-09-27T10:00:00Z"}` | `202 {"queued":true}` |
@@ -2314,7 +2502,7 @@ fields.
 | `GET` | `/settings/reviewer` | `{"profile":"reviewer","auto_review":true}` |
 | `PUT` | `/settings/reviewer` | `{"ok":true}` |
 | `GET` | `/settings/models` | `{ "<backend>": [ModelOption] }` |
-| `POST` | `/settings/models/refresh` | `{"ok":true,"models":{ "<backend>": [ModelOption] }}` — body `{"backend":"claude" \| "codex" \| "all"}` (default `all`); rewrites `agent.available_models` in `WORKFLOW.md` and the live model list, without a reload. `503 settings_reloading` like the other settings writes |
+| `POST` | `/settings/models/refresh` | `{"ok":true,"models":{ "<backend>": [ModelOption] }}` — body `{"backend":"claude" \| "codex" \| "opencode" \| "all"}` (default `all`; `opencode` lists `opencode models` and is left out of `all` when that finds none); rewrites `agent.available_models` in `WORKFLOW.md` and the live model list, without a reload. `503 settings_reloading` like the other settings writes |
 
 `PUT /settings/reviewer` request body:
 

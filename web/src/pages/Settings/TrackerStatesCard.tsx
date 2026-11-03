@@ -4,6 +4,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { SAVE_OK_BANNER_MS } from '../../utils/timings';
 import { TagInput } from '../../components/itervox/TagInput';
+import { buttonClass } from '../../components/ui/button/buttonStyles';
+import { inputCls } from './formStyles';
 
 // ─── Zod schema ──────────────────────────────────────────────────────────────
 
@@ -95,9 +97,8 @@ export function TrackerStatesCard({
   };
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Tracker States</h2>
+    <div>
+      <div className="mb-4">
         <p className="text-theme-text-secondary mt-0.5 text-xs">
           Configure which states the orchestrator picks up (Active), marks as done (Terminal), and
           transitions to on completion. Changes are saved to the project settings file
@@ -109,13 +110,10 @@ export function TrackerStatesCard({
         onSubmit={(e) => {
           void handleSubmit(doSubmit)(e);
         }}
-        className="space-y-5 px-5 py-5"
+        className="space-y-5"
       >
         <div>
-          <label
-            htmlFor="tracker-active-states"
-            className="mb-2 block text-xs font-medium tracking-wider uppercase"
-          >
+          <label htmlFor="tracker-active-states" className="field-label">
             Active States
           </label>
           <TagInput
@@ -124,8 +122,6 @@ export function TrackerStatesCard({
             onChange={(chips) => {
               setValue('activeStates', chips, { shouldValidate: true });
             }}
-            chipClassName="bg-[var(--accent-soft)] text-[var(--accent-strong)]"
-            addButtonClassName="bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:opacity-80"
           />
           {errors.activeStates && (
             <p role="alert" className="text-theme-danger-text mt-1 text-xs">
@@ -135,10 +131,7 @@ export function TrackerStatesCard({
         </div>
 
         <div>
-          <label
-            htmlFor="tracker-backlog-states"
-            className="mb-2 block text-xs font-medium tracking-wider uppercase"
-          >
+          <label htmlFor="tracker-backlog-states" className="field-label">
             Terminal States
           </label>
           <TagInput
@@ -147,8 +140,6 @@ export function TrackerStatesCard({
             onChange={(chips) => {
               setValue('terminalStates', chips, { shouldValidate: true });
             }}
-            chipClassName="bg-[var(--bg-soft)] text-[var(--text-secondary)]"
-            addButtonClassName="bg-[var(--bg-soft)] text-[var(--text-secondary)] hover:opacity-80"
           />
           {errors.terminalStates && (
             <p role="alert" className="text-theme-danger-text mt-1 text-xs">
@@ -158,17 +149,14 @@ export function TrackerStatesCard({
         </div>
 
         <div>
-          <label
-            htmlFor="tracker-terminal-states"
-            className="mb-2 block text-xs font-medium tracking-wider uppercase"
-          >
+          <label htmlFor="tracker-terminal-states" className="field-label">
             Completion State
           </label>
           <input
             id="tracker-terminal-states"
             type="text"
             placeholder="e.g. In Review (leave empty to skip)"
-            className="border-theme-line bg-theme-panel-strong text-theme-text focus:border-theme-accent w-64 rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
+            className={inputCls}
             {...register('completionState')}
           />
           <p className="text-theme-muted mt-1 text-xs">
@@ -181,7 +169,7 @@ export function TrackerStatesCard({
           <button
             type="submit"
             disabled={isSubmitting}
-            className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+            className={buttonClass('primary', 'md', undefined, true)}
           >
             {isSubmitting ? 'Saving…' : 'Save Changes'}
           </button>

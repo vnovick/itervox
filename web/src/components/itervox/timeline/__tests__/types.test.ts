@@ -6,7 +6,7 @@ import {
   fromHistory,
   extractSubagents,
   filterByRun,
-  dotStyle,
+  dotClass,
 } from '../types';
 import type { NormalisedSession } from '../types';
 
@@ -219,18 +219,21 @@ describe('filterByRun', () => {
   });
 });
 
-describe('dotStyle', () => {
-  it('returns success style for live', () => {
-    const style = dotStyle('live');
-    expect(style.background).toBe('var(--success)');
+describe('dotClass', () => {
+  it('returns the pulsing ok tone for live', () => {
+    expect(dotClass('live')).toBe('dot-ok animate-pulse');
   });
   it('returns accent for succeeded', () => {
-    expect(dotStyle('succeeded').background).toBe('var(--accent)');
+    expect(dotClass('succeeded')).toBe('bg-theme-accent');
   });
   it('returns danger for failed', () => {
-    expect(dotStyle('failed').background).toBe('var(--danger)');
+    expect(dotClass('failed')).toBe('dot-danger');
   });
-  it('returns muted for cancelled', () => {
-    expect(dotStyle('cancelled').background).toBe('var(--muted)');
+  it('returns warn for stalled and input_required', () => {
+    expect(dotClass('stalled')).toBe('dot-warn');
+    expect(dotClass('input_required')).toBe('dot-warn');
+  });
+  it('returns idle for cancelled', () => {
+    expect(dotClass('cancelled')).toBe('dot-idle');
   });
 });

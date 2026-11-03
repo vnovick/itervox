@@ -64,3 +64,37 @@ describe('ThemeToggle', () => {
     expect(document.documentElement.getAttribute('data-theme')).not.toBe('light');
   });
 });
+
+// Visual refresh — the sidebar's labelled "Theme" button.
+describe('ThemeToggle (labelled sidebar button)', () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute('data-theme');
+    document.documentElement.classList.remove('dark');
+    localStorage.clear();
+  });
+
+  it('shows the visible label "Theme" and keeps it in the accessible name', () => {
+    renderToggle();
+    const btn = screen.getByRole('button', { name: 'Theme: switch to light mode' });
+    expect(btn).toHaveTextContent(/^Theme$/);
+    expect(btn).toHaveAttribute('type', 'button');
+    expect(btn).toHaveAttribute('data-theme-current', 'dark');
+  });
+
+  it('names the next theme and flips data-theme on <html> both ways', () => {
+    renderToggle();
+    fireEvent.click(screen.getByRole('button', { name: 'Theme: switch to light mode' }));
+    expect(document.documentElement).toHaveAttribute('data-theme', 'light');
+    expect(document.documentElement).not.toHaveClass('dark');
+    const btn = screen.getByRole('button', { name: 'Theme: switch to dark mode' });
+    expect(btn).toHaveAttribute('data-theme-current', 'light');
+    fireEvent.click(btn);
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+    expect(document.documentElement).toHaveClass('dark');
+  });
+
+  it('uses the glass chip surface', () => {
+    renderToggle();
+    expect(screen.getByRole('button')).toHaveClass('glass-chip');
+  });
+});

@@ -21,12 +21,12 @@ function toastStyle(variant: ToastItem['variant']): CSSProperties {
       : variant === 'success'
         ? ['var(--success-soft)', 'var(--success-text)']
         : ['var(--accent-soft)', 'var(--accent-strong)'];
-  // The translucent -soft tint is layered over a solid --panel so the text
-  // contrast is measured against a known surface, not whatever the toast
-  // happens to overlap.
+  // The translucent -soft tint is layered over the opaque --surface so the
+  // text contrast is measured against a known surface, not whatever the
+  // toast happens to overlap.
   return {
     borderColor: soft,
-    background: `linear-gradient(${soft}, ${soft}), var(--panel)`,
+    background: `linear-gradient(${soft}, ${soft}), var(--surface)`,
     color: text,
   };
 }
@@ -46,7 +46,7 @@ function ToastEntry({ toast, onDismiss }: { toast: ToastItem; onDismiss: (id: st
       role="presentation"
       data-testid="toast"
       onKeyDown={handleKeyDown}
-      className="pointer-events-auto flex max-w-sm min-w-[240px] items-start gap-3 rounded-[var(--radius-md)] border px-4 py-3 text-sm shadow-lg"
+      className="pointer-events-auto flex max-w-sm min-w-[240px] items-start gap-3 rounded-[var(--radius-md)] border px-4 py-3 text-sm shadow-[var(--sheet-shadow)]"
       style={toastStyle(toast.variant)}
     >
       <span className="flex-1">{toast.message}</span>

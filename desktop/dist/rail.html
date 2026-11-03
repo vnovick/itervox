@@ -6,90 +6,102 @@
      the page has no IPC and no network access of its own. Choosing a row
      navigates to /__itervox/rail/switch, which the window intercepts and
      shows that project's dashboard beside the rail; the row menu, pins,
-     drag-and-drop and the collapse button work the same way. -->
+     drag-and-drop, the collapse button and "Add project" work the same
+     way. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Projects — Itervox</title>
+<!-- A system material behind the page (src-tauri/src/material.rs): mark
+     <html> before the stylesheet applies, so the first paint is right. -->
+<script>(function(){var m=window.__ITERVOX_MATERIAL__;if(m)document.documentElement.setAttribute("data-material",m);})();</script>
+<link rel="stylesheet" href="theme.css">
 <style>
-  :root { color-scheme: light dark; --bg:#f4f2ef; --panel:#fff; --line:#e4e1dc; --text:#1d1b19;
-    --muted:#77716a; --accent:#d9480f; --active:#ffffff; --badge-bg:#c2410c; --badge:#fff;
-    --ok:#16a34a; --stopped:#a8a29e; --down:#dc2626; --token:#d97706; --pending:#2563eb; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#121110; --panel:#1d1b19; --line:#33302c; --text:#eeeae4; --muted:#9a938a;
-      --accent:#fb923c; --active:#26231f; --badge-bg:#fb923c; --badge:#1d1b19;
-      --ok:#4ade80; --stopped:#78716c; --down:#f87171; --token:#fbbf24; --pending:#60a5fa; }
-  }
-  * { box-sizing: border-box; }
+  /* Layout only: colours, surfaces, radii and shadows come from theme.css. */
   html, body { height:100%; }
-  body { margin:0; font:13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background:var(--bg); color:var(--text); border-right:1px solid var(--line);
-    display:flex; flex-direction:column; overflow:hidden; user-select:none; -webkit-user-select:none; }
-  header { display:flex; align-items:center; gap:6px; padding:10px 8px 6px 12px; }
-  h1 { margin:0; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.05em;
+  body { font-size:13px; line-height:1.35; overflow:hidden; user-select:none; -webkit-user-select:none;
+    padding:10px; }
+  .rail { display:flex; flex-direction:column; height:100%; border-radius:var(--r-panel); overflow:hidden; }
+  header { display:flex; align-items:center; gap:6px; padding:12px 8px 4px 18px; }
+  h1 { margin:0; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em;
     color:var(--muted); flex:1; }
-  button { font:inherit; color:inherit; }
-  #toggle { background:none; border:1px solid transparent; border-radius:6px; padding:2px 6px;
+  #toggle { background:none; border:1px solid transparent; border-radius:var(--r-pill); padding:2px 8px;
     cursor:pointer; color:var(--muted); font-size:14px; }
-  #toggle:hover { border-color:var(--line); }
-  nav { flex:1; overflow-y:auto; padding:0 6px 12px; }
-  h2 { margin:12px 6px 4px; font-size:11px; font-weight:600; color:var(--muted);
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #toggle:hover { background:var(--hover); }
+  nav { flex:1; overflow-y:auto; padding:0 8px 10px; }
+  h2 { margin:14px 10px 4px; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase;
+    letter-spacing:.06em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   ul { list-style:none; margin:0; padding:0; }
   li { position:relative; }
-  button.row { display:flex; align-items:center; gap:8px; width:100%; text-align:left; cursor:pointer;
-    background:none; border:1px solid transparent; border-radius:7px; padding:5px 6px; margin:1px 0; }
-  button.row:hover { background:var(--panel); }
-  button.row[aria-current="page"] { background:var(--active); border-color:var(--line); font-weight:600; }
+  button.row { display:flex; align-items:center; gap:10px; width:100%; min-height:40px; text-align:left;
+    cursor:pointer; background:none; border:1px solid transparent; border-radius:var(--r-row); padding:0 10px;
+    margin:2px 0; font-size:14px; }
+  button.row:hover { background:var(--hover); }
+  button.row[aria-current="page"] { font-weight:600; background:var(--card); border-color:var(--card-border);
+    box-shadow:var(--shadow-card); }
   button.row.closed { color:var(--muted); cursor:default; }
-  button.row:focus-visible, #toggle:focus-visible, .menu button:focus-visible {
-    outline:2px solid var(--accent); outline-offset:1px; }
-  .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--stopped); }
-  .dot.running { background:var(--ok); }
-  .dot.unreachable { background:var(--down); }
-  .dot.token_required { background:var(--token); }
-  .dot.pending { background:var(--pending); }
+  button.row:focus-visible, #toggle:focus-visible, .menu button:focus-visible { outline-offset:1px; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dot-idle); }
+  .dot.running { background:var(--dot-ok); }
+  .dot.unreachable { background:var(--dot-down); }
+  .dot.token_required { background:var(--dot-warn); }
+  .dot.pending { background:var(--dot-pending); }
   .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .initials { display:none; width:24px; text-align:center; font-weight:600; font-size:12px; }
-  .count { color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
-  .badge { border-radius:999px; padding:0 6px; font-size:11px; font-weight:700; line-height:17px;
-    background:var(--badge-bg); color:var(--badge); font-variant-numeric:tabular-nums; }
+  .count, .state { color:var(--text2); font-size:12px; font-weight:400; white-space:nowrap;
+    font-variant-numeric:tabular-nums; }
+  .state { color:var(--muted); }
+  .badge { font-size:12px; font-weight:600; line-height:18px; white-space:nowrap; color:var(--warn);
+    font-variant-numeric:tabular-nums; }
   .pin { color:var(--muted); font-size:10px; }
-  li.drop-before::before, li.drop-after::after { content:""; position:absolute; left:4px; right:4px;
+  li.drop-before::before, li.drop-after::after { content:""; position:absolute; left:6px; right:6px;
     height:2px; background:var(--accent); border-radius:1px; }
   li.drop-before::before { top:-1px; }
   li.drop-after::after { bottom:-1px; }
-  .empty { color:var(--muted); margin:8px 6px; }
-  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden;
-    clip:rect(0,0,0,0); white-space:nowrap; border:0; }
-  .menu { position:fixed; z-index:10; min-width:180px; background:var(--panel); border:1px solid var(--line);
-    border-radius:8px; padding:4px; box-shadow:0 6px 24px rgba(0,0,0,.18); }
+  .empty { color:var(--muted); margin:10px; }
+  footer { padding:8px; }
+  #add-project { display:flex; align-items:center; justify-content:center; gap:6px; width:100%; min-height:40px;
+    border-radius:var(--r-card); font-size:14px; }
+  .menu { position:fixed; z-index:10; min-width:180px; border-radius:var(--r-card); padding:6px; }
   .menu[hidden] { display:none; }
-  .menu button { display:block; width:100%; text-align:left; background:none; border:0; border-radius:5px;
-    padding:5px 8px; cursor:pointer; }
-  .menu button:hover, .menu button:focus { background:var(--bg); }
-  .menu button[disabled] { color:var(--muted); cursor:default; }
+  .menu button { display:block; width:100%; text-align:left; background:none; border:0; border-radius:var(--r-item);
+    padding:6px 10px; cursor:pointer; font-size:13px; }
+  .menu button:hover, .menu button:focus { background:var(--hover); }
+  .menu button[disabled] { color:var(--muted); cursor:default; background:none; }
+  @media (forced-colors: active) {
+    button.row[aria-current="page"] { outline:2px solid CanvasText; }
+  }
   /* Collapsed: initials, dot and badge only; names stay for screen readers. */
-  body.collapsed header { justify-content:center; padding:10px 0 6px; }
-  body.collapsed h1, body.collapsed h2 .title, body.collapsed .count, body.collapsed .pin { display:none; }
-  body.collapsed h2 { margin:8px 4px 2px; border-top:1px solid var(--line); height:0; }
-  body.collapsed nav { padding:0 4px 12px; }
-  body.collapsed button.row { justify-content:center; gap:2px; padding:5px 2px; position:relative; }
+  body.collapsed { padding:6px; }
+  body.collapsed .rail { border-radius:var(--r-bar); }
+  body.collapsed header { justify-content:center; padding:10px 0 4px; }
+  body.collapsed h1, body.collapsed h2 .title, body.collapsed .count, body.collapsed .pin,
+  body.collapsed .state, body.collapsed .unit, body.collapsed #add-project .label { display:none; }
+  body.collapsed h2 { margin:8px 6px 2px; border-top:1px solid var(--hairline); height:0; }
+  body.collapsed nav { padding:0 4px 10px; }
+  body.collapsed footer { padding:4px; }
+  body.collapsed button.row { justify-content:center; gap:2px; padding:0 2px; position:relative; }
   body.collapsed .name { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
   body.collapsed .initials { display:block; }
-  body.collapsed .dot { position:absolute; left:6px; top:6px; width:7px; height:7px; }
-  body.collapsed .badge { position:absolute; right:0; top:0; padding:0 4px; font-size:10px; line-height:14px; }
+  body.collapsed .dot { position:absolute; left:4px; top:5px; width:7px; height:7px; }
+  body.collapsed .badge { position:absolute; right:-2px; top:-2px; padding:0 4px; font-size:10px; line-height:14px;
+    border-radius:var(--r-pill); background:var(--badge-solid); color:var(--on-badge); }
 </style>
 </head>
-<body>
+<body class="page">
+<div class="rail glass">
 <header>
   <h1 id="title">Projects</h1>
   <button id="toggle" type="button" aria-controls="rail" aria-expanded="true"
     title="Hide project names (⌥⌘S)" aria-label="Hide project names">⟨</button>
 </header>
 <nav id="rail" aria-labelledby="title"></nav>
-<div id="menu" class="menu" role="menu" hidden></div>
+<footer>
+  <button id="add-project" class="chip" type="button" aria-label="Add project" title="Add a project (its WORKFLOW.md)"><span aria-hidden="true">+</span><span class="label">Add project</span></button>
+</footer>
+</div>
+<div id="menu" class="menu sheet" role="menu" hidden></div>
 <div id="live" class="sr-only" aria-live="polite"></div>
 <script>
 (function () {
@@ -164,7 +176,7 @@
     toggleEl.textContent = view.collapsed ? '⟩' : '⟨';
     railEl.textContent = '';
     if (view.sections.length === 0) {
-      railEl.appendChild(el('p', 'empty', 'No projects yet. Add one from the menu bar.'));
+      railEl.appendChild(el('p', 'empty', 'No projects yet. Add one below or from the menu bar.'));
     }
     view.sections.forEach(function (s) {
       var h = el('h2');
@@ -191,11 +203,19 @@
         b.appendChild(el('span', 'name', r.name));
         if (r.pinned) b.appendChild(img('pin', 'pinned', '●'));
         if (r.running > 0) {
-          b.appendChild(img('count', r.running + (r.running === 1 ? ' agent running' : ' agents running'),
-            String(r.running)));
+          // With a badge the badge speaks for the row; the count stays for
+          // screen readers.
+          b.appendChild(img(r.needsYou > 0 ? 'count sr-only' : 'count', r.running + (r.running === 1 ? ' agent running' : ' agents running'),
+            String(r.running))).appendChild(el('span', 'unit', ' running'));
         }
         if (r.needsYou > 0) {
-          b.appendChild(img('badge', r.needsYou + ' waiting for you (input or approval)', String(r.needsYou)));
+          b.appendChild(img('badge', r.needsYou + ' waiting for you (input or approval)', String(r.needsYou)))
+            .appendChild(el('span', 'unit', ' input'));
+        }
+        if (r.running === 0 && r.needsYou === 0) {
+          // Visible state word; the dot already announces the health.
+          b.appendChild(el('span', 'state', r.health === 'running' ? 'idle' : healthText(r.health)))
+            .setAttribute('aria-hidden', 'true');
         }
         b.addEventListener('click', function () { choose(r); });
         b.addEventListener('contextmenu', function (e) {
@@ -371,6 +391,8 @@
     list[next].tabIndex = 0;
     list[next].focus();
   });
+
+  document.getElementById('add-project').addEventListener('click', function () { go('add-project'); });
 
   toggleEl.addEventListener('click', function () {
     go('collapse', { value: view.collapsed ? '0' : '1' });

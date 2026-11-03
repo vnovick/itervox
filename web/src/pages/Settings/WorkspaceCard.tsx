@@ -32,35 +32,19 @@ export function WorkspaceCard({
   };
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Workspace</h2>
-      </div>
-      <div className="px-5 py-5">
-        <label className="flex cursor-pointer items-start gap-4">
-          <div className="relative mt-0.5 flex-shrink-0">
-            <input
-              type="checkbox"
-              className="sr-only"
-              checked={autoClearWorkspace}
-              disabled={saving}
-              onChange={(e) => {
-                void handleChange(e.target.checked);
-              }}
-            />
-            <div
-              aria-hidden="true"
-              className="h-5 w-9 rounded-full transition-colors"
-              style={{ background: autoClearWorkspace ? 'var(--accent)' : 'var(--bg-soft)' }}
-            />
-            <div
-              aria-hidden="true"
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                autoClearWorkspace ? 'translate-x-4' : 'translate-x-0.5'
-              }`}
-            />
-          </div>
-          <div>
+    <div>
+      <div>
+        <label className="flex cursor-pointer items-start justify-between gap-4">
+          <input
+            type="checkbox"
+            className="switch order-last mt-0.5"
+            checked={autoClearWorkspace}
+            disabled={saving}
+            onChange={(e) => {
+              void handleChange(e.target.checked);
+            }}
+          />
+          <div className="min-w-0 flex-1">
             <span className="text-theme-text block text-sm font-medium">
               Auto-clear workspace on success
             </span>

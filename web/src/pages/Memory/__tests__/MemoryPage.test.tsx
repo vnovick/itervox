@@ -163,6 +163,20 @@ describe('Memory page (#202)', () => {
     expect(screen.getByTestId('lessons-list')).toHaveTextContent('not used until approved');
   });
 
+  it('shows each entry’s type, scope, usage and tags as separate chips', async () => {
+    serve(() => view([PNPM]));
+    render(<Memory />);
+    const list = await screen.findByTestId('memory-list');
+    const meta = within(list).getByTestId('memory-entry-meta');
+    const chips = [...meta.children].map((c) => [c.className, c.textContent]);
+    expect(chips).toEqual([
+      ['tag', 'Fact'],
+      ['tag', 'Private'],
+      ['tag', 'used by 2 runs'],
+      ['tag', '#tooling'],
+    ]);
+  });
+
   it('shows provenance and the runs that used an entry, and the file path to open', async () => {
     serve(() => view());
     const user = userEvent.setup();

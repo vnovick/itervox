@@ -1,7 +1,15 @@
 /* eslint-disable react-refresh/only-export-components */
 import type { ReactNode } from 'react';
 
-type CardVariant = 'default' | 'elevated' | 'outline';
+/**
+ * Surface recipes (index.css):
+ * - `panel`   top-level glass section (`.glass-panel`, radius 24, blurred)
+ * - `card`    an item inside a panel (`.glass-card`, radius 16)
+ * - `subtle`  an inset well (`.subtle-fill`, radius 16)
+ * - `outline` transparent with a hairline rim
+ * `default` and `elevated` are the earlier names for `card` and `panel`.
+ */
+type CardVariant = 'panel' | 'card' | 'subtle' | 'outline' | 'default' | 'elevated';
 type CardPadding = 'none' | 'sm' | 'md' | 'lg';
 
 interface CardProps {
@@ -15,13 +23,16 @@ const PADDING_CLASS: Record<CardPadding, string> = {
   none: '',
   sm: 'p-3',
   md: 'p-4',
-  lg: 'p-6',
+  lg: 'p-5',
 };
 
-const VARIANT_STYLE: Record<CardVariant, React.CSSProperties> = {
-  default: { background: 'var(--panel)', border: '1px solid var(--line)' },
-  elevated: { background: 'var(--bg-elevated)', boxShadow: 'var(--shadow-md)' },
-  outline: { background: 'transparent', border: '1px solid var(--line-strong)' },
+const VARIANT_CLASS: Record<CardVariant, string> = {
+  panel: 'glass-panel',
+  elevated: 'glass-panel',
+  card: 'glass-card',
+  default: 'glass-card',
+  subtle: 'subtle-fill rounded-[var(--radius-md)]',
+  outline: 'rounded-[var(--radius-md)] border border-theme-line-strong',
 };
 
 function CardRoot({ children, variant = 'default', padding = 'md', className }: CardProps) {
@@ -29,8 +40,7 @@ function CardRoot({ children, variant = 'default', padding = 'md', className }: 
     <div
       data-variant={variant}
       data-padding={padding}
-      className={['rounded-[var(--radius-md)]', PADDING_CLASS[padding], className ?? ''].join(' ')}
-      style={VARIANT_STYLE[variant]}
+      className={[VARIANT_CLASS[variant], PADDING_CLASS[padding], className ?? ''].join(' ')}
     >
       {children}
     </div>

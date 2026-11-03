@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -564,12 +565,9 @@ func toolDescription(name string, rawInput json.RawMessage) string {
 			return fmt.Sprintf("waiting on %d sub-agent(s)", n)
 		}
 		return ""
-	case "read":
-		return str("file_path")
-	case "write":
-		return str("file_path")
-	case "edit", "multiedit":
-		return str("file_path")
+	case "read", "write", "edit", "multiedit", "delete":
+		// Claude's file_path; OpenCode's filePath; Cursor's path.
+		return cmp.Or(str("file_path"), str("filePath"), str("path"))
 	case "glob":
 		p := str("pattern")
 		if d := str("path"); d != "" {
@@ -829,13 +827,14 @@ const streamReaderOverheadBytes = 2*streamReadBufferBytes + 128<<10
 var errStreamLineTooLong = fmt.Errorf("agent: stream line exceeds %d MiB cap", maxStreamLineBytes>>20)
 
 // isTerminalStreamType reports whether a top-level "type" ends a turn for
-// either parser: Claude "result" (ParseLine) or Codex "turn.completed" /
-// "turn.failed" (ParseCodexLine). One set serves both runners — a
+// any parser: Claude and Cursor "result" (ParseLine), Codex
+// "turn.completed" / "turn.failed" (ParseCodexLine), the custom protocol's
+// "done" / "failed" (ParseCustomLine; OpenCode has no terminal line). One set serves both runners — a
 // Claude-only type on the Codex stream merely buffers and is then ignored by
 // ParseCodexLine.
 func isTerminalStreamType(t string) bool {
 	switch t {
-	case "result", "turn.completed", "turn.failed":
+	case "result", "turn.completed", "turn.failed", "done", "failed":
 		return true
 	}
 	return false

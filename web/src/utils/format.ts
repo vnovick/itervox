@@ -23,6 +23,25 @@ export function orchDotClass(state: string): string {
   return 'bg-gray-300 dark:bg-gray-600';
 }
 
+/**
+ * The `.status-dot` tone class for an orchestrator state (visual refresh):
+ * running ok, paused / waiting on input warn, retrying danger, else idle.
+ */
+export function orchStatusDotClass(state: string): string {
+  switch (state) {
+    case 'running':
+      return 'dot-ok';
+    case 'paused':
+    case 'input_required':
+    case 'pending_input_resume':
+      return 'dot-warn';
+    case 'retrying':
+      return 'dot-danger';
+    default:
+      return 'dot-idle';
+  }
+}
+
 export function formatOrchestratorState(state: string): string {
   if (state === 'pending_input_resume') return 'reply received';
   return state.replace(/_/g, ' ');
@@ -57,12 +76,16 @@ export const proseClass = [
 
 export type BadgeColor = 'primary' | 'success' | 'error' | 'warning' | 'info' | 'light' | 'dark';
 
-/** Map a tracker state string to a Badge color variant. */
+/**
+ * Map a tracker state string to a Badge color variant. Work in flight is the
+ * accent tone (warning is reserved for things that need attention), review
+ * and done read as success, and queued states (Todo, Backlog, …) stay
+ * neutral so the in-flight state is the one that stands out.
+ */
 export function stateBadgeColor(state: string): BadgeColor {
   const s = state.toLowerCase();
-  if (s.includes('progress')) return 'warning';
+  if (s.includes('progress')) return 'primary';
   if (s.includes('review') || s.includes('done')) return 'success';
-  if (s.includes('todo')) return 'primary';
   return 'light';
 }
 
@@ -85,4 +108,23 @@ export function fmtAge(iso: string | null | undefined, now: number): string | nu
   if (s < 60) return `${String(s)}s`;
   if (s < 3600) return `${String(Math.floor(s / 60))}m`;
   return `${String(Math.floor(s / 3600))}h`;
+}
+
+/** Compact byte size in binary units: 512 B, 3.4 KB, 1.2 GB. */
+export function fmtBytes(n: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = Math.max(0, n);
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  if (i === 0) return `${String(Math.round(v))} B`;
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i] ?? ''}`;
+}
+
+/** CPU use as percent of one core: "42%", "180%", "0.4%". */
+export function fmtCpu(pct: number): string {
+  if (pct > 0 && pct < 1) return `${pct.toFixed(1)}%`;
+  return `${String(Math.round(pct))}%`;
 }

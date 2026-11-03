@@ -310,7 +310,7 @@ Isolation
   landlock: available
   profiles with isolation: process: coder
   sandbox: landlock
-  writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache (+ isolation_extra_write)
+  writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache, ~/.local/share/opencode, ~/.local/state/opencode, ~/.config/opencode, ~/.cursor, ~/.config/cursor (+ isolation_extra_write)
   unreadable: ~/.ssh, ~/.aws, …, every other workspace under /Users/me/.itervox/workspaces/app-1a2b3c4d (+ isolation_extra_deny)
   network: allowed; hooks: not sandboxed
 ```

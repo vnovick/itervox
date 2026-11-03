@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/sysmon"
 )
 
 // mutableSnap is a snapshot source a test can change between requests.
@@ -218,4 +219,36 @@ func TestSummaryCountsMatchSnapshot(t *testing.T) {
 	assert.True(t, sum.GeneratedAt.Equal(gen))
 	assert.Less(t, w.Body.Len(), 512, "the summary stays small")
 	assert.True(t, strings.Contains(w.Body.String(), `"paused":false`), "paused is always present")
+}
+
+// TestSummaryCarriesRoundedSystem: the summary carries the live runs'
+// memory and the disk warning, rounded so a few MB of churn keep the same
+// ETag (the tray then skips the /state read) while a real change moves it.
+func TestSummaryCarriesRoundedSystem(t *testing.T) {
+	t0 := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	src := &mutableSnap{snap: server.StateSnapshot{GeneratedAt: t0}}
+	h := summaryServer(t, src)
+	var sum server.Summary
+	first := getSummary(h, "", true)
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &sum))
+	assert.Nil(t, sum.System, "no monitor, no system block")
+
+	sys := func(rss, free uint64, low bool) *sysmon.SystemStatus {
+		return &sysmon.SystemStatus{Runs: sysmon.RunsTotal{Runs: 1, RSSBytes: rss},
+			Machine: sysmon.MachineStatus{DiskLow: low, Disk: &sysmon.DiskStatus{FreeBytes: free, TotalBytes: 100 << 30}}}
+	}
+	src.update(func(s *server.StateSnapshot) { s.System = sys(1<<30+5<<20, 3<<30+100<<20, true) })
+	w := getSummary(h, "", true)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &sum))
+	require.NotNil(t, sum.System)
+	assert.Equal(t, uint64(1<<30), sum.System.RunsRSSBytes, "rounded down to 64 MiB")
+	assert.Equal(t, uint64(3<<30), sum.System.DiskFreeBytes, "rounded down to 256 MiB")
+	assert.True(t, sum.System.DiskLow)
+	tag := w.Header().Get("ETag")
+
+	src.update(func(s *server.StateSnapshot) { s.System = sys(1<<30+40<<20, 3<<30+200<<20, true) })
+	assert.Equal(t, http.StatusNotModified, getSummary(h, tag, true).Code, "churn inside a step keeps the ETag")
+
+	src.update(func(s *server.StateSnapshot) { s.System = sys(2<<30, 3<<30, true) })
+	assert.Equal(t, http.StatusOK, getSummary(h, tag, true).Code, "a real change moves it")
 }

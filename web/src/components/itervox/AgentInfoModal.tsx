@@ -5,7 +5,8 @@ import { Modal } from '../ui/modal';
 import type { ProfileDef } from '../../types/schemas';
 import { proseClass } from '../../utils/format';
 import { ProfileEditorFields } from '../../pages/Settings/profiles/ProfileEditorFields';
-import { backendLabel, backendBadgeClass } from '../../pages/Settings/profiles/profileBadges';
+import { backendLabel } from '../../pages/Settings/profiles/profileBadges';
+import { Button } from '../ui/button';
 import {
   agentActionOptionsFor,
   normalizeAllowedActions,
@@ -150,68 +151,77 @@ export const AgentInfoModal = memo(function AgentInfoModal({
     setActiveTab(displaySoul ? 'soul' : 'instructions');
   }
 
+  const tabClass = 'min-h-9 text-[15px]';
+
   return (
     <Modal
       isOpen={profileName !== null}
       onClose={onClose}
       showCloseButton
-      className="flex h-[85vh] w-[90vw] max-w-[1400px] flex-col overflow-hidden"
+      className="flex h-[85vh] w-[90vw] max-w-[1300px] flex-col overflow-hidden"
       ariaLabel={profileName ? `Agent profile ${profileName}` : 'Agent profile'}
     >
       {profileName && color && (
-        <div className="flex h-full flex-col" data-testid="agent-info-content">
-          {/* Colored top edge */}
-          <div
-            className="h-1 flex-shrink-0 rounded-t-[var(--radius-lg)]"
-            style={{ background: `linear-gradient(90deg, ${color.accent}, ${color.accent}66)` }}
-          />
-
-          {/* Header (fixed) */}
-          <div className="flex-shrink-0 px-6 pt-6 pb-4">
+        <div className="flex h-[85vh] flex-col" data-testid="agent-info-content">
+          {/* Header (fixed); the right padding clears the close button. */}
+          <div className="flex-shrink-0 px-7 pt-6 pr-20 pb-4">
             <div className="flex items-start gap-3">
               <div
-                className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl text-base font-bold text-white"
+                aria-hidden="true"
+                className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-sm font-bold text-white"
                 style={{ background: color.gradient }}
               >
-                <span className="relative z-10">{initials}</span>
+                {initials}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-theme-text text-base font-semibold">{profileName}</h2>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h2 className="text-theme-text text-[22px] font-bold tracking-tight">
+                    {profileName}
+                  </h2>
                   <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${backendBadgeClass(inferredBackend)}`}
+                    data-testid="agent-info-backend"
+                    className="pill pill-accent px-2 py-0 text-xs font-semibold"
                   >
                     {backendLabel(inferredBackend)}
                   </span>
-                  {modelDisplay && (
-                    <span className="text-theme-text-secondary bg-theme-bg-soft rounded-full px-2 py-0.5 text-[10px] font-medium">
-                      {modelDisplay}
-                    </span>
-                  )}
+                  <span
+                    data-testid="agent-info-model"
+                    className="pill pill-neutral px-2 py-0 text-xs"
+                  >
+                    {modelDisplay || 'Default model'}
+                  </span>
                 </div>
                 {!editing && actionLabels.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {actionLabels.map((label) => (
-                      <span
-                        key={label}
-                        className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-2 py-0.5 text-[10px]"
-                      >
+                      <span key={label} className="pill pill-neutral px-2 py-0 text-xs">
                         {label}
                       </span>
                     ))}
                   </div>
                 )}
               </div>
+              {!editing && onSave && (
+                <Button
+                  variant="glass"
+                  size="lg"
+                  onClick={() => {
+                    setEditing(true);
+                  }}
+                >
+                  Edit Profile
+                </Button>
+              )}
             </div>
           </div>
 
           {/* Body (fills remaining height, scrolls internally) */}
-          <div className="flex flex-1 flex-col overflow-hidden px-6 pb-6">
+          <div className="flex flex-1 flex-col overflow-hidden px-7 pb-6">
             {/* View mode: tabs over SOUL / Instructions */}
             {!editing && hasProfileText && (
               <>
                 <div
-                  className="border-theme-line flex flex-shrink-0 gap-1 border-b"
+                  className="segmented flex-shrink-0 self-start"
                   role="tablist"
                   aria-label="Profile documents"
                 >
@@ -223,11 +233,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                       onClick={() => {
                         setActiveTab('soul');
                       }}
-                      className={`-mb-px border-b-2 px-4 py-2 text-[12px] font-semibold tracking-wide uppercase transition-colors ${
-                        activeTab === 'soul'
-                          ? 'border-theme-accent text-theme-text'
-                          : 'text-theme-muted hover:text-theme-text-secondary border-transparent'
-                      }`}
+                      className={tabClass}
                     >
                       SOUL.md
                     </button>
@@ -240,11 +246,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                       onClick={() => {
                         setActiveTab('instructions');
                       }}
-                      className={`-mb-px border-b-2 px-4 py-2 text-[12px] font-semibold tracking-wide uppercase transition-colors ${
-                        activeTab === 'instructions'
-                          ? 'border-theme-accent text-theme-text'
-                          : 'text-theme-muted hover:text-theme-text-secondary border-transparent'
-                      }`}
+                      className={tabClass}
                     >
                       INSTRUCTIONS.md
                     </button>
@@ -252,7 +254,7 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                 </div>
                 <div
                   role="tabpanel"
-                  className={`border-theme-line bg-theme-panel-strong mt-3 flex-1 overflow-y-auto rounded-[var(--radius-sm)] border p-5 ${proseClass}`}
+                  className={`glass-card mt-4 flex-1 overflow-y-auto rounded-[20px] px-6 py-5 ${proseClass}`}
                 >
                   {activeTab === 'soul' && displaySoul && (
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{displaySoul}</ReactMarkdown>
@@ -264,23 +266,11 @@ export const AgentInfoModal = memo(function AgentInfoModal({
               </>
             )}
 
-            {/* View mode: empty state + edit button */}
+            {/* View mode: empty state */}
             {!editing && !hasProfileText && (
-              <p className="text-theme-muted text-sm">
+              <p className="glass-card text-theme-muted px-6 py-5 text-sm">
                 No profile files configured for this profile.
               </p>
-            )}
-            {!editing && onSave && (
-              <div className="flex-shrink-0 pt-4">
-                <button
-                  onClick={() => {
-                    setEditing(true);
-                  }}
-                  className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-colors hover:opacity-80"
-                >
-                  Edit Profile
-                </button>
-              </div>
             )}
 
             {/* Edit mode */}
@@ -334,22 +324,20 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                   onCreateIssueStateChange={setCreateIssueState}
                   dynamicModels={availableModels}
                 />
-                <div className="flex items-center gap-2 pt-2">
-                  <button
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <Button variant="glass" size="lg" onClick={handleCancel}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="lg"
                     onClick={() => {
                       void handleSave();
                     }}
                     disabled={saving || !command.trim()}
-                    className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
                   >
                     {saving ? 'Saving…' : 'Save'}
-                  </button>
-                  <button
-                    onClick={handleCancel}
-                    className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-colors hover:opacity-80"
-                  >
-                    Cancel
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}

@@ -9,6 +9,7 @@
  * producing silent undefined values.
  */
 import { z } from 'zod';
+import { AGENT_BACKENDS } from '../lib/backends';
 import { AUTOMATION_TRIGGER_TYPES } from './automationTriggers';
 import {
   extraKeys,
@@ -112,6 +113,166 @@ export const CommentRowSchema = z.object({
   createdAt: z.string().optional(), // omitempty — absent when nil
 });
 
+// System visibility — a run's resource use (sampled every 2s by the
+// daemon; RSS is summed over the run's processes) and the machine status.
+export const ChildCommandSchema = z.object({
+  pid: z.number(),
+  name: z.string(),
+  args: z.string().optional(), // absent below operator scope
+  cpuPercent: z.number(),
+  rssBytes: z.number(),
+});
+export type ChildCommand = z.infer<typeof ChildCommandSchema>;
+
+export const RunUsageSchema = z.object({
+  runId: z.string().optional(),
+  identifier: z.string(),
+  live: z.boolean(),
+  remote: z.boolean().optional(), // an SSH worker: only the local ssh client is seen
+  cpuPercent: z.number(),
+  cpuSeconds: z.number(),
+  rssBytes: z.number(),
+  peakRssBytes: z.number(),
+  processes: z.number(),
+  peakProcesses: z.number(),
+  diskReadBytes: z.number(),
+  diskWriteBytes: z.number(),
+  diskIoKnown: z.boolean(), // false where the OS does not report it (macOS)
+  netConnections: z.number(),
+  topCommands: z
+    .array(ChildCommandSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  samples: z.number(),
+  startedAt: z.string().optional(),
+  sampledAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+});
+export type RunUsage = z.infer<typeof RunUsageSchema>;
+
+export const RunSummarySchema = z.object({
+  cpuSeconds: z.number(),
+  peakCpuPercent: z.number(),
+  lastRssBytes: z.number(),
+  peakRssBytes: z.number(),
+  peakProcesses: z.number(),
+  diskReadBytes: z.number().optional(),
+  diskWriteBytes: z.number().optional(),
+  commands: z.number().optional(),
+  filesWritten: z.number().optional(),
+  connections: z.number().optional(),
+  activityMode: z.string().optional(),
+  samples: z.number(),
+});
+export type RunSummary = z.infer<typeof RunSummarySchema>;
+
+export const MachineStatusSchema = z.object({
+  load1: z.number(),
+  load5: z.number(),
+  load15: z.number(),
+  loadKnown: z.boolean(), // false on Windows
+  cpuCount: z.number(),
+  memTotalBytes: z.number(),
+  memAvailableBytes: z.number(),
+  memPressure: z.string(), // ok | moderate | high (a string: a new level never fails the parse)
+  disk: z.object({ path: z.string(), freeBytes: z.number(), totalBytes: z.number() }).optional(),
+  diskWarnBytes: z.number(),
+  diskPauseBytes: z.number(),
+  diskLow: z.boolean(),
+  diskCritical: z.boolean(),
+  sampledAt: z.string().optional(),
+});
+export type MachineStatus = z.infer<typeof MachineStatusSchema>;
+
+export const SystemStatusSchema = z.object({
+  machine: MachineStatusSchema,
+  runs: z.object({
+    runs: z.number(),
+    cpuPercent: z.number(),
+    rssBytes: z.number(),
+    processes: z.number(),
+  }),
+  activityMode: z.string(), // off | sampled | precise
+  activityModeReason: z.string().optional(),
+  platform: z.string(),
+});
+export type SystemStatus = z.infer<typeof SystemStatusSchema>;
+
+const ActivityTimesSchema = {
+  count: z.number(),
+  firstAt: z.string(),
+  lastAt: z.string(),
+};
+
+export const ActivityReportSchema = z.object({
+  identifier: z.string(),
+  runId: z.string().optional(),
+  live: z.boolean(),
+  mode: z.string(),
+  modeReason: z.string().optional(),
+  platform: z.string(),
+  supports: z.object({ commands: z.boolean(), files: z.boolean(), connections: z.boolean() }),
+  notes: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  workspace: z.string().optional(),
+  remote: z.boolean().optional(),
+  startedAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+  commands: z
+    .array(
+      z.object({
+        name: z.string(),
+        args: z.string().optional(),
+        pid: z.number(),
+        ...ActivityTimesSchema,
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+  files: z
+    .array(
+      z.object({
+        path: z.string(),
+        write: z.boolean(),
+        outsideWorkspace: z.boolean().optional(),
+        command: z.string().optional(),
+        ...ActivityTimesSchema,
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+  connections: z
+    .array(
+      z.object({
+        protocol: z.string(),
+        remote: z.string(),
+        state: z.string().optional(),
+        command: z.string().optional(),
+        ...ActivityTimesSchema,
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+  dropped: z
+    .object({ commands: z.number(), files: z.number(), connections: z.number() })
+    .optional(),
+  runs: z
+    .array(
+      z.object({
+        runId: z.string(),
+        startedAt: z.string().optional(),
+        finishedAt: z.string().optional(),
+        live: z.boolean().optional(),
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type ActivityReport = z.infer<typeof ActivityReportSchema>;
+
 export const RunningRowSchema = z.object({
   identifier: z.string(),
   state: z.string(),
@@ -148,6 +309,9 @@ export const RunningRowSchema = z.object({
   // #258 — the sandbox the run's agent runs in ("bubblewrap", "landlock",
   // "sandbox-exec"); absent when it runs unsandboxed.
   isolation: z.string().optional(),
+  // System visibility — the latest resource sample; absent before the
+  // first one or on daemons without the run monitor.
+  resources: RunUsageSchema.optional(),
 });
 
 // #186 — per-component digests of a run's prompt version (hashes only).
@@ -211,6 +375,12 @@ export const HistoryRowSchema = z.object({
   // Operator messages delivered to the run (redacted, bounded).
   steers: z.array(RunSteerSchema).optional(),
   steersDropped: z.number().optional(),
+  // Review and continue — the run took an operator review queued while no
+  // run was live; reviewComments counts its line comments.
+  continuedFromReview: z.boolean().optional(),
+  reviewComments: z.number().optional(),
+  // System visibility — the run's resource summary; absent without the monitor.
+  resources: RunSummarySchema.optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -366,13 +536,13 @@ export const AutomationPolicySchema = z.object({
   autoResume: z.boolean().optional(),
   // Gap E — rate_limited rules carry these. Server validator enforces:
   //  - switchToProfile required when triggerType === 'rate_limited'
-  //  - switchToBackend ∈ {'', 'claude', 'codex'}
+  //  - switchToBackend ∈ {'', ...AGENT_BACKENDS}
   //  - cooldownMinutes >= 0
   // and rejects all three on non-rate_limited triggers.
   switchToProfile: z.string().optional(),
   switchToBackend: tolerantEnum(
     'automations.policy.switchToBackend',
-    ['', 'claude', 'codex'],
+    ['', ...AGENT_BACKENDS],
     '',
   ).optional(),
   cooldownMinutes: z.number().int().nonnegative().optional(),
@@ -405,7 +575,7 @@ function captureAutomationUnknowns(input: unknown): unknown {
   }
   const policy = input.policy;
   if (isRecord(policy) && typeof policy.switchToBackend === 'string') {
-    if (!['', 'claude', 'codex'].includes(policy.switchToBackend)) {
+    if (!(['', ...AGENT_BACKENDS] as string[]).includes(policy.switchToBackend)) {
       unknown.switchToBackend = policy.switchToBackend;
     }
   }
@@ -769,6 +939,11 @@ export const TotalsSchema = z.object({
     .object({
       claudeRuns: z.number().int().nonnegative(),
       codexRuns: z.number().int().nonnegative(),
+      // Runs per backend, and the backends that reported a cost; a backend
+      // with runs that is not listed is left out of the estimate. Optional:
+      // older daemons send only the two counts above.
+      runsByBackend: z.record(z.string(), z.number().int().nonnegative()).optional(),
+      costBackends: z.array(z.string()).optional(),
     })
     .optional(),
 });
@@ -826,6 +1001,16 @@ export const DispatchPauseRowSchema = z.object({
   pausedAt: z.string(),
 });
 export type DispatchPauseRow = z.infer<typeof DispatchPauseRowSchema>;
+
+// Review and continue — one operator review waiting for its next run.
+export const QueuedReviewRowSchema = z.object({
+  identifier: z.string(),
+  comments: z.number(),
+  hasNote: z.boolean().optional(),
+  moveToActive: z.boolean(),
+  queuedAt: z.string(),
+});
+export type QueuedReviewRow = z.infer<typeof QueuedReviewRowSchema>;
 
 export const StateSnapshotSchema = z.object({
   generatedAt: z.string(),
@@ -972,11 +1157,17 @@ export const StateSnapshotSchema = z.object({
   // CORE-175 — optional daemon features the dashboard may use; an absent
   // entry hides the matching UI (older daemons omit the whole field).
   capabilities: z.array(z.string()).optional(),
+  // Review and continue — operator reviews waiting for their issue's next
+  // worker run (counts only, never the text). Absent when none.
+  queuedReviews: z.array(QueuedReviewRowSchema).optional(),
   // #213 — the daemon-wide dispatch pause: null while dispatch runs, absent
   // on daemons predating it. feedSeq is the newest event-feed seq
   // (GET /api/v1/feed?since=).
   dispatchPaused: DispatchPauseRowSchema.nullable().optional(),
   feedSeq: z.number().optional(),
+  // System visibility — machine load, memory, workspace disk, the live
+  // runs' totals and the activity mode. Absent without the run monitor.
+  system: SystemStatusSchema.optional(),
   // #214 — the requesting token's scope (viewer | operator | admin), set per
   // caller by GET /state and /events. Absent on daemons predating scopes,
   // which treat every caller as admin. A string, not an enum, so a future
@@ -2065,6 +2256,7 @@ export const RunContextRunSchema = z.object({
   guardrailBlocks: z.number().default(0),
   lastGuardrailKind: z.string().optional(),
   playbook: z.string().optional(), // #218
+  resources: RunUsageSchema.optional(), // system visibility
 });
 export type RunContextRun = z.infer<typeof RunContextRunSchema>;
 
@@ -2145,6 +2337,32 @@ export const PrReviewResultSchema = z.object({
   }),
 });
 export type PrReviewResult = z.infer<typeof PrReviewResultSchema>;
+
+// Review and continue — POST /api/v1/issues/{identifier}/review-continue:
+// the draft review steered into the live run, or queued for the next run;
+// and, when asked, the PR review outcome (reported, never undoing the agent
+// delivery).
+export const ReviewContinueResultSchema = z.object({
+  agent: z.object({
+    delivery: tolerantEnum('reviewContinue.delivery', ['steered', 'queued'], 'queued'),
+    runId: z.string().optional(),
+    messages: z.number().optional(),
+    queuedAt: z.string().optional(),
+    movedTo: z.string().optional(),
+    resumed: z.boolean().optional(),
+  }),
+  pr: z
+    .object({
+      posted: z.boolean(),
+      prUrl: z.string().optional(),
+      url: z.string().optional(),
+      comments: z.number().optional(),
+      error: z.string().optional(),
+      message: z.string().optional(),
+    })
+    .optional(),
+});
+export type ReviewContinueResult = z.infer<typeof ReviewContinueResultSchema>;
 
 // #218 — task-type playbooks, decision logs, steering phrases and the
 // verify-skill issue. Fetched on demand, never on the SSE frame.

@@ -13,6 +13,7 @@ import { useItervoxStore } from '../../store/itervoxStore';
 import { useIssues, useUpdateIssueState, useSetIssueProfile } from '../../queries/issues';
 import { HeroStats } from './components/HeroStats';
 import { LiveOpsStrip } from './components/LiveOpsStrip';
+import { SystemHealthBanner } from './components/SystemHealthBanner';
 import { AutomationQueueList } from './components/AutomationQueueList';
 import { AutomationQueueDetailPanel } from './components/AutomationQueueDetailPanel';
 import { OutboxList } from './components/OutboxList';
@@ -203,7 +204,7 @@ export default function Dashboard() {
         description="Itervox — autonomous agentic harness for multi-agent collaboration, observability, human input, and fleet distribution"
       />
       <NewTaskDialog />
-      <div className="space-y-[14px]">
+      <div className="page-container">
         <ProjectSelector />
         {/* CORE-077 — everything that needs the operator, with inline
             Reply / Resume / Discard, above every other section. */}
@@ -211,56 +212,53 @@ export default function Dashboard() {
         <FirstRunChecklist />
         <AttentionInbox onSelectIssue={handleIssueSelect} />
         <LiveOpsStrip />
+        <SystemHealthBanner />
 
-        {/* Hero-compact banner — responsive: stacks on mobile */}
-        <div className="border-theme-line bg-theme-bg-elevated relative overflow-hidden rounded-[var(--radius-lg)] border px-4 py-4 sm:px-[22px] sm:py-[18px]">
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{
-              background:
-                'radial-gradient(ellipse at top left, var(--accent-soft) 0%, transparent 60%)',
-            }}
-          />
-          <div className="relative z-10 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:gap-6">
-            <div className="min-w-0">
-              <div className="mb-2">
-                <span className="bg-theme-accent-soft text-theme-accent-strong inline-flex items-center rounded-full px-3 py-[5px] text-[11px] font-semibold tracking-[0.03em] uppercase">
-                  Itervox
-                </span>
-              </div>
-              <h1
-                className="text-xl leading-tight font-bold tracking-[-0.03em] sm:text-2xl"
-                style={{
-                  background: 'var(--gradient-accent)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                }}
-              >
-                Autonomous agentic harness
-              </h1>
-              <p className="text-theme-text-secondary mt-2 text-[13px] leading-relaxed">
-                Multi-agent collaboration, observability, human input, and fleet distribution.
-              </p>
-            </div>
-            <HeroStats />
+        {/* Hero: product line + the live stat tiles. */}
+        <section
+          aria-label="Overview"
+          className="glass-panel flex flex-col gap-4 rounded-[var(--radius-shell)] px-4 py-5 sm:px-6"
+        >
+          <div className="min-w-0">
+            <span className="glass-chip inline-flex items-center px-2.5 py-[3px] text-xs font-semibold">
+              Itervox
+            </span>
+            <h1 className="page-title mt-2.5 mb-1 text-[26px] sm:text-[30px]">
+              Autonomous agentic harness
+            </h1>
+            <p className="text-theme-text-secondary text-sm">
+              Multi-agent collaboration, observability, human input, and fleet distribution.
+            </p>
+          </div>
+          <HeroStats />
+        </section>
+
+        {/* Wide screens: Running Sessions beside the Automation Queue and
+            the Host pool; a section that renders nothing frees its column
+            (empty:hidden), and narrow screens stack as before. */}
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+          <div className="min-w-0 empty:hidden xl:flex-1">
+            <RunningSessionsTable />
+          </div>
+          <div className="flex min-w-0 flex-col gap-4 empty:hidden xl:flex-1">
+            <AutomationQueueList
+              queue={automationQueue}
+              running={running}
+              backpressure={automationQueueBackpressure}
+              dependencyAudit={dependencyAudit}
+              onSelectIssue={handleIssueSelect}
+              onSelectQueue={handleQueueSelect}
+            />
+            <HostPool />
           </div>
         </div>
-
-        <AutomationQueueList
-          queue={automationQueue}
-          running={running}
-          backpressure={automationQueueBackpressure}
-          dependencyAudit={dependencyAudit}
-          onSelectIssue={handleIssueSelect}
-          onSelectQueue={handleQueueSelect}
-        />
 
         <OutboxList entries={outboxEntries} onSelectIssue={handleIssueSelect} />
 
         <FailuresPanel failures={recentFailures} onSelectIssue={handleIssueSelect} />
 
         {apiOffline && (
-          <div className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning-text rounded-[var(--radius-md)] border p-4 text-sm">
+          <div className="banner-warn p-4">
             <p className="mb-1 font-semibold">Cannot reach the Itervox API</p>
             {/* CORE-022 — the daemon's port is NOT reliably 8090: omitting
                 server.port from WORKFLOW.md does default to 8090, but
@@ -269,25 +267,19 @@ export default function Dashboard() {
                 real URL rather than a port that may not be in use. */}
             <p className="opacity-80">
               Make sure the itervox binary is running for this project. If{' '}
-              <code className="bg-theme-bg-elevated rounded px-1 font-mono">server.port</code> is
-              omitted from your{' '}
-              <code className="bg-theme-bg-elevated rounded px-1 font-mono">WORKFLOW.md</code> front
-              matter, the daemon listens on port 8090 by default — but{' '}
-              <code className="bg-theme-bg-elevated rounded px-1 font-mono">itervox init</code>{' '}
-              scaffolds <code className="bg-theme-bg-elevated rounded px-1 font-mono">port: 0</code>
-              , which asks the OS for a random free port instead. Run{' '}
-              <code className="bg-theme-bg-elevated rounded px-1 font-mono">itervox doctor</code> or
-              check{' '}
-              <code className="bg-theme-bg-elevated rounded px-1 font-mono">
-                .itervox/dashboard_url
-              </code>{' '}
-              to find the URL it is actually listening on.
+              <code className="subtle-fill rounded px-1 font-mono">server.port</code> is omitted
+              from your <code className="subtle-fill rounded px-1 font-mono">WORKFLOW.md</code>{' '}
+              front matter, the daemon listens on port 8090 by default — but{' '}
+              <code className="subtle-fill rounded px-1 font-mono">itervox init</code> scaffolds{' '}
+              <code className="subtle-fill rounded px-1 font-mono">port: 0</code>, which asks the OS
+              for a random free port instead. Run{' '}
+              <code className="subtle-fill rounded px-1 font-mono">itervox doctor</code> or check{' '}
+              <code className="subtle-fill rounded px-1 font-mono">.itervox/dashboard_url</code> to
+              find the URL it is actually listening on.
             </p>
           </div>
         )}
 
-        <HostPool />
-        <RunningSessionsTable />
         <ReviewQueueSection />
         <PendingResumePanel onSelect={handleIssueSelect} />
         <RetryQueueTable />

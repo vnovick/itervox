@@ -1,5 +1,5 @@
-import Badge from '../../ui/badge/Badge';
 import { EmptyState } from '../../ui/EmptyState';
+import { buttonClass } from '../../ui/button/buttonStyles';
 import { mobileIssueHref, type AttentionItem } from '../../../queries/hubPhone';
 
 // #231 — the phone's needs-attention list: every project's agents waiting
@@ -9,6 +9,10 @@ import { mobileIssueHref, type AttentionItem } from '../../../queries/hubPhone';
 const KIND_LABEL: Record<AttentionItem['kind'], string> = {
   input: 'Needs you',
   failure: 'Failed',
+};
+const KIND_PILL: Record<AttentionItem['kind'], string> = {
+  input: 'pill pill-warn',
+  failure: 'pill pill-danger',
 };
 
 export function NeedsAttentionList({
@@ -21,7 +25,10 @@ export function NeedsAttentionList({
   failedProjects?: number;
 }) {
   return (
-    <section aria-label="Needs attention" className="flex flex-col gap-2">
+    <section aria-label="Needs attention" className="flex flex-col gap-2.5">
+      {items.length > 0 && (
+        <h2 className="text-theme-text text-[15px] font-semibold">Needs you · {items.length}</h2>
+      )}
       {failedProjects > 0 && (
         <p role="alert" className="text-theme-warning-text text-xs">
           {failedProjects === 1
@@ -40,28 +47,56 @@ export function NeedsAttentionList({
           />
         )
       ) : (
-        <ul className="flex flex-col gap-2">
-          {items.map((it) => (
-            <li key={`${it.project}/${it.identifier}/${it.kind}`}>
-              <a
-                href={mobileIssueHref(it.project, it.identifier)}
-                className="border-theme-line bg-theme-bg-elevated active:bg-theme-panel-strong flex min-h-14 flex-col gap-1 rounded-[var(--radius-sm)] border p-3"
+        <ul className="flex flex-col gap-3">
+          {items.map((it, idx) => {
+            const href = mobileIssueHref(it.project, it.identifier);
+            // The most urgent item (the list is ordered) carries the accent
+            // tint; the rest sit on the neutral card surface.
+            const top = idx === 0;
+            return (
+              <li
+                key={`${it.project}/${it.identifier}/${it.kind}`}
+                data-testid="attention-card"
+                data-top={top ? 'true' : undefined}
+                className={`glass-card flex flex-col gap-2.5 rounded-[20px] px-4 py-3.5 ${
+                  top
+                    ? 'border-theme-accent/30 bg-[linear-gradient(var(--accent-soft),var(--accent-soft)),var(--card)]'
+                    : ''
+                }`}
               >
-                <span className="flex items-center gap-2">
-                  <Badge size="sm" color={it.kind === 'input' ? 'warning' : 'error'}>
-                    {KIND_LABEL[it.kind]}
-                  </Badge>
-                  <span className="text-theme-text font-mono text-sm font-semibold">
-                    {it.identifier}
+                {/* Two sibling links, never nested: the card body opens the
+                    issue, and a waiting question gets its own Answer action. */}
+                <a
+                  href={href}
+                  className="flex min-h-11 flex-col gap-1.5 rounded-[12px] active:brightness-95"
+                >
+                  <span className="flex items-center gap-2">
+                    <span className={KIND_PILL[it.kind]}>{KIND_LABEL[it.kind]}</span>
+                    <span className="text-theme-text-secondary font-mono text-[13px]">
+                      {it.identifier}
+                    </span>
+                    <span className="text-theme-text-secondary ml-auto truncate text-[13px]">
+                      {it.project}
+                    </span>
                   </span>
-                  <span className="text-theme-muted ml-auto truncate text-xs">{it.project}</span>
-                </span>
-                {it.text && (
-                  <span className="text-theme-text-secondary line-clamp-2 text-sm">{it.text}</span>
+                  {it.text && (
+                    <span className="text-theme-text line-clamp-2 text-base leading-snug font-semibold">
+                      {it.text}
+                    </span>
+                  )}
+                </a>
+                {it.kind === 'input' && (
+                  <a
+                    href={href}
+                    aria-label={`Answer ${it.identifier}`}
+                    className={buttonClass('primary', 'md', 'self-start', true)}
+                  >
+                    Answer
+                  </a>
                 )}
-              </a>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>

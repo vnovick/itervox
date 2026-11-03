@@ -1,9 +1,8 @@
+import { AGENT_BACKENDS } from '../../../lib/backends';
 import { Input } from '../../ui/Input';
 import { Select } from '../../ui/Select';
 import type { FieldErrors, TaskDraft, TaskWhere } from './newTaskModel';
 import { TaskField } from './TaskField';
-
-const BACKENDS = ['claude', 'codex'] as const;
 
 interface NewTaskOptionsProps {
   draft: TaskDraft;
@@ -31,9 +30,9 @@ export function NewTaskOptions({
   return (
     <div className="flex flex-col gap-3">
       <fieldset>
-        <legend className="text-theme-text-secondary mb-1 text-xs font-medium">Create as</legend>
-        <div className="flex flex-wrap gap-4 text-[13px]">
-          <label className="flex items-center gap-1.5">
+        <legend className="field-label mb-1.5">Create as</legend>
+        <div className="grid grid-cols-1 gap-2.5 text-sm sm:grid-cols-2">
+          <label className="choice-card">
             <input
               type="radio"
               name="new-task-where"
@@ -46,7 +45,7 @@ export function NewTaskOptions({
             />
             Local issue (Itervox only)
           </label>
-          <label className="flex items-center gap-1.5">
+          <label className="choice-card">
             <input
               type="radio"
               name="new-task-where"
@@ -91,7 +90,7 @@ export function NewTaskOptions({
             }}
           >
             <option value="">Default</option>
-            {BACKENDS.map((b) => (
+            {AGENT_BACKENDS.map((b) => (
               <option key={b} value={b}>
                 {b}
               </option>

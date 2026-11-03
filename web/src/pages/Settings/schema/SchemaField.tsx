@@ -101,7 +101,7 @@ export function SchemaField({
       control = (
         <pre
           id={id}
-          className="bg-theme-bg-soft text-theme-text-secondary max-h-40 overflow-auto rounded-[var(--radius-sm)] p-2 font-mono text-[11px]"
+          className="subtle-fill text-theme-text-secondary max-h-40 overflow-auto rounded-[var(--radius-sm)] p-2 font-mono text-[11px]"
         >
           {fieldText(def, value) || '(not set)'}
         </pre>

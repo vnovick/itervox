@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { inputCls, helperTextCls, selectCls } from '../formStyles';
 import {
   CRON_FIELDS,
@@ -17,11 +17,14 @@ interface CronPickerProps {
   placeholder?: string;
   /** id of the visible field label; the picker is exposed as a labelled group. */
   labelledBy?: string;
+  /** Rendered first inside the group (the group's visible title). */
+  title?: ReactNode;
+  /** Rendered beside the custom expression field (e.g. the timezone). */
+  aside?: ReactNode;
 }
 
 const CUSTOM = 'custom';
-const subLabelCls =
-  'text-theme-text-secondary mb-1 block text-[11px] font-medium tracking-wider uppercase';
+const subLabelCls = 'text-theme-text-secondary mb-1 block text-xs';
 
 /**
  * #211 — light cron input: a preset menu, five per-field inputs and a raw
@@ -36,6 +39,8 @@ export function CronPicker({
   onChange,
   placeholder = '0 9 * * 1-5',
   labelledBy,
+  title,
+  aside,
 }: CronPickerProps) {
   const baseId = useId();
   const presetId = `${baseId}-preset`;
@@ -82,39 +87,42 @@ export function CronPicker({
       role="group"
       aria-labelledby={labelledBy}
       data-testid="cron-picker"
-      className="border-theme-line bg-theme-bg-elevated space-y-3 rounded-[var(--radius-md)] border p-3"
+      className="field-group space-y-3"
     >
-      <div>
-        <label htmlFor={presetId} className={subLabelCls}>
-          Preset
-        </label>
-        <select
-          id={presetId}
-          data-testid="cron-preset"
-          value={preset?.id ?? CUSTOM}
-          onChange={(event) => {
-            const next = CRON_PRESETS.find((p) => p.id === event.target.value);
-            if (next) onChange(next.expr);
-          }}
-          className={`${selectCls} text-xs`}
-        >
-          <option value={CUSTOM} disabled>
-            Custom
-          </option>
-          {CRON_PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label} ({p.expr})
+      {title}
+      {/* The preset menu takes its own row so a label such as
+          "Weekdays at 09:00 (0 9 * * 1-5)" is never clipped. */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div className="col-span-2 sm:col-span-5">
+          <label htmlFor={presetId} className={subLabelCls}>
+            Preset
+          </label>
+          <select
+            id={presetId}
+            data-testid="cron-preset"
+            value={preset?.id ?? CUSTOM}
+            onChange={(event) => {
+              const next = CRON_PRESETS.find((p) => p.id === event.target.value);
+              if (next) onChange(next.expr);
+            }}
+            className={selectCls}
+          >
+            <option value={CUSTOM} disabled>
+              Custom
             </option>
-          ))}
-        </select>
-      </div>
+            {CRON_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label} ({p.expr})
+              </option>
+            ))}
+          </select>
+        </div>
 
-      <div className="grid grid-cols-5 gap-2">
         {CRON_FIELDS.map((spec, i) => {
           const fieldId = `${baseId}-${spec.name}`;
           return (
             <div key={spec.name} className="min-w-0">
-              <label htmlFor={fieldId} className={`${subLabelCls} truncate text-[10px]`}>
+              <label htmlFor={fieldId} className={`${subLabelCls} truncate`}>
                 {spec.label}
               </label>
               <input
@@ -131,9 +139,9 @@ export function CronPicker({
                 placeholder="*"
                 spellCheck={false}
                 autoComplete="off"
-                className={`${inputCls} px-2 text-center font-mono text-xs`}
+                className={`${inputCls} px-2.5 font-mono text-[13px]`}
               />
-              <p className="text-theme-muted mt-0.5 text-center text-[10px]">
+              <p className="text-theme-muted mt-0.5 text-[11px]">
                 {String(spec.min)}–{String(spec.max)}
               </p>
             </div>
@@ -141,24 +149,27 @@ export function CronPicker({
         })}
       </div>
 
-      <div>
-        <label htmlFor={rawId} className={subLabelCls}>
-          Custom expression
-        </label>
-        <input
-          id={rawId}
-          data-testid="cron-raw-input"
-          value={value}
-          onChange={(event) => {
-            onChange(event.target.value);
-          }}
-          aria-invalid={error !== null}
-          aria-describedby={previewId}
-          placeholder={placeholder}
-          spellCheck={false}
-          autoComplete="off"
-          className={`${inputCls} font-mono text-xs`}
-        />
+      <div className="grid gap-3 md:grid-cols-2">
+        <div>
+          <label htmlFor={rawId} className={subLabelCls}>
+            Custom expression
+          </label>
+          <input
+            id={rawId}
+            data-testid="cron-raw-input"
+            value={value}
+            onChange={(event) => {
+              onChange(event.target.value);
+            }}
+            aria-invalid={error !== null}
+            aria-describedby={previewId}
+            placeholder={placeholder}
+            spellCheck={false}
+            autoComplete="off"
+            className={`${inputCls} font-mono text-[13px]`}
+          />
+        </div>
+        {aside}
       </div>
 
       <p

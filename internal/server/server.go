@@ -17,6 +17,7 @@ import (
 	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
+	"github.com/vnovick/itervox/internal/sysmon"
 	"github.com/vnovick/itervox/internal/tracker"
 
 	"github.com/go-chi/chi/v5"
@@ -94,6 +95,9 @@ type RunningRow struct {
 	// Isolation names the sandbox the run's agent runs in ("bubblewrap",
 	// "landlock", "sandbox-exec"; #258); absent when unsandboxed.
 	Isolation string `json:"isolation,omitempty"`
+	// Resources is the run's latest resource sample (system visibility);
+	// absent before the first sample or without the run monitor.
+	Resources *sysmon.RunUsage `json:"resources,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -142,6 +146,24 @@ type HistoryRow struct {
 	// and bounded; SteersDropped counts the older ones not kept.
 	Steers        []HistorySteer `json:"steers,omitempty"`
 	SteersDropped int            `json:"steersDropped,omitempty"`
+	// ContinuedFromReview marks a run that continued from an operator
+	// review (POST .../review-continue); ReviewComments counts its line
+	// comments.
+	ContinuedFromReview bool `json:"continuedFromReview,omitempty"`
+	ReviewComments      int  `json:"reviewComments,omitempty"`
+	// Resources is the run's resource summary (peak memory, CPU time,
+	// processes, disk I/O, activity counts); absent without the monitor.
+	Resources *sysmon.RunSummary `json:"resources,omitempty"`
+}
+
+// QueuedReviewRow is an operator review waiting for its issue's next
+// worker run: never the review text.
+type QueuedReviewRow struct {
+	Identifier   string    `json:"identifier"`
+	Comments     int       `json:"comments"`
+	HasNote      bool      `json:"hasNote,omitempty"`
+	MoveToActive bool      `json:"moveToActive"`
+	QueuedAt     time.Time `json:"queuedAt"`
 }
 
 // HistoryPromptParts are the per-component digests of a run's prompt
@@ -895,6 +917,10 @@ type StateSnapshot struct {
 	// DispatchPaused is the daemon-wide dispatch pause (#213): null when
 	// dispatch runs, else its reason, until and start.
 	DispatchPaused *DispatchPauseRow `json:"dispatchPaused"`
+	// System is the machine's load, memory and workspace disk, the live
+	// runs' resource totals and the activity mode (system visibility).
+	// Absent without the run monitor.
+	System *sysmon.SystemStatus `json:"system,omitempty"`
 	// FeedSeq is the newest event feed seq (#213); GET /api/v1/feed?since=
 	// reads what came after a client's cursor.
 	FeedSeq int64 `json:"feedSeq"`
@@ -947,6 +973,9 @@ type StateSnapshot struct {
 	// page's review queue (#203): the Memory nav item's count. Omitted when
 	// none.
 	ProposedLessons int `json:"proposedLessons,omitempty"`
+	// QueuedReviews are operator reviews waiting for their issue's next
+	// worker run (POST .../review-continue), oldest first.
+	QueuedReviews []QueuedReviewRow `json:"queuedReviews,omitempty"`
 }
 
 // Backend health statuses carried by BackendHealthRow.Status.
@@ -1165,6 +1194,11 @@ type TotalsRow struct {
 type TotalsCoverageRow struct {
 	ClaudeRuns int `json:"claudeRuns"`
 	CodexRuns  int `json:"codexRuns"`
+	// RunsByBackend counts the runs per backend name; CostBackends lists the
+	// backends that reported a cost. A backend with runs but not listed is
+	// left out of CostUSDEstimated (Codex, and any that report no cost).
+	RunsByBackend map[string]int `json:"runsByBackend,omitempty"`
+	CostBackends  []string       `json:"costBackends,omitempty"`
 }
 
 // CapabilityFailureAck is advertised in StateSnapshot.Capabilities when the
@@ -1577,6 +1611,9 @@ type Config struct {
 	// Tasks backs New task and the saved task templates (#251). Nil
 	// answers 503.
 	Tasks TasksClient
+	// Activity backs GET /api/v1/issues/{identifier}/activity (system
+	// visibility). Nil answers 503.
+	Activity ActivityClient
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1643,6 +1680,8 @@ type Server struct {
 	dispatch DispatchClient
 	// changes mirrors Config.Changes (#215).
 	changes ChangesClient
+	// activity backs the system-visibility activity endpoint.
+	activity ActivityClient
 	// changeReview / github mirror Config.ChangeReview / Config.GitHubPRs
 	// (#238).
 	changeReview ChangeReviewClient
@@ -1706,6 +1745,7 @@ func New(cfg Config) *Server {
 		version:             cfg.Version,
 		dispatch:            cfg.Dispatch,
 		changes:             cfg.Changes,
+		activity:            cfg.Activity,
 		changeReview:        cfg.ChangeReview,
 		github:              cfg.GitHubPRs,
 		playbooks:           cfg.Playbooks,
@@ -1869,11 +1909,13 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
 			r.Get("/issues/{identifier}/context", s.handleIssueContext)           // #215
+			r.Get("/issues/{identifier}/activity", s.handleIssueActivity)         // system visibility: operator
 			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
 			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
-			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
-			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
-			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
+			r.Post("/issues/{identifier}/review-continue", s.handleReviewContinue)
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)        // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)

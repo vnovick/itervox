@@ -18,7 +18,7 @@ export function TaskField({
   return (
     <div>
       <label className="block">
-        <span className="text-theme-text-secondary mb-1 block text-xs font-medium">{label}</span>
+        <span className="field-label mb-1.5 block">{label}</span>
         {children}
       </label>
       {hint && !error && <span className="text-theme-muted mt-1 block text-[11px]">{hint}</span>}

@@ -19,11 +19,13 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::app_hub;
+use crate::app_material;
 use crate::app_remote::RemoteShared;
 use crate::app_update;
 use crate::client;
 use crate::dashboard::{token_init_script, window_label};
 use crate::hub_source::{hub_page_url, read_local, HubPage, HubReader, HubStatus};
+use crate::material::{self, Surface};
 use crate::menu::{
     append_app_section, append_hub_section, build_menu, MenuAction, MenuEntry, MenuSpec,
 };
@@ -272,6 +274,14 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     dash::install_app_menu(app)?;
     let rail_shared = Arc::clone(&shared);
     app.on_menu_event(move |app, event| {
+        // The Go menu: a page of the focused dashboard, in place.
+        if let Some(path) = crate::go_menu::go_menu_path(event.id().as_ref()) {
+            let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
+            let _ = std::thread::Builder::new()
+                .name("itervox-go".into())
+                .spawn(move || dash::go(&app, &shared, path));
+            return;
+        }
         if let Some(cmd) = crate::rail::menu_command(event.id().as_ref()) {
             let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
             let _ = std::thread::Builder::new()
@@ -533,13 +543,24 @@ fn append_entry<R: Runtime>(
 ) -> tauri::Result<()> {
     match entry {
         MenuEntry::Separator => parent.add(&PredefinedMenuItem::separator(app)?),
-        MenuEntry::Item { id, label, enabled } => parent.add(&MenuItem::with_id(
-            app,
-            id.as_str(),
+        MenuEntry::Item {
+            id,
             label,
-            *enabled,
-            None::<&str>,
-        )?),
+            enabled,
+            accelerator,
+        } => {
+            // ⌘Q on macOS, Ctrl+Q on Linux and Windows (platform::accelerator).
+            let accel = accelerator
+                .as_deref()
+                .map(|a| crate::platform::accelerator(crate::platform::Os::current(), a));
+            parent.add(&MenuItem::with_id(
+                app,
+                id.as_str(),
+                label,
+                *enabled,
+                accel.as_deref(),
+            )?)
+        }
         MenuEntry::Submenu { label, items } => {
             let sub = Submenu::new(app, label, true)?;
             for i in items {
@@ -554,6 +575,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
     match action {
         MenuAction::OpenDashboard(key) => open_dashboard(app, shared, &key, None),
         MenuAction::OpenUrl { project, url } => open_dashboard(app, shared, &project, Some(url)),
+        MenuAction::NewTask(key) => dash::open_page(app, shared, &key, crate::menu::NEW_TASK_PATH),
         MenuAction::Start(key) => spawn_op(app, shared, key, PendingOp::Starting),
         MenuAction::Stop(key) => spawn_op(app, shared, key, PendingOp::Stopping),
         MenuAction::Restart(key) => spawn_op(app, shared, key, PendingOp::Restarting),
@@ -972,7 +994,8 @@ fn open_sessions(app: &AppHandle, shared: &Arc<Shared>) {
         let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
         let nav_app = app2.clone();
         let nav_shared = Arc::clone(&shared2);
-        let built = WebviewWindowBuilder::new(
+        let material = app_material::material_for(Surface::Sessions);
+        let mut builder = WebviewWindowBuilder::new(
             &app2,
             SESSIONS_LABEL,
             WebviewUrl::App("sessions.html".into()),
@@ -986,10 +1009,21 @@ fn open_sessions(app: &AppHandle, shared: &Arc<Shared>) {
                 false
             }
             None => true,
-        })
-        .build();
-        match built {
+        });
+        // A system material behind the page: a transparent window and
+        // webview, and the page told before it loads (material.rs).
+        if let Some(m) = material {
+            builder = builder
+                .transparent(true)
+                .initialization_script(material::init_script(m));
+        }
+        match builder.build() {
             Ok(w) => {
+                if let Some(m) = material {
+                    app_material::apply_or_clear(&w.as_ref().window(), m, |js| {
+                        let _ = w.eval(js);
+                    });
+                }
                 let _ = w.set_focus();
                 wake(&shared2);
             }

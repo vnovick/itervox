@@ -158,12 +158,15 @@ export function NewTaskForm({ onDone }: { onDone: () => void }) {
           {errors.form}
         </p>
       )}
+      <SaveTaskTemplate draft={draft} />
       <div className="flex justify-end gap-2">
-        <Button type="submit" disabled={create.isPending}>
+        <Button type="submit" size="lg" disabled={create.isPending}>
           Create
         </Button>
         <Button
           variant="primary"
+          size="lg"
+          className="font-semibold"
           disabled={create.isPending}
           onClick={() => {
             submit(true);
@@ -172,7 +175,6 @@ export function NewTaskForm({ onDone }: { onDone: () => void }) {
           Create and start
         </Button>
       </div>
-      <SaveTaskTemplate draft={draft} />
     </form>
   );
 }

@@ -138,6 +138,26 @@ describe('Logs page', () => {
     expect(screen.getByTestId('chip-error')).toBeInTheDocument();
   });
 
+  it('tints a pressed level chip with its level tone', async () => {
+    setupStoreMock('ABC-1');
+    mockUseLogIdentifiers.mockReturnValue({ data: ['ABC-1'], settled: true });
+    const user = userEvent.setup();
+    render(<Logs />, { wrapper });
+    expect(screen.getByTestId('chip-warn')).toHaveClass(
+      'bg-theme-warning-soft',
+      'text-theme-warning-text',
+    );
+    expect(screen.getByTestId('chip-error')).toHaveClass(
+      'bg-theme-danger-soft',
+      'text-theme-danger-text',
+    );
+    expect(screen.getByTestId('chip-text')).toHaveClass('bg-theme-accent-soft');
+    await user.click(screen.getByTestId('chip-warn'));
+    // Off: the shared struck-through chip, not the level tint.
+    expect(screen.getByTestId('chip-warn')).not.toHaveClass('bg-theme-warning-soft');
+    expect(screen.getByTestId('chip-warn')).toHaveClass('line-through');
+  });
+
   it('hides entries of a deactivated chip type', async () => {
     setupStoreMock('ABC-1');
     const user = userEvent.setup();

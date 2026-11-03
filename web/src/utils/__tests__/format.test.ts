@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   fmtMs,
   orchDotClass,
+  orchStatusDotClass,
   priorityDotClass,
   stateBadgeColor,
   formatOrchestratorState,
@@ -21,6 +22,17 @@ describe('fmtMs', () => {
 
   it('handles 0ms', () => {
     expect(fmtMs(0)).toBe('0s');
+  });
+});
+
+describe('orchStatusDotClass', () => {
+  it('maps each orchestrator state to a status-dot tone', () => {
+    expect(orchStatusDotClass('running')).toBe('dot-ok');
+    expect(orchStatusDotClass('paused')).toBe('dot-warn');
+    expect(orchStatusDotClass('input_required')).toBe('dot-warn');
+    expect(orchStatusDotClass('pending_input_resume')).toBe('dot-warn');
+    expect(orchStatusDotClass('retrying')).toBe('dot-danger');
+    expect(orchStatusDotClass('idle')).toBe('dot-idle');
   });
 });
 
@@ -83,9 +95,9 @@ describe('formatOrchestratorState', () => {
 });
 
 describe('stateBadgeColor', () => {
-  it('returns warning for in-progress states', () => {
-    expect(stateBadgeColor('In Progress')).toBe('warning');
-    expect(stateBadgeColor('in_progress')).toBe('warning');
+  it('returns the accent tone (primary) for in-progress states', () => {
+    expect(stateBadgeColor('In Progress')).toBe('primary');
+    expect(stateBadgeColor('in_progress')).toBe('primary');
   });
 
   it('returns success for review and done states', () => {
@@ -93,9 +105,9 @@ describe('stateBadgeColor', () => {
     expect(stateBadgeColor('Done')).toBe('success');
   });
 
-  it('returns primary for todo states', () => {
-    expect(stateBadgeColor('Todo')).toBe('primary');
-    expect(stateBadgeColor('TODO')).toBe('primary');
+  it('keeps queued todo states neutral (light)', () => {
+    expect(stateBadgeColor('Todo')).toBe('light');
+    expect(stateBadgeColor('TODO')).toBe('light');
   });
 
   it('returns light for unrecognised states', () => {

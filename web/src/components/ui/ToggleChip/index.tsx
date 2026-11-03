@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes, Ref } from 'react';
 import { cn } from '../cn';
-import { FOCUS_RING } from '../button/buttonStyles';
+import { FOCUS_RING } from '../button/buttonRecipe';
 
 export interface ToggleChipProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
@@ -11,7 +11,7 @@ export interface ToggleChipProps extends Omit<
   ref?: Ref<HTMLButtonElement>;
 }
 
-/** CORE-094 — a filter chip: a toggle button whose state is `aria-pressed`. */
+/** CORE-094 — a filter chip (pill): a toggle button whose state is `aria-pressed`. */
 export function ToggleChip({
   pressed,
   onPressedChange,
@@ -30,11 +30,11 @@ export function ToggleChip({
         if (!event.defaultPrevented) onPressedChange(!pressed);
       }}
       className={cn(
-        'rounded-[var(--radius-sm)] px-2 py-0.5 font-mono text-[11px] transition-colors',
+        'rounded-full px-2.5 py-0.5 font-mono text-[11px] transition-colors',
         FOCUS_RING,
         pressed
           ? 'bg-theme-accent-soft text-theme-accent-strong'
-          : 'text-theme-muted hover:text-theme-text line-through',
+          : 'subtle-fill text-theme-muted hover:text-theme-text line-through',
         className,
       )}
       {...rest}
