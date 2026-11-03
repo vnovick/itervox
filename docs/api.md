@@ -153,6 +153,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/issues` | viewer |
 | `GET` | `/api/v1/issues/{identifier}` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/context` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/decisions` | viewer (redacted, bounded decision logs, #218) |
 | `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
 | `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/logs` | viewer |
@@ -162,6 +163,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/logs/identifiers` | viewer |
 | `GET` | `/api/v1/memory` | viewer |
 | `GET` | `/api/v1/memory/recall` | viewer |
+| `GET` | `/api/v1/playbooks` | viewer (#218) |
 | `GET` | `/api/v1/projects` | viewer |
 | `GET` | `/api/v1/projects/filter` | viewer |
 | `GET` | `/api/v1/repo/evals` | viewer |
@@ -182,6 +184,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/skills/issues` | viewer |
 | `GET` | `/api/v1/skills/profile-backends` | viewer (Operator: run the fleet.) |
 | `GET` | `/api/v1/state` | viewer |
+| `GET` | `/api/v1/steering/phrases` | viewer (#218) |
 | `GET` | `/api/v1/summary` | viewer |
 | `GET` | `/api/v1/tracker/labels` | viewer |
 | `GET` | `/api/v1/tracker/scope` | viewer |
@@ -205,6 +208,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/issues/{identifier}/dismiss-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/failures/ack` | operator |
 | `DELETE` | `/api/v1/issues/{identifier}/logs` | operator |
+| `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
 | `POST` | `/api/v1/issues/{identifier}/profile` | operator |
 | `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |
@@ -226,6 +230,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `DELETE` | `/api/v1/outbox/{id}` | operator |
 | `POST` | `/api/v1/outbox/{id}/retry` | operator |
 | `POST` | `/api/v1/refresh` | operator |
+| `POST` | `/api/v1/repo/readiness/verify-skill-issue` | operator (creates a tracker issue, #218) |
 | `POST` | `/api/v1/sessions/{id}/message` | operator (steering) |
 | `GET` | `/api/v1/sessions/{id}/screen` | operator (a live terminal pane) |
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
@@ -936,7 +941,7 @@ is reported as `fail` when it does not answer in time.
   "generatedAt": "2026-10-21T10:00:00Z",
   "checks": [
     { "id": "schema_version", "title": "WORKFLOW.md schema 2 marker", "status": "pass", "detail": "itervox_schema_version: 2" },
-    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable", "status": "warn",
+    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff, .itervox/playbooks and .itervox/memory.json committable", "status": "warn",
       "detail": "the root .gitignore ignores .itervox/ without the carve-outs: !.itervox/agents/** …",
       "fix": "run `itervox init --update --workflow /srv/app/WORKFLOW.md` (adds the carve-outs), or add the lines yourself" }
   ]
@@ -949,8 +954,9 @@ anything that is not a pass. Check IDs, in order:
 | ID | Checks | Not a pass when |
 |---|---|---|
 | `schema_version` | `itervox_schema_version: 2` in WORKFLOW.md, and the workflow loads | `fail`: missing, older or unloadable |
-| `gitignore_carveouts` | the root `.gitignore` keeps `.itervox/agents/**` and `.itervox/handoff/**` committable | `warn`: it ignores `.itervox/` without `!.itervox/`, `!.itervox/agents/`, `!.itervox/agents/**`, `!.itervox/handoff/`, `!.itervox/handoff/**` |
+| `gitignore_carveouts` | the root `.gitignore` keeps `.itervox/agents/**`, `.itervox/handoff/**`, `.itervox/playbooks/**` and `.itervox/memory.json` committable | `warn`: it ignores `.itervox/` without `!.itervox/`, `!.itervox/agents/`, `!.itervox/agents/**`, `!.itervox/handoff/`, `!.itervox/handoff/**`, `!.itervox/playbooks/`, `!.itervox/playbooks/**`, `!.itervox/memory.json` |
 | `instruction_docs` | `CLAUDE.md` (Claude profiles) and `AGENTS.md` (Codex profiles) at the repository root | `warn`: a backend in use has no instruction file |
+| `verify_skill` | a project verification skill or script (#218): `.claude/skills/<…verif…>/SKILL.md`, `scripts/verify*`, a `verify` Makefile target or a `verify` script in `package.json` | `warn`: none of them; `POST /api/v1/repo/readiness/verify-skill-issue` creates an issue to write one |
 | `bare_fetch_refspec` | the shared bare clone's fetch (#195) | `fail`: the last fetch failed; `warn`: still on the pre-#195 refspec, or stale |
 | `profile_refs` | skill and subagent references in profile SOUL.md / INSTRUCTIONS.md (#86) | `warn`: a reference does not resolve |
 | `tracker_reachable` | one read of the tracker API (Linear `{ viewer }`, GitHub repository access) | `fail`: the read failed or timed out; `warn`: GitHub token without push access |
@@ -1283,11 +1289,71 @@ bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
 
+### Playbooks, decisions and steering (#218)
+
+Fetched on demand; none of these are on the `/state` snapshot or the SSE
+frames. See the [Playbooks guide](/guides/playbooks/).
+
+#### `GET /api/v1/playbooks`
+
+The playbooks in `agent.playbooks.dir` (viewer):
+
+```json
+{"enabled": true, "playbooks": [
+  {"name": "bug-fix", "description": "Reproduce first, fix the root cause, prove the fix with a test.",
+   "keywords": ["bug", "crash"], "requireEvidence": ["test"]}
+]}
+```
+
+#### `POST /api/v1/issues/{identifier}/playbook`
+
+Sets the issue's playbook (operator): `{"playbook":"bug-fix"}`, `{"playbook":"none"}`
+(no playbook), or `{"playbook":""}` (automatic: label, then keyword
+classifier). `202 {"identifier":"ENG-1","playbook":"bug-fix"}`; `400
+unknown_playbook` for a name not on disk; `503` when the event queue is full.
+The choice is event-loop state, kept across restarts in
+`.itervox/playbook_overrides.json`, and applies from the issue's next run.
+`GET /api/v1/issues` and `GET /api/v1/issues/{identifier}` report it as
+`playbookOverride`, with `playbook` and `playbookSource` (`override`,
+`label`, `keyword`) naming the playbook the next (or current) run gets.
+
+#### `GET /api/v1/issues/{identifier}/decisions`
+
+Every run's decision log (`.itervox/handoff/<timestamp>_<profile>.decisions.tsv`
+in the issue's worktree), oldest run first (viewer). Fields are redacted and
+cut to 500 bytes; at most 200 rows per run and 50 runs; a file over 64 KiB is
+read up to that and flagged `truncated`; `skipped` counts lines without a
+decision.
+
+```json
+{"identifier": "ENG-1", "runs": [
+  {"path": ".itervox/handoff/2026-05-02T10-00-00.000Z_implementer.decisions.tsv",
+   "runTimestamp": "2026-05-02T10-00-00.000Z", "role": "implementer",
+   "decisions": [{"time": "2026-05-02T10:01:00Z", "at": "2026-05-02T10:01:00Z",
+     "decision": "Diff against the merge base", "why": "main moves on", "alternative": "main's tip"}]}
+]}
+```
+
+#### `GET /api/v1/steering/phrases`
+
+The steering chips (`sessions.steering_phrases`, viewer):
+`{"phrases":[{"label":"Prove it works","message":"Prove it works: …"}]}`.
+A chip is sent like any message, with `POST /api/v1/sessions/{id}/message`.
+
+#### `POST /api/v1/repo/readiness/verify-skill-issue`
+
+**Generate verify skill** (operator): creates a tracker issue asking an agent
+to write the project's verification skill, through `tracker.CreateIssue` in
+the enforcement issue state (as an accepted enforcement suggestion, #217).
+`201 {"identifier":"ENG-42","url":"…"}`; `502 issue_create_failed` (redacted
+message) when the tracker refuses.
+
 ### Per-issue overrides and human-input flow
 
 | Method | Path | Request body | Success response |
 |---|---|---|---|
 | `POST` | `/issues/{identifier}/profile` | `{"profile":"frontend"}` or `{"profile":""}` | `{"ok":true,"identifier":"ENG-1","profile":"frontend"}` |
+| `POST` | `/issues/{identifier}/playbook` | `{"playbook":"bug-fix"}`, `{"playbook":"none"}` or `{"playbook":""}` | `202 {"identifier":"ENG-1","playbook":"bug-fix"}` |
 | `POST` | `/issues/{identifier}/backend` | `{"backend":"claude"}` or `{"backend":""}` | `{"ok":true,"identifier":"ENG-1","backend":"claude"}` |
 | `POST` | `/issues/{identifier}/provide-input` | `{"message":"...","fromAgent"?:true}` | `{"ok":true}` |
 | `POST` | `/issues/{identifier}/dismiss-input` | — | `{"ok":true}` |

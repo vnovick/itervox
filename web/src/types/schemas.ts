@@ -148,6 +148,7 @@ export const PromptPartsSchema = z.object({
   instructions: z.string().optional(),
   rules: z.string().optional(),
   memory: z.string().optional(), // #202 — absent when the run had no memory block
+  playbook: z.string().optional(), // #218 — absent when the run had no playbook
   template: z.string().optional(),
 });
 
@@ -196,6 +197,8 @@ export const HistoryRowSchema = z.object({
   // template. Opaque; the dashboard shows the first 12 characters.
   promptDigest: z.string().optional(),
   promptParts: PromptPartsSchema.optional(),
+  // #218 — the task-type playbook the run was given; absent when none.
+  playbook: z.string().optional(),
   // Operator messages delivered to the run (redacted, bounded).
   steers: z.array(RunSteerSchema).optional(),
   steersDropped: z.number().optional(),
@@ -1099,6 +1102,11 @@ export const TrackerIssueSchema = z.object({
   // CORE-055 — set when agentProfile/agentBackend come from an automatic
   // switch rather than an operator pin.
   autoSwitch: AutoSwitchRowSchema.optional(),
+  // #218 — the playbook the issue's next (or current) run gets, how it was
+  // chosen, and the operator's override ('none' or a name; absent: auto).
+  playbook: z.string().optional(),
+  playbookSource: z.string().optional(),
+  playbookOverride: z.string().optional(),
 });
 
 // Inferred TypeScript types — re-exported from itervox.ts for backward compatibility.
@@ -2034,6 +2042,7 @@ export const RunContextRunSchema = z.object({
     .transform((v) => v ?? []),
   guardrailBlocks: z.number().default(0),
   lastGuardrailKind: z.string().optional(),
+  playbook: z.string().optional(), // #218
 });
 export type RunContextRun = z.infer<typeof RunContextRunSchema>;
 
@@ -2072,3 +2081,69 @@ export const FileDiffResponseSchema = z.object({
   maxBytes: z.number(),
 });
 export type FileDiffResponse = z.infer<typeof FileDiffResponseSchema>;
+
+// #218 — task-type playbooks, decision logs, steering phrases and the
+// verify-skill issue. Fetched on demand, never on the SSE frame.
+export const PlaybookRowSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  keywords: stringList,
+  requireEvidence: stringList,
+});
+export type PlaybookRow = z.infer<typeof PlaybookRowSchema>;
+
+export const PlaybooksResponseSchema = z.object({
+  enabled: z.boolean().default(true),
+  playbooks: z
+    .array(PlaybookRowSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type PlaybooksResponse = z.infer<typeof PlaybooksResponseSchema>;
+
+export const DecisionRowSchema = z.object({
+  time: z.string().optional(),
+  at: z.string().optional(),
+  decision: z.string(),
+  why: z.string().optional(),
+  alternative: z.string().optional(),
+});
+export type DecisionRow = z.infer<typeof DecisionRowSchema>;
+
+export const DecisionRunSchema = z.object({
+  path: z.string(),
+  runTimestamp: z.string().optional(),
+  role: z.string().optional(),
+  decisions: z
+    .array(DecisionRowSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  truncated: z.boolean().optional(),
+  skipped: z.number().optional(),
+});
+export type DecisionRun = z.infer<typeof DecisionRunSchema>;
+
+export const DecisionsResponseSchema = z.object({
+  identifier: z.string(),
+  runs: z
+    .array(DecisionRunSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type DecisionsResponse = z.infer<typeof DecisionsResponseSchema>;
+
+export const SteeringPhraseSchema = z.object({ label: z.string(), message: z.string() });
+export type SteeringPhrase = z.infer<typeof SteeringPhraseSchema>;
+
+export const SteeringPhrasesResponseSchema = z.object({
+  phrases: z
+    .array(SteeringPhraseSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+
+export const VerifySkillIssueResultSchema = z.object({
+  identifier: z.string().optional(),
+  url: z.string().optional(),
+});
+export type VerifySkillIssueResult = z.infer<typeof VerifySkillIssueResultSchema>;

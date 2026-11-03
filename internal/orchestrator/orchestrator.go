@@ -173,6 +173,9 @@ type Orchestrator struct {
 	// unified-dependency-graph Task 6.
 	depsOverridesMu   sync.RWMutex
 	depsOverridesFile string // optional path for persisting DepsOverrides across restarts
+	// playbookOverridesFile persists State.PlaybookOverrides (#218); guarded
+	// by depsOverridesMu like depsOverridesFile, set before Run.
+	playbookOverridesFile string
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string

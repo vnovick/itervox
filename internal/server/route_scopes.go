@@ -69,6 +69,9 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/issues/{identifier}/sublog-stream": accessViewer,
 	"GET /api/v1/issues/{identifier}/context":       accessViewer, // #215: redacted, never tool output
 	"GET /api/v1/issues/{identifier}/diff":          accessViewer, // #215: ?file= hunks need operator (handleIssueDiff)
+	"GET /api/v1/issues/{identifier}/decisions":     accessViewer, // #218: redacted, bounded decision logs
+	"GET /api/v1/playbooks":                         accessViewer, // #218
+	"GET /api/v1/steering/phrases":                  accessViewer, // #218
 	"GET /api/v1/logs/identifiers":                  accessViewer,
 	"GET /api/v1/logs":                              accessViewer,
 	"GET /api/v1/projects":                          accessViewer,
@@ -113,6 +116,8 @@ var routeScopes = map[string]routeAccess{
 	"POST /api/v1/issues/{identifier}/dismiss-input":         accessOperator,
 	"POST /api/v1/issues/{identifier}/comment":               accessOperator,
 	"POST /api/v1/issues/{identifier}/deps-override":         accessOperator,
+	"POST /api/v1/issues/{identifier}/playbook":              accessOperator, // #218: per-issue playbook override
+	"POST /api/v1/repo/readiness/verify-skill-issue":         accessOperator, // #218: creates a tracker issue
 	"DELETE /api/v1/issues/{identifier}/deps-override":       accessOperator,
 	"POST /api/v1/issues/{identifier}/failures/ack":          accessOperator,
 	"DELETE /api/v1/issues/{identifier}/logs":                accessOperator,

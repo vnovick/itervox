@@ -167,6 +167,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				RunID:         r.RunID,
 				PromptDigest:  r.PromptDigest,
 				PromptParts:   historyPromptParts(r.PromptParts),
+				Playbook:      r.Playbook, // #218
 				Steers:        historySteers(r.Steers),
 				SteersDropped: r.SteersDropped,
 			})
@@ -325,7 +326,7 @@ func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
 	if p == (orchestrator.PromptParts{}) {
 		return nil
 	}
-	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Template: p.Template}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Template: p.Template}
 }
 
 // historySteers maps a run's delivered operator messages (#186).

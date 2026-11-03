@@ -161,6 +161,7 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		if err := finalizeItervoxGitignore(itervoxDir); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 		}
+		scaffoldPlaybooks(itervoxDir, "itervox quickstart", out) // #218
 		offerIssueTemplate(dir, det.Tracker, opts.Yes, reader, out)
 	}
 
