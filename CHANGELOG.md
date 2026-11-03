@@ -3,13 +3,15 @@
 All notable changes to Itervox are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+Each release has its own section, newest first. Changes merged since the last tagged release are listed under the version they were planned and built for, and that section reads `— Unreleased` until the version is tagged, when it gets the tag's date. `[Unreleased]` holds changes not yet assigned to a version.
+
 ---
 
 ## [Unreleased]
 
 ---
 
-## [0.2.3] — 2026-11-03
+## [0.2.4] — 2026-11-03
 
 ### Added
 
@@ -35,7 +37,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - **`make chaos` and a nightly chaos CI job** (#126). The orchestrator and tracker tests run over and over (`-race -count -cpu 1,2,4`) while busy loops saturate every CPU, which is how the ordering races fixed in v0.2.2 were reproduced. Every night on the default branch, on demand, and on a pull request labelled `ci:chaos`; a failing package uploads its verbose log, where a hung test's timeout panic carries every goroutine's stack. The tests get a throwaway git config, so a developer's commit signing is never asked to sign their commits. Settings: `CHAOS_COUNT`, `CHAOS_RUN`, `CHAOS_PACKAGES`, `CHAOS_CPU`, `CHAOS_HOGS`, `CHAOS_TIMEOUT`, `CHAOS_OUT`.
 
-- **Local tracker store** (#113). With `tracker.store.enabled: true`, Itervox keeps the tracked Linear or GitHub issues in `.itervox/tracker_store.json` and serves the orchestrator's and dashboard's list reads from it; ticks no longer call the tracker's list endpoints, and the board keeps working through a tracker outage. A background sync re-pulls every `tracker.store.sync_interval_ms` (default 60s). A restart serves from the file; a cold start pulls exactly once. On by default since #132.
+### Changed
+
+- **The tracker store is on by default** (#132). `tracker.store.enabled` now defaults to `true` for Linear and GitHub: list reads are served from `.itervox/tracker_store.json`, kept current by incremental pulls (#114), and every agent start re-reads its issue by ID first (the claim check, #116), so an issue a person moved out of an active state since the last sync is not dispatched (`TestDefaultStoreDoesNotDispatchAnIssueMovedOutBetweenSyncs` runs the real daemon against a GitHub API whose listings lag behind it). **Upgrade note:** a project with no `tracker.store` block switches from polling to the store on its first start after the upgrade; that start makes one full pull before the first read is answered and writes `.itervox/tracker_store.json` (gitignored by `itervox init`'s `.itervox/.gitignore`). A change made in the tracker reaches the board within `tracker.store.sync_interval_ms` (default 1 minute) rather than at the next tick. To keep polling the tracker directly, set `tracker.store.enabled: false`. `local` and `memory` trackers are unaffected.
+
+- **Headless by default; the terminal UI is deprecated** (#134). `itervox` with no command now runs headless even on a terminal: no terminal UI, logs on stderr, and the dashboard URL printed there (with its token when stderr is a terminal, as before). `itervox --tui` starts the terminal UI, which is deprecated and will be removed in v0.3: its header says so, and the daemon logs a deprecation warning when it starts. Without a terminal, `--tui` warns and runs headless. `--headless` (#120) still withholds the tokenised URL even on a terminal, and wins over `--tui`. **Upgrade note:** if you start Itervox in a terminal and use the terminal UI, add `--tui`; otherwise use the dashboard, or `itervox watch`, `itervox logs -f <issue>` and the quick actions from another shell. This supersedes the #120 entry's "the terminal UI stays the default".
+
+### Fixed
+
+- **Reviewers are identified by their own run, and a review no longer clears your profile choice** (#127). A reviewer's retry, a reviewer re-dispatched after its backend was limited, a paused reviewer and a reviewer waiting for input (across a restart too) now run as the same reviewer under its own profile. Reviewer runs no longer set the issue's profile: a profile you picked for an issue stays in place through its review instead of being replaced while the reviewer ran and deleted when it finished, and picking a profile while a reviewer retry is pending no longer turns that retry into an implementer run. The review chain advances from the finishing reviewer's own run record, so a reviewer stopped by reconcile still counts once, never twice. A reviewer whose vendor-limit re-dispatch is held (every mapped backend limited) continues as a reviewer retry that keeps the claim, so the next poll cannot start it as implementer work. A review chain is kept while its reviewer waits for input, has a reply queued, is paused or is pending during a drain, even with the issue outside the active states, so the resumed reviewer still advances it.
+
+- **Every run has an ID and a lifecycle** (#125). Each dispatch gets a run ID (also its log session ID), carried on every update and exit its worker sends, and a phase: dispatched, running, finishing, exited. The exit or progress of a run that was stopped and replaced by a new run on the same issue is recognised by its ID and no longer touches the new run, even after the new run has itself exited and left a retry; before, a late exit deleted the new run, cancelled its worker and could schedule a retry or a review for it. A run that is finishing (its worker has moved the issue to `completion_state`, or is sending its exit) is left to its own exit by tracker reconciliation and by stall detection.
+
+---
+
+## [0.2.3] — 2026-11-03
+
+### Added
+
+- **Local tracker store** (#113). With `tracker.store.enabled: true`, Itervox keeps the tracked Linear or GitHub issues in `.itervox/tracker_store.json` and serves the orchestrator's and dashboard's list reads from it; ticks no longer call the tracker's list endpoints, and the board keeps working through a tracker outage. A background sync re-pulls every `tracker.store.sync_interval_ms` (default 60s). A restart serves from the file; a cold start pulls exactly once. Off by default until the dispatch claim check (#116) lands.
 
 ---
 
@@ -62,22 +82,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **GitHub tracker setup guide** (#77), on the site (`/guides/github-issues/`) and in `docs/github-tracker.md`: state labels with `gh label create` commands and `itervox doctor --fix`, `p0`–`p3` priority labels and how they order dispatch, blocker phrases in the issue body, `#42` identifiers and the template variables (including which ones are unset until filled and must be guarded under strict variables), `gh auth`, and a GitHub-vs-Linear comparison (no project filter, no sub-issue gating, per-issue state reads). Linked from getting-started, and `itervox doctor` prints the link with every GitHub label problem. The rewrite also corrects three errors in the previous guide: its example prompt used `{{ issue.number }}`, which does not exist and fails every dispatch under strict template variables (use `{{ issue.identifier }}`); `active_states: [open]` matches only issues labelled `open`, not all open issues; and `completion_state: closed` adds a `closed` label rather than closing the issue.
 - **`itervox doctor` checks GitHub state labels; `doctor --fix` creates the missing ones** (#75). The GitHub tracker maps every state to an issue label, and a state whose label does not exist matched nothing: no issue was dispatched or moved and nothing reported why. Doctor now lists each configured state label missing on the repository (active, working, completion, terminal except `closed`, backlog and failed states, case-insensitive) with the exact `gh label create` command, and exits `1`. API failures are reported but never fail doctor; Linear workflows skip the check. `itervox doctor --fix` creates the missing labels after a `[y/N]` prompt (the API time limit starts after the answer); `--yes` / `-y` skips it for CI. A repair that fails part-way exits `1` and still lists the labels it did not create.
 
-### Changed
-
-- **Headless by default; the terminal UI is deprecated** (#134). `itervox` with no command now runs headless even on a terminal: no terminal UI, logs on stderr, and the dashboard URL printed there (with its token when stderr is a terminal, as before). `itervox --tui` starts the terminal UI, which is deprecated and will be removed in v0.3: its header says so, and the daemon logs a deprecation warning when it starts. Without a terminal, `--tui` warns and runs headless. `--headless` (#120) still withholds the tokenised URL even on a terminal, and wins over `--tui`. **Upgrade note:** if you start Itervox in a terminal and use the terminal UI, add `--tui`; otherwise use the dashboard, or `itervox watch`, `itervox logs -f <issue>` and the quick actions from another shell. This supersedes the #120 entry's "the terminal UI stays the default".
-
-- **The tracker store is on by default** (#132). `tracker.store.enabled` now defaults to `true` for Linear and GitHub: list reads are served from `.itervox/tracker_store.json`, kept current by incremental pulls (#114), and every agent start re-reads its issue by ID first (the claim check, #116), so an issue a person moved out of an active state since the last sync is not dispatched (`TestDefaultStoreDoesNotDispatchAnIssueMovedOutBetweenSyncs` runs the real daemon against a GitHub API whose listings lag behind it). **Upgrade note:** a project with no `tracker.store` block switches from polling to the store on its first start after the upgrade; that start makes one full pull before the first read is answered and writes `.itervox/tracker_store.json` (gitignored by `itervox init`'s `.itervox/.gitignore`). A change made in the tracker reaches the board within `tracker.store.sync_interval_ms` (default 1 minute) rather than at the next tick. To keep polling the tracker directly, set `tracker.store.enabled: false`. `local` and `memory` trackers are unaffected.
-
 ### Security
 
 - **Go toolchain bumped to 1.26.9 and `golang.org/x/net` to v0.60.0.** `govulncheck` flagged ten standard-library advisories (GO-2026-6603/6605/6607/6608/6609/6610/6611/6612/6613/6617: HTTP/1 and HTTP/2 request handling in `net/http`, `net/textproto` and `crypto/tls`, plus their `x/net` counterparts) whose fixes ship in Go 1.26.9 and 1.27.2 only, so the 1.25 line no longer receives them. `go.mod`, the `Makefile` `GOTOOLCHAIN` pin and the container image's `GO_VERSION` move together; contributors with `GOTOOLCHAIN=auto` get the toolchain downloaded on the next build.
 - **Go toolchain bumped to 1.26.10.** `govulncheck` flagged GO-2026-6809 (`crypto/x509` now distrusts a set of compromised intermediate certificates), reachable from the GitHub tracker's HTTPS calls. The release binaries and the Docker image are built with go1.26.10.
 
 ### Fixed
-
-- **Reviewers are identified by their own run, and a review no longer clears your profile choice** (#127). A reviewer's retry, a reviewer re-dispatched after its backend was limited, a paused reviewer and a reviewer waiting for input (across a restart too) now run as the same reviewer under its own profile. Reviewer runs no longer set the issue's profile: a profile you picked for an issue stays in place through its review instead of being replaced while the reviewer ran and deleted when it finished, and picking a profile while a reviewer retry is pending no longer turns that retry into an implementer run. The review chain advances from the finishing reviewer's own run record, so a reviewer stopped by reconcile still counts once, never twice. A reviewer whose vendor-limit re-dispatch is held (every mapped backend limited) continues as a reviewer retry that keeps the claim, so the next poll cannot start it as implementer work. A review chain is kept while its reviewer waits for input, has a reply queued, is paused or is pending during a drain, even with the issue outside the active states, so the resumed reviewer still advances it.
-
-- **Every run has an ID and a lifecycle** (#125). Each dispatch gets a run ID (also its log session ID), carried on every update and exit its worker sends, and a phase: dispatched, running, finishing, exited. The exit or progress of a run that was stopped and replaced by a new run on the same issue is recognised by its ID and no longer touches the new run, even after the new run has itself exited and left a retry; before, a late exit deleted the new run, cancelled its worker and could schedule a retry or a review for it. A run that is finishing (its worker has moved the issue to `completion_state`, or is sending its exit) is left to its own exit by tracker reconciliation and by stall detection.
 
 - **An issue with an empty description no longer fails its prompt** (#102). `{{ issue.description }}`, `{{ issue.url }}` and `{{ issue.branch_name }}` print as nothing when empty, instead of failing the dispatch with `undefined variable` under strict variables; `{% if issue.description %}` still skips its block, and a misspelt variable such as `{{ issue.descripton }}` still fails. The Linear guide's example prompt, which printed the description unguarded, now works on issues without one.
 
