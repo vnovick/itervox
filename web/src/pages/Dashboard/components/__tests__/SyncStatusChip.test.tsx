@@ -111,6 +111,11 @@ describe('syncStatusChipModel (#117)', () => {
     expect(model?.danger).toBe(true);
   });
 
+  it('describes the local issue sync', () => {
+    const model = syncStatusChipModel(row({ mode: 'local_sync', syncIntervalMs: 60_000 }), NOW);
+    expect(model?.title).toContain('Local issue files synced with the remote tracker every 1m');
+  });
+
   it('describes direct polling', () => {
     const model = syncStatusChipModel(row({ mode: 'direct', syncIntervalMs: 30_000 }), NOW);
     expect(model?.title).toContain('Direct polling every 30s');

@@ -171,3 +171,48 @@ func TestEnqueueRollbackRestoresCoalescedEntries(t *testing.T) {
 	require.Error(t, ob.Enqueue(urgentMove), "the persist failure surfaces")
 	assert.Equal(t, before, ob.Snapshot(), "the replaced move and the rescheduled batch are restored")
 }
+
+func fieldEdit(issueID, payload string) Entry {
+	return Entry{Kind: KindUpdateFields, IssueID: issueID, Identifier: "ENG-" + issueID, Payload: payload}
+}
+
+// TestCoalesceMergesWaitingFieldEdits (#118): field edits for one issue
+// inside one interval merge into one entry, key by key with the later value
+// winning, at the end of the issue's queue (after its comments), due at the
+// batch's first deadline; an edit already handed to the flusher is not
+// merged into.
+func TestCoalesceMergesWaitingFieldEdits(t *testing.T) {
+	ob, now := batchedOutbox(t)
+	start := *now
+	require.NoError(t, ob.Enqueue(fieldEdit("a", `{"title":"One","labels":["cli"]}`)))
+	require.NoError(t, ob.Enqueue(comment("a", "note")))
+	*now = start.Add(4 * time.Second)
+	require.NoError(t, ob.Enqueue(fieldEdit("a", `{"title":"Two","priority":2}`)))
+	require.NoError(t, ob.Enqueue(fieldEdit("b", `{"title":"Other"}`)))
+
+	entries := ob.Snapshot()
+	require.Len(t, entries, 3)
+	assert.Equal(t, KindCreateComment, entries[0].Kind)
+	merged := entries[1]
+	assert.Equal(t, KindUpdateFields, merged.Kind)
+	assert.JSONEq(t, `{"title":"Two","labels":["cli"],"priority":2}`, merged.Payload)
+	assert.Equal(t, 1, merged.Coalesced)
+	assert.Equal(t, start.Add(10*time.Second), merged.NextAttemptAt, "the batch's first deadline")
+	assert.JSONEq(t, `{"title":"Other"}`, entries[2].Payload, "other issues are untouched")
+
+	// Once attempted, an edit is not merged into: it may have landed.
+	ob.MarkFailed(merged.ID, errors.New("boom"), *now)
+	require.NoError(t, ob.Enqueue(fieldEdit("a", `{"title":"Three"}`)))
+	assert.Len(t, ob.PendingFor("a"), 3)
+}
+
+// TestEnqueueValidatesSyncKinds (#118): create_issue and update_fields need
+// a JSON payload; a create gets an idempotency key like a comment does.
+func TestEnqueueValidatesSyncKinds(t *testing.T) {
+	ob, err := New("")
+	require.NoError(t, err)
+	assert.Error(t, ob.Enqueue(Entry{Kind: KindUpdateFields, IssueID: "a", Identifier: "ENG-1", Payload: "not json"}))
+	assert.Error(t, ob.Enqueue(Entry{Kind: KindCreateIssue, IssueID: "local:ITX-1", Identifier: "ITX-1"}))
+	require.NoError(t, ob.Enqueue(Entry{Kind: KindCreateIssue, IssueID: "local:ITX-1", Identifier: "ITX-1", Payload: `{"local":"ITX-1"}`}))
+	assert.NotEmpty(t, ob.Snapshot()[0].CommentKey)
+}

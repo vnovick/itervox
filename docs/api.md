@@ -357,13 +357,17 @@ Useful top-level fields include:
   "message", "resetAt"?, "consecutiveFailures"? }`. A successful poll clears
   a poll failure; a failed failed-state move stays for up to an hour.
 - `syncStatus` (#117) — the tracker sync status, absent on older daemons:
-  `{ "mode": "store" | "direct", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
+  `{ "mode": "store" | "direct" | "local_sync", "lastPullAt"?, "lagMs"?, "lagWarnAfterMs",
   "stale", "syncIntervalMs", "cursorAt"?, "consecutiveFailures"?,
   "lastError"?: { "at", "kind", "message" }, "pendingWrites",
   "pendingUrgent", "pendingBatched", "pendingRetrying", "pendingDegraded",
   "pendingRateLimited", "oldestPendingAt"?, "nextPushAt"?, "pushIntervalMs" }`.
   `mode` is `store` when the local tracker store pulls in the background
-  (`tracker.store.enabled`), `direct` when each poll reads the tracker.
+  (`tracker.store.enabled`), `direct` when each poll reads the tracker, and
+  `local_sync` (#118) when local issue files are synced with Linear or
+  GitHub (`tracker.sync`): `lastPullAt` is then the sync's last good cycle,
+  `syncIntervalMs` is `tracker.sync.interval_ms`, and the `pending*` counts
+  include the sync's queued remote writes.
   `lastPullAt` is the last successful pull (store) or candidate poll
   (direct), absent until one succeeds; `lagMs` is now − `lastPullAt` when the
   snapshot was built (clients should recompute it on their own clock).

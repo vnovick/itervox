@@ -622,8 +622,9 @@ export const TrackerErrorRowSchema = z.object({
 });
 
 // SyncStatusRowSchema mirrors server.SyncStatusRow (#117): the tracker sync
-// status. mode is "store" (local tracker store pulling in the background) or
-// "direct" (each poll reads the tracker), kept a plain string so a future
+// status. mode is "store" (local tracker store pulling in the background),
+// "direct" (each poll reads the tracker) or "local_sync" (local issue files
+// synced with Linear or GitHub, #118), kept a plain string so a future
 // mode never fails the snapshot parse. lastPullAt is absent until a pull
 // succeeds; lagMs is the lag at snapshot time (the dashboard recomputes it
 // from lastPullAt on its own clock). lastError.kind is a tracker error class

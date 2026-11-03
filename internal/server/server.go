@@ -879,6 +879,11 @@ const (
 	SyncModeStore = "store"
 	// SyncModeDirect: no store; every poll tick reads the tracker.
 	SyncModeDirect = "direct"
+	// SyncModeLocalSync: the local issue files (tracker.kind: local) synced
+	// both ways with Linear or GitHub (#118, tracker.sync). The pull side
+	// is the sync's last good cycle; the pending writes include the sync's
+	// queued remote writes.
+	SyncModeLocalSync = "local_sync"
 )
 
 // SyncStatusRow is the tracker sync status (#117), on the snapshot for the

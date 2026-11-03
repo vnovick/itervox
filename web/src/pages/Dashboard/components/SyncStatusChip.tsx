@@ -73,9 +73,7 @@ export function syncStatusChipModel(
     lag !== null
       ? `Lag ${compactDuration(lag)} (warns after ${compactDuration(row.lagWarnAfterMs)})`
       : '',
-    row.mode === 'store'
-      ? `Local tracker store, pulls every ${compactDuration(row.syncIntervalMs)}`
-      : `Direct polling every ${compactDuration(row.syncIntervalMs)}`,
+    modeLine(row),
     row.pendingWrites > 0
       ? `${String(row.pendingWrites)} tracker write${row.pendingWrites === 1 ? '' : 's'} pending${pendingDetail(row)}` +
         (row.nextPushAt ? ` · next push ${localTime(row.nextPushAt)}` : '')
@@ -88,6 +86,16 @@ export function syncStatusChipModel(
     .join('\n');
 
   return { label, warning: stale || failing, danger: stale && failing, title, stale };
+}
+
+// modeLine describes how the board gets its tracker data: the store, direct
+// polling, or (#118) local issue files synced with Linear or GitHub.
+function modeLine(row: SyncStatusRow): string {
+  const every = compactDuration(row.syncIntervalMs);
+  if (row.mode === 'store') return `Local tracker store, pulls every ${every}`;
+  if (row.mode === 'local_sync')
+    return `Local issue files synced with the remote tracker every ${every}`;
+  return `Direct polling every ${every}`;
 }
 
 // SyncStatusChip renders the tracker sync tile (#117): last pull, lag and
