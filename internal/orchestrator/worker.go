@@ -89,13 +89,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// early hook/worker messages written before the agent subprocess starts — shares
 	// the same session ID. This ID is used purely for log correlation in the Timeline;
 	// the real Claude Code session ID (claudeSessionID below) is kept separately for
-	// --resume continuity within the same run.
-	runLogID := generateRunID()
+	// --resume continuity within the same run. A dispatched run's log session
+	// ID is its run ID (#125).
+	runLogID := cmp.Or(runIDFrom(ctx), generateRunID())
 	// Notify the event loop right away so the Timeline run record has a session ID
 	// from the start, before the first agent turn completes.
 	select {
 	case o.events <- OrchestratorEvent{
 		Type:     EventWorkerUpdate,
+		RunID:    runIDFrom(ctx),
 		IssueID:  issue.ID,
 		RunEntry: &RunEntry{SessionID: runLogID},
 	}:
@@ -278,8 +280,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	readOnlyReviewer := isReviewerProfile(o.cfg, profileName)
 	o.cfgMu.RUnlock()
 	// A reviewer rerouted by backend_fallback runs under another profile
-	// name; the reviewer-injected marker still identifies it.
-	readOnlyReviewer = readOnlyReviewer || (profileName != "" && o.isReviewerInjected(issue.Identifier))
+	// name; its run still identifies it as a reviewer (#127).
+	readOnlyReviewer = readOnlyReviewer || runIsReviewer(ctx)
 	reviewVerdictRel := ""
 	if readOnlyReviewer {
 		reviewVerdictRel = reviewVerdictRelPath(issue.Identifier, profileName)
@@ -626,6 +628,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			select {
 			case o.events <- OrchestratorEvent{
 				Type:    EventWorkerUpdate,
+				RunID:   runIDFrom(ctx),
 				IssueID: issue.ID,
 				RunEntry: &RunEntry{
 					TurnCount:    turn,
@@ -665,6 +668,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
 			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
+		// #136: the turn's usage counts whatever its outcome; every exit
+		// below carries it (deliverExit) so the event loop settles it.
+		recordRunUsage(ctx, cumulativeInput+result.InputTokens, cumulativeCached+result.CachedInputTokens,
+			cumulativeOutput+result.OutputTokens, result.CostUSD, result.SessionID)
 
 		if result.SessionID != "" {
 			s := result.SessionID
@@ -675,6 +682,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			select {
 			case o.events <- OrchestratorEvent{
 				Type:     EventWorkerUpdate,
+				RunID:    runIDFrom(ctx),
 				IssueID:  issue.ID,
 				RunEntry: &RunEntry{AgentSessionID: s},
 			}:
@@ -891,6 +899,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		select {
 		case o.events <- OrchestratorEvent{
 			Type:    EventWorkerUpdate,
+			RunID:   runIDFrom(ctx),
 			IssueID: issue.ID,
 			RunEntry: &RunEntry{
 				TurnCount:    turn,
@@ -1186,8 +1195,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	if completionState != "" && ctx.Err() == nil && !automationRun {
 		// From here the run only finishes; mark it before the issue turns
 		// terminal in the tracker, so a reconcile tick between this move and
-		// the exit below leaves the run to that exit (see pendingExits).
-		o.exitsSent.Store(issue.ID, time.Now())
+		// the exit below leaves the run to that exit (#125).
+		markFinishing(ctx)
 		slog.Info("worker: transitioning to completion state",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "target_state", completionState)
 		if o.logBuf != nil {
@@ -1468,6 +1477,7 @@ func (o *Orchestrator) queueInputRequiredEntry(
 		Command:     agentCommand,
 		WorkerHost:  workerHost,
 		ProfileName: profileName,
+		Reviewer:    runIsReviewer(ctx),
 		QueuedAt:    time.Now(),
 	})
 }
@@ -1744,7 +1754,11 @@ func formatResetsAt(limit *agent.LimitSignal) string {
 
 // deliverExit sends a worker exit event to the event loop.
 func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev OrchestratorEvent) {
-	o.exitsSent.Store(issue.ID, time.Now())
+	// The run is finishing from here: a reconcile tick that runs while this
+	// exit is queued must leave the run to it (#125).
+	markFinishing(ctx)
+	ev.RunID = runIDFrom(ctx)
+	settleRunUsage(ctx, ev.RunEntry) // #136: the run's final usage
 	// If the worker context is already cancelled (e.g. user-triggered pause via
 	// CancelIssue), the exit event must still reach the event loop so that
 	// PausedIdentifiers is set correctly.  Fall back to a background-derived
@@ -1827,27 +1841,13 @@ func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *
 	if runEntry == nil {
 		return
 	}
-	issue := runEntry.Issue
-	ev := OrchestratorEvent{
+	// deliverExit marks the run finishing and, while the loop runs, never
+	// gives up on the send: a dropped exit would leave a finishing run that
+	// reconcile and stall detection both leave alone (#125).
+	o.deliverExit(ctx, runEntry.Issue, OrchestratorEvent{
 		Type:               EventWorkerExited,
-		IssueID:            issue.ID,
+		IssueID:            runEntry.Issue.ID,
 		RunEntry:           runEntry,
 		InputRequiredEntry: entry,
-	}
-	sendCtx := ctx
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		sendCtx, cancel = context.WithTimeout(context.Background(), hookFallbackTimeout)
-		defer cancel()
-	}
-	orchDone := o.loopExitedCh() // M4-close D1: see deliverExit
-	select {
-	case o.events <- ev:
-	case <-orchDone:
-		slog.Warn("worker: input-required event dropped (orchestrator exited)",
-			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
-	case <-sendCtx.Done():
-		slog.Warn("worker: input-required event not delivered (orchestrator shutting down)",
-			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
-	}
+	})
 }

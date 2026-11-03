@@ -137,6 +137,9 @@ type Orchestrator struct {
 	// (CORE-053), next to autoSwitchedFile. Guarded by autoSwitchedMu; set
 	// before Run.
 	backendHealthFile string
+	// spendFile is issue_spend.json (#136); guarded by autoSwitchedMu like
+	// the other ledger paths.
+	spendFile string
 
 	// inputRequiredMu guards inputRequiredFile.
 	inputRequiredMu   sync.RWMutex
@@ -229,18 +232,13 @@ type Orchestrator struct {
 	userTerminatedMu  sync.Mutex
 	userTerminatedIDs map[string]struct{} // like userCancelledIDs but releases claim without pausing
 
-	// issueProfilesMu guards issueProfiles AND reviewerInjectedProfiles —
-	// they're tracked together because reviewer-dispatch writes both under the
-	// same lock. issueProfiles is written by SetIssueProfile (any goroutine)
-	// and read by dispatch (event loop goroutine) and Snapshot.
+	// issueProfilesMu guards issueProfiles, the operator's per-issue profile
+	// overrides. issueProfiles is written by SetIssueProfile (any goroutine)
+	// and read by dispatch (event loop goroutine) and Snapshot. Reviewer runs
+	// never write it: a reviewer's profile is its run's own (#127).
 	// RWMutex allows concurrent Snapshot() calls without serialising each other.
 	issueProfilesMu sync.RWMutex
 	issueProfiles   map[string]string // identifier → profile name
-
-	// reviewerInjectedProfiles marks identifiers whose issueProfiles entry was
-	// set by dispatchReviewerForIssue (T-21). On reviewer-run TerminalSucceeded
-	// we clear ONLY entries we marked here, leaving user-set overrides intact.
-	reviewerInjectedProfiles map[string]struct{}
 
 	// issueBackendsMu guards issueBackends, which is written by SetIssueBackend
 	// (any goroutine) and read by dispatch (event loop goroutine) and Snapshot.
@@ -387,12 +385,6 @@ type Orchestrator struct {
 	// that must correct a ledger synchronously at shutdown (BH5) can do so
 	// without being overwritten. Nil until Run starts.
 	loopExited atomic.Pointer[chan struct{}]
-	// exitsSent records, per issue ID, when a worker started finishing: its
-	// move to tracker.completion_state, or delivering its exit (deliverExit).
-	// Worker goroutines write it; the event loop copies
-	// it into State.ExitPending before reconciling and deletes an entry once
-	// that exit is handled. See ReconcileTrackerStates.
-	exitsSent sync.Map
 
 	// started is set to true at the beginning of Run. It guards SetHistoryFile
 	// and SetHistoryKey: calling either after Run starts is a programming error
@@ -408,22 +400,21 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		sshHostDescs = make(map[string]string)
 	}
 	return &Orchestrator{
-		cfg:                      cfg,
-		tracker:                  tr,
-		runner:                   runner,
-		workspace:                wm,
-		sink:                     NewDirectWriteSink(tr),
-		events:                   make(chan OrchestratorEvent, 64),
-		refresh:                  make(chan struct{}, 1),
-		workerCancels:            make(map[string]context.CancelFunc),
-		userCancelledIDs:         make(map[string]struct{}),
-		userTerminatedIDs:        make(map[string]struct{}),
-		issueProfiles:            make(map[string]string),
-		reviewerInjectedProfiles: make(map[string]struct{}),
-		issueBackends:            make(map[string]string),
-		commentCounts:            make(map[string]int),
-		sshHostDescs:             sshHostDescs,
-		daemonInstanceID:         newDaemonInstanceID(),
+		cfg:               cfg,
+		tracker:           tr,
+		runner:            runner,
+		workspace:         wm,
+		sink:              NewDirectWriteSink(tr),
+		events:            make(chan OrchestratorEvent, 64),
+		refresh:           make(chan struct{}, 1),
+		workerCancels:     make(map[string]context.CancelFunc),
+		userCancelledIDs:  make(map[string]struct{}),
+		userTerminatedIDs: make(map[string]struct{}),
+		issueProfiles:     make(map[string]string),
+		issueBackends:     make(map[string]string),
+		commentCounts:     make(map[string]int),
+		sshHostDescs:      sshHostDescs,
+		daemonInstanceID:  newDaemonInstanceID(),
 	}
 }
 

@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-The local tracker keeps each issue in a Markdown file in your repository, in `.itervox/issues/`. It needs no Linear or GitHub account, no API key and no labels, so it suits solo projects, demos and trying Itervox out. Files are the source of truth: edit one in your editor and the board follows on the next poll.
+The local tracker keeps each issue in a Markdown file in your repository, in `.itervox/issues/`. It needs no Linear or GitHub account, no API key and no labels, so it suits solo projects, demos and trying Itervox out. Files are the source of truth: edit one in your editor and the board follows within a moment.
 
 ## Set it up
 
@@ -74,7 +74,7 @@ Everything after the front matter is the description, up to the last `## Comment
 
 ## Working with the files
 
-- **By hand.** Create `ITX-2.md`, change `state: Backlog` to `state: Todo`, add a comment: the change appears on the next poll (`polling.interval_ms`), without a restart. Itervox re-reads the files whose size or modification time changed, and any file changed within two seconds of its last read (for filesystems with coarse timestamps). Before writing a file it always reads it again, so a change is applied to what is on disk.
+- **By hand.** Create `ITX-2.md`, change `state: Backlog` to `state: Todo`, add a comment: the change appears within a moment, without a restart: the daemon watches `.itervox/issues/` and polls at once when a file is added, edited or removed (an issue moved to an active state is dispatched right away, not at the next `polling.interval_ms`). Where the filesystem gives no change events, or one is missed, a rescan every 10 seconds catches it. Itervox's own writes do not count as changes. While the directory is watched, the board is served from what the watch has read; without a watch (no change events, or the directory missing) every read rescans the directory. Itervox re-reads the files whose size or modification time changed, and any file changed within two seconds of its last read (for filesystems with coarse timestamps). Before writing a file it always reads it again, so a change is applied to what is on disk.
 - **From the dashboard.** Moving a card or posting a comment writes the file.
 - **By agents.** The agent actions that create issues, comment and move state work the same as with Linear or GitHub. A new issue takes the next free number for the prefix.
 

@@ -45,3 +45,6 @@ v0.2.0/
 # CORE-149 inter-process WORKFLOW.md edit lock (transient)
 .WORKFLOW.md.lock
 WORKFLOW.md.bak
+
+# make chaos logs (#126)
+/chaos-out/

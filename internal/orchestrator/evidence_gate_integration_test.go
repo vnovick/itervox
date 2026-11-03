@@ -32,7 +32,7 @@ type evidenceRunner struct {
 	// commit the evidence is stamped with (needs gitCommit).
 	dirtyAfter bool
 	mu         sync.Mutex
-	prompts   []string
+	prompts    []string
 }
 
 func (r *evidenceRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, prompt, workspacePath, _, _, _ string, _, _ int, _ agent.PermissionMode) (agent.TurnResult, error) {

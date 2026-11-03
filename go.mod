@@ -9,11 +9,13 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260316093931-f2fb44ab3145
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/joho/godotenv v1.5.1
 	github.com/knz/catwalk v0.1.4
 	github.com/osteele/liquid v1.8.1
 	github.com/stretchr/testify v1.11.1
+	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
