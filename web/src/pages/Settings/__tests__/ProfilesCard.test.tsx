@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ProfilesCard } from '../ProfilesCard';
+import { findEditor, replaceEditorText } from '../../../test/codemirror';
 
 // ProfileRow now consumes useSkillsInventory() to surface the per-profile
 // token-cost line. Stub it to avoid wrapping these tests with a QueryClient.
@@ -101,10 +102,13 @@ describe('ProfilesCard', () => {
     expect(qaCard).not.toBeNull();
     await user.click(within(qaCard as HTMLElement).getByRole('button', { name: 'Edit' }));
 
-    await user.clear(screen.getByDisplayValue('# QA SOUL'));
-    await user.type(screen.getAllByRole('textbox')[1], '# Updated SOUL');
-    await user.clear(screen.getByDisplayValue('# QA INSTRUCTIONS'));
-    await user.type(screen.getAllByRole('textbox')[2], '# Updated INSTRUCTIONS');
+    // The prompt files are CodeMirror editors (#122), loaded lazily.
+    const soul = await findEditor('SOUL.md');
+    const instructions = await findEditor('INSTRUCTIONS.md');
+    expect(soul.state.doc.toString()).toBe('# QA SOUL');
+    expect(instructions.state.doc.toString()).toBe('# QA INSTRUCTIONS');
+    replaceEditorText(soul, '# Updated SOUL');
+    replaceEditorText(instructions, '# Updated INSTRUCTIONS');
     await user.click(screen.getByRole('button', { name: 'Save Changes' }));
 
     await waitFor(() => {

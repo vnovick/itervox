@@ -42,7 +42,22 @@ type setting = config.SettingAssignment
 // The caller holds beginSettingsSave, which serializes it against every
 // other save and fences it against a reload.
 func persistSettings(workflowPath string, settings []setting, extra ...workflow.Mutator) error {
-	jsonc := config.ProjectSettingsPath(workflowPath)
+	remove := make([]string, 0, len(settings))
+	for _, s := range settings {
+		remove = append(remove, s.Key)
+	}
+	return persistLayer(workflowPath, config.ProjectSettingsPath(workflowPath),
+		func(path string) error { return config.SetSettings(path, settings...) }, nil, remove, extra...)
+}
+
+// persistLayer is persistSettings for any settings layer file (#158): write
+// changes the file at jsonc (SetSettings, or the JSON view's text), check —
+// when not nil — runs after that write and refuses it (the file is put back)
+// by returning an error, and then each key in remove, with its alias
+// spelling, is removed from WORKFLOW.md together with the extra mutators. A
+// nil remove with no extra mutators leaves WORKFLOW.md alone (a user-layer
+// save never edits the project's workflow).
+func persistLayer(workflowPath, jsonc string, write func(path string) error, check func() error, remove []string, extra ...workflow.Mutator) error {
 	dir := filepath.Dir(jsonc)
 	_, statErr := os.Stat(dir)
 	dirExisted := statErr == nil
@@ -52,26 +67,37 @@ func persistSettings(workflowPath string, settings []setting, extra ...workflow.
 	}
 	existed := readErr == nil
 
-	if err := config.SetSettings(jsonc, settings...); err != nil {
-		return err // SetSettings writes once, atomically: nothing changed
+	if err := write(jsonc); err != nil {
+		return err // both writers write once, atomically: nothing changed
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			if rbErr := restoreProjectSettings(jsonc, before, existed, dirExisted); rbErr != nil {
+				return fmt.Errorf("%w; restoring %s also failed: %w", err, jsonc, rbErr)
+			}
+			return err
+		}
+	}
+	if len(remove) == 0 && len(extra) == 0 {
+		return nil
 	}
 
-	remove := make([]string, 0, 2*len(settings))
-	for _, s := range settings {
-		remove = append(remove, s.Key)
-		if alt, ok := config.SettingAlias(s.Key); ok {
-			remove = append(remove, alt)
+	keys := make([]string, 0, 2*len(remove))
+	for _, k := range remove {
+		keys = append(keys, k)
+		if alt, ok := config.SettingAlias(k); ok {
+			keys = append(keys, alt)
 		}
 	}
 	wfErr := runSettingsWorkflowStep(workflowPath)
 	if wfErr == nil {
-		wfErr = workflow.RemoveFrontMatterKeys(workflowPath, remove, extra...)
+		wfErr = workflow.RemoveFrontMatterKeys(workflowPath, keys, extra...)
 	}
 	if wfErr == nil {
 		return nil
 	}
 	if rbErr := restoreProjectSettings(jsonc, before, existed, dirExisted); rbErr != nil {
-		slog.Error("settings: WORKFLOW.md write failed and restoring .itervox/settings.jsonc also failed; "+
+		slog.Error("settings: WORKFLOW.md write failed and restoring the settings file also failed; "+
 			"the settings file holds a value the running config does not until the next reload",
 			"path", jsonc, "workflow_error", wfErr, "restore_error", rbErr)
 		return fmt.Errorf("%w; restoring %s also failed: %w", wfErr, jsonc, rbErr)
@@ -79,8 +105,8 @@ func persistSettings(workflowPath string, settings []setting, extra ...workflow.
 	return wfErr
 }
 
-// restoreProjectSettings puts the project settings file back the way
-// persistSettings found it.
+// restoreProjectSettings puts a settings layer file back the way
+// persistLayer found it.
 func restoreProjectSettings(path string, before []byte, existed, dirExisted bool) error {
 	if existed {
 		return atomicfs.WriteFile(path, before, 0o644)

@@ -59,85 +59,6 @@ func newAppSessionID() string {
 	return hex.EncodeToString(b)
 }
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: itervox [command] [flags]
-
-Commands:
-  demo    Try Itervox in about a minute: a throwaway board with fake
-          issues and a scripted agent (no tracker, keys or agent CLI).
-             --dir      scratch directory (default: a new temp dir)
-             --no-open  do not open the dashboard in a browser
-             --tracker  memory|local  (default: memory)
-
-  quickstart  From a repository to a running board in one command:
-          detect the tracker and agent CLI, write (or migrate) WORKFLOW.md,
-          set up the tracker token and GitHub labels (asks first), run
-          doctor, start the daemon in the background and print the URL.
-             --tracker  github|linear|local  (default: detected)
-             --runner   claude|codex   (default: detected)
-             --dir      repository directory (default: .)
-             --workflow workflow path (default: <dir>/WORKFLOW.md)
-             --yes, -y  answer yes to every confirmation
-             --no-start run the checks only; do not start the daemon
-             --ready-timeout  how long to wait for the daemon (default: 90s)
-
-  init    Scan a repository and generate a WORKFLOW.md starter file,
-          or migrate an existing one with --update.
-             --tracker  linear|github|local  (required for new workflows)
-             --runner   claude|codex    (default: claude)
-             --output   output file path (default: WORKFLOW.md)
-             --dir      directory to scan (default: .)
-             --force    overwrite existing output file
-             --issue-template  add the agent-ready issue template
-                        without asking (GitHub; printed for Linear)
-             --update   migrate an existing WORKFLOW.md to the latest
-                        schema (writes WORKFLOW.md.bak, extracts inline
-                        profile prompts to .itervox/agents/<name>/
-                        INSTRUCTIONS.md, seeds SOUL.md, stamps
-                        itervox_schema_version)
-             --workflow path to the WORKFLOW.md to migrate when using
-                        --update (default: WORKFLOW.md)
-
-  clear   Remove workspace directories created by itervox
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             [identifier ...]  specific issues to clear; omit for all
-
-  stop    Stop all daemons serving the current project (uses PID file +
-          process scan as fallback, so pre-upgrade daemons are caught)
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --grace    SIGTERM → SIGKILL grace period (default: 30s)
-             --force    skip the grace period and SIGKILL immediately
-
-  status  List running itervox daemons for the current project
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --all      also list daemons from other projects
-
-  secret  Set or list .itervox/.env values without showing them
-             set KEY    read the value with echo off (or from stdin)
-             list       show each key as set / placeholder / empty
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --replace  (set) replace a value that is already set
-
-  config  Show the effective settings and the layer each came from
-          (default, ~/.itervox/settings.jsonc, .itervox/settings.jsonc,
-          WORKFLOW.md), or edit a settings file with its comments kept
-             show       every value with its layer (--json for JSON)
-             set KEY VALUE  set agent.*, polling.*, server.* or
-                        workspace.* in .itervox/settings.jsonc (--user:
-                        ~/.itervox/settings.jsonc)
-             unset KEY  remove a key from that file
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-
-  report  costs: tokens and estimated cost per issue and per day
-             --days N   days to list (default 14)  --json  JSON output
-
-  --version  Print version information
-
-Run mode (default when no command given):
-`)
-	flag.PrintDefaults()
-}
-
 func configuredBackend(command, explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -396,6 +317,12 @@ func main() {
 			return
 		case "config":
 			runConfig(os.Args[2:])
+			return
+		case "import":
+			runImport(os.Args[2:])
+			return
+		case "export":
+			runExport(os.Args[2:])
 			return
 		case "report":
 			runReport(os.Args[2:])
@@ -814,6 +741,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		runner = demoSession.runner
 	}
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
+	tr = withLocalSync(cfg, workflowPath, tr) // #118
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -896,6 +824,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	if cfg.Tracker.Outbox {
 		orch.SetWriteSink(orchestrator.NewOutboxWriteSink(ob))
 		orch.SetOutbox(ob)
+		wireCoalescedPush(cfg, ob, tr) // #115
 	}
 
 	var agentSessionsDir string
@@ -1091,6 +1020,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		DashboardURL:  heartbeatDashboardURL,
 		LastCrash:     bootCrash,
 	}, snap, heartbeatMinInterval)
+	heartbeat.syncProbe = newSyncStatusSource(cfg, tr, ob, orch).fingerprint // #117
 	if err := heartbeat.WriteNow(time.Now().UTC()); err != nil {
 		slog.Warn("heartbeat: startup write failed", "path", heartbeat.path, "error", err)
 	}
@@ -1192,6 +1122,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
+			Rules:            &rulesAdapter{cfg: cfg, orch: orch}, // #157
+			SettingsLayers:   adapter,                             // #158
 			DepsAnalyzer:     depsSvc,
 			// gaps_11 G-3 — merge_pr policy is read-only after startup, so it
 			// is passed by value rather than via cfgMu-guarded accessors.
@@ -1244,6 +1176,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// #133: a local issue file edit polls at once.
 	startLocalIssueWatch(ctx, tr, orch.Refresh)
 	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
+	// #118: the local issue files' sync with Linear or GitHub (tracker.sync).
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1287,6 +1221,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	runErr := joinRun(orchDone, srvDone, srvListener, flusherDone, logBuf)
 	<-commentCommandsDone
+	<-localSyncDone
 	final := orch.Snapshot()
 	failureCarry.store(final.RecentFailures, final.FailureAcks)
 	return runErr

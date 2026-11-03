@@ -209,83 +209,8 @@ func findKeyInBlock(frontLines []string, blockLine int, key string) int {
 
 // renderFrontMatter and writeLocked are defined in settings_patch.go (shared
 // trailing-newline policy and the single write primitive for every patcher
-// in this package).
-
-// insertAfterBlockHeader inserts `line` immediately after `blockLine`, or at
-// the end of frontLines when the block header is absent (defensive — patcher
-// callers always pass a valid header in practice).
-func insertAfterBlockHeader(frontLines []string, blockLine int, line string) []string {
-	insertAt := len(frontLines)
-	if blockLine >= 0 {
-		insertAt = blockLine + 1
-	}
-	out := make([]string, 0, len(frontLines)+1)
-	out = append(out, frontLines[:insertAt]...)
-	out = append(out, line)
-	out = append(out, frontLines[insertAt:]...)
-	return out
-}
-
-// MutateDependenciesStringField returns a Mutator that sets or removes a
-// string key under the dependencies: block. See PatchDependenciesStringField.
-func MutateDependenciesStringField(key, value string) Mutator {
-	return func(frontLines []string) ([]string, error) {
-		blockLine := findBlockHeader(frontLines, "dependencies")
-		if blockLine < 0 && value != "" {
-			// splitFrontMatter's frontLines never includes the closing "---"
-			// delimiter (see splitFrontMatter), so appending the header here
-			// lands it at the end of the front matter, not after it.
-			frontLines = append(frontLines, "dependencies:")
-			blockLine = len(frontLines) - 1
-		}
-		indent := detectBlockIndent(frontLines, blockLine)
-		keyPrefix := indent + key + ": "
-		keyFound := findKeyInBlock(frontLines, blockLine, key)
-
-		switch {
-		case keyFound >= 0 && value == "":
-			frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
-		case keyFound >= 0:
-			frontLines[keyFound] = keyPrefix + strconv.Quote(value)
-		case value != "":
-			frontLines = insertAfterBlockHeader(frontLines, blockLine, keyPrefix+strconv.Quote(value))
-		}
-
-		// Write-time re-parse guard (CORE-125), scoped to this mutator
-		// rather than a blanket check in ApplyAndWriteFrontMatter: an
-		// existing "dependencies:" header findBlockHeader does not
-		// recognise (e.g. a quoted "dependencies": key, an explicit
-		// non-goal — see findBlockHeader) leaves blockLine at -1 above, so
-		// this mutator creates a SECOND top-level "dependencies:" header —
-		// the exact corruption CORE-125 reported, since YAML treats both
-		// spellings as the same key. Re-parsing the candidate result here,
-		// still inside ApplyAndWriteFrontMatter's per-path lock, turns that
-		// case into a refused write with the file left untouched instead of
-		// a WORKFLOW.md that fails to load on the next reload/restart. The
-		// path argument is only used by parseFrontMatter for error context,
-		// so a Mutator (which has no path of its own) passes a fixed label.
-		if _, err := parseFrontMatter("dependencies patch", frontLines); err != nil {
-			return nil, fmt.Errorf("workflow mutate dependencies: edit would produce unparseable front matter: %w", err)
-		}
-		return frontLines, nil
-	}
-}
-
-// PatchDependenciesStringField sets or removes a string key under the
-// dependencies: block of the YAML front matter. Unlike the agent: patchers,
-// the dependencies: block is OPTIONAL — the scaffold never emits it — so
-// when it is absent the block header is created at the end of the front
-// matter. Appending the key without a header would land it under whatever
-// block came last.
-//
-// Routed through ApplyAndWriteFrontMatter (CORE-006), which also re-parses
-// the assembled front matter before the atomic rename and refuses the write
-// (leaving the file untouched) if it does not parse — the guard that turns a
-// header this patcher cannot recognise (e.g. a quoted "dependencies": key)
-// into a refused write instead of a duplicate, unparseable key (CORE-125).
-func PatchDependenciesStringField(path, key, value string) error {
-	return ApplyAndWriteFrontMatter(path, MutateDependenciesStringField(key, value))
-}
+// in this package). Single keys outside the agent profiles and automations
+// blocks are set with the generic MutateSetKey (set_key.go, #158).
 
 // ProfileEntry describes one named agent profile for PatchProfilesBlock.
 type ProfileEntry struct {

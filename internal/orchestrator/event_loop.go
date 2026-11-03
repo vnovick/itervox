@@ -694,7 +694,9 @@ func boundInputRequiredContext(text string) string {
 // nil.
 func (o *Orchestrator) postInputRequiredComment(issueID, identifier, key, body, what string) error {
 	if o.sinkEnqueuesLocally() {
-		if err := o.writeSink().CreateKeyedComment(context.Background(), issueID, identifier, key, body); err != nil {
+		// #115: a person waits on the question (and the agent on the
+		// reply), so neither waits for the push interval.
+		if err := o.writeSink().CreateKeyedComment(urgentWrite(context.Background()), issueID, identifier, key, body); err != nil {
 			return fmt.Errorf("orchestrator: enqueue input-required %s: %w", what, err)
 		}
 		return nil
@@ -2646,7 +2648,8 @@ func maxRetriesExhaustedBody(attempts int, lastErr string) string {
 func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, body string) {
 	comment := tracker.MarkManagedComment(body)
 	if o.sinkEnqueuesLocally() {
-		if err := o.writeSink().CreateComment(context.Background(), issue.ID, issue.Identifier, comment); err != nil {
+		// #115: a failure notice is pushed at once, not batched.
+		if err := o.writeSink().CreateComment(urgentWrite(context.Background()), issue.ID, issue.Identifier, comment); err != nil {
 			slog.Warn("worker: failed to enqueue max-retries comment", "issue_id", issue.ID, "error", err)
 		}
 		return
@@ -2697,7 +2700,9 @@ func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identif
 		// of the failed state would have had that move overwritten. Empty
 		// stays permitted for callers that genuinely cannot observe the
 		// state; this caller can.
-		err := o.writeSink().UpdateIssueState(updateCtx, issueID, identifier, targetState, fromState)
+		// #115: the move to the failed state is a failure notice a person
+		// acts on, so it is pushed at once rather than batched.
+		err := o.writeSink().UpdateIssueState(urgentWrite(updateCtx), issueID, identifier, targetState, fromState)
 		updateCancel()
 		if err != nil {
 			// Error, not Warn (CORE-044): retries are exhausted and the
@@ -2822,6 +2827,8 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.SessionID = liveEntry.SessionID
 		run.AutomationID = liveEntry.AutomationID
 		run.TriggerType = liveEntry.TriggerType
+		run.RulesHash = liveEntry.RulesHash
+		run.RuleIDs = liveEntry.RuleIDs
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the

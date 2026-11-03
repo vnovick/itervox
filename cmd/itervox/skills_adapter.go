@@ -89,9 +89,7 @@ func (a *orchestratorAdapter) skillsAnalyzeInputs() skills.AnalyzeInputs {
 		Profiles:               profiles,
 		RecentlyActiveProfiles: recentlyActive,
 		SSHHosts:               sshHosts,
-		// agent.command / agent.backend are read-only after startup (not in
-		// the cfgMu allowlist).
-		BackendDefaults: skills.RefBackendDefaults{Command: a.cfg.Agent.Command, Backend: a.cfg.Agent.Backend},
+		BackendDefaults:        a.refBackendDefaults(),
 	}
 }
 
@@ -244,4 +242,51 @@ func (a *orchestratorAdapter) ApplyFix(_ context.Context, issueID string, fix sk
 
 func serverProfileFromConfig(p config.AgentProfile) server.ProfileDef {
 	return profileDefFromConfig(p)
+}
+
+// refBackendDefaults are the workflow-level runner settings a profile
+// inherits. agent.command / agent.backend are read-only after startup (not
+// in the cfgMu allowlist).
+func (a *orchestratorAdapter) refBackendDefaults() skills.RefBackendDefaults {
+	return skills.RefBackendDefaults{Command: a.cfg.Agent.Command, Backend: a.cfg.Agent.Backend}
+}
+
+// CheckPromptRefs runs the doctor reference validator over one draft
+// prompt (#123). The draft's command/backend resolve the backend exactly as
+// skills.ProfileBackend does for saved profiles.
+func (a *orchestratorAdapter) CheckPromptRefs(req server.PromptRefCheckRequest) (server.PromptRefCheck, bool) {
+	inv := a.Inventory()
+	if inv == nil {
+		return server.PromptRefCheck{}, false
+	}
+	sshHosts := a.cfg.Agent.SSHHosts
+	if a.orch != nil {
+		sshHosts, _ = a.orch.SSHHostsCfg()
+	}
+	backend := skills.ProfileBackend(config.AgentProfile{Command: req.Command, Backend: req.Backend}, a.refBackendDefaults())
+	profile := strings.TrimSpace(req.Profile)
+	if profile == "" {
+		profile = "new profile"
+	}
+	return server.PromptRefCheck{
+		Backend:  backend,
+		SSHHosts: sshHosts,
+		Findings: skills.CheckPromptRefs(inv, profile, backend, req.Text, sshHosts),
+	}, true
+}
+
+// ProfileBackends maps each configured profile to its backend, plus the
+// workflow default under "" (#123).
+func (a *orchestratorAdapter) ProfileBackends() map[string]string {
+	profiles := a.cfg.Agent.Profiles
+	if a.orch != nil {
+		profiles = a.orch.ProfilesCfg()
+	}
+	defaults := a.refBackendDefaults()
+	out := make(map[string]string, len(profiles)+1)
+	out[""] = skills.ProfileBackend(config.AgentProfile{}, defaults)
+	for name, p := range profiles {
+		out[name] = skills.ProfileBackend(p, defaults)
+	}
+	return out
 }
