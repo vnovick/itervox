@@ -147,6 +147,8 @@ type OrchestratorEvent struct { //nolint:revive
 	// Lesson reports a lesson-drafting goroutine's result
 	// (EventLessonDrafted, #203).
 	Lesson *LessonReport
+	// Reverts reports a reverted-PR scan (EventRevertsScanned, #217).
+	Reverts *RevertScanReport
 	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
 	ExternalScan *ExternalScan
 	// Tmux is the payload of the tmux session events (#178).
@@ -164,6 +166,8 @@ type OrchestratorEvent struct { //nolint:revive
 	deferReply chan bool
 	// feed is the payload of EventFeedRecorded (#213).
 	feed *FeedEvent
+	// runContext is the payload of EventRunContext (#215).
+	runContext *runContextUpdate
 	// dispatchPause is the payload of EventSetDispatchPause (#213).
 	dispatchPause *dispatchPauseRequest
 	// deferFromState is the tracker state a deferred-move apply observed.
@@ -411,6 +415,11 @@ type RunEntry struct {
 	// once at dispatch (startRun) and never mutated. Hashes only.
 	PromptDigest string
 	PromptParts  PromptParts
+	// Playbook / PlaybookSource name the task-type playbook the run was
+	// dispatched with (#218) and how it was chosen ("override", "label",
+	// "keyword"); empty when it had none. Set once at dispatch (startRun).
+	Playbook       string
+	PlaybookSource string
 	// Steers are the operator messages delivered to this run (#186), redacted
 	// and bounded (maxRunSteers, maxRunSteerBytes); SteersDropped counts the
 	// older ones the bound let go. Appended by the event loop on
@@ -475,6 +484,9 @@ type CompletedRun struct {
 	// digests. Hashes only: history never stores prompt text.
 	PromptDigest string      `json:"promptDigest,omitempty"`
 	PromptParts  PromptParts `json:"promptParts,omitzero"`
+	// Playbook is the task-type playbook the run was given (#218); empty
+	// when it had none.
+	Playbook string `json:"playbook,omitempty"`
 	// Steers are the operator messages delivered to the run (#186), redacted
 	// and bounded; SteersDropped counts older ones the bound let go.
 	Steers        []RunSteer `json:"steers,omitempty"`
@@ -862,6 +874,14 @@ type State struct {
 	// goroutine) only sends the event. unified-dependency-graph Task 6.
 	DepsOverrides map[string]time.Time
 
+	// PlaybookOverrides holds operator-chosen playbooks per issue identifier
+	// (#218): a playbook name, or playbook.None for "no playbook". Absent
+	// means automatic (label, then keyword classifier). Mutated only by the
+	// EventSetPlaybookOverride case in the event loop and persisted to
+	// .itervox/playbook_overrides.json; SetPlaybookOverride (any goroutine)
+	// only sends the event.
+	PlaybookOverrides map[string]string
+
 	// StackOnReviewState is tracker.completion_state, lower-cased, when
 	// dependencies.stacked_prs is on, and "" otherwise. Snapshotted each tick
 	// under cfgMu. An issue whose ONLY unresolved blocker is in this state
@@ -980,6 +1000,29 @@ type State struct {
 	// (suppressed, bumped, failed) gives its stamp back. Event-loop state;
 	// session-scoped, not persisted.
 	LessonProposals map[string][]time.Time
+	// ReviewerAsks are the recent changes reviewers' blocking verdicts asked
+	// for (#217), redacted and bounded (maxReviewerAsks): a new ask similar
+	// to one from another run or issue proposes a reviewer_ask lesson.
+	// Event-loop state; session-scoped, not persisted.
+	ReviewerAsks []ReviewerAsk
+	// LessonRevertsSeen holds the reverted agent PRs (by URL) a
+	// reverted_pr lesson was already proposed for this session (#217),
+	// bounded (maxRevertsSeen). RevertScanAt / RevertScanInFlight pace the
+	// off-loop revert scan. Event-loop state; session-scoped, not persisted
+	// (a re-proposal after a restart only matches the existing lesson,
+	// whose evidence already names the run).
+	LessonRevertsSeen  map[string]time.Time
+	RevertScanAt       time.Time
+	RevertScanInFlight bool
+
+	// RunContexts holds, per run ID, what the run is doing (#215): its last
+	// assistant step and tool call (redacted, bounded, never tool output),
+	// its tool-call and guardrail-block counts, and the exit summary of a
+	// finished run. Event-loop state (run_context.go): updated by the
+	// debounced EventRunContext, guardrail failures and worker exits;
+	// bounded to the running runs plus runContextFinishedCap finished ones.
+	// Not in the SSE frame; session-scoped, not persisted.
+	RunContexts map[string]RunContext
 }
 
 // NewState initialises a State from a config snapshot.
@@ -1042,5 +1085,6 @@ func NewState(cfg *config.Config) State {
 		TmuxSessions:       make(map[string]*TmuxSession),
 		LessonCorrections:  make(map[string][]LessonCorrection),
 		LessonProposals:    make(map[string][]time.Time),
+		RunContexts:        make(map[string]RunContext),
 	}
 }

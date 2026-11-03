@@ -2,8 +2,35 @@
 // `itervox doctor` checks from GET /api/v1/repo/readiness, one row per check
 // with its status and, when it is not a pass, the fix doctor prints.
 
-import { useRepoReadiness } from '../../../queries/repo';
+import { RequireScope } from '../../../components/itervox/RequireScope';
+import { useCreateVerifySkillIssue, useRepoReadiness } from '../../../queries/repo';
 import type { RepoReadinessCheck } from '../../../types/schemas';
+
+/** #218 — the check the "Generate verify skill" action answers. */
+const VERIFY_SKILL_CHECK = 'verify_skill';
+
+/** #218 — creates an issue asking an agent to write the verify skill. */
+function GenerateVerifySkill() {
+  const create = useCreateVerifySkillIssue();
+  return (
+    <RequireScope scope="operator">
+      <button
+        type="button"
+        disabled={create.isPending || create.isSuccess}
+        onClick={() => {
+          create.mutate();
+        }}
+        className="border-theme-line text-theme-text mt-2 rounded border px-3 py-1 text-xs font-semibold hover:bg-[var(--bg-soft)] disabled:opacity-50"
+      >
+        {create.isPending
+          ? 'Creating issue…'
+          : create.isSuccess
+            ? `Created ${create.data.identifier ?? 'issue'}`
+            : 'Generate verify skill'}
+      </button>
+    </RequireScope>
+  );
+}
 
 const STATUS_STYLE: Record<RepoReadinessCheck['status'], string> = {
   pass: 'border-emerald-400/40 bg-emerald-500/15 text-emerald-400',
@@ -30,6 +57,7 @@ function ReadinessRow({ check }: { check: RepoReadinessCheck }) {
           {check.fix}
         </p>
       )}
+      {check.id === VERIFY_SKILL_CHECK && check.status !== 'pass' && <GenerateVerifySkill />}
     </li>
   );
 }

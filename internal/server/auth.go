@@ -154,15 +154,21 @@ func scopeMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if !p.Scope.Allows(required) {
-			w.Header().Set(RequiredScopeHeader, string(required))
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{
-				"code":           "insufficient_scope",
-				"message":        "this action needs the " + string(required) + " scope; your token has " + string(p.Scope),
-				"required_scope": string(required),
-				"scope":          string(p.Scope),
-			}})
+			writeInsufficientScope(w, required, p.Scope)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// writeInsufficientScope answers 403 insufficient_scope naming the scope
+// required (also in RequiredScopeHeader) and the caller's.
+func writeInsufficientScope(w http.ResponseWriter, required, have apitokens.Scope) {
+	w.Header().Set(RequiredScopeHeader, string(required))
+	writeJSON(w, http.StatusForbidden, map[string]any{"error": map[string]string{
+		"code":           "insufficient_scope",
+		"message":        "this action needs the " + string(required) + " scope; your token has " + string(have),
+		"required_scope": string(required),
+		"scope":          string(have),
+	}})
 }
