@@ -295,8 +295,9 @@ Useful top-level fields include:
   `/api/v1/issues` rows carry the same object as `autoSwitch`, and an issue
   held by an open breaker has `ineligibleReason: "backend_limited"`.
 - `pauseReasons` — `{ "<identifier>": "<reason>" }` for currently paused
-  issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted` or
-  `transition_failed` (treat unknown values as opaque). An issue paused by an
+  issues: `user_cancelled`, `user_dismissed_input`, `retries_exhausted`,
+  `transition_failed` or `budget_exceeded` (the issue reached
+  `agent.budget`; treat unknown values as opaque). An issue paused by an
   older daemon without a recorded reason is absent. Omitted when empty.
 - `failureAcks` (CORE-175) — `[{ "identifier", "upTo" }]`, sorted by
   identifier: the operator's acknowledgements of worker failures (see

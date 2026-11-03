@@ -56,6 +56,20 @@ type ScopedFetcher interface {
 	FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error)
 }
 
+// IncrementalFetcher is an optional interface implemented by remote
+// adapters that can list what changed since a time in one paginated request
+// (#114), so the tracker store pulls only changes between full pulls.
+//
+// FetchIssuesUpdatedSince returns the tracked issues updated at or after
+// since, in any state, and gone: the IDs among the updated issues that left
+// the tracked scope (deleted, archived, or no longer carrying a tracked
+// state). An issue absent from both is unchanged, or left the scope in a way
+// the tracker does not report as an update (moved to another project or
+// repository); the store's periodic full pull catches those.
+type IncrementalFetcher interface {
+	FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (changed []domain.Issue, gone []string, err error)
+}
+
 // IdempotentCommenter is an optional interface implemented by tracker
 // adapters that can post a comment under a caller-supplied idempotency key
 // and later answer whether a comment with that key exists. Callers should

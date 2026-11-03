@@ -44,6 +44,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPendingReviewsFromDisk(state)
+	state = o.loadSpendFromDisk(state)
 	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	// CORE-038: ledger writes run on per-ledger workers for the lifetime of
 	// the loop; the shutdown flush below lands the final storeSnap's versions.
@@ -396,10 +397,32 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			)
 			continue
 		}
+		// #116 claim check: the list may come from the local store, so read
+		// the issue from the tracker before starting it. The same read
+		// serves the input-required recovery below.
+		detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
+		if errors.Is(err, tracker.ErrNotFound) || (err == nil && detailed == nil) {
+			slog.Info("orchestrator: claim check: the tracker no longer has the issue; not starting it",
+				"identifier", issue.Identifier, "path", admitDispatch)
+			o.forgetLocally(issue.ID)
+			continue
+		}
+		if err != nil {
+			slog.Warn("orchestrator: claim check: tracker read failed, not starting the issue now",
+				"identifier", issue.Identifier, "error", err)
+			continue
+		}
+		claimed, verdict := o.claimCheck(ctx, &state, issue, detailed, admitDispatch, func(v domain.Issue) string {
+			return IneligibleReason(v, state, o.cfg)
+		}, now)
+		if verdict != claimAdmit {
+			continue
+		}
+		issue = claimed
 		// Guard: if the latest comment is an unresolved Itervox input-required
 		// comment, restore the issue to InputRequiredIssues instead of dispatching
 		// a fresh worker. This recovers from daemon restarts / state loss.
-		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
+		if entry := recoverInputRequired(issue, detailed); entry != nil {
 			state.InputRequiredIssues[issue.Identifier] = entry
 			// Recovery path: no live RunEntry — the previous worker is gone
 			// (daemon restart / state loss). B1 self-reentry guard does not
@@ -566,12 +589,26 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 			continue
 		}
 
-		if len(refreshed) == 0 || !isActiveState(refreshed[0].State, state) {
+		if len(refreshed) == 0 {
 			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
 			state = CancelRetry(state, issueID)
 			continue
 		}
-		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, refreshed[0], now)
+		// #116: the read above is the claim check's; pending local writes a
+		// person's later change superseded are dropped.
+		// A reviewer's retry is admitted where a reviewer is (#116): its
+		// issue may wait in a non-active completion state.
+		eligible := claimActive(&state)
+		if entry.ReviewerProfile != "" {
+			eligible = o.claimNotTerminal(&state, true)
+		}
+		issue, verdict := o.claimCheck(ctx, &state, refreshed[0], &refreshed[0], admitRetry, eligible, now)
+		if verdict != claimAdmit {
+			slog.Info("retry: issue no longer active, releasing claim", "issue_id", issueID)
+			state = CancelRetry(state, issueID)
+			continue
+		}
+		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, issue, now)
 
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("retry: no slots, rescheduling", "issue_id", issueID)
@@ -582,7 +619,7 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 		}
 
 		delete(state.RetryAttempts, issueID)
-		state = o.dispatchRun(ctx, state, refreshed[0], entry.Attempt, entry.ReviewerProfile)
+		state = o.dispatchRun(ctx, state, issue, entry.Attempt, entry.ReviewerProfile)
 		// CORE-053: a retry the backend gate held keeps its attempt and its
 		// claim; it is due again when the breaker can admit it.
 		if hold, held := state.BackendLimitedHolds[entry.Identifier]; held {
@@ -876,14 +913,8 @@ func findReplySince(comments []domain.Comment, since time.Time, question domain.
 // preventing a wasteful fresh dispatch. This path is intentionally best-effort:
 // session/backend/host continuity comes from the locally persisted
 // InputRequiredIssues file, not tracker comment metadata.
-func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Issue) *InputRequiredEntry {
-	detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
-	if err != nil {
-		slog.Warn("orchestrator: recoverInputRequired detail fetch failed",
-			"identifier", issue.Identifier, "error", err)
-		return nil
-	}
-	if len(detailed.Comments) == 0 {
+func recoverInputRequired(issue domain.Issue, detailed *domain.Issue) *InputRequiredEntry {
+	if detailed == nil || len(detailed.Comments) == 0 {
 		return nil
 	}
 	// Walk comments in reverse to find the last Itervox question.
@@ -1083,6 +1114,12 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 				"identifier", identifier)
 			continue
 		}
+		// #136: an issue at its budget is paused instead of resumed; like
+		// any paused issue it then drops the pending resume.
+		if o.refuseOverBudget(&state, entry.IssueID, identifier) {
+			delete(state.PendingInputResumes, identifier)
+			continue
+		}
 		if _, discarding := state.DiscardingIdentifiers[identifier]; discarding {
 			delete(state.PendingInputResumes, identifier)
 			slog.Info("orchestrator: dropping pending input resume for discarding issue",
@@ -1134,6 +1171,11 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		if detailed == nil {
 			continue
 		}
+		// #116 claim check, on the read above: pending local writes a
+		// person's later change superseded are dropped before the state
+		// checks below decide.
+		claimed := o.claimView(&state, domain.Issue{}, *detailed, admitInputResume, now)
+		detailed = &claimed
 		o.auditFetchedIssueDependenciesAndDispatch(ctx, &state, *detailed, now)
 		if isTerminalState(detailed.State, state) {
 			delete(state.PendingInputResumes, identifier)
@@ -1200,6 +1242,9 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 	if state.Draining {        // CORE-057: no new worker while draining
 		slog.Info("orchestrator: dispatch refused, daemon is draining",
 			"issue_identifier", issue.Identifier, "attempt", attempt)
+		return state
+	}
+	if o.refuseOverBudget(&state, issue.ID, issue.Identifier) { // #136
 		return state
 	}
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -1411,6 +1456,16 @@ func (o *Orchestrator) issueBackendForDispatch(state State, identifier string) s
 // using the specified profile. The reviewer enters the regular worker queue with
 // Kind="reviewer" and gets full retry/pause/resume support.
 func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *State, issue domain.Issue, profileName string, now time.Time) {
+	o.dispatchReviewer(ctx, state, issue, nil, profileName, now)
+}
+
+// dispatchReviewer is dispatchReviewerForIssue with fresh, the caller's own
+// read of the issue by ID in this admission, for the claim check (nil: it
+// reads one).
+func (o *Orchestrator) dispatchReviewer(ctx context.Context, state *State, issue domain.Issue, fresh *domain.Issue, profileName string, now time.Time) {
+	if o.refuseOverBudget(state, issue.ID, issue.Identifier) { // #136
+		return
+	}
 	o.syncDrainRequest(state) // M4-close D2
 	if state.Draining {       // CORE-057
 		// M4-close BH-M4-2: keep the review, not just a log line. The
@@ -1440,6 +1495,21 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 			"issue_identifier", issue.Identifier, "profile", profileName)
 		return
 	}
+	// #116 claim check: a person may have closed or deleted the issue since
+	// it was last read. A reviewer is admitted anywhere but a terminal state
+	// other than tracker.completion_state.
+	claimed, verdict := o.claimCheck(ctx, state, issue, fresh, admitReviewer, o.claimNotTerminal(state, true), now)
+	switch verdict {
+	case claimUnreachable:
+		// Deferred, never dropped: a reviewer retry reads the issue again.
+		*state = ScheduleRetry(*state, issue.ID, 0, issue.Identifier,
+			"claim check: the tracker could not be read", now, int(claimRetryDelay.Milliseconds()))
+		retryAs(*state, issue.ID, profileName) // #127: the retry is this reviewer
+		return
+	case claimRefuse:
+		return
+	}
+	issue = claimed
 
 	// Same per-issue backend lookup as worker and automation dispatch
 	// (operator pin, else auto-switch) and the same resolver (CORE-115).
@@ -1577,7 +1647,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			}
 			// CORE-091: fold the update into the session totals before the
 			// entry takes the new counts.
-			state.Totals.accountRunUpdate(entry, ev.RunEntry)
+			// #136: and into the issue's spend, which agent.budget caps.
+			added := state.Totals.accountRunUpdate(entry, ev.RunEntry)
+			state.Spend.record(entry.Issue.Identifier, time.Now(), added)
+			o.stopOverBudgetRun(&state, entry)
 			if ev.RunEntry.CostUSD != nil {
 				c := *ev.RunEntry.CostUSD
 				entry.CostUSD = &c
@@ -1890,6 +1963,28 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// run's exit closes its record.
 			markRunExited(state, ev.IssueID, ev.RunID)
 		}
+		// #136: a run's spend is final at its exit. The exit carries the
+		// run's final usage, which settles what the progress updates did not
+		// (a failed turn sends none; a dropped update loses its counts) —
+		// before anything below decides on a retry. accountRunUpdate adds
+		// only what the run has not contributed yet, so usage its updates
+		// already counted is not counted again. Without the live entry
+		// (reconcile or stall detection deleted it) the run's baseline is
+		// gone, and settling could double-count: it is skipped.
+		if liveEntry != nil {
+			settled := state.Totals.accountRunUpdate(liveEntry, ev.RunEntry)
+			state.Spend.record(ev.RunEntry.Issue.Identifier, time.Now(), settled)
+			if ev.RunEntry.TotalTokens > liveEntry.TotalTokens { // the run's record shows them
+				liveEntry.TotalTokens = ev.RunEntry.TotalTokens
+				liveEntry.InputTokens = ev.RunEntry.InputTokens
+				liveEntry.OutputTokens = ev.RunEntry.OutputTokens
+			}
+		}
+		budgetStopped := ev.RunID != "" && state.BudgetStops[ev.RunEntry.Issue.Identifier] == ev.RunID
+		if budgetStopped {
+			delete(state.BudgetStops, ev.RunEntry.Issue.Identifier)
+		}
+		o.saveSpendToDisk(&state)
 		// CORE-045: one count per processed worker exit, by terminal reason.
 		metrics.WorkerExit(string(ev.RunEntry.TerminalReason))
 
@@ -1939,6 +2034,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			reason := PauseReasonUserCancelled
 			if o.takeTransitionFailed(issue.Identifier) {
 				reason = PauseReasonTransitionFailed
+			} else if budgetStopped {
+				reason = PauseReasonBudgetExceeded // #136
 			}
 			setPauseReason(&state, issue.Identifier, reason)
 			// Capture session info so resume can continue the same agent session
@@ -2275,6 +2372,14 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 		// distinctly from a clean handoff. No-op if the agent never
 		// wrote a handoff this turn.
 		o.markFailedHandoffPartial(ev.RunEntry, liveEntry, issue)
+		// #136: a failed run that has used the issue's budget is not run
+		// again, by a retry or a fallback: the issue is paused with
+		// budget_exceeded. Its spend was settled from the exit above.
+		if o.refuseOverBudget(&state, ev.IssueID, issue.Identifier) {
+			o.abandonReviewerRun(&state, finished, issue.Identifier) // CORE-157: nothing re-runs it
+			o.recordHistory(liveEntry, issue, now, "failed")
+			return state
+		}
 		errMsg := ""
 		if ev.Error != nil {
 			errMsg = ev.Error.Error()
@@ -2306,13 +2411,32 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 				// attempt (no retry consumed): the gate reroutes it, or holds
 				// it with backend_limited when every target is limited.
 				delete(state.Claimed, ev.IssueID)
-				state = o.dispatchRun(ctx, state, issue, attempt, reviewerProfileOf(finished))
+				// #116 claim check before the re-dispatch.
+				eligible := claimActive(&state)
+				if reviewerProfileOf(finished) != "" {
+					eligible = o.claimNotTerminal(&state, true)
+				}
+				claimed, verdict := o.claimCheck(ctx, &state, issue, nil, admitFallback, eligible, now)
+				admit := verdict == claimAdmit
+				if admit {
+					state = o.dispatchRun(ctx, state, claimed, attempt, reviewerProfileOf(finished))
+				} else if verdict == claimUnreachable && reviewerProfileOf(finished) != "" {
+					// A worker is dispatched again by the next tick; a reviewer
+					// is not, so it is deferred to a retry.
+					state = ScheduleRetry(state, issue.ID, attempt, issue.Identifier,
+						"claim check: the tracker could not be read", now, int(claimRetryDelay.Milliseconds()))
+					retryAs(state, issue.ID, reviewerProfileOf(finished))
+				}
 				o.recordHistory(liveEntry, issue, now, "failed")
-				if _, running := state.Running[ev.IssueID]; running {
+				_, running := state.Running[ev.IssueID]
+				switch {
+				case !admit:
+					// The claim check logged why; nothing is re-dispatched.
+				case running:
 					o.logger().Warn("orchestrator: vendor limit, backend_fallback rerouted without consuming a retry",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier, "attempt", attempt,
 						"backend", state.Running[ev.IssueID].Backend, "profile", state.Running[ev.IssueID].ProfileName)
-				} else {
+				default:
 					o.logger().Warn("orchestrator: vendor limit, every backend limited; issue held",
 						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
 						"hold", describeHold(state.BackendLimitedHolds[issue.Identifier]))

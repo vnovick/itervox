@@ -34,6 +34,55 @@ type runHandle struct {
 	id        string
 	kind      string
 	finishing atomic.Bool
+	// usage is the run's latest cumulative usage, recorded by its worker
+	// after every turn whatever the turn's outcome (#136). The worker's exit
+	// carries it, so the event loop settles a run's final usage even when
+	// the turn failed or its last progress update was dropped.
+	usage atomic.Pointer[runUsage]
+}
+
+// runUsage is a run's cumulative usage at the end of its latest turn (#136).
+type runUsage struct {
+	input, cached, output int
+	// cost is the latest session-cumulative cost a turn reported, and
+	// session the agent session it belongs to; nil when no turn reported one.
+	cost    *float64
+	session string
+}
+
+// recordRunUsage records a run's usage after a turn: the tokens of the turns
+// before it plus the turn's own, and the turn's cost when it reported one
+// (otherwise the last reported cost stands). Worker only.
+func recordRunUsage(ctx context.Context, input, cached, output int, cost *float64, session string) {
+	h := runFrom(ctx)
+	if h == nil {
+		return
+	}
+	u := &runUsage{input: input, cached: cached, output: output}
+	if cost != nil {
+		c := *cost
+		u.cost, u.session = &c, session
+	} else if prev := h.usage.Load(); prev != nil {
+		u.cost, u.session = prev.cost, prev.session
+	}
+	h.usage.Store(u)
+}
+
+// settleRunUsage puts the run's final usage on its exit entry (#136). The
+// event loop accounts it against what the run's progress updates already
+// added, so a usage that was already counted adds nothing. Worker only.
+func settleRunUsage(ctx context.Context, exit *RunEntry) {
+	h := runFrom(ctx)
+	if h == nil || exit == nil {
+		return
+	}
+	u := h.usage.Load()
+	if u == nil {
+		return
+	}
+	exit.InputTokens, exit.OutputTokens = u.input, u.output
+	exit.TotalTokens = u.input + u.cached + u.output
+	exit.CostUSD, exit.AgentSessionID = u.cost, u.session
 }
 
 type runHandleKey struct{}

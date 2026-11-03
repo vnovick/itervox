@@ -694,7 +694,8 @@ export const StateSnapshotSchema = z.object({
   paused: z.array(z.string()),
   pausedWithPR: z.record(z.string(), z.string()).optional(),
   // M6-close BH-M6-3 — why each paused issue is paused: 'user_cancelled' |
-  // 'user_dismissed_input' | 'retries_exhausted' | 'transition_failed'
+  // 'user_dismissed_input' | 'retries_exhausted' | 'transition_failed' |
+  // 'budget_exceeded'
   // (open set; unknown values are opaque). Absent on older daemons.
   pauseReasons: z.record(z.string(), z.string()).optional(),
   maxConcurrentAgents: z.number(),
