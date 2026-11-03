@@ -60,9 +60,18 @@ export function RunProvenance({ run }: { run: NormalisedSession }) {
       </div>
       <div className="mt-2">
         <span className={SECTION_LABEL}>Operator messages</span>
-        {steers.length === 0 ? (
+        {run.continuedFromReview && (
+          <p data-testid="run-review-continued" className="mt-1">
+            <span className="pill pill-accent px-1.5 py-0 text-[11px]">review</span>{' '}
+            <span className="text-theme-text">
+              Continued from your review ({run.reviewComments ?? 0}{' '}
+              {run.reviewComments === 1 ? 'comment' : 'comments'})
+            </span>
+          </p>
+        )}
+        {steers.length === 0 && !run.continuedFromReview ? (
           <p className="text-theme-muted mt-1 italic">None delivered to this run</p>
-        ) : (
+        ) : steers.length === 0 ? null : (
           <ol
             data-testid="run-steers"
             className="mt-1 flex max-h-32 flex-col gap-1 overflow-y-auto"

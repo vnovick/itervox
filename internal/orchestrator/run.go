@@ -73,6 +73,11 @@ type runHandle struct {
 	// completionApplied is set by the worker once it moved its issue to
 	// completion_state (#177).
 	completionApplied atomic.Bool
+	// review is the operator review this worker run continues from, and
+	// noTrackerMove marks a run started for it without a tracker move. Set
+	// by startRun before the worker starts and never changed.
+	review        *ReviewContinuation
+	noTrackerMove bool
 }
 
 // runUsage is a run's cumulative usage at the end of its latest turn (#136).
@@ -161,6 +166,7 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	// #218: the task-type playbook, chosen before the digest it is part of.
 	// #251: a task's spec; its first run freezes the instructions.
 	h.task, h.taskBlock = o.resolveRunTask(entry)
+	attachReviewContinuation(state, entry, h, o.isReviewerProfileName(entry.ProfileName))
 	h.playbook = o.resolveRunPlaybook(state, entry, h.task.Playbook)
 	entry.Playbook, entry.PlaybookSource = h.playbook.Name(), playbookSource(h.playbook)
 	// #186: the prompt version this run is dispatched with.

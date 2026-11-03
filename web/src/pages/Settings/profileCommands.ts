@@ -1,7 +1,13 @@
 import type { z } from 'zod';
+import {
+  BACKEND_BINARIES,
+  backendForBinary,
+  isAgentBackend,
+  type AgentBackend,
+} from '../../lib/backends';
 import type { AllowedAgentActionSchema, ProfileDef } from '../../types/schemas';
 
-export type SupportedBackend = 'claude' | 'codex';
+export type SupportedBackend = AgentBackend;
 export type AllowedAgentAction = z.infer<typeof AllowedAgentActionSchema>;
 
 export interface AllowedAgentActionOption {
@@ -98,7 +104,7 @@ export const CODEX_MODELS = [
 ] satisfies ModelOption[];
 
 export function normalizeBackend(backend: string | undefined | null): SupportedBackend {
-  return backend === 'codex' ? 'codex' : 'claude';
+  return isAgentBackend(backend) ? backend : 'claude';
 }
 
 export function normalizeAllowedActions(
@@ -114,15 +120,7 @@ export function normalizeAllowedActions(
 }
 
 export function inferBackendFromCommand(cmd: string | undefined | null): SupportedBackend | null {
-  const token = executableToken(cmd);
-  switch (baseName(token)) {
-    case 'codex':
-      return 'codex';
-    case 'claude':
-      return 'claude';
-    default:
-      return null;
-  }
+  return backendForBinary(baseName(executableToken(cmd)));
 }
 
 export function commandToBackend(
@@ -140,7 +138,17 @@ export function modelsForBackend(
   if (dynamicModels?.[backend]?.length) {
     return dynamicModels[backend];
   }
-  return backend === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  switch (backend) {
+    case 'claude':
+      return CLAUDE_MODELS;
+    case 'codex':
+      return CODEX_MODELS;
+    default:
+      // OpenCode's and Cursor's catalogs depend on the user's own setup
+      // (agent.available_models, `itervox models refresh --backend
+      // opencode`); custom commands pick their own model.
+      return [];
+  }
 }
 
 export function commandToModel(cmd: string | undefined | null): string {
@@ -149,9 +157,16 @@ export function commandToModel(cmd: string | undefined | null): string {
   return match ? match[1] : '';
 }
 
+/**
+ * The command for a backend's CLI with an optional --model: `opencode
+ * --model provider/model`, `cursor-agent --model gpt-5`. Custom has no CLI
+ * of its own, so its command is empty until the operator writes one.
+ */
 export function buildCanonicalCommand(backend: SupportedBackend, model: string): string {
+  const binary = BACKEND_BINARIES[backend];
+  if (binary === '') return '';
   const trimmed = model.trim();
-  return trimmed ? `${backend} --model ${trimmed}` : backend;
+  return trimmed ? `${binary} --model ${trimmed}` : binary;
 }
 
 export function normalizeCommandForSave(

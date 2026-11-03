@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -17,28 +18,77 @@ import (
 // config, never the reverse (CORE-010). internal/agent delegates to these.
 const BackendHintPrefix = "@@itervox-backend="
 
+// Agent backend names (#OpenCode/Cursor/custom). SupportedBackends is the
+// one ordered list every surface that names a backend reads (the settings
+// enum, validation messages, the dashboard selector mirrors it).
+const (
+	BackendClaude   = "claude"
+	BackendCodex    = "codex"
+	BackendOpenCode = "opencode"
+	BackendCursor   = "cursor"
+	// BackendCustom runs any command that speaks the itervox JSON-lines
+	// agent protocol (docs/guides/backends.md). It has no binary of its
+	// own, so it is only ever selected explicitly (backend: custom).
+	BackendCustom = "custom"
+)
+
+// SupportedBackends lists every agent backend itervox can run, in display
+// order.
+var SupportedBackends = []string{BackendClaude, BackendCodex, BackendOpenCode, BackendCursor, BackendCustom}
+
+// SupportedBackendsText is SupportedBackends for error messages:
+// "claude, codex, opencode, cursor or custom".
+func SupportedBackendsText() string {
+	n := len(SupportedBackends)
+	return strings.Join(SupportedBackends[:n-1], ", ") + " or " + SupportedBackends[n-1]
+}
+
+// binaryBackends maps an agent CLI's executable basename to its backend.
+// Cursor's CLI installs as cursor-agent; its newer `agent` alias is too
+// generic a name to claim, so such a command needs backend: cursor.
+var binaryBackends = map[string]string{
+	"claude":       BackendClaude,
+	"codex":        BackendCodex,
+	"opencode":     BackendOpenCode,
+	"cursor-agent": BackendCursor,
+}
+
+// BackendForBinary returns the backend whose CLI has the executable
+// basename base, or "" when base is no known agent CLI (a wrapper script).
+func BackendForBinary(base string) string {
+	return binaryBackends[base]
+}
+
+// BackendBinary is the default executable for a backend: the inverse of
+// BackendForBinary ("cursor" → "cursor-agent"). "" for custom, which has
+// no binary of its own, and for an unknown backend.
+func BackendBinary(backend string) string {
+	for bin, b := range binaryBackends {
+		if b == backend {
+			return bin
+		}
+	}
+	return ""
+}
+
 // IsSupportedBackend reports whether backend is exactly one of the agent
-// backends itervox can run ("claude", "codex"). The comparison is exact — no
-// trimming or case folding — because callers feed the value into a runner
-// command as a backend hint that is split at the first whitespace (CORE-040).
-// The empty string is NOT a backend; callers that accept "" as "clear the
-// override" must check for it separately.
+// backends itervox can run (SupportedBackends). The comparison is exact —
+// no trimming or case folding — because callers feed the value into a
+// runner command as a backend hint that is split at the first whitespace
+// (CORE-040). The empty string is NOT a backend; callers that accept "" as
+// "clear the override" must check for it separately.
 //
 // It lives in config, not internal/agent, for the same package-order reason
 // as the parser below: internal/server (and config validation) must not
 // import agent.
 func IsSupportedBackend(backend string) bool {
-	switch backend {
-	case "claude", "codex":
-		return true
-	}
-	return false
+	return slices.Contains(SupportedBackends, backend)
 }
 
-// BackendFromCommand returns "claude" or "codex" when the command either
-// carries a backend hint or its first real token (after env assignments and
-// an optional `env [-flags]` prefix) has that basename, and "" for anything
-// else — e.g. an opaque wrapper script. No I/O.
+// BackendFromCommand returns the backend a command names: its backend hint,
+// else the backend of its first real token's basename (after env
+// assignments and an optional `env [-flags]` prefix; BackendForBinary), and
+// "" for anything else — e.g. an opaque wrapper script. No I/O.
 func BackendFromCommand(command string) string {
 	backend, _ := SplitBackendFromCommand(command)
 	return backend
@@ -54,8 +104,8 @@ func SplitBackendFromCommand(command string) (backend, cleaned string) {
 	if first == "" {
 		return "", command
 	}
-	if base := filepath.Base(first); IsSupportedBackend(base) {
-		return base, command
+	if b := BackendForBinary(filepath.Base(first)); b != "" {
+		return b, command
 	}
 	return "", command
 }

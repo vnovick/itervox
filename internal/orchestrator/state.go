@@ -8,6 +8,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/extsessions"
+	"github.com/vnovick/itervox/internal/sysmon"
 )
 
 // EventType identifies the kind of OrchestratorEvent.
@@ -101,6 +102,13 @@ const (
 	// dispatch picks (#187). The loop re-checks eligibility and starts the
 	// issues the tracker still admits.
 	EventClaimChecked EventType = "ClaimChecked"
+	// EventReviewContinue queues (or drops) an operator review for the
+	// issue's next worker run; the loop answers on the request's reply
+	// channel.
+	EventReviewContinue EventType = "ReviewContinue"
+	// EventReviewContinueDelivered reports that a run wrote its operator
+	// review into the issue's handoff dir.
+	EventReviewContinueDelivered EventType = "ReviewContinueDelivered"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -175,6 +183,10 @@ type OrchestratorEvent struct { //nolint:revive
 	dispatchPause *dispatchPauseRequest
 	// deferFromState is the tracker state a deferred-move apply observed.
 	deferFromState string
+	// reviewContinue is the payload of EventReviewContinue.
+	reviewContinue *reviewContinueRequest
+	// reviewDelivered is the payload of EventReviewContinueDelivered.
+	reviewDelivered *reviewDelivery
 }
 
 // DiscardMarker is one State.DiscardingIdentifiers entry (CORE-109): the
@@ -434,6 +446,15 @@ type RunEntry struct {
 	// it (copyRunningMap).
 	Steers        []RunSteer
 	SteersDropped int
+	// ContinuedFromReview marks a worker run that was given an operator
+	// review queued while no run was live; ReviewComments counts its line
+	// comments. Set once at dispatch (startRun).
+	ContinuedFromReview bool
+	ReviewComments      int
+	// NoTrackerMove marks a run started for such a review without a
+	// tracker move: reconciliation does not stop it for being outside the
+	// active states. Set once at dispatch (startRun).
+	NoTrackerMove bool
 	// totalsInput/totalsOutput/totalsCounted record what this run has
 	// already contributed to State.Totals (CORE-091). Unexported: event-loop
 	// bookkeeping, not part of the snapshot.
@@ -508,6 +529,15 @@ type CompletedRun struct {
 	// "block" (#201); empty for other runs and for a reviewer whose exit
 	// recorded no verdict.
 	ReviewVerdict string `json:"reviewVerdict,omitempty"`
+	// ContinuedFromReview marks a run that continued from an operator
+	// review; ReviewComments counts the review's line comments.
+	ContinuedFromReview bool `json:"continuedFromReview,omitempty"`
+	ReviewComments      int  `json:"reviewComments,omitempty"`
+	// Resources is the run's resource use and activity counts from the
+	// run monitor (internal/sysmon): last and peak memory, CPU time, peak
+	// process count, disk I/O. Nil when no monitor was installed or the
+	// run started no local process.
+	Resources *sysmon.RunSummary `json:"resources,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -921,6 +951,11 @@ type State struct {
 	// keyed by identifier. Persisted to deferred_state_moves.json; while one
 	// is pending, normal dispatch and retries of the issue are held.
 	DeferredStateMoves map[string]DeferredStateMove
+	// ReviewContinuations holds operator reviews queued for the issue's next
+	// worker run, keyed by identifier. Persisted to
+	// review_continuations.json; dropped once a run wrote the review into
+	// its workspace (review_continue.go).
+	ReviewContinuations map[string]ReviewContinuation
 	// Spend is the per-issue spend ledger behind agent.budget and the cost
 	// report (#136), persisted to issue_spend.json.
 	Spend SpendLedger
@@ -1069,29 +1104,30 @@ func NewState(cfg *config.Config) State {
 		AutomationQueueBackpressure: AutomationQueueBackpressure{
 			MaxLength: cfg.Agent.MaxAutomationQueueLength,
 		},
-		DependencyAudit:    make(map[string]*DependencyAuditEntry),
-		ReviewVerdicts:     make(map[string][]ReviewVerdict),
-		ReviewChainIndex:   make(map[string]int),
-		ReviewOutcomes:     make(map[string]ReviewOutcome),
-		PROpenedDispatched: make(map[string]struct{}),
-		PRMergedDispatched: make(map[string]struct{}),
-		ManagedPRs:         make(map[string]ManagedPR),
-		PREventDispatched:  make(map[string]time.Time),
-		PREventBaselines:   make(map[string]string),
-		CronCursors:        make(map[string]string),
-		InferredDeps:       make(map[string][]InferredDepEntry),
-		DepsOverrides:      make(map[string]time.Time),
-		StackOnReviewState: stackOnReviewState(cfg),
-		StackUnavailable:   make(map[string]string),
-		BranchInUseHolds:   make(map[string]BranchInUseHold),
-		PendingReviews:     make(map[string]PendingReview),
-		DeferredStateMoves: make(map[string]DeferredStateMove),
-		OutboxSyncing:      make(map[string]struct{}),
-		ClaimChecks:        make(map[string]ClaimCheckPending),
-		SessionMessages:    make(map[string][]SessionMessage),
-		TmuxSessions:       make(map[string]*TmuxSession),
-		LessonCorrections:  make(map[string][]LessonCorrection),
-		LessonProposals:    make(map[string][]time.Time),
-		RunContexts:        make(map[string]RunContext),
+		DependencyAudit:     make(map[string]*DependencyAuditEntry),
+		ReviewVerdicts:      make(map[string][]ReviewVerdict),
+		ReviewChainIndex:    make(map[string]int),
+		ReviewOutcomes:      make(map[string]ReviewOutcome),
+		PROpenedDispatched:  make(map[string]struct{}),
+		PRMergedDispatched:  make(map[string]struct{}),
+		ManagedPRs:          make(map[string]ManagedPR),
+		PREventDispatched:   make(map[string]time.Time),
+		PREventBaselines:    make(map[string]string),
+		CronCursors:         make(map[string]string),
+		InferredDeps:        make(map[string][]InferredDepEntry),
+		DepsOverrides:       make(map[string]time.Time),
+		StackOnReviewState:  stackOnReviewState(cfg),
+		StackUnavailable:    make(map[string]string),
+		BranchInUseHolds:    make(map[string]BranchInUseHold),
+		PendingReviews:      make(map[string]PendingReview),
+		DeferredStateMoves:  make(map[string]DeferredStateMove),
+		ReviewContinuations: make(map[string]ReviewContinuation),
+		OutboxSyncing:       make(map[string]struct{}),
+		ClaimChecks:         make(map[string]ClaimCheckPending),
+		SessionMessages:     make(map[string][]SessionMessage),
+		TmuxSessions:        make(map[string]*TmuxSession),
+		LessonCorrections:   make(map[string][]LessonCorrection),
+		LessonProposals:     make(map[string][]time.Time),
+		RunContexts:         make(map[string]RunContext),
 	}
 }

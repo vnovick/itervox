@@ -14,7 +14,7 @@
 
 use serde::Serialize;
 
-use crate::dashboard::token_init_script;
+use crate::dashboard::dashboard_init_script;
 use crate::model::{Health, PendingOp, ProjectView};
 use crate::projects::RailPrefs;
 use crate::remote_model::{ConnectionView, RemoteDaemonView};
@@ -576,7 +576,7 @@ pub fn rail_page_allowed(url: &str) -> bool {
 
 /// What a dashboard webview needs to show a project: its URL, and the
 /// origin and token the token initialization script hands over
-/// ([`token_init_script`]).
+/// ([`dashboard_init_script`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashTarget {
     pub url: String,
@@ -619,12 +619,51 @@ pub fn switch_plan(
     }
 }
 
-/// The token initialization script of a dashboard webview showing `t`.
-pub fn init_script_for(t: &DashTarget) -> Option<String> {
-    match (&t.token, t.origin.as_deref()) {
-        (Some(tok), Some(origin)) => Some(token_init_script(origin, tok)),
-        _ => None,
+/// How the tray opens an in-app page (`path`, e.g. New Task…) of a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PagePlan {
+    /// A window already shows the project with the same origin and token:
+    /// evaluate `script` in its dashboard webview (the Go menu's in-place
+    /// navigation, falling back to loading the page) and focus the window.
+    InPlace { script: String },
+    /// No such window (or its webview was made for another origin or
+    /// token): open the project's dashboard at `url`, reusing its window.
+    Open { url: String },
+}
+
+/// The full address of in-app `path` on the dashboard at `base`:
+/// `http://h:1/` + `/?newTask=1` → `http://h:1/?newTask=1`.
+pub fn page_url(base: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+/// The tray's plan for showing `path` of the project at `next` (its
+/// dashboard home), given the window that shows the project, if any:
+/// `held` is the (origin, token) its dashboard webview was created with.
+pub fn page_plan(
+    held: Option<(&Option<String>, &Option<String>)>,
+    next: &DashTarget,
+    path: &str,
+) -> PagePlan {
+    let url = page_url(&next.url, path);
+    match switch_plan(held, next) {
+        SwitchPlan::Navigate { .. } => PagePlan::InPlace {
+            script: crate::dashboard::navigate_or_load_script(path, &url),
+        },
+        _ => PagePlan::Open { url },
     }
+}
+
+/// The initialization script of a dashboard webview showing `t`: the
+/// embedded flag, and the token when the daemon has one.
+pub fn init_script_for(t: &DashTarget) -> Option<String> {
+    t.origin
+        .as_deref()
+        .map(|origin| dashboard_init_script(origin, t.token.as_deref()))
 }
 
 #[cfg(test)]
@@ -1108,6 +1147,48 @@ mod tests {
         );
     }
 
+    /// The tray's "New Task…": a window already showing the project with
+    /// the same origin and token navigates in place through the embedded
+    /// dashboard's hook (falling back to loading the page); no window, or
+    /// one whose webview was made for another origin or token (a tunnel
+    /// that came back on a new port, a rotated token), opens the
+    /// dashboard at the page's full address. The token is never in it.
+    #[test]
+    fn tray_page_plan_navigates_in_place_or_opens_the_page() {
+        let t = DashTarget {
+            url: "http://127.0.0.1:8090/".into(),
+            origin: Some("http://127.0.0.1:8090".into()),
+            token: Some("tok".into()),
+        };
+        let path = crate::menu::NEW_TASK_PATH;
+        assert_eq!(
+            page_plan(Some((&t.origin, &t.token)), &t, path),
+            PagePlan::InPlace {
+                script: crate::dashboard::navigate_or_load_script(
+                    "/?newTask=1",
+                    "http://127.0.0.1:8090/?newTask=1"
+                )
+            }
+        );
+        let open = PagePlan::Open {
+            url: "http://127.0.0.1:8090/?newTask=1".into(),
+        };
+        assert_eq!(page_plan(None, &t, path), open);
+        let stale_origin = Some("http://127.0.0.1:9999".to_string());
+        assert_eq!(page_plan(Some((&stale_origin, &t.token)), &t, path), open);
+        let old_token = Some("old".to_string());
+        assert_eq!(page_plan(Some((&t.origin, &old_token)), &t, path), open);
+        let PagePlan::Open { url } = page_plan(None, &t, path) else {
+            unreachable!()
+        };
+        assert!(!url.contains("tok"));
+        // The page URL is the one the dashboard's New task deep link uses.
+        assert_eq!(
+            page_url("http://127.0.0.1:50001", path),
+            crate::menu::new_task_link("http://127.0.0.1:50001")
+        );
+    }
+
     #[test]
     fn rail_switch_keeps_token_injection() {
         let a = DashTarget {
@@ -1139,7 +1220,10 @@ mod tests {
             plan,
             SwitchPlan::Replace {
                 url: "http://127.0.0.1:8091/".into(),
-                init_script: Some(token_init_script("http://127.0.0.1:8091", "tok-b")),
+                init_script: Some(dashboard_init_script(
+                    "http://127.0.0.1:8091",
+                    Some("tok-b")
+                )),
             }
         );
         let SwitchPlan::Replace { url, init_script } = &plan else {
@@ -1172,7 +1256,7 @@ mod tests {
             switch_plan(Some((&a.origin, &a.token)), &restarted),
             SwitchPlan::Replace { .. }
         ));
-        // An open API (no token): no script at all.
+        // An open API (no token): the embedded flag only.
         let open = DashTarget {
             url: "http://127.0.0.1:8092/".into(),
             origin: Some("http://127.0.0.1:8092".into()),
@@ -1182,7 +1266,7 @@ mod tests {
             switch_plan(Some((&a.origin, &a.token)), &open),
             SwitchPlan::Replace {
                 url: "http://127.0.0.1:8092/".into(),
-                init_script: None
+                init_script: Some(dashboard_init_script("http://127.0.0.1:8092", None)),
             }
         );
         // A new window: the same script.
@@ -1190,7 +1274,10 @@ mod tests {
             switch_plan(None, &a),
             SwitchPlan::Replace {
                 url: a.url.clone(),
-                init_script: Some(token_init_script("http://127.0.0.1:8090", "tok-a")),
+                init_script: Some(dashboard_init_script(
+                    "http://127.0.0.1:8090",
+                    Some("tok-a")
+                )),
             }
         );
 

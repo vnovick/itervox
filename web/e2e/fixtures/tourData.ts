@@ -400,3 +400,303 @@ export function installRunContextData(api: MockApiHandle): void {
     route.fulfill(json({ phrases: [{ label: 'Wrap up', message: 'Wrap up and open the PR.' }] })),
   );
 }
+
+// Review and continue — the Changes tab's data: a PR diff with two files,
+// each file's patch, and the review routes.
+const CHANGES_FILES = [
+  { path: 'internal/greeting/greeting.go', status: 'modified', additions: 4, deletions: 2 },
+  { path: 'internal/greeting/greeting_test.go', status: 'modified', additions: 3, deletions: 0 },
+];
+const CHANGES_PATCHES: Record<string, string> = {
+  'internal/greeting/greeting.go': [
+    'diff --git a/internal/greeting/greeting.go b/internal/greeting/greeting.go',
+    '--- a/internal/greeting/greeting.go',
+    '+++ b/internal/greeting/greeting.go',
+    '@@ -8,7 +8,9 @@ package greeting',
+    ' // Hello returns the greeting for name.',
+    ' func Hello(name string) string {',
+    '-\tif name == "" {',
+    '-\t\treturn "Hello!"',
+    '+\tname = strings.TrimSpace(name)',
+    '+\tif name == "" {',
+    '+\t\treturn fallbackGreeting',
+    ' \t}',
+    '+\t// Keep the old greeting as a fallback.',
+    ' \treturn "Hello, " + name + "!"',
+    ' }',
+    '',
+  ].join('\n'),
+  'internal/greeting/greeting_test.go': [
+    'diff --git a/internal/greeting/greeting_test.go b/internal/greeting/greeting_test.go',
+    '--- a/internal/greeting/greeting_test.go',
+    '+++ b/internal/greeting/greeting_test.go',
+    '@@ -4,3 +4,6 @@ import "testing"',
+    ' func TestHello(t *testing.T) {',
+    ' \tif got := Hello("Ada"); got != "Hello, Ada!" {',
+    ' \t\tt.Fatal(got)',
+    '+\t}',
+    '+\tif got := Hello("  "); got != fallbackGreeting {',
+    '+\t\tt.Fatal(got)',
+    '',
+  ].join('\n'),
+};
+
+export function installChangesData(api: MockApiHandle): void {
+  installRunContextData(api);
+  api.override(/\/api\/v1\/issues\/[^/]+\/diff(\?|$)/, (route) => {
+    const url = new URL(route.request().url());
+    const identifier = decodeURIComponent(
+      url.pathname.split('/issues/')[1]?.replace('/diff', '') ?? '',
+    );
+    const file = url.searchParams.get('file');
+    const base = { identifier, base: 'main', source: 'pr' };
+    if (file) {
+      const patch = CHANGES_PATCHES[file] ?? '';
+      return route.fulfill(
+        json({
+          ...base,
+          file: CHANGES_FILES.find((f) => f.path === file),
+          patch,
+          bytes: patch.length,
+          maxBytes: 262144,
+        }),
+      );
+    }
+    return route.fulfill(
+      json({
+        ...base,
+        mergeBase: 'b1c2d3e4f5a6',
+        headSha: 'a9b8c7d6e5f4a3b2',
+        hunksAllowed: true,
+        sources: ['pr', 'worktree'],
+        prUrl: 'https://github.com/example/greeting/pull/12',
+        worktreePath: `/work/${identifier}`,
+        files: CHANGES_FILES,
+      }),
+    );
+  });
+  api.override(/\/api\/v1\/issues\/[^/]+\/review-continue$/, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        agent: { delivery: 'queued', queuedAt: T, movedTo: 'In Progress' },
+        pr: { posted: true, prUrl: 'https://github.com/example/greeting/pull/12', comments: 2 },
+      }),
+    }),
+  );
+}
+
+/**
+ * The issue's changes (GET /issues/{id}/diff and one file's patch), for the
+ * issue view's Changes column: the files the live run context lists.
+ */
+export function installDiffData(api: MockApiHandle): void {
+  api.override(/\/api\/v1\/issues\/[^/]+\/diff(\?|$)/, (route) => {
+    const url = new URL(route.request().url());
+    const identifier = decodeURIComponent(
+      url.pathname.split('/issues/')[1]?.replace('/diff', '') ?? '',
+    );
+    const files = liveRunContext(identifier).changedFiles;
+    const file = url.searchParams.get('file');
+    if (file === null) {
+      return route.fulfill(
+        json({
+          identifier,
+          base: 'main',
+          mergeBase: '0f3c2a9d1e7b4c55aa21',
+          files,
+          hunksAllowed: true,
+          source: 'worktree',
+          sources: ['worktree'],
+        }),
+      );
+    }
+    const f = files.find((x) => x.path === file) ?? files[0];
+    return route.fulfill(
+      json({
+        identifier,
+        base: 'main',
+        file: f,
+        bytes: 240,
+        maxBytes: 1_000_000,
+        source: 'worktree',
+        patch: [
+          `diff --git a/${f.path} b/${f.path}`,
+          `--- a/${f.path}`,
+          `+++ b/${f.path}`,
+          '@@ -1,4 +1,5 @@',
+          ' func Greeting(name string) string {',
+          '-\treturn "Hello, " + name',
+          '+\tif name == "" {',
+          '+\t\treturn legacyGreeting()',
+          '+\t}',
+          '+\treturn fmt.Sprintf("Hello, %s!", name)',
+          ' }',
+          '',
+        ].join('\n'),
+      }),
+    );
+  });
+}
+
+// System visibility — a live run's resource sample, its activity audit and
+// the snapshot's system block (the workspace disk below the warning
+// threshold), for the issue view, the issue detail and the dashboard.
+const GIB = 1024 ** 3;
+
+export const SYSTEM_USAGE = {
+  runId: 'run-DEMO-RUN-1',
+  identifier: 'DEMO-RUN-1',
+  live: true,
+  cpuPercent: 82.5,
+  cpuSeconds: 41.2,
+  rssBytes: 734_003_200,
+  peakRssBytes: 912_261_120,
+  processes: 6,
+  peakProcesses: 9,
+  diskReadBytes: 12_582_912,
+  diskWriteBytes: 3_145_728,
+  diskIoKnown: true,
+  netConnections: 2,
+  topCommands: [
+    {
+      pid: 4242,
+      name: 'node',
+      args: 'cli.js --print --output-format stream-json',
+      cpuPercent: 61.2,
+      rssBytes: 536_870_912,
+    },
+    {
+      pid: 4301,
+      name: 'go',
+      args: 'test ./internal/greeting/...',
+      cpuPercent: 18.4,
+      rssBytes: 150_994_944,
+    },
+    { pid: 4300, name: 'git', args: 'status --short', cpuPercent: 0.4, rssBytes: 8_388_608 },
+  ],
+  samples: 30,
+  startedAt: T,
+  sampledAt: T,
+};
+
+export const SYSTEM_STATUS = (diskFreeGB: number, critical = false) => ({
+  platform: 'linux',
+  activityMode: 'sampled',
+  runs: { runs: 1, cpuPercent: 82.5, rssBytes: 734_003_200, processes: 6 },
+  machine: {
+    load1: 2.1,
+    load5: 1.7,
+    load15: 1.2,
+    loadKnown: true,
+    cpuCount: 8,
+    memTotalBytes: 16 * GIB,
+    memAvailableBytes: 6 * GIB,
+    memPressure: 'ok',
+    disk: {
+      path: '/home/dev/.itervox/workspaces/web-app',
+      freeBytes: diskFreeGB * GIB,
+      totalBytes: 500 * GIB,
+    },
+    diskWarnBytes: 5 * GIB,
+    diskPauseBytes: critical ? 2 * GIB : 0,
+    diskLow: diskFreeGB < 5,
+    diskCritical: critical,
+    sampledAt: T,
+  },
+});
+
+const at = { firstAt: T, lastAt: T };
+export const SYSTEM_ACTIVITY = (identifier: string) => ({
+  identifier,
+  runId: `run-${identifier}`,
+  live: true,
+  mode: 'sampled',
+  platform: 'linux',
+  supports: { commands: true, files: true, connections: true },
+  notes: [
+    'Sampled every 2s from /proc: short-lived processes, files and connections between two samples may be missed.',
+  ],
+  workspace: `/work/${identifier}`,
+  startedAt: T,
+  updatedAt: T,
+  commands: [
+    {
+      name: 'node',
+      args: 'cli.js --print --output-format stream-json',
+      pid: 4242,
+      count: 1,
+      ...at,
+    },
+    { name: 'git', args: 'status --short', pid: 4300, count: 4, ...at },
+    { name: 'go', args: 'test ./internal/greeting/...', pid: 4301, count: 2, ...at },
+    { name: 'gofmt', args: '-l internal/greeting', pid: 4310, count: 1, ...at },
+  ],
+  files: [
+    {
+      path: `/work/${identifier}/internal/greeting/greeting.go`,
+      write: true,
+      command: 'node',
+      count: 3,
+      ...at,
+    },
+    {
+      path: `/work/${identifier}/internal/greeting/greeting_test.go`,
+      write: true,
+      command: 'node',
+      count: 2,
+      ...at,
+    },
+    { path: `/work/${identifier}/go.mod`, write: false, command: 'go', count: 2, ...at },
+    {
+      path: '/home/dev/.cache/go-build/trim.txt',
+      write: true,
+      outsideWorkspace: true,
+      command: 'go',
+      count: 1,
+      ...at,
+    },
+  ],
+  connections: [
+    {
+      protocol: 'tcp',
+      remote: '160.79.104.10:443',
+      state: 'ESTABLISHED',
+      command: 'node',
+      count: 6,
+      ...at,
+    },
+    {
+      protocol: 'tcp',
+      remote: '140.82.112.3:443',
+      state: 'TIME_WAIT',
+      command: 'git',
+      count: 1,
+      ...at,
+    },
+  ],
+  dropped: { commands: 0, files: 0, connections: 0 },
+  runs: [{ runId: `run-${identifier}`, startedAt: T, live: true }],
+});
+
+/**
+ * The run context with its resources, the activity route, and the diff:
+ * the issue view and the issue detail with system visibility on. The
+ * context override is registered first so it answers before the plain one.
+ */
+export function installSystemVisibilityData(api: MockApiHandle): void {
+  const idOf = (url: string, tail: string) =>
+    decodeURIComponent(new URL(url).pathname.split('/issues/')[1]?.replace(tail, '') ?? '');
+  api.override(/\/api\/v1\/issues\/[^/]+\/context$/, (route) => {
+    const ctx = liveRunContext(idOf(route.request().url(), '/context'));
+    return route.fulfill(json({ ...ctx, run: { ...ctx.run, resources: SYSTEM_USAGE } }));
+  });
+  api.override(/\/api\/v1\/issues\/[^/]+\/activity(\?|$)/, (route) =>
+    route.fulfill(
+      json(SYSTEM_ACTIVITY(idOf(route.request().url().split('?')[0] ?? '', '/activity'))),
+    ),
+  );
+  installRunContextData(api);
+  installDiffData(api);
+}

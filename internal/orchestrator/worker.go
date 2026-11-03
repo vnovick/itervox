@@ -107,6 +107,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		slog.Debug("orchestrator: worker update event dropped (channel full)", "issue_id", issue.ID)
 	}
 
+	// System visibility: the run's process groups are its own from here.
+	o.attachRunMonitor(issue.Identifier, runIDFrom(ctx), "", workerHost)
+
 	// --- Workspace ---
 	automationRun := automation != nil && !automation.UseIssueLifecycle
 	hasResumeSession := resume != nil && resume.SessionID != ""
@@ -201,6 +204,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		wsPath = ws.Path
 		stackedOn = ws.StackedOn
+		o.attachRunMonitor(issue.Identifier, runIDFrom(ctx), wsPath, workerHost)
 		// #250: the workspace's port reaches every hook of this run (and,
 		// below, the agent); copy_files ran inside EnsureWorkspace, before
 		// after_create.
@@ -287,7 +291,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	// Transition issue to working state (e.g. Todo → In Progress).
-	if !skipFreshDispatchSetup && !automationRun {
+	// A run continuing an operator review in place makes no tracker write.
+	if !skipFreshDispatchSetup && !automationRun && !runNoTrackerMove(ctx) {
 		o.transitionToWorking(ctx, issue)
 	}
 
@@ -508,6 +513,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// prompt would include turn 1..N-1's outputs as "prior agent handoffs."
 	runTimestamp := handoffRunTimestamp(startedAt)
 	runHandoffRelPath := handoffPathFor(runTimestamp, profileName)
+	// An operator review queued while no run was live: written into the
+	// handoff dir before the first prompt, so the Prior Agent Handoffs
+	// block carries it.
+	o.deliverReviewContinuation(ctx, runReviewContinuation(ctx), wsPath, startedAt, runLogID)
 	// CORE-101: the Liquid `run` object for the WORKFLOW.md body, profile
 	// SOUL/INSTRUCTIONS and automation instructions.
 	// #218: the task-type playbook this run was dispatched with; its
@@ -1093,9 +1102,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 
 		o.cfgMu.RLock()
-		activeStates := append([]string{}, o.cfg.Tracker.ActiveStates...)
+		turnStates := State{
+			ActiveStates:    append([]string{}, o.cfg.Tracker.ActiveStates...),
+			TerminalStates:  append([]string{}, o.cfg.Tracker.TerminalStates...),
+			CompletionState: o.cfg.Tracker.CompletionState,
+		}
 		o.cfgMu.RUnlock()
-		if !isActiveState(issue.State, State{ActiveStates: activeStates}) {
+		// A run continuing an operator review in place runs outside the
+		// active states by design: it keeps taking turns like a normal run
+		// until the agent finishes, max_turns, input required or a stop;
+		// only a terminal state other than completion_state ends it here
+		// (reconciliation stops it for the same state).
+		inPlace := runNoTrackerMove(ctx) && inPlaceReviewRunContinues(issue.State, turnStates)
+		if !inPlace && !isActiveState(issue.State, turnStates) {
 			break // issue left active states — clean exit
 		}
 		// #177: the issue was moved out of the active states by itervox
@@ -1361,7 +1380,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
-	if completionState != "" && ctx.Err() == nil && !automationRun {
+	// A run that continued an operator review in place leaves its issue
+	// where it is: no completion move, as there was no working-state move.
+	if completionState != "" && ctx.Err() == nil && !automationRun && !runNoTrackerMove(ctx) {
 		// From here the run only finishes; mark it before the issue turns
 		// terminal in the tracker, so a reconcile tick between this move and
 		// the exit below leaves the run to that exit (#125).

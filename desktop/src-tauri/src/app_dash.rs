@@ -19,10 +19,12 @@ use tauri::{
 
 use super::{error_dialog, lock, read_token_file, Shared};
 use crate::dashboard::origin_of;
+use crate::material::{self, Surface};
 use crate::model::token_for;
 use crate::rail::{
-    build_rail, move_before, nudge, push_script, rail_action, rail_page_allowed, rail_width,
-    switch_plan, DashTarget, RailAction, RailCommand, RailView, SwitchPlan, RAIL_PAGE,
+    build_rail, move_before, nudge, page_plan, page_url, push_script, rail_action,
+    rail_page_allowed, rail_width, switch_plan, DashTarget, PagePlan, RailAction, RailCommand,
+    RailView, SwitchPlan, RAIL_PAGE,
 };
 use crate::remote::is_remote_key;
 
@@ -290,15 +292,31 @@ fn create(
     let label = format!("dashboard-{n}");
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    // A system material behind the rail (material.rs) needs a transparent
+    // window; the dashboard's webview stays opaque over it.
+    let material = crate::app_material::material_for(Surface::Rail);
     let builder = tauri::window::WindowBuilder::new(app, &label)
         .title(title)
         .inner_size(1280.0, 860.0)
-        .min_inner_size(720.0, 480.0);
+        .min_inner_size(720.0, 480.0)
+        .transparent(material.is_some());
     // Linux and Windows have no app menu bar: the window carries the
     // Projects menu, with Ctrl accelerators (#260).
     #[cfg(not(target_os = "macos"))]
     let builder = builder.menu(window_menu(app)?);
     let window = builder.build()?;
+    // Applied before the rail exists: when it fails, the rail is built
+    // without the flag and draws its CSS look.
+    let material = material.filter(|m| match crate::app_material::apply(&window, *m) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(
+                "itervox desktop: no {} material behind the rail: {e}",
+                m.attr()
+            );
+            false
+        }
+    });
     let (x, w, h) = bounds(&window, collapsed(shared));
 
     let (nav_app, nav_shared, nav_label) = (app.clone(), Arc::clone(shared), label.clone());
@@ -315,6 +333,12 @@ fn create(
             }
             None => rail_page_allowed(url.as_str()),
         });
+    let rail = match material {
+        Some(m) => rail
+            .transparent(true)
+            .initialization_script(material::init_script(m)),
+        None => rail,
+    };
     window.add_child(rail, LogicalPosition::new(0.0, 0.0), LogicalSize::new(x, h))?;
 
     let view = format!("{label}-view-{n}");
@@ -489,8 +513,89 @@ fn open_new_task(app: &AppHandle, shared: &Arc<Shared>, key: &str, label: String
     }
 }
 
+/// The tray's "New Task…" (and any in-app page of a project): opens or
+/// focuses the window showing `key` and navigates its dashboard to `path`
+/// in place through the embedded dashboard's navigate hook, the Go menu's
+/// mechanism ([`crate::rail::page_plan`]); without such a window, the
+/// dashboard opens at the page.
+pub(super) fn open_page(app: &AppHandle, shared: &Arc<Shared>, key: &str, path: &'static str) {
+    let t = match target(shared, key, None) {
+        Ok((t, _)) => t,
+        Err(e) => {
+            error_dialog(app, &e);
+            return;
+        }
+    };
+    let (app2, shared2, key) = (app.clone(), Arc::clone(shared), key.to_string());
+    let _ = app.run_on_main_thread(move || {
+        let held = {
+            let windows = lock(&shared2.dash.windows);
+            windows
+                .iter()
+                .find(|(_, w)| w.project == key)
+                .map(|(l, w)| (l.clone(), w.view.clone(), w.origin.clone(), w.token.clone()))
+        };
+        let plan = page_plan(
+            held.as_ref().map(|(_, _, origin, token)| (origin, token)),
+            &t,
+            path,
+        );
+        if let (PagePlan::InPlace { script }, Some((label, view, _, _))) = (&plan, &held) {
+            if let (Some(v), Some(w)) = (app2.get_webview(view), app2.get_window(label)) {
+                let _ = v.eval(script);
+                let _ = w.show();
+                let _ = w.set_focus();
+                let _ = v.set_focus();
+                return;
+            }
+        }
+        let url = match plan {
+            PagePlan::Open { url } => url,
+            PagePlan::InPlace { .. } => page_url(&t.url, path),
+        };
+        open(&app2, &shared2, &key, Some(url), Mode::Reuse);
+    });
+}
+
+/// A Go menu item: shows `path` in the dashboard webview of the window
+/// focused last, through the embedded dashboard's navigate hook.
+pub(super) fn go(app: &AppHandle, shared: &Shared, path: &str) {
+    let target = {
+        let windows = lock(&shared.dash.windows);
+        let focused = lock(&shared.dash.focused).clone();
+        focused
+            .filter(|l| windows.contains_key(l))
+            .or_else(|| windows.keys().next().cloned())
+            .and_then(|l| windows.get(&l).map(|w| (l, w.view.clone())))
+    };
+    let Some((label, view)) = target else {
+        return;
+    };
+    if let Some(v) = app.get_webview(&view) {
+        let _ = v.eval(crate::dashboard::navigate_script(path));
+        let _ = v.set_focus();
+    }
+    if let Some(w) = app.get_window(&label) {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// The Go menu: every dashboard page (crate::go_menu).
+fn go_submenu(app: &AppHandle) -> tauri::Result<tauri::menu::Submenu<tauri::Wry>> {
+    use tauri::menu::{MenuItem, PredefinedMenuItem, Submenu};
+    let go = Submenu::new(app, "Go", true)?;
+    for (i, (id, label)) in crate::go_menu::go_menu_items().into_iter().enumerate() {
+        if crate::go_menu::separator_before(i, &id) {
+            go.append(&PredefinedMenuItem::separator(app)?)?;
+        }
+        go.append(&MenuItem::with_id(app, id, label, true, None::<&str>)?)?;
+    }
+    Ok(go)
+}
+
 /// The Projects menu of a dashboard window on Linux and Windows: the rail's
-/// shortcuts, each accelerator shown and bound with Ctrl.
+/// shortcuts, each accelerator shown and bound with Ctrl; then the Go menu.
 #[cfg(not(target_os = "macos"))]
 fn window_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use crate::platform::{accelerator, Os};
@@ -506,12 +611,13 @@ fn window_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> 
         projects.append(&MenuItem::with_id(app, id, label, true, Some(accel))?)?;
     }
     menu.append(&projects)?;
+    menu.append(&go_submenu(app)?)?;
     Ok(menu)
 }
 
-/// Adds the Projects menu with the rail's shortcuts to the macOS menu bar
-/// (shown while a window is open), keeping the default menus (Edit's copy
-/// and paste for the dashboard's text fields).
+/// Adds the Projects menu with the rail's shortcuts and the Go menu to the
+/// macOS menu bar (shown while a window is open), keeping the default menus
+/// (Edit's copy and paste for the dashboard's text fields).
 #[cfg(target_os = "macos")]
 pub(super) fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -525,6 +631,7 @@ pub(super) fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
         projects.append(&MenuItem::with_id(app, id, label, true, Some(accel))?)?;
     }
     menu.append(&projects)?;
+    menu.append(&go_submenu(app)?)?;
     app.set_menu(menu)?;
     Ok(())
 }

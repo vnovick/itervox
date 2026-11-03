@@ -1,5 +1,6 @@
 import PageMeta from '../../components/common/PageMeta';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
+import { useHashScroll } from '../../hooks/useHashScroll';
 import { ModelsCard } from '../Settings/ModelsCard';
 import { ProfilesCard } from '../Settings/ProfilesCard';
 import { ReviewerCard } from '../Settings/ReviewerCard';
@@ -19,6 +20,11 @@ export default function Agents() {
     deleteProfile,
     setReviewerConfig,
   } = useSettingsPageData();
+  // The command palette links here: #profile-<name> scrolls to a profile's
+  // row, ?editProfile=<name> opens its editor.
+  const [searchParams] = useSearchParams();
+  const editProfile = searchParams.get('editProfile') ?? undefined;
+  useHashScroll(Object.keys(profileDefs).length);
 
   return (
     <>
@@ -43,6 +49,7 @@ export default function Agents() {
           availableModels={availableModels}
           supportedAgentActions={supportedAgentActions}
           trackerStates={trackerStateOptions}
+          focusProfileName={editProfile}
         />
 
         <div className="grid gap-4 lg:grid-cols-2">

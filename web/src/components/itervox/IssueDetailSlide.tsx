@@ -33,6 +33,8 @@ import { RUN_CONTEXT_CAPABILITY } from '../../queries/changes';
 import { IssueNowPanel } from './changes/IssueNowPanel';
 import { IssueDetailTabs, type IssueDetailTab } from './changes/IssueDetailTabs';
 import { plainButtonClass } from '../ui/button/buttonRecipe';
+import { focusPathFor } from '../../hooks/useFocusIssue';
+import { Link } from 'react-router';
 
 // #215 — the diff viewer is only loaded when the Changes tab opens.
 const IssueChangesTab = lazy(() => import('./changes/IssueChangesTab'));
@@ -161,6 +163,7 @@ export default function IssueDetailSlide() {
             <IssueChangesTab
               identifier={issue.identifier}
               live={issue.orchestratorState === 'running'}
+              issueState={issue.state}
             />
           </Suspense>
         </div>
@@ -177,6 +180,9 @@ export default function IssueDetailSlide() {
             <IssueSteerBox identifier={issue.identifier} /> // #218
           )}
           <div className="flex items-center gap-3">
+            <Link to={focusPathFor(issue.identifier)} className={SMALL_BUTTON}>
+              Open full view
+            </Link>
             {issue.url && (
               <a
                 href={issue.url}

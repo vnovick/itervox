@@ -10,6 +10,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/logging"
+	"github.com/vnovick/itervox/internal/sysmon"
 )
 
 // changes.go — #215: the run context (GET /api/v1/issues/{identifier}/context)
@@ -90,6 +91,9 @@ type RunContextRow struct {
 	LastGuardrailKind string        `json:"lastGuardrailKind,omitempty"`
 	// Playbook is the live run's task-type playbook (#218).
 	Playbook string `json:"playbook,omitempty"`
+	// Resources is the run's resource use (system visibility): the latest
+	// sample of a live run, the final one of a finished run.
+	Resources *sysmon.RunUsage `json:"resources,omitempty"`
 }
 
 // DiffFileRow is one changed file.
@@ -194,6 +198,7 @@ func (s *Server) handleIssueContext(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "identifier")
 	resp := RunContextResponse{Identifier: id, Handoffs: s.changes.Handoffs(id), Port: s.changes.WorkspacePort(id)}
 	if run, ok := s.changes.RunContext(id); ok {
+		run.Resources = usageForScope(run.Resources, callerScope(r))
 		resp.Run = &run
 	}
 	diff, err := s.changes.Diff(r.Context(), id, "")

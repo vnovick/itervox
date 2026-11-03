@@ -221,6 +221,7 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/issues/{identifier}/pr-review` | operator (one GitHub review, never merges, #238) |
 | `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
 | `POST` | `/api/v1/issues/{identifier}/review-comments` | operator (to the running agent or the PR, #238) |
+| `POST` | `/api/v1/issues/{identifier}/review-continue` | operator (the whole draft review to the agent: steer the live run, or queue it for a new run) |
 | `POST` | `/api/v1/issues/{identifier}/profile` | operator |
 | `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |

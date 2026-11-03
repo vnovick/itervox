@@ -2,6 +2,7 @@ import { memo, useState } from 'react';
 import type { DraggableAttributes } from '@dnd-kit/core';
 import { GripVertical } from 'lucide-react';
 import { fmtMs, EMPTY_PROFILE_LABEL, orchStatusDotClass } from '../../utils/format';
+import { backendLabel, resolveIssueBackend } from '../../lib/backends';
 import type { TrackerIssue, ProfileDef } from '../../types/schemas';
 import { WhyIdleChip } from './WhyIdleChip';
 
@@ -50,23 +51,6 @@ interface CardProps {
   dragHandleRef?: (element: HTMLElement | null) => void;
 }
 
-function resolveBackend(
-  profile: string | undefined,
-  profileDefs: Record<string, ProfileDef> | undefined,
-  runningBackend: string | undefined,
-  defaultBackend: string | undefined,
-): 'claude' | 'codex' {
-  if (runningBackend) return /codex/i.test(runningBackend) ? 'codex' : 'claude';
-  if (profile && profileDefs?.[profile]) {
-    const def = profileDefs[profile];
-    // Explicit backend field takes priority, then infer from command name.
-    const hint = def.backend || def.command || '';
-    if (hint) return /codex/i.test(hint) ? 'codex' : 'claude';
-  }
-  const fallback = defaultBackend || '';
-  return /codex/i.test(fallback) ? 'codex' : 'claude';
-}
-
 export default memo(function IssueCard({
   issue,
   isDragging,
@@ -101,7 +85,12 @@ export default memo(function IssueCard({
   const isEditable = !!onDispatch && !isActive;
   const showProfileSelector =
     isEditable && availableProfiles && availableProfiles.length > 0 && onProfileChange;
-  const backend = resolveBackend(issue.agentProfile, profileDefs, runningBackend, defaultBackend);
+  const backend = resolveIssueBackend(
+    issue.agentProfile,
+    profileDefs,
+    runningBackend,
+    defaultBackend,
+  );
   const hasActivity = isActive;
   const blockerCount = getBlockerCount(issue);
   // CORE-024 — the dispatch button is otherwise only revealed by
@@ -240,7 +229,7 @@ export default memo(function IssueCard({
         )}
 
         {/* Backend tag */}
-        <span className="tag">{backend === 'codex' ? 'Codex' : 'Claude'}</span>
+        <span className="tag">{backendLabel(backend)}</span>
 
         {/* State tag — only when active */}
         {isInputRequired && <span className="tag pill-warn">Needs Input</span>}

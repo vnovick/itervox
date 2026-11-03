@@ -6,7 +6,15 @@ import { expect, test, type Page } from '@playwright/test';
 import { bootApp } from './fixtures/commands';
 import { installMockApi, type MockApiHandle } from './fixtures/mockApi';
 import { installMockSse } from './fixtures/mockSse';
-import { installRunContextData, installTourData } from './fixtures/tourData';
+import {
+  SYSTEM_STATUS,
+  installChangesData,
+  installDiffData,
+  installRunContextData,
+  installSystemVisibilityData,
+  installTourData,
+} from './fixtures/tourData';
+import { makeIssue } from '../src/test/fixtures/issues';
 import {
   activeRunScenario,
   automationsPassScenario,
@@ -110,6 +118,8 @@ interface Stop {
   beforeNavigate?: (api: MockApiHandle) => void;
   /** Capture the viewport only (a dialog over a long page). Default: full page. */
   viewportOnly?: boolean;
+  /** Boot as the desktop app's dashboard window (embedded mode). */
+  embedded?: boolean;
 }
 
 const heading = (name: string | RegExp) => (page: Page) =>
@@ -185,6 +195,98 @@ const pages: Stop[] = [
   },
 ];
 
+// The issue view, with a file of the Changes column open; and the desktop
+// app's embedded window (no sidebar; the top bar carries the navigation).
+const focusScenario: Scenario = {
+  ...pausable,
+  snapshot: { ...pausable.snapshot, projectName: 'web-app' },
+};
+const systemScenario: Scenario = {
+  ...focusScenario,
+  snapshot: {
+    ...focusScenario.snapshot,
+    capabilities: [...(focusScenario.snapshot.capabilities ?? []), 'system_visibility'],
+    system: SYSTEM_STATUS(3.2),
+  },
+};
+const runAndDiff = (api: MockApiHandle) => {
+  installRunContextData(api);
+  installDiffData(api);
+};
+const openFirstFile = async (p: Page) => {
+  await p
+    .getByTestId('focus-changes')
+    .getByRole('button', { name: /greeting\.go/ })
+    .first()
+    .click();
+  await expect(p.getByText('return legacyGreeting()')).toBeVisible();
+};
+const issueView: Stop[] = [
+  {
+    name: 'focus',
+    route: '/focus/DEMO-RUN-1',
+    scenario: focusScenario,
+    beforeNavigate: runAndDiff,
+    ready: (p) => expect(p.getByTestId('focus-last-tool')).toBeVisible(),
+    open: openFirstFile,
+  },
+  {
+    // System visibility: the run's resources and its Activity audit open.
+    name: 'focus-system',
+    route: '/focus/DEMO-RUN-1',
+    scenario: systemScenario,
+    beforeNavigate: installSystemVisibilityData,
+    ready: (p) => expect(p.getByRole('list', { name: 'Resource use' })).toBeVisible(),
+    open: async (p) => {
+      await p
+        .getByTestId('focus-now')
+        .getByRole('button', { name: /Activity/ })
+        .click();
+      await expect(p.getByTestId('activity-mode')).toHaveText('sampled');
+    },
+  },
+  {
+    // System visibility: the workspace disk below the warning threshold.
+    name: 'dashboard-disk-low',
+    route: '/',
+    viewportOnly: true,
+    scenario: systemScenario,
+    beforeNavigate: installRunContextData,
+    ready: (p) => expect(p.getByTestId('system-health-disk')).toBeVisible(),
+  },
+  {
+    name: 'embedded-focus',
+    route: '/',
+    embedded: true,
+    viewportOnly: true,
+    scenario: focusScenario,
+    beforeNavigate: runAndDiff,
+    ready: (p) => expect(p.getByTestId('focus-last-tool')).toBeVisible(),
+    open: openFirstFile,
+  },
+  {
+    name: 'embedded-dashboard',
+    route: '/?view=board',
+    embedded: true,
+    scenario: focusScenario,
+    beforeNavigate: installRunContextData,
+    ready: heading('Autonomous agentic harness'),
+  },
+  {
+    name: 'embedded-more-menu',
+    route: '/settings',
+    embedded: true,
+    viewportOnly: true,
+    scenario: settingsMatrixScenario,
+    beforeNavigate: installTourData,
+    ready: heading('Settings'),
+    open: async (p) => {
+      await p.getByRole('button', { name: 'More' }).click();
+      await expect(p.getByRole('menu', { name: 'All pages' })).toBeVisible();
+    },
+  },
+];
+
 const overlays: Stop[] = [
   {
     name: 'automations-activity',
@@ -224,11 +326,41 @@ const overlays: Stop[] = [
     name: 'command-palette',
     viewportOnly: true,
     route: '/',
-    scenario: activeRunScenario,
+    scenario: pausable,
+    beforeNavigate: installTourData,
     ready: heading('Autonomous agentic harness'),
     open: async (p) => {
       await p.keyboard.press('ControlOrMeta+k');
       await expect(p.getByRole('combobox', { name: 'Search commands and issues' })).toBeVisible();
+      await expect(p.getByRole('option', { name: /New task/ })).toBeVisible();
+    },
+  },
+  {
+    // The ranked search across sources: actions, pages, issues, rules,
+    // memory and settings fields under their group headers.
+    name: 'command-palette-search',
+    viewportOnly: true,
+    route: '/',
+    scenario: pausable,
+    beforeNavigate: installTourData,
+    ready: heading('Autonomous agentic harness'),
+    open: async (p) => {
+      await p.keyboard.press('ControlOrMeta+k');
+      await p.getByRole('combobox', { name: 'Search commands and issues' }).fill('pa');
+      await expect(p.getByRole('option', { name: 'Pause dispatch', exact: true })).toBeVisible();
+    },
+  },
+  {
+    name: 'command-palette-help',
+    viewportOnly: true,
+    route: '/',
+    scenario: pausable,
+    beforeNavigate: installTourData,
+    ready: heading('Autonomous agentic harness'),
+    open: async (p) => {
+      await p.keyboard.press('ControlOrMeta+k');
+      await p.getByRole('combobox', { name: 'Search commands and issues' }).fill('?');
+      await expect(p.getByRole('option', { name: /Agents and profiles/ })).toBeVisible();
     },
   },
   {
@@ -291,6 +423,72 @@ const overlays: Stop[] = [
   },
 ];
 
+// Review and continue: an idle issue in review with a PR diff, so the
+// Changes tab shows the draft review and its send bar.
+const reviewable: Scenario = {
+  ...pausable,
+  snapshot: {
+    ...pausable.snapshot,
+    capabilities: [...(pausable.snapshot.capabilities ?? []), 'change_review', 'review_continue'],
+  },
+  issues: [
+    ...pausable.issues,
+    makeIssue({ identifier: 'DEMO-REV-1', title: 'Trim the greeting', state: 'In Review' }),
+  ],
+};
+
+const openReviewDraft = async (p: Page) => {
+  const dialog = p.getByRole('dialog', { name: 'DEMO-REV-1' });
+  await dialog.getByRole('tab', { name: 'Changes' }).click();
+  await dialog.getByRole('button', { name: /^M ?internal\/greeting\/greeting\.go/ }).click();
+  await dialog.getByRole('button', { name: 'Select line 10', exact: true }).click();
+  await dialog
+    .getByRole('button', { name: 'Select line 12', exact: true })
+    .click({ modifiers: ['Shift'] });
+  await dialog
+    .getByRole('textbox', { name: 'Comment' })
+    .fill('Name the fallback constant in the doc comment.');
+  await dialog.getByRole('button', { name: 'Add to review' }).click();
+  await dialog
+    .getByRole('textbox', { name: 'Overall note' })
+    .fill('Close; also cover blank names in the test.');
+  await expect(dialog.getByTestId('review-draft-count')).toHaveText('1 comment');
+};
+
+overlays.push(
+  {
+    name: 'changes-draft',
+    route: '/?issue=DEMO-REV-1',
+    scenario: reviewable,
+    beforeNavigate: installChangesData,
+    viewportOnly: true,
+    ready: (p) =>
+      expect(
+        p.getByRole('dialog', { name: 'DEMO-REV-1' }).getByRole('tab', { name: 'Changes' }),
+      ).toBeVisible(),
+    open: openReviewDraft,
+  },
+  {
+    name: 'changes-split',
+    route: '/?issue=DEMO-REV-1',
+    scenario: reviewable,
+    beforeNavigate: installChangesData,
+    viewportOnly: true,
+    ready: (p) =>
+      expect(
+        p.getByRole('dialog', { name: 'DEMO-REV-1' }).getByRole('tab', { name: 'Changes' }),
+      ).toBeVisible(),
+    open: async (p) => {
+      await openReviewDraft(p);
+      const dialog = p.getByRole('dialog', { name: 'DEMO-REV-1' });
+      // Phone width keeps the unified diff only.
+      const split = dialog.getByRole('button', { name: 'Side by side' });
+      if (await split.isVisible()) await split.click();
+      await dialog.getByTestId('diff-viewer').scrollIntoViewIfNeeded();
+    },
+  },
+);
+
 const viewportOf = (project: string) => (project.includes('mobile') ? 'mobile' : 'desktop');
 
 async function shoot(page: Page, theme: string, name: string, viewport: string, fullPage = true) {
@@ -311,10 +509,15 @@ for (const theme of THEMES) {
       await page.addInitScript((t) => window.localStorage.setItem('theme', t), theme);
     });
 
-    for (const stop of [...pages, ...overlays]) {
+    for (const stop of [...pages, ...issueView, ...overlays]) {
       test(`${stop.name} renders`, async ({ page }, info) => {
         const errors: string[] = [];
         page.on('pageerror', (e) => errors.push(e.message));
+        if (stop.embedded) {
+          await page.addInitScript(() => {
+            window.__ITERVOX_SHELL__ = 'desktop';
+          });
+        }
         await bootApp(page, {
           scenario: stop.scenario,
           route: stop.route,
