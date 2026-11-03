@@ -1,0 +1,11 @@
+.env
+HEARTBEAT.md
+daemon.pid
+dashboard_url
+STARTUP_ERROR.md
+logs/
+runtime/
+run/
+/*.json
+bin/
+*.db

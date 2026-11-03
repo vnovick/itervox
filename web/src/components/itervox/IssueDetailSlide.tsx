@@ -5,6 +5,7 @@ import IssueDetailHeader from './IssueDetailHeader';
 import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
 import { IssueStatusChanges } from './IssueStatusChanges';
+import { IssueReviews } from './IssueReviews';
 import { InputRequiredPanel } from './InputRequiredPanel';
 import { IssueCommentComposer } from './IssueCommentComposer';
 import { IssueBackendControl } from './IssueBackendControl';
@@ -142,6 +143,18 @@ export default function IssueDetailSlide() {
         </div>
 
         <IssueStatusChanges changes={issue.statusChanges} />
+
+        <IssueReviews
+          review={issue.review}
+          rerunPending={triggerAIReviewMutation.isPending}
+          onRerun={
+            reviewerProfile && issue.orchestratorState !== 'running'
+              ? () => {
+                  triggerAIReviewMutation.mutate(issue.identifier);
+                }
+              : undefined
+          }
+        />
 
         {/* Priority + Labels */}
         {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (

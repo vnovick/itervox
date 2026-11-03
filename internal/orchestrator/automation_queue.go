@@ -51,6 +51,10 @@ const (
 	// backend is limited by the backend circuit breaker (CORE-053) instead
 	// of dropping it.
 	AutomationQueueReasonBackendLimited AutomationQueueReason = IneligibleBackendLimited
+	// AutomationQueueReasonTrackerUnavailable holds an automation whose
+	// claim check (#116) could not read the issue from the tracker; the
+	// queue tries again on its next drain.
+	AutomationQueueReasonTrackerUnavailable AutomationQueueReason = "tracker_unavailable"
 )
 
 // AutomationQueueEntry preserves one automation trigger attempt until it can dispatch.
@@ -405,7 +409,8 @@ func automationQueueableReason(reason string) (bool, AutomationQueueReason, stri
 		AutomationQueueReasonPendingInputResume,
 		AutomationQueueReasonBlockedBy,
 		AutomationQueueReasonInferredBlockedBy,
-		AutomationQueueReasonBackendLimited: // CORE-053: held, never dropped
+		AutomationQueueReasonBackendLimited,     // CORE-053: held, never dropped
+		AutomationQueueReasonTrackerUnavailable: // #116: held, never dropped
 		return true, queueReason, detail
 	default:
 		return false, "", ""
@@ -540,10 +545,11 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 			"reason", reason)
 		return false
 	}
-	started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
-	if held {
-		// CORE-053: the target backend is limited — hold, never drop.
-		return enqueueAutomation(state, issue, dispatch, string(AutomationQueueReasonBackendLimited), now)
+	started, hold := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+	if hold != "" {
+		// CORE-053 / #116: the backend is limited or the tracker could not
+		// be read — hold, never drop.
+		return enqueueAutomation(state, issue, dispatch, string(hold), now)
 	}
 	return started
 }
@@ -619,14 +625,14 @@ func (o *Orchestrator) drainAutomationQueueWithCandidates(
 		entry.Status = AutomationQueueDispatching
 		entry.LastAttemptAt = now
 		entry.AttemptCount++
-		started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+		started, hold := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
 		if started {
 			removeAutomationQueueEntry(state, entry.ID)
 			continue
 		}
-		if held {
-			// CORE-053: still backend_limited — keep it queued.
-			_ = updateAutomationQueueEntryReason(entry, string(AutomationQueueReasonBackendLimited), now)
+		if hold != "" {
+			// CORE-053 / #116: still held — keep it queued.
+			_ = updateAutomationQueueEntryReason(entry, string(hold), now)
 			continue
 		}
 		if AvailableSlots(*state) <= 0 {

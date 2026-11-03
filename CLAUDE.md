@@ -7,8 +7,13 @@
 It polls Linear, GitHub Issues or local Markdown issue files (`tracker.kind: local`), spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
 
-Config lives entirely in one `WORKFLOW.md` file per project (YAML front matter +
-Liquid prompt template). The binary is a single static Go executable.
+Config lives in one `WORKFLOW.md` file per project (YAML front matter +
+Liquid prompt template). Since #129 the `agent`, `polling`, `workspace` and
+`server` sections can also come from JSONC settings layers
+(`~/.itervox/settings.jsonc` < `.itervox/settings.jsonc` < `WORKFLOW.md`),
+merged in `config.Load` (`internal/config/layers.go`); `itervox config show`
+explains where each value came from. The binary is a single static Go
+executable.
 
 ---
 
@@ -26,6 +31,10 @@ go test -race ./cmd/... ./internal/...
 
 # Single package
 go test -race ./internal/orchestrator/...
+
+# Orchestrator + tracker tests repeated under CPU saturation (#126; slow,
+# not part of verify; CI runs it nightly and on the `ci:chaos` label)
+make chaos   # CHAOS_COUNT / CHAOS_RUN / CHAOS_PACKAGES / CHAOS_CPU to narrow
 
 # Frontend
 cd web && pnpm install --frozen-lockfile && pnpm test:coverage
@@ -80,14 +89,26 @@ worker's context. Every `EventWorkerUpdate`/`EventWorkerExited` the worker sends
 and every synthetic exit reconcile or stall detection sends, carries that
 `RunID`. The loop applies an event only to the run it names: an exit or update
 from a superseded run (stopped, then the issue dispatched again) changes nothing.
-`State.LatestRunID` keeps each issue's most recently dispatched run after its
-Running entry is gone, so a late exit is still recognised as superseded once its
-replacement has itself exited (and left a retry behind).
+`State.LatestRun` keeps a `RunRecord` of each issue's most recently dispatched
+run after its Running entry is gone, so a late exit is still recognised as
+superseded once its replacement has itself exited (and left a retry behind).
 `RunEntry.Phase` (`dispatched → running → finishing → exited`) is event-loop
 state. The worker reports `finishing` through its run handle (`markFinishing`)
 before it moves the issue to `completion_state` and before it sends its exit;
 reconcile and stall detection fold that in with `observeFinishing` and leave a
 finishing run to its own exit. Do not key new run bookkeeping by issue ID alone.
+
+The exit handler identifies the finishing run with `finishedRun`: the live
+entry, else the run's record (#127). The record carries its kind, profile (a
+reviewer's chain step), whether reconcile or stall detection stopped it
+(`markRunStopped`; a stopped run's late success starts no review), and whether
+its own exit was handled. A run that continues a reviewer carries the reviewer
+itself: `RetryEntry.ReviewerProfile`, `PausedSessionInfo.Reviewer`, and
+`Reviewer` on the input-required entries (persisted), which `dispatchRun` and
+the input resume turn back into a reviewer `RunEntry`. A reviewer never writes
+the operator's per-issue profile override (`issueProfiles`). Do not add a
+per-issue side map to recover what a run was; put it on the run or on the
+entry that continues it.
 
 ### `orchestrator.State` is a value type
 
@@ -265,7 +286,10 @@ gate the change.
 ## Package dependency order (no circular deps)
 
 ```
-domain ─────┬── tracker (interface + adapters: linear, github, local, memory)
+domain ─────┬── tracker (interface + adapters: linear, github, local, memory;
+            │            tracker/store is the local store, tracker/webhook the
+            │            signed Linear/GitHub webhook receiver that refreshes
+            │            it by issue — imports metrics, not store; #131)
             │     └── tracker/store (local tracker store, #113: wraps a Linear
             │         or GitHub adapter; imports tracker, domain, atomicfs)
             ├── prompt (Liquid template rendering)
@@ -375,16 +399,19 @@ The two lifecycle defects that justified the gate are fixed and pinned:
 1. **The chain never advanced.** The `TerminalSucceeded` handler identified a
    reviewer only via `state.Running`, which `ReconcileTrackerStates` deletes
    first when `tracker.completion_state` moves the issue terminal. It now
-   recovers the reviewer identity from `reviewerInjectedProfiles`, which
-   reconciliation does not touch.
+   reads the finishing run's own record (`State.LatestRun`, #127), which
+   reconciliation does not delete.
 2. **The workspace was cleared mid-chain.** The auto-clear decision keyed off
-   `runEligibleForAutoReview` ("would a FRESH review start?"), which is false
+   `runStartsAReview` ("would a FRESH review start?"), which is false
    for a reviewer's own exit. It now also consults `reviewChainInFlight`, so the
    worktree survives until the quorum closes.
 
 Both are covered by `TestMultiReviewerFanOutRunsEveryReviewerWithoutLooping`,
 which runs the exact configuration that reproduced them and asserts one worker
 plus both reviewers (no re-dispatch loop) and exactly one workspace clear.
+`TestReplacedReviewerAdvancesTheChainOnce` pins the record-based identity: a
+reviewer whose Running entry reconcile deleted still advances the chain, and a
+late copy of its exit after the next reviewer replaced it does not.
 
 ---
 

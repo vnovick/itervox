@@ -27,6 +27,7 @@ export default defineConfig({
             { label: 'Linear Setup', slug: 'guides/linear-setup' },
             { label: 'GitHub Issues', slug: 'guides/github-issues' },
             { label: 'Local issues', slug: 'guides/local-issues' },
+            { label: 'Tracker webhooks', slug: 'guides/tracker-webhooks' },
             { label: 'Agent Profiles', slug: 'guides/agent-profiles' },
             { label: 'Cross-review preset', slug: 'guides/cross-review' },
             { label: 'Automations', slug: 'guides/automations' },

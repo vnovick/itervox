@@ -6,6 +6,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -182,7 +183,7 @@ func TestBackendFallback_ReviewerHeldIsRetriedNotLost(t *testing.T) {
 	o.dispatchReviewerForIssue(ctx, &state, a, "reviewer", now)
 	assert.NotContains(t, state.Running, a.ID)
 	require.Contains(t, state.RetryAttempts, a.ID, "the review is retried when the breaker admits it")
-	assert.True(t, o.exitedRunIsReviewer(nil, a.Identifier), "the retry runs the reviewer profile")
+	assert.Equal(t, "reviewer", state.RetryAttempts[a.ID].ReviewerProfile, "the retry runs the reviewer profile")
 	cancel()
 }
 
@@ -199,4 +200,45 @@ func TestCheckIssueBackendPin_RefusesMismatchedCommand(t *testing.T) {
 	assert.NoError(t, o.CheckIssueBackendPin("ENG-2", "codex"), "a wrapper takes the hint")
 	o.SetIssueProfile("ENG-3", "coder-codex")
 	assert.Error(t, o.CheckIssueBackendPin("ENG-3", "claude"), "the issue's profile command decides")
+}
+
+// TestHeldReviewerReDispatchStaysAReviewer (#127): a running reviewer hits
+// its vendor limit while every mapped backend is limited, so the fallback
+// re-dispatch is held. The continuation is a reviewer retry that keeps the
+// claim; once the breakers admit it, the next poll runs the reviewer under
+// its own profile, never the issue as implementer work.
+func TestHeldReviewerReDispatchStaysAReviewer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := breakerIssue("1")
+	o, _ := breakerOrchestrator(t, fallbackOn(), a)
+	o.SetIssueProfile(a.Identifier, "coder")
+	state := NewState(o.cfg)
+	now := time.Now()
+	o.recordBackendLimit(&state, "codex", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.dispatchReviewerForIssue(ctx, &state, a, "reviewer", now)
+	run := state.Running[a.ID]
+	require.NotNil(t, run)
+	require.Equal(t, "claude", run.Backend)
+
+	attempt := 0
+	state = o.handleEvent(ctx, state, OrchestratorEvent{Type: EventWorkerExited, IssueID: a.ID, RunID: run.RunID,
+		RunEntry: &RunEntry{Issue: a, TerminalReason: TerminalRateLimited, RetryAttempt: &attempt},
+		Error:    errors.New("turn 1: " + structuredLimitText), Limit: quotaLimit(now.Add(time.Hour))})
+	require.NotContains(t, state.Running, a.ID, "every backend is limited: held")
+	require.Contains(t, state.RetryAttempts, a.ID, "the held reviewer continues as a retry")
+	assert.Equal(t, "reviewer", state.RetryAttempts[a.ID].ReviewerProfile)
+	assert.Contains(t, state.Claimed, a.ID, "the claim is kept, so ordinary dispatch skips the issue")
+
+	// The breakers admit work again; the next poll must resume the reviewer.
+	state.BackendHealth = map[string]BackendHealthEntry{}
+	state.BackendLimitedHolds = map[string]BackendHold{}
+	state = o.onTick(ctx, state)
+	state = o.fireRetries(ctx, state, now.Add(24*time.Hour))
+	resumed := state.Running[a.ID]
+	require.NotNil(t, resumed, "the reviewer runs again")
+	assert.Equal(t, "reviewer", resumed.Kind)
+	assert.Equal(t, "reviewer", resumed.ProfileName)
+	assert.True(t, state.LatestRun[a.ID].IsReviewer())
+	cancel()
 }
