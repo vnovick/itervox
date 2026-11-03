@@ -26,31 +26,46 @@ func writeVerdictFile(t *testing.T, ws, identifier, profile string, v ReviewVerd
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ReviewVerdictFileName), body, 0o600))
 }
 
+// awaitRunnerCalls waits until rr has started n turns. A reviewer worker
+// clears any earlier verdict before it reaches the runner, so a test that
+// fakes the reviewer's exit writes the verdict only after this returns;
+// written earlier, the worker may delete it first.
+func awaitRunnerCalls(t *testing.T, rr *recordingRunner, n int) {
+	t.Helper()
+	require.Eventually(t, func() bool { return len(rr.snapshot()) >= n }, 10*time.Second, 5*time.Millisecond,
+		"the reviewer worker never reached its runner")
+}
+
 // A single reviewer's verdict is recorded as the issue's review, like a
 // chain's; each round replaces the last.
 func TestSingleReviewerVerdictIsRecorded(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	issue := domain.Issue{ID: "id1", Identifier: "ENG-1", Title: "T", State: "In Progress"}
-	o, _ := breakerOrchestrator(t, config.BackendFallbackConfig{}, issue)
+	o, rr := breakerOrchestrator(t, config.BackendFallbackConfig{}, issue)
 	ws := t.TempDir()
 	o.workspace = &stubWorkspaceProvider{path: ws}
 	o.cfg.Agent.ReviewerProfile = "reviewer"
 	o.cfg.Agent.ReviewQuorum = config.ReviewQuorumAnyBlock
 	state := NewState(o.cfg)
 
-	review := func() {
+	reviews := 0
+	review := func(v *ReviewVerdict) {
 		t.Helper()
 		o.dispatchReviewerForIssue(ctx, &state, issue, "reviewer", time.Now())
 		run := state.Running[issue.ID]
 		require.NotNil(t, run)
+		reviews++
+		awaitRunnerCalls(t, rr, reviews)
+		if v != nil {
+			writeVerdictFile(t, ws, "ENG-1", "reviewer", *v)
+		}
 		state = o.handleEvent(ctx, state, OrchestratorEvent{Type: EventWorkerExited, IssueID: issue.ID, RunID: run.RunID,
 			RunEntry: &RunEntry{Issue: issue, TerminalReason: TerminalSucceeded}})
 	}
 
-	writeVerdictFile(t, ws, "ENG-1", "reviewer", ReviewVerdict{Verdict: "approve", Reasons: []string{"looks good"}})
 	state.ReviewChainIndex["ENG-1"] = 1 // left by a multi-reviewer config before a reload
-	review()
+	review(&ReviewVerdict{Verdict: "approve", Reasons: []string{"looks good"}})
 	require.Len(t, state.ReviewVerdicts["ENG-1"], 1)
 	assert.Equal(t, ReviewVerdictApprove, state.ReviewVerdicts["ENG-1"][0].Verdict)
 	assert.Equal(t, []string{"looks good"}, state.ReviewVerdicts["ENG-1"][0].Reasons)
@@ -59,7 +74,7 @@ func TestSingleReviewerVerdictIsRecorded(t *testing.T) {
 
 	// The next round wrote nothing: it is a block, and it replaces the last.
 	require.NoError(t, os.RemoveAll(ReviewDir(ws, "ENG-1", "reviewer")))
-	review()
+	review(nil)
 	require.Len(t, state.ReviewVerdicts["ENG-1"], 1)
 	assert.Equal(t, ReviewVerdictBlock, state.ReviewVerdicts["ENG-1"][0].Verdict)
 	assert.Contains(t, state.ReviewVerdicts["ENG-1"][0].Reasons[0], "no parseable verdict")

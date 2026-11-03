@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -20,6 +21,8 @@ type fanoutWriter struct {
 	mu        sync.Mutex
 	last      []byte
 	lastFrame []byte
+	// feeds are the `event: feed` frames written (#213), in order.
+	feeds []string
 }
 
 func (w *fanoutWriter) Header() http.Header {
@@ -31,9 +34,19 @@ func (w *fanoutWriter) Header() http.Header {
 
 func (w *fanoutWriter) Write(b []byte) (int, error) {
 	w.mu.Lock()
-	w.last = b
+	if bytes.HasPrefix(b, []byte("event: feed")) {
+		w.feeds = append(w.feeds, string(b))
+	} else {
+		w.last = b
+	}
 	w.mu.Unlock()
 	return len(b), nil
+}
+
+func (w *fanoutWriter) feedFrames() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.feeds...)
 }
 
 func (w *fanoutWriter) WriteHeader(int) {}

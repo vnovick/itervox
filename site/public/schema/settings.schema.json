@@ -263,6 +263,42 @@
           "type": "array",
           "x-itervox-group": "Capacity"
         },
+        "playbooks": {
+          "additionalProperties": false,
+          "properties": {
+            "classify": {
+              "default": true,
+              "description": "When no label maps to a playbook, score the issue's title and description against each playbook's keywords and attach a confident winner. Read at load time.",
+              "title": "Classify by keywords",
+              "type": "boolean",
+              "x-itervox-group": "Playbooks"
+            },
+            "dir": {
+              "default": ".itervox/playbooks",
+              "description": "Where playbook files (<name>.md) live, relative to WORKFLOW.md. Read at load time; the files are read again for every run.",
+              "title": "Playbooks directory",
+              "type": "string",
+              "x-itervox-group": "Playbooks"
+            },
+            "enabled": {
+              "default": true,
+              "description": "Attach a task-type playbook (bug fix, feature, refactor, perf, investigation, docs) to each worker run's prompt, after INSTRUCTIONS.md. Read at load time.",
+              "title": "Playbooks",
+              "type": "boolean",
+              "x-itervox-group": "Playbooks"
+            },
+            "labels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Issue label (case-insensitive) to playbook name, e.g. {\"bug\": \"bug-fix\"}. Unset: the documented defaults; a set map replaces them. Read at load time.",
+              "title": "Label to playbook",
+              "type": "object",
+              "x-itervox-group": "Playbooks"
+            }
+          },
+          "type": "object"
+        },
         "pr_footer": {
           "default": false,
           "description": "Add a one-line \"Shipped with Itervox\" footer to pull requests agents open.",

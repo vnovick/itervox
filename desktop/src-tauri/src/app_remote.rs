@@ -2,7 +2,7 @@
 //! the remote half of the refresh, and the menu flows. The decisions live in
 //! `remote`, `remote_ops`, `remote_model`, `tunnel` and `sysevents`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -53,6 +53,8 @@ pub struct RemoteShared {
     statuses: Mutex<Vec<TunnelStatus>>,
     tools: OnceLock<Tools>,
     stopped: AtomicBool,
+    /// Keep-alive connections to the remote daemons, through their tunnels.
+    clients: client::ClientPool,
 }
 
 impl RemoteShared {
@@ -90,6 +92,7 @@ impl RemoteShared {
             statuses: Mutex::default(),
             tools: OnceLock::new(),
             stopped: AtomicBool::new(false),
+            clients: client::ClientPool::default(),
         });
         (s, rx, err)
     }
@@ -199,20 +202,7 @@ impl RemoteShared {
         let remotes = lock(&self.remotes).clone();
         let tunnels = lock(&self.statuses).clone();
         let jobs = RemoteCore::fetch_jobs(&remotes, &tunnels, self.tokens.as_ref());
-        let states: HashMap<_, _> = std::thread::scope(|s| {
-            let hs: Vec<_> = jobs
-                .iter()
-                .map(|j| {
-                    s.spawn(move || {
-                        (
-                            j.key.clone(),
-                            client::fetch_state(&j.url, j.token.as_deref()),
-                        )
-                    })
-                })
-                .collect();
-            hs.into_iter().filter_map(|h| h.join().ok()).collect()
-        });
+        let states = client::fetch_all(&self.clients, &jobs);
         let mut core = lock(&self.core);
         let before = core.views().to_vec();
         let alerts = core.apply(&remotes, &tunnels, self.tokens.as_ref(), &states);
@@ -229,6 +219,11 @@ impl RemoteShared {
 
     pub fn views(&self) -> Vec<ConnectionView> {
         lock(&self.core).views().to_vec()
+    }
+
+    /// Whether a remote daemon has agent work in flight (#212).
+    pub fn busy(&self) -> bool {
+        lock(&self.core).views().iter().any(ConnectionView::busy)
     }
 
     /// Where a remote daemon's dashboard opens, and its window title.

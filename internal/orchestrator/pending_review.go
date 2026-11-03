@@ -43,6 +43,11 @@ type PendingReview struct {
 	// a DIFFERENT terminal state; a terminal completion_state the review was
 	// queued in is expected. Empty in files written before CORE-174.
 	IssueState string `json:"issue_state,omitempty"`
+	// Reason is why the review was refused: "" for a drain, dispatch_paused
+	// for a dispatch pause (#213). A paused review continues its reviewer
+	// chain where it stopped; a drained one restarts it (the in-memory
+	// verdicts did not survive the restart).
+	Reason string `json:"reason,omitempty"`
 }
 
 // SetPendingReviewsFile sets the path for persisting reviews refused during a
@@ -123,9 +128,9 @@ func (o *Orchestrator) savePendingReviews(state *State) {
 	o.persistLedger(ledgerPendingReviews, path, data, 0o644)
 }
 
-// recordPendingReview remembers a reviewer dispatch refused while draining.
-// Event loop only.
-func (o *Orchestrator) recordPendingReview(state *State, issue domain.Issue, profile string, now time.Time) {
+// recordPendingReview remembers a reviewer dispatch refused while draining
+// (reason "") or while all dispatch is paused (#213). Event loop only.
+func (o *Orchestrator) recordPendingReview(state *State, issue domain.Issue, profile, reason string, now time.Time) {
 	if issue.ID == "" || issue.Identifier == "" || profile == "" {
 		return
 	}
@@ -134,7 +139,7 @@ func (o *Orchestrator) recordPendingReview(state *State, issue domain.Issue, pro
 	}
 	state.PendingReviews[issue.Identifier] = PendingReview{
 		IssueID: issue.ID, Identifier: issue.Identifier, Profile: profile, QueuedAt: now,
-		IssueState: issue.State,
+		IssueState: issue.State, Reason: reason,
 	}
 	o.savePendingReviews(state)
 }
@@ -196,11 +201,15 @@ func (o *Orchestrator) resumePendingReviews(ctx context.Context, state *State, n
 			continue
 		}
 		profile := pr.Profile
-		if chain := o.reviewerChainCfg(); len(chain) > 1 && slices.Contains(chain, profile) {
+		// #213: a review a dispatch pause deferred continues its chain (the
+		// verdicts are still in memory); one a drain refused restarts it.
+		_, chainLive := state.ReviewChainIndex[id]
+		continueChain := pr.Reason == IneligibleDispatchPaused && chainLive
+		if chain := o.reviewerChainCfg(); !continueChain && len(chain) > 1 && slices.Contains(chain, profile) {
 			ResetReviewChain(state, id)
 			profile = chain[0]
 		}
-		slog.Info("orchestrator: dispatching review refused by the last drain",
+		slog.Info("orchestrator: dispatching a review refused by a drain or a dispatch pause",
 			"identifier", id, "profile", profile, "queued_at", pr.QueuedAt)
 		o.dispatchReviewer(ctx, state, *issue, issue, profile, now) // #116: the read above is the claim check's
 		_, retrying := state.RetryAttempts[pr.IssueID]
@@ -208,7 +217,7 @@ func (o *Orchestrator) resumePendingReviews(ctx context.Context, state *State, n
 			// A reviewer retry owns the review now (a held backend, or a
 			// claim read that failed).
 			o.clearPendingReview(state, id)
-		} else if _, started := state.Running[pr.IssueID]; !started && !state.Draining {
+		} else if _, started := state.Running[pr.IssueID]; !started && !state.Draining && !state.DispatchPaused.Active {
 			// Profile removed, disabled or unresolvable: dispatchReviewerForIssue
 			// logged why. Do not refetch the issue every tick forever.
 			slog.Warn("orchestrator: pending review dropped, reviewer could not start", "identifier", id, "profile", profile)

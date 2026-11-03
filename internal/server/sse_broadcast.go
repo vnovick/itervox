@@ -3,8 +3,12 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/vnovick/itervox/internal/apitokens"
 )
 
 // sse_broadcast.go — the dashboard stream's fan-out (#210): the broadcaster
@@ -135,28 +139,50 @@ type sseFrameCache struct {
 	version uint64
 	builtAt time.Time
 	frame   []byte
+	// feedSeq is the snapshot's FeedSeq (#213): the version's `feed` event.
+	feedSeq int64
 	// encodes counts snapshot encodings (TestSSEClientsShareOneEncodingPerVersion).
 	encodes uint64
 }
 
-// sseFrame returns the current version's encoded snapshot frame, building
-// it when this version has none yet or the cached one is older than
+// frameScopes are the caller scopes with their own frame cache, in the
+// order of Server.frames.
+var frameScopes = [...]apitokens.Scope{apitokens.ScopeViewer, apitokens.ScopeOperator, apitokens.ScopeAdmin}
+
+// sseFrame returns the current version's encoded snapshot frame for a
+// caller of scope, and that snapshot's feed seq (#213), building the frame
+// when this version has none yet or the cached one is older than
 // frameMaxAge. Concurrent callers of a new version wait for the one encode.
-func (s *Server) sseFrame() ([]byte, error) {
+// Each scope has its own cache (#214): the frame names the caller's scope,
+// and below admin it is the redacted snapshot. An invalid scope gets the
+// viewer frame (the most redacted).
+func (s *Server) sseFrame(scope apitokens.Scope) ([]byte, int64, error) {
+	idx := slices.Index(frameScopes[:], scope)
+	if idx < 0 {
+		idx, scope = 0, apitokens.ScopeViewer
+	}
 	version := s.bc.currentVersion()
-	c := &s.frames
+	c := &s.frames[idx]
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.frame != nil && c.version == version && time.Since(c.builtAt) < frameMaxAge {
-		return c.frame, nil
+		return c.frame, c.feedSeq, nil
 	}
-	frame, err := encodeSSEFrame(s.snapshot())
+	snap := snapshotForScope(s.snapshot(), scope)
+	frame, err := encodeSSEFrame(snap)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	c.version, c.builtAt, c.frame = version, time.Now(), frame
+	c.version, c.builtAt, c.frame, c.feedSeq = version, time.Now(), frame, snap.FeedSeq
 	c.encodes++
-	return frame, nil
+	return frame, c.feedSeq, nil
+}
+
+// feedFrame is the SSE `feed` event announcing the newest feed seq (#213):
+// `event: feed` with data {"seq":N}. It rides the snapshot's coalesced
+// delivery, so it adds no wakeups of its own.
+func feedFrame(seq int64) []byte {
+	return []byte("event: feed\ndata: {\"seq\":" + strconv.FormatInt(seq, 10) + "}\n\n")
 }
 
 // encodeSSEFrame renders snap as one SSE data frame. json.Encoder escapes

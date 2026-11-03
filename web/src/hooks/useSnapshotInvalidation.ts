@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useItervoxStore } from '../store/itervoxStore';
 import { ISSUES_KEY } from '../queries/issues';
@@ -28,23 +28,32 @@ export function buildSnapshotInvalidationFingerprint(
  * This bridges the real-time SSE snapshot to the issues list so the kanban
  * board and issue detail refresh immediately instead of waiting for a stale query.
  *
- * CORE-075 — the hook subscribes to the snapshot reference only and memoizes
- * the (sorting, JSON-building) fingerprint on it, so unrelated store traffic
- * such as log lines and keepalives never rebuilds it.
+ * CORE-075 — the fingerprint is rebuilt only when the snapshot reference
+ * changes, so unrelated store traffic such as log lines and keepalives never
+ * rebuilds it.
+ *
+ * #211 — the hook watches the store with `subscribe` instead of a
+ * whole-snapshot selector: it only ever invalidates queries, so it has
+ * nothing to render, and subscribing through a selector re-rendered its host
+ * component on every SSE frame (`generatedAt` changes on each one).
  */
 export function useSnapshotInvalidation() {
   const queryClient = useQueryClient();
-  const snapshot = useItervoxStore((s) => s.snapshot);
-  const fingerprint = useMemo(() => buildSnapshotInvalidationFingerprint(snapshot), [snapshot]);
-  const prevRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (fingerprint === null) return; // no snapshot yet
-    if (prevRef.current !== null && prevRef.current !== fingerprint) {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
-      void queryClient.invalidateQueries({ queryKey: ['issue'] });
-      void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
-    }
-    prevRef.current = fingerprint;
-  }, [fingerprint, queryClient]);
+    let prevSnapshot = useItervoxStore.getState().snapshot;
+    let prevFingerprint = buildSnapshotInvalidationFingerprint(prevSnapshot);
+    return useItervoxStore.subscribe((state) => {
+      if (state.snapshot === prevSnapshot) return;
+      prevSnapshot = state.snapshot;
+      const fingerprint = buildSnapshotInvalidationFingerprint(state.snapshot);
+      if (fingerprint === null) return; // no snapshot yet
+      if (prevFingerprint !== null && prevFingerprint !== fingerprint) {
+        void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+        void queryClient.invalidateQueries({ queryKey: ['issue'] });
+        void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
+      }
+      prevFingerprint = fingerprint;
+    });
+  }, [queryClient]);
 }

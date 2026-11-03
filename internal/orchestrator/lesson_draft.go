@@ -35,6 +35,8 @@ type lessonDraftPlan struct {
 	Command     string
 	TokenBudget int
 	TimeoutMs   int
+	// EnforceThreshold is memory.lessons.enforce_threshold (#217).
+	EnforceThreshold int
 }
 
 // lessonDraftPlan resolves the drafting profile: memory.lessons.profile,
@@ -42,7 +44,7 @@ type lessonDraftPlan struct {
 // drafts from the template.
 func (o *Orchestrator) lessonDraftPlan() lessonDraftPlan {
 	lc := o.cfg.Memory.Lessons
-	plan := lessonDraftPlan{TokenBudget: lc.DraftTokenBudget, TimeoutMs: lc.DraftTimeoutMs}
+	plan := lessonDraftPlan{TokenBudget: lc.DraftTokenBudget, TimeoutMs: lc.DraftTimeoutMs, EnforceThreshold: lc.EnforceThreshold}
 	if lc.Profile == config.LessonProfileTemplate || o.runner == nil {
 		return plan
 	}
@@ -92,16 +94,19 @@ func (o *Orchestrator) draftAndPropose(ctx context.Context, store memory.Store, 
 	if err != nil {
 		return LessonReport{Err: err, DraftedBy: draft.DraftedBy}
 	}
-	return LessonReport{Outcome: res.Outcome, EntryID: res.Entry.ID, DraftedBy: draft.DraftedBy}
+	rep := LessonReport{Outcome: res.Outcome, EntryID: res.Entry.ID, DraftedBy: draft.DraftedBy}
+	rep.Enforcement = o.suggestEnforcement(ctx, store, res.Entry, plan) // #217
+	return rep
 }
 
 // errLessonOverBudget: the drafting call passed its token budget.
 var errLessonOverBudget = errors.New("orchestrator: lesson drafting call passed its token budget")
 
-// draftWithAgent runs the budgeted drafting turn. It runs in an empty
+// runDraftTurn runs one budgeted drafting turn (a lesson, or an
+// enforcement suggestion, #217) and returns its output. It runs in an empty
 // temporary directory with the sandbox permission mode: drafting needs no
 // tools and must not touch a workspace.
-func (o *Orchestrator) draftWithAgent(ctx context.Context, cand memory.Candidate, plan lessonDraftPlan) (memory.Draft, error) {
+func (o *Orchestrator) runDraftTurn(ctx context.Context, identifier, prompt string, plan lessonDraftPlan) (string, error) {
 	dctx, cancel := context.WithTimeout(ctx, time.Duration(plan.TimeoutMs)*time.Millisecond)
 	defer cancel()
 	var over atomic.Bool
@@ -113,23 +118,32 @@ func (o *Orchestrator) draftWithAgent(ctx context.Context, cand memory.Candidate
 	}
 	dir, err := os.MkdirTemp("", "itervox-lesson-")
 	if err != nil {
-		return memory.Draft{}, fmt.Errorf("orchestrator: lesson draft dir: %w", err)
+		return "", fmt.Errorf("orchestrator: lesson draft dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	var sessionID string
-	res, err := o.runner.RunTurn(dctx, o.logger().With("issue_identifier", cand.Issue, "lesson_draft", true),
-		onProgress, &sessionID, lessonDraftPrompt(cand), dir, plan.Command, "", "",
+	res, err := o.runner.RunTurn(dctx, o.logger().With("issue_identifier", identifier, "lesson_draft", true),
+		onProgress, &sessionID, prompt, dir, plan.Command, "", "",
 		plan.TimeoutMs, plan.TimeoutMs, agent.PermissionSandbox)
 	if over.Load() || res.InputTokens+res.OutputTokens > plan.TokenBudget {
-		return memory.Draft{}, errLessonOverBudget
+		return "", errLessonOverBudget
 	}
+	if err != nil {
+		return "", err
+	}
+	if res.Failed {
+		return "", fmt.Errorf("orchestrator: lesson drafting turn failed: %s", boundUTF8(res.FailureText, 200))
+	}
+	return cmp.Or(strings.TrimSpace(res.ResultText), strings.TrimSpace(res.LastText)), nil
+}
+
+// draftWithAgent runs the budgeted drafting turn for a lesson.
+func (o *Orchestrator) draftWithAgent(ctx context.Context, cand memory.Candidate, plan lessonDraftPlan) (memory.Draft, error) {
+	out, err := o.runDraftTurn(ctx, cand.Issue, lessonDraftPrompt(cand), plan)
 	if err != nil {
 		return memory.Draft{}, err
 	}
-	if res.Failed {
-		return memory.Draft{}, fmt.Errorf("orchestrator: lesson drafting turn failed: %s", boundUTF8(res.FailureText, 200))
-	}
-	d, ok := parseLessonDraft(cmp.Or(strings.TrimSpace(res.ResultText), strings.TrimSpace(res.LastText)))
+	d, ok := parseLessonDraft(out)
 	if !ok {
 		return memory.Draft{}, errors.New("orchestrator: lesson drafting turn returned no usable lesson")
 	}

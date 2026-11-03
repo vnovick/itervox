@@ -21,7 +21,7 @@ import (
 // run history for usage and lesson health, and the reviewer profile as the
 // default lesson drafter.
 func newMemoryAdapter(cfg *config.Config, orch *orchestrator.Orchestrator) *memoryAdapter {
-	return &memoryAdapter{cfg: cfg, history: orch.RunHistory, reviewerProfile: func() string {
+	return &memoryAdapter{cfg: cfg, history: orch.RunHistory, enforcement: orch, reviewerProfile: func() string {
 		p, _ := orch.ReviewerCfg()
 		return p
 	}}
@@ -63,7 +63,7 @@ func (a *memoryAdapter) lessonsView() server.MemoryLessonsView {
 		Enabled: a.cfg.Memory.Enabled && lc.Enabled, Drafter: drafter, Scope: memory.Scope(lc.Scope),
 		AutoApprovePrivate: lc.AutoApprovePrivate, AutoApproveProject: lc.AutoApproveProject,
 		MaxPerIssue: lc.MaxPerIssue, RateWindowHours: lc.RateWindowHours, StaleAfterRuns: lc.StaleAfterRuns,
-		Rejected: len(rejected),
+		Rejected: len(rejected), EnforceThreshold: lc.EnforceThreshold,
 	}
 }
 
@@ -79,10 +79,15 @@ func (a *memoryAdapter) annotateLessons(v *server.MemoryView) {
 	for _, r := range hist {
 		runs = append(runs, memory.RunUse{
 			MemoryIDs: r.MemoryIDs, FinishedAt: r.FinishedAt, Failed: r.Status == "failed" || r.Status == "stalled",
+			Succeeded: r.Status == "succeeded",
 		})
 	}
 	for i := range v.Entries {
 		v.Entries[i].NotHelping, v.Entries[i].NotHelpingReason = memory.HealthOf(v.Entries[i].Entry, runs, a.cfg.Memory.Lessons.StaleAfterRuns)
+		if v.Entries[i].Type == memory.TypeLesson { // #217 analytics
+			an := memory.AnalyticsOf(v.Entries[i].Entry, runs)
+			v.Entries[i].Analytics = &an
+		}
 	}
 }
 

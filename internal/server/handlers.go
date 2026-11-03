@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationconfig"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
@@ -55,8 +56,7 @@ func flushSSE(w http.ResponseWriter, flusher http.Flusher) {
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
-	snap := s.snapshot()
-	writeJSON(w, http.StatusOK, snap)
+	writeJSON(w, http.StatusOK, snapshotForScope(s.snapshot(), callerScope(r)))
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -88,8 +88,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	sub := s.bc.subscribe()
 	defer s.bc.unsubscribe(sub)
 
-	// Send initial snapshot immediately.
-	if err := s.writeSSEEvent(w, flusher); err != nil {
+	// Send initial snapshot immediately. lastFeed is the feed seq this
+	// client was last told (#213); -1 so the first frame announces it.
+	lastFeed := int64(-1)
+	scope := callerScope(r) // #214: the frame carries it; below admin it is redacted
+	if err := s.writeSSEEvent(w, flusher, scope, &lastFeed); err != nil {
 		return
 	}
 
@@ -109,7 +112,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-s.streamsDone: // generation shut down (CORE-025); the client reconnects
 			return
 		case <-sub:
-			if err := s.writeSSEEvent(w, flusher); err != nil {
+			if err := s.writeSSEEvent(w, flusher, scope, &lastFeed); err != nil {
 				return
 			}
 			ticker.Reset(keepaliveInterval) // §7.2 — defer keepalive after activity
@@ -131,14 +134,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeSSEEvent writes the current snapshot frame. The frame is encoded
-// once per broadcaster version and shared by every client (#210).
-func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) error {
-	frame, err := s.sseFrame()
+// once per broadcaster version and shared by every client (#210). When the
+// snapshot's feed seq differs from *lastFeed, a `feed` event with the new
+// seq follows it in the same flush (#213).
+func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, scope apitokens.Scope, lastFeed *int64) error {
+	frame, feedSeq, err := s.sseFrame(scope)
 	if err != nil {
 		return err
 	}
 	if err := writeSSEBytes(w, frame); err != nil {
 		return err
+	}
+	if feedSeq != *lastFeed {
+		if err := writeSSEBytes(w, feedFrame(feedSeq)); err != nil {
+			return err
+		}
+		*lastFeed = feedSeq
 	}
 	flushSSE(w, flusher)
 	return nil
@@ -646,6 +657,10 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
 		Message string `json:"message"`
+		// FromAgent marks a reply relayed for an agent (`itervox mcp`,
+		// #216): like the agent-actions route it never answers a guardrail
+		// approval, decided atomically in the event loop.
+		FromAgent bool `json:"fromAgent"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
@@ -655,11 +670,15 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
 		return
 	}
+	provide := s.client.ProvideInput
+	if body.FromAgent && s.guardrails != nil {
+		provide = s.guardrails.ProvideAgentInput
+	}
 	// ProvideInput performs no lookup of its own (CORE-005): the only error
 	// it can return is ErrBusy (event channel full). There is no "not found"
 	// branch here any more — whether the issue is actually waiting for input
 	// is the event loop's decision, so success means "queued", not "applied".
-	if err := s.client.ProvideInput(identifier, body.Message); err != nil {
+	if err := provide(identifier, body.Message); err != nil {
 		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}
@@ -907,7 +926,7 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 // handleListProfiles returns the current profile definitions.
 // GET /api/v1/settings/profiles
 func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
-	defs := s.client.ProfileDefs()
+	defs := profileDefsForScope(s.client.ProfileDefs(), callerScope(r))
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": defs})
 }
 

@@ -56,3 +56,8 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # #211 — fail on bundle regressions (total / initial / per-chunk caps,
+      # xyflow back in the Dashboard chunk, antd or react-js-cron anywhere).
+      - name: Bundle budget
+        run: pnpm bundle:budget

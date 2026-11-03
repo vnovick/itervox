@@ -107,6 +107,7 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				RuleIDs:       entry.RuleIDs,
 				PromptDigest:  entry.PromptDigest,
 				PromptParts:   entry.PromptParts,
+				Playbook:      entry.Playbook,
 				Steers:        entry.Steers,
 				SteersDropped: entry.SteersDropped,
 			}
