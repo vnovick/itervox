@@ -147,6 +147,7 @@ export const PromptPartsSchema = z.object({
   soul: z.string().optional(),
   instructions: z.string().optional(),
   rules: z.string().optional(),
+  memory: z.string().optional(), // #202 — absent when the run had no memory block
   template: z.string().optional(),
 });
 
@@ -186,6 +187,8 @@ export const HistoryRowSchema = z.object({
   // #157 — the rule set the run used; absent when no rule applied.
   rulesHash: z.string().optional(),
   ruleIds: z.array(z.string()).optional(),
+  // #202 — the memory entries the run's prompt carried; absent when none.
+  memoryIds: z.array(z.string()).optional(),
   // #186 — run provenance; all absent on rows recorded before it existed.
   profileName: z.string().optional(),
   runId: z.string().optional(),
@@ -965,6 +968,8 @@ export const StateSnapshotSchema = z.object({
   // optional/omitempty: absent on daemons predating CORE-053/055.
   backendHealth: z.array(BackendHealthRowSchema).optional(),
   autoSwitches: z.array(AutoSwitchRowSchema).optional(),
+  // #203 — proposed lessons waiting for review (the Memory nav count).
+  proposedLessons: z.number().optional(),
 });
 
 export const LogEventTypeSchema = z.enum([
@@ -1533,6 +1538,121 @@ export type RulesView = z.infer<typeof RulesViewSchema>;
 export type RulesPreview = z.infer<typeof RulesPreviewSchema>;
 export type RulesLayerName = (typeof RULES_LAYER_NAMES)[number];
 
+// ─── Memory (#202) ───────────────────────────────────────────────────────────
+// Mirrors internal/memory (Go) and internal/server/memory.go; the published
+// JSON Schema is site/public/schema/memory.schema.json.
+
+export const MEMORY_TYPES = ['preference', 'fact', 'decision', 'lesson'] as const;
+export const MEMORY_STATUSES = ['active', 'proposed', 'archived'] as const;
+export const MEMORY_SCOPES = ['private', 'project'] as const;
+/** Byte cap on an entry's text (memory.MaxTextBytes). */
+export const MEMORY_MAX_TEXT_BYTES = 2000;
+
+const optionalList = z
+  .array(z.string())
+  .nullish()
+  .transform((v) => v ?? []);
+
+export const MemorySourceSchema = z.object({
+  kind: z.string().optional(),
+  issue: z.string().optional(),
+  runIds: z.array(z.string()).optional(),
+  links: z.array(z.string()).optional(),
+});
+
+export const MemoryRunRefSchema = z.object({
+  runId: z.string().optional(),
+  identifier: z.string(),
+  status: z.string(),
+  finishedAt: z.string(),
+});
+
+// #203 — a lesson's review record (memory.Lesson).
+export const LESSON_TRIGGERS = ['input_reply', 'steering', 'failed_then_succeeded'] as const;
+
+export const MemoryLessonSchema = z.object({
+  trigger: tolerantEnum('memory.lesson.trigger', LESSON_TRIGGERS, 'input_reply'),
+  situation: z.string().optional(),
+  wentWrong: z.string().optional(),
+  worked: z.string().optional(),
+  correction: z.string().optional(),
+  confidence: z.number().optional(),
+  evidence: z.number().optional(),
+  draftedBy: z.string().optional(),
+  approvedAt: z.string().optional(),
+});
+
+export const MemoryEntrySchema = z.object({
+  id: z.string(),
+  type: tolerantEnum('memory.type', MEMORY_TYPES, 'fact'),
+  text: z.string(),
+  scope: tolerantEnum('memory.scope', MEMORY_SCOPES, 'private'),
+  profiles: optionalList,
+  tags: optionalList,
+  pinned: z.boolean().optional().default(false),
+  status: tolerantEnum('memory.status', MEMORY_STATUSES, 'archived'),
+  source: MemorySourceSchema.optional(),
+  created: z.string(),
+  updated: z.string(),
+  lastUsed: z.string().optional(),
+  useCount: z.number().optional().default(0),
+  path: z.string(),
+  runs: z
+    .array(MemoryRunRefSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  // #203 — lessons: the review record and the "not helping" flag.
+  lesson: MemoryLessonSchema.optional(),
+  notHelping: z.enum(['unused', 'failing']).optional(),
+  notHelpingReason: z.string().optional(),
+});
+
+export const MemoryFileSchema = z.object({
+  scope: tolerantEnum('memory.file.scope', MEMORY_SCOPES, 'private'),
+  path: z.string(),
+  exists: z.boolean(),
+  writable: z.boolean(),
+  error: z.string().optional(),
+});
+
+// #203 — memory.lessons as the Lessons tab explains it.
+export const MemoryLessonsViewSchema = z.object({
+  enabled: z.boolean(),
+  drafter: z.string(),
+  scope: tolerantEnum('memory.lessons.scope', MEMORY_SCOPES, 'private'),
+  autoApprovePrivate: z.boolean(),
+  autoApproveProject: z.boolean(),
+  maxPerIssue: z.number(),
+  rateWindowHours: z.number(),
+  staleAfterRuns: z.number(),
+  rejected: z.number(),
+});
+
+export const MemoryViewSchema = z.object({
+  enabled: z.boolean(),
+  tokenBudget: z.number(),
+  promptShareTokens: z.number(),
+  schemaUrl: z.string(),
+  files: z.array(MemoryFileSchema),
+  entries: z.array(MemoryEntrySchema),
+  lessons: MemoryLessonsViewSchema.optional(),
+});
+
+export const MemoryPromoteResultSchema = z.object({
+  entry: MemoryEntrySchema,
+  path: z.string(),
+  diff: z.string(),
+  diffNote: z.string().optional(),
+});
+
+export type MemoryType = (typeof MEMORY_TYPES)[number];
+export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+export type MemoryEntry = z.infer<typeof MemoryEntrySchema>;
+export type MemoryView = z.infer<typeof MemoryViewSchema>;
+export type MemoryPromoteResult = z.infer<typeof MemoryPromoteResultSchema>;
+export type MemoryLessonsView = z.infer<typeof MemoryLessonsViewSchema>;
+
 // ─── Settings layers and schema (#158) ───────────────────────────────────────
 // Mirrors internal/server/settings_layers.go and the JSON Schema published at
 // site/public/schema/settings.schema.json (generated from the Go config
@@ -1678,7 +1798,95 @@ export const RepoReadinessResponseSchema = z.object({
   checks: z.array(RepoReadinessCheckSchema).nullable(),
 });
 
+// GET /api/v1/repo/evals — internal/server/repo_evals.go (#201). The latest
+// persisted eval result per profile/scenario, read-only.
+export const RepoEvalCaseSchema = z.object({
+  profile: z.string(),
+  scenario: z.string(),
+  pass: z.boolean(),
+  failures: z.array(z.string()).nullable().optional(),
+  error: z.string().optional(),
+  stale: z.boolean().optional(),
+  promptDigest: z.string().optional(),
+  digestSource: z.string().optional(),
+  ranAt: z.string(),
+  mode: z.string(),
+  file: z.string(),
+  regression: z.boolean().optional(),
+  previousDigest: z.string().optional(),
+  previousAt: z.string().nullable().optional(),
+  results: z.number(),
+});
+
+export const RepoEvalReportSchema = z.object({
+  file: z.string(),
+  mode: z.string(),
+  finishedAt: z.string(),
+  pass: z.number(),
+  total: z.number(),
+});
+
+export const RepoEvalsResponseSchema = z.object({
+  dir: z.string().optional(),
+  reports: z.array(RepoEvalReportSchema).nullable(),
+  cases: z.array(RepoEvalCaseSchema).nullable(),
+  skipped: z.number().optional(),
+  error: z.string().optional(),
+});
+
+// GET /api/v1/repo/hotspots — internal/server/repo_hotspots.go (#201).
+// Unknown signals are dropped, never shown as a known one.
+export const RepoHotspotRunSchema = z.object({
+  runId: z.string().optional(),
+  identifier: z.string(),
+  status: z.string(),
+  kind: z.string().optional(),
+  profile: z.string().optional(),
+  finishedAt: z.string(),
+  prUrl: z.string().optional(),
+  signals: tolerantEnumList('hotspot.signals', [
+    'failed',
+    'stalled',
+    'change_request',
+    'input_request',
+    'reverted',
+  ]),
+});
+
+export const RepoHotspotRowSchema = z.object({
+  path: z.string(),
+  failed: z.number(),
+  stalled: z.number(),
+  changeRequests: z.number(),
+  inputRequests: z.number(),
+  reverted: z.number(),
+  total: z.number(),
+  issues: z.array(z.string()).nullable(),
+  runs: z.array(RepoHotspotRunSchema).nullable(),
+});
+
+export const RepoHotspotsResponseSchema = z.object({
+  generatedAt: z.string().nullable().optional(),
+  refreshing: z.boolean(),
+  repo: z.string().optional(),
+  baseRef: z.string().optional(),
+  runsConsidered: z.number(),
+  runsWithSignals: z.number(),
+  runsAttributed: z.number(),
+  runsUnattributed: z.number(),
+  runsPending: z.number().optional(),
+  files: z.array(RepoHotspotRowSchema).nullable(),
+  directories: z.array(RepoHotspotRowSchema).nullable(),
+  notes: z.array(z.string()).nullable().optional(),
+});
+
 export type PromptVersionRow = z.infer<typeof PromptVersionRowSchema>;
 export type PromptVersionsResponse = z.infer<typeof PromptVersionsResponseSchema>;
 export type RepoReadinessCheck = z.infer<typeof RepoReadinessCheckSchema>;
 export type RepoReadinessResponse = z.infer<typeof RepoReadinessResponseSchema>;
+export type RepoEvalCase = z.infer<typeof RepoEvalCaseSchema>;
+export type RepoEvalReport = z.infer<typeof RepoEvalReportSchema>;
+export type RepoEvalsResponse = z.infer<typeof RepoEvalsResponseSchema>;
+export type RepoHotspotRun = z.infer<typeof RepoHotspotRunSchema>;
+export type RepoHotspotRow = z.infer<typeof RepoHotspotRowSchema>;
+export type RepoHotspotsResponse = z.infer<typeof RepoHotspotsResponseSchema>;

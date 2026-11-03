@@ -1,5 +1,6 @@
-// #200 — the Repo Analysis page: four sections, sub-tabs selected by the
-// location hash (/repo#capabilities, #usage, #prompts, #readiness).
+// #200 — the Repo Analysis page: its sections, sub-tabs selected by the
+// location hash (/repo#capabilities, #usage, #prompts, #readiness, and
+// #201's #evals and #hotspots).
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
 import { render } from '../../../test/render';
@@ -19,12 +20,20 @@ vi.mock('../prompts/PromptVersionsSection', () => ({
 vi.mock('../readiness/ReadinessSection', () => ({
   ReadinessSection: () => <div data-testid="readiness-body" />,
 }));
+vi.mock('../evals/EvalsSection', () => ({
+  EvalsSection: () => <div data-testid="evals-body" />,
+}));
+vi.mock('../hotspots/HotspotsSection', () => ({
+  HotspotsSection: () => <div data-testid="hotspots-body" />,
+}));
 
 const SECTIONS = [
   ['capabilities', 'Capabilities'],
   ['usage', 'Runtime usage and cost'],
   ['prompts', 'Prompt versions'],
   ['readiness', 'Agent readiness'],
+  ['evals', 'Evals'],
+  ['hotspots', 'Hotspots'],
 ] as const;
 
 function activeSection(): string | undefined {
@@ -32,7 +41,7 @@ function activeSection(): string | undefined {
 }
 
 describe('Repo Analysis page (#200)', () => {
-  it('renders the four sections, each with its heading and body', () => {
+  it('renders every section, each with its heading and body', () => {
     render(<RepoAnalysis />, { route: '/repo' });
     expect(screen.getByRole('heading', { level: 1, name: 'Repo Analysis' })).toBeInTheDocument();
     for (const [key, label] of SECTIONS) {
@@ -68,14 +77,22 @@ describe('Repo Analysis page (#200)', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Agent readiness' }));
     expect(activeSection()).toBe('readiness');
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Agent readiness' }), { key: 'ArrowRight' });
+    expect(activeSection()).toBe('evals');
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Evals' }), { key: 'ArrowRight' });
+    expect(activeSection()).toBe('hotspots');
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Hotspots' }), { key: 'ArrowRight' });
     expect(activeSection()).toBe('capabilities');
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Capabilities' }), { key: 'ArrowLeft' });
-    expect(activeSection()).toBe('readiness');
+    expect(activeSection()).toBe('hotspots');
+    fireEvent.click(screen.getByRole('tab', { name: 'Evals' }));
+    expect(activeSection()).toBe('evals');
   });
 
   it('maps unknown hashes to Capabilities', () => {
     expect(sectionFromHash('')).toBe('capabilities');
     expect(sectionFromHash('#nope')).toBe('capabilities');
     expect(sectionFromHash('#usage')).toBe('usage');
+    expect(sectionFromHash('#evals')).toBe('evals');
+    expect(sectionFromHash('#hotspots')).toBe('hotspots');
   });
 });

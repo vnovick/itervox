@@ -1,5 +1,6 @@
 import {
   Bot,
+  Brain,
   FolderGit2,
   LayoutDashboard,
   Logs,
@@ -52,4 +53,8 @@ export function RulesIcon({ className }: { className?: string }) {
 
 export function RepoIcon({ className }: { className?: string }) {
   return <FolderGit2 {...iconProps(className)} />;
+}
+
+export function MemoryIcon({ className }: { className?: string }) {
+  return <Brain {...iconProps(className)} />;
 }

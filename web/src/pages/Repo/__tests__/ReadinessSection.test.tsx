@@ -22,7 +22,8 @@ const readiness = {
     },
     {
       id: 'gitignore_carveouts',
-      title: '.gitignore keeps .itervox/agents and .itervox/handoff committable',
+      title:
+        '.gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable',
       status: 'warn',
       detail: 'missing !.itervox/agents/**',
       fix: 'run `itervox init --update --workflow WORKFLOW.md`',

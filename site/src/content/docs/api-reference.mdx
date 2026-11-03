@@ -334,6 +334,8 @@ Useful top-level fields include:
   (the reset, or the cooldown end). This is the AGENT backend, unrelated to
   `rateLimits` (tracker API budget) and `outboxEntries[].rateLimitedUntil`
   (tracker writes). Absent on older daemons.
+- `proposedLessons` (#203) — how many proposed lessons wait in the Memory
+  page's review queue (the Memory nav item's count); omitted when none.
 - `autoSwitches` (CORE-055) — issues whose next run uses an automatic
   override: `{ "identifier", "source": "automation" | "backend_fallback" |
   "unknown", "fromBackend"?, "fromProfile"?, "toBackend"?, "toProfile"?,
@@ -401,12 +403,17 @@ to the daemon's history file). Each row may carry, besides the fields above
 - `promptDigest` — the run's **prompt version**: 64 hex characters of
   SHA-256 over a versioned, length-prefixed concatenation of the profile's
   `SOUL.md`, its `INSTRUCTIONS.md`, the resolved rule set (sorted by id;
-  each rule's id, severity and text) and the prompt template (the
+  each rule's id, severity and text), the run's memory selection (#202;
+  sorted by id, each entry's id, type and text; left out entirely when the
+  run had no memory, so such runs keep their earlier digest) and the
+  prompt template (the
   `WORKFLOW.md` body, or `agent.reviewer_prompt` for a reviewer run that has
   one), computed when the run is dispatched. Two runs with the same digest
   were given the same prompt inputs. Treat it as an opaque identifier; the
   dashboard shows its first 12 characters.
-- `promptParts` — `{ "soul"?, "instructions"?, "rules"?, "template"? }`:
+- `memoryIds` — the ids of the memory entries the run's prompt carried
+  (#202), in block order; omitted when it had none.
+- `promptParts` — `{ "soul"?, "instructions"?, "rules"?, "memory"?, "template"? }`:
   16-hex-character digests of each component (absent when the run had none),
   so two versions can be compared part by part. History stores only these
   hashes, never prompt text.
@@ -473,7 +480,7 @@ is reported as `fail` when it does not answer in time.
   "generatedAt": "2026-10-21T10:00:00Z",
   "checks": [
     { "id": "schema_version", "title": "WORKFLOW.md schema 2 marker", "status": "pass", "detail": "itervox_schema_version: 2" },
-    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents and .itervox/handoff committable", "status": "warn",
+    { "id": "gitignore_carveouts", "title": ".gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable", "status": "warn",
       "detail": "the root .gitignore ignores .itervox/ without the carve-outs: !.itervox/agents/** …",
       "fix": "run `itervox init --update --workflow /srv/app/WORKFLOW.md` (adds the carve-outs), or add the lines yourself" }
   ]
@@ -493,6 +500,130 @@ anything that is not a pass. Check IDs, in order:
 | `tracker_reachable` | one read of the tracker API (Linear `{ viewer }`, GitHub repository access) | `fail`: the read failed or timed out; `warn`: GitHub token without push access |
 
 `503 readiness_unavailable` when the daemon was built without the checks.
+
+## Repo evals
+
+### `GET /api/v1/repo/evals`
+
+The latest saved eval result per profile and scenario (#201), for the
+dashboard's **Repo Analysis → Evals** section. `make evals` (recorded mode),
+`make evals-live`, `make evals-record` and `itervox-evals` save each judged
+report as JSON to `<project>/.itervox/evals/<ISO8601>.json` (the newest 20
+kept; the directory carries its own `.gitignore`); the endpoint reads the
+newest of those files on the request goroutine. It never starts an eval run.
+
+```json
+{
+  "dir": "/srv/app/.itervox/evals",
+  "reports": [
+    { "file": "20261021T090000.000Z.json", "mode": "live", "finishedAt": "2026-10-21T09:00:00Z", "pass": 7, "total": 8 }
+  ],
+  "cases": [
+    {
+      "profile": "reviewer", "scenario": "rejects-and-moves-back", "pass": false,
+      "failures": ["forbidden phrase present in comments: /ai-approved"],
+      "promptDigest": "9f2c…", "digestSource": "live",
+      "ranAt": "2026-10-21T09:00:00Z", "mode": "live", "file": "20261021T090000.000Z.json",
+      "regression": true, "previousDigest": "41ab…", "previousAt": "2026-10-20T09:00:00Z",
+      "results": 3
+    }
+  ]
+}
+```
+
+- `failures` lists every failed assertion: missing required actions,
+  forbidden actions, `forbidden_phrases` present, missing marker phrases.
+  `error` is a live run that could not be judged as complete (backend failure,
+  budget); `stale` a recording older than its sources.
+- `promptDigest` is the prompt version the case ran against, computed with
+  the same digest as run history (#186), so it matches **Prompt versions**.
+  `digestSource` is `live` (computed by the live run from the workflow it ran)
+  or `recording` (read from a live recording's `meta` line). Recorded mode
+  replays a fixed transcript, so it has a digest only when the recording was
+  made by a live run since #201; the hand-written fixtures have none.
+- `regression` is set when the case fails on its digest and the newest result
+  on the previous digest passed (`previousDigest`, `previousAt`). Results
+  without a digest never mark one.
+- `mode` is `recorded`, `live` or `record`; `results` counts the reports read
+  that include the case. `error` at the top level means the directory could
+  not be read; no directory is an empty list.
+
+`503 evals_unavailable` when the daemon was built without the provider.
+
+## Repo hotspots
+
+### `GET /api/v1/repo/hotspots`
+
+Files and directories ranked by how often agent work on them went wrong
+(#201), for **Repo Analysis → Hotspots**. A run in the history window counts
+when it `failed` or `stalled`, asked for input (`input_request`), was a
+reviewer whose verdict was `block` (`change_request`), or opened a PR that
+was later reverted on the base branch (`reverted`). Each such run is
+attributed to the files its branch changed.
+
+A background job in the daemon computes it, never on the orchestrator's event
+loop: it reads run history and runs read-only git through `internal/gitexec`
+(no fetch), one refresh at a time, at most 100 run lookups per refresh, each
+git call under a 10 s timeout and the refresh under 2 minutes. A request
+returns the latest result at once and starts a refresh only when that result
+is older than 10 minutes (`refreshing: true` while it runs; the dashboard
+polls until it lands). Each run's changed files are cached by run ID, so a
+refresh runs git only for runs it has not attributed yet (an unattributed run
+is retried after an hour).
+
+```json
+{
+  "generatedAt": "2026-10-21T09:05:00Z",
+  "refreshing": false,
+  "repo": "/srv/ws/.bare",
+  "baseRef": "refs/remotes/origin/main",
+  "runsConsidered": 200, "runsWithSignals": 31, "runsAttributed": 27, "runsUnattributed": 4,
+  "files": [
+    {
+      "path": "internal/orchestrator/event_loop.go",
+      "failed": 3, "stalled": 1, "changeRequests": 2, "inputRequests": 0, "reverted": 1, "total": 7,
+      "issues": ["ENG-12", "ENG-40"],
+      "runs": [
+        { "runId": "r-…", "identifier": "ENG-40", "status": "succeeded", "kind": "reviewer", "profile": "reviewer",
+          "finishedAt": "2026-10-21T08:40:00Z", "signals": ["change_request"] }
+      ]
+    }
+  ],
+  "directories": [ { "path": "internal/orchestrator/", "…": "same shape" } ],
+  "notes": ["4 run(s) that went wrong could not be attributed to files: …"]
+}
+```
+
+Rows are sorted by `total` (a run with two signals counts twice), at most 50
+per list, with at most 20 runs each, newest first; a directory counts a run
+once however many of its files the run changed.
+
+How the signals are read, and where they are approximations:
+
+- **Repository.** The shared bare clone in worktree mode with
+  `workspace.clone_url`, the workspace root in plain worktree mode, otherwise
+  the directory holding `WORKFLOW.md`. Refs are as fresh as the daemon's (or
+  your) last fetch. The base is `workspace.base_branch` on origin, else the
+  local branch.
+- **Changed files.** Run history now records each run's branch (the branch
+  its exit reported, else the issue's worktree branch), its PR URL and a
+  reviewer's verdict. While the branch exists and adds commits, the files are
+  `git diff <base>...<branch>` (against the merge base) — the branch's
+  current state, not exactly what that one run changed. Once the branch is
+  merged or gone, they are the files of the commit on the base whose message
+  names the PR (`(#N)` squash subject or `Merge pull request #N`), against
+  its first parent. A run with neither is counted in `runsUnattributed`.
+- **Change requests** count reviewer runs whose recorded verdict was `block`.
+  Reviewer runs recorded before #201 carry no verdict and are not counted (a
+  note says how many).
+- **Reverted PRs** come from the newest 500 commits on the base: a revert
+  subject `Revert "… (#N)"`, a GitHub revert branch `revert-N-…`, or the PR
+  number in the subject of a commit a revert names (`This reverts commit <sha>`).
+  The newest non-reviewer run with that PR URL gets the signal.
+  Reverts outside that window, or of commits that name no PR, are missed.
+- The window is the daemon's run history (the newest 200 runs).
+
+`503 hotspots_unavailable` when the daemon was built without the job.
 
 ---
 
@@ -967,6 +1098,42 @@ applies to the next run and reloads nothing.
 A `Rule` is `{"id","severity":"must"|"should","text","description"?,"scope"?:{"projects"?,"profiles"?,"backends"?}}`. Running rows and
 history rows in `/state` carry the run's `rulesHash` and `ruleIds` (omitted
 when no rule applied).
+
+---
+
+## Memory
+
+The Memory page's endpoints (#202). Memory lives in two files the daemon
+reads again for every run (`~/.itervox/memory.json`, private, and
+`.itervox/memory.json`, project shared; see the configuration reference,
+"Memory files"), so a change applies to the next run and reloads nothing.
+Every write redacts secrets first; text over 2000 bytes (or a list over 32
+items of 512 bytes) is refused.
+
+| Method | Path | Request body | Success response | Errors |
+|---|---|---|---|---|
+| `GET` | `/memory` | — | `{"enabled","tokenBudget","promptShareTokens","schemaUrl","files":[{"scope":"private"\|"project","path","exists","writable","error"?}],"entries":[Entry],"lessons":{"enabled","drafter","scope","autoApprovePrivate","autoApproveProject","maxPerIssue","rateWindowHours","staleAfterRuns","rejected"}}` | — |
+| `POST` | `/memory` | `{"text","type"?,"scope"?,"tags"?,"profiles"?,"pinned"?,"status"?,"source"?}` (`type` defaults to `fact`, `scope` to `private`, `status` to `active`; posting a deleted entry back, id and timestamps included, restores it) | `201` the entry | `400 memory_invalid`, `409 memory_conflict` (id in use), `413 memory_too_large` |
+| `PUT` | `/memory/{id}` | any of `{"text","type","tags","profiles","pinned","status"}` (omitted fields stay) | the entry | `400 memory_invalid`, `404 memory_not_found`, `413 memory_too_large` |
+| `DELETE` | `/memory/{id}` | — | the deleted entry | `404 memory_not_found` |
+| `POST` | `/memory/{id}/pin` | `{"pinned":true\|false}` (empty body pins) | the entry | `404 memory_not_found` |
+| `POST` | `/memory/{id}/promote` | — | `{"entry":Entry,"path":"<project file>","diff":"<git diff of it>","diffNote"?}` | `404 memory_not_found`, `409 memory_conflict` (already shared) |
+| `POST` | `/memory/{id}/approve` | `{"scope"?:"private"\|"project","text"?}` (optional; `scope` defaults to the file the proposal is in, `text` replaces the lesson text: edit, then approve) | the entry, now `active` (moved to `scope`, `lesson.approvedAt` set) | `400 memory_invalid` (bad scope), `404 memory_not_found`, `409 memory_conflict` (not proposed), `413 memory_too_large` |
+| `POST` | `/memory/{id}/reject` | — | the removed proposal; the lesson is remembered in `.itervox/lessons-rejected.json` and not proposed again | `404 memory_not_found`, `409 memory_conflict` (not proposed) |
+
+An `Entry` is the file's entry (`id`, `type`: `preference`\|`fact`\|`decision`\|`lesson`,
+`text`, `scope`, `profiles`?, `tags`?, `pinned`?, `status`: `active`\|`proposed`\|`archived`,
+`source`?: `{"kind"?,"issue"?,"runIds"?,"links"?}`, `created`, `updated`, `lastUsed`?, `useCount`?,
+`lesson`?: `{"trigger","situation"?,"wentWrong"?,"worked"?,"correction"?,"confidence"?,"evidence"?,"draftedBy"?,"approvedAt"?}`)
+plus `path` (the file that holds it), `runs` (the newest runs in history whose prompt
+carried it: `[{"runId"?,"identifier","status","finishedAt"}]`, at most 20) and, for an approved
+lesson that is not helping (#203), `notHelping`: `"unused"` (none of the last
+`memory.lessons.stale_after_runs` runs used it) or `"failing"` (most runs that used it failed)
+with `notHelpingReason`. Lessons Itervox proposes arrive as `status: "proposed"` entries;
+approve and reject change the snapshot's `proposedLessons`, which is pushed at once. A promote's `diff`
+is `git diff` of the project file after the move, or the whole file when git does not track it
+yet (`diffNote` says so); outside a git repository it is empty. A file that does not parse is
+reported in `files[].error` and never rewritten (`400 memory_invalid`) until it is fixed.
 
 ---
 

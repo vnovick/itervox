@@ -343,6 +343,9 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 	}
 	awaitingDisk := make(map[string]inputRequiredDisk, len(entries))
 	for k, v := range entries {
+		if v.GuardrailApprovalID != "" {
+			continue // #204: dies with its run; never resumed after a restart
+		}
 		awaitingDisk[k] = inputRequiredDisk{
 			IssueID:            v.IssueID,
 			Identifier:         v.Identifier,

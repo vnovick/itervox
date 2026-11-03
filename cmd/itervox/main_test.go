@@ -724,6 +724,8 @@ agent:
       command: claude
       soul_file: .itervox/agents/deps-analyzer/SOUL.md
       instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md
+guardrails:
+  enabled: true
 ---
 
 Body.
