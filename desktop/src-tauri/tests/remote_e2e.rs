@@ -16,6 +16,10 @@
 //!
 //! The stub needs python3 (part of the Xcode Command Line Tools on a Mac).
 
+// Unix only: the stand-in ssh/gcloud are shell scripts and the tests
+// signal tunnel processes (SIGKILL, SIGSTOP).
+#![cfg(unix)]
+
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};

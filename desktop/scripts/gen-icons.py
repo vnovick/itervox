@@ -6,7 +6,9 @@ Pure standard library (zlib + struct), so it runs anywhere:
 
 The mark is the itervox "I//" glyph: a teal bar and two violet slashes on the
 dashboard's dark tile (site/public/favicon.svg colours). The tray icon is a
-template image (black + alpha) that macOS tints for light and dark menu bars.
+template image (black + alpha) that macOS tints for light and dark menu bars;
+Linux and Windows show the full-colour 128x128.png in the tray instead, since
+their panels do not tint (#260). icon.ico is the Windows executable icon.
 """
 
 import os
@@ -153,6 +155,19 @@ def icns(entries):
     return b"icns" + struct.pack(">I", len(body) + 8) + body
 
 
+def ico(entries):
+    """A Windows .ico of PNG images (Vista and later read PNG entries)."""
+    header = struct.pack("<HHH", 0, 1, len(entries))
+    offset = 6 + 16 * len(entries)
+    dirs, blobs = b"", b""
+    for size, data in entries:
+        dim = 0 if size >= 256 else size  # 0 means 256 in the directory
+        dirs += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(data), offset)
+        blobs += data
+        offset += len(data)
+    return header + dirs + blobs
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     big = render_app(1024, ss=2)
@@ -178,6 +193,8 @@ def main():
                 (b"ic14", pngs[512]),
             ]
         ),
+        # Windows: the executable's and the installers' icon (#260).
+        "icon.ico": ico([(s, pngs[s]) for s in (16, 32, 64, 128, 256)]),
         "tray.png": png(44, 44, render_tray(44)),
     }
     for name, data in files.items():

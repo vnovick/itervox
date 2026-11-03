@@ -44,7 +44,7 @@ go install github.com/vnovick/itervox/cmd/itervox@latest
 
 Pre-built binaries for macOS and Linux are available on the [latest release](https://github.com/vnovick/itervox/releases/latest).
 
-On a Mac you can install the menu bar app instead: `brew install --cask vnovick/tap/itervox-app`. It carries its own `itervox` daemon, so you need only one of the two; see the [Mac app guide](https://itervox.dev/guides/mac-app/#install).
+On a Mac you can install the menu bar app instead: `brew install --cask vnovick/tap/itervox-app`. It carries its own `itervox` daemon, so you need only one of the two; see the [desktop app guide](https://itervox.dev/guides/desktop-app/#install). The desktop app also comes for Linux (AppImage and `.deb`, x86_64 and arm64) and Windows (MSI and setup `.exe`; local projects need WSL or a remote daemon for now) on the [latest release](https://github.com/vnovick/itervox/releases/latest).
 
 ### Authenticating the agent CLI
 
@@ -172,9 +172,9 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
   </tr>
 </table>
 
-### Mac menu-bar app
+### Desktop app (macOS, Linux, Windows)
 
-A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, `brew install --cask vnovick/tap/itervox-app`, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
+A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, `brew install --cask vnovick/tap/itervox-app`, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. The same app runs in the Linux and Windows system tray (AppImage, `.deb`, MSI and setup `.exe` on the releases). Guide: **[itervox.dev/guides/desktop-app/](https://itervox.dev/guides/desktop-app/)**.
 
 ### View from your phone, anywhere
 
