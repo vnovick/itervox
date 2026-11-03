@@ -28,6 +28,11 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if !isActiveState(issue.State, state) {
 		return "not_active_state"
 	}
+	// #177: the issue's last run left a state move to apply; starting it
+	// again before that lands would redo finished work.
+	if _, pending := state.DeferredStateMoves[issue.Identifier]; pending {
+		return IneligibleStateMovePending
+	}
 	return ineligibleReasonShared(issue, state, cfg, false)
 }
 
@@ -80,6 +85,15 @@ func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config,
 	}
 	if _, claimed := state.Claimed[issue.ID]; claimed {
 		return "claimed"
+	}
+	// #187: picked by a poll; its claim read is in flight off the loop.
+	if _, pending := state.ClaimChecks[issue.ID]; pending {
+		return IneligibleClaimCheckPending
+	}
+	// #193: the worktree branch is checked out in another worktree. Checked
+	// before the slot gate so a saturated tick still names it.
+	if _, held := state.BranchInUseHolds[issue.Identifier]; held {
+		return IneligibleBranchInUse
 	}
 	if AvailableSlots(state) <= 0 {
 		return "no_slots"
@@ -159,7 +173,8 @@ func AvailableSlots(state State) int {
 	if state.Draining {
 		return 0
 	}
-	n := state.MaxConcurrentAgents - len(state.Running)
+	// #187: a pick whose claim read is in flight off the loop holds its slot.
+	n := state.MaxConcurrentAgents - len(state.Running) - len(state.ClaimChecks)
 	if n < 0 {
 		return 0
 	}

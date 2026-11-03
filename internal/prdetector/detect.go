@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/gitexec"
@@ -27,9 +29,12 @@ const maxFullDiffLines = 150
 
 // PRContext holds the context of an open pull request for prompt injection.
 type PRContext struct {
-	URL            string
-	Branch         string
-	Description    string
+	URL         string
+	Branch      string
+	Description string
+	// Title is the PR title; with Branch and Description it decides whether
+	// the PR is the issue's own (OwnedByIssue, #193).
+	Title          string
 	ReviewComments []ReviewComment
 	DiffStat       string // always: git diff --stat <base>
 	FullDiff       string // non-empty only if total diff < maxFullDiffLines lines
@@ -71,7 +76,7 @@ func ParsePRURLs(text string) []string {
 	return out
 }
 
-// prViewJSON is the JSON shape returned by `gh pr view --json state,headRefName,body,isDraft`.
+// prViewJSON is the JSON shape returned by `gh pr view --json state,headRefName,body,isDraft,title`.
 // Note: `gh pr view --json state` returns "OPEN" for both open and draft PRs;
 // draft status is exposed as a separate isDraft boolean field.
 type prViewJSON struct {
@@ -79,15 +84,16 @@ type prViewJSON struct {
 	HeadRefName string `json:"headRefName"`
 	Body        string `json:"body"`
 	IsDraft     bool   `json:"isDraft"`
+	Title       string `json:"title"`
 }
 
-// CheckPR calls `gh pr view <url> --json state,headRefName,body,isDraft`.
+// CheckPR calls `gh pr view <url> --json state,headRefName,body,isDraft,title`.
 // Returns nil, nil if the PR is merged, closed, or gh fails for any reason.
 // Returns a PRContext with URL, Branch, and Description set if the PR is OPEN
 // (including draft PRs, which also report state "OPEN" with isDraft=true).
 func CheckPR(ctx context.Context, url string) (*PRContext, error) {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "view", url,
-		"--json", "state,headRefName,body,isDraft")
+		"--json", "state,headRefName,body,isDraft,title")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, nil //nolint:nilerr // gh failure is non-fatal — fall through to normal flow
@@ -103,6 +109,7 @@ func CheckPR(ctx context.Context, url string) (*PRContext, error) {
 		URL:         url,
 		Branch:      v.HeadRefName,
 		Description: v.Body,
+		Title:       v.Title,
 	}, nil
 }
 
@@ -248,10 +255,20 @@ func sortEntriesByPos(entries []*prEntry) {
 	})
 }
 
-// Detect looks for an open PR associated with the issue.
+// Detect looks for an open PR that belongs to the issue.
 // It parses PR URLs from the issue description and all comments, then checks
 // each URL (most-recently-sourced first) with CheckPR.
-// Returns the first open/draft PRContext found, or nil, nil if none.
+// Returns the first open/draft PRContext the issue owns (OwnedByIssue), or
+// nil, nil if none.
+//
+// #193: an open PR is no longer enough. A URL in an issue's thread may name
+// another issue's PR (a related PR, a blocker's PR, or the "Pull request
+// created" comment an older worker posted when `gh pr view` resolved a
+// stacked worktree's upstream to the blocker's PR); reusing that PR's branch
+// made unrelated issues try to check out a branch already held by its owner's
+// worktree, and run on it. Only a PR whose branch, title or body names the
+// issue is continued.
+//
 // FetchPRContext is NOT called here — the caller is responsible for enriching
 // the PRContext with diffs after setting up the workspace.
 func Detect(ctx context.Context, issue domain.Issue) (*PRContext, error) {
@@ -263,11 +280,116 @@ func Detect(ctx context.Context, issue domain.Issue) (*PRContext, error) {
 			slog.Debug("prdetector: CheckPR error (best-effort)", "url", urls[i], "error", err)
 			return nil, nil //nolint:nilerr // best-effort
 		}
-		if pr != nil {
-			return pr, nil
+		if pr == nil {
+			continue
 		}
+		if !OwnedByIssue(pr, issue) {
+			slog.Info("prdetector: open PR linked from the issue is not the issue's own; ignoring it",
+				"issue_identifier", issue.Identifier, "pr_url", pr.URL, "pr_branch", pr.Branch)
+			continue
+		}
+		return pr, nil
 	}
 	return nil, nil
+}
+
+// OwnedByIssue reports whether pr is clearly the issue's own pull request
+// (#193), by any one of:
+//   - its head branch is the issue's branch: the tracker's branch name, or
+//     itervox/<identifier slug> (workspace.ResolveWorktreeBranch);
+//   - its head branch names the identifier as a whole token
+//     ("vlad/eng-12-fix" for ENG-12, never "eng-123"); identifiers without a
+//     letter (GitHub "#12") are too ambiguous inside a branch name and need
+//     one of the other signals;
+//   - its title or body names the identifier on word boundaries
+//     ("Fixes ENG-12", "Closes #12", never "ENG-123" or "#123");
+//   - its body links the tracker issue's URL.
+func OwnedByIssue(pr *PRContext, issue domain.Issue) bool {
+	if pr == nil || strings.TrimSpace(issue.Identifier) == "" {
+		return false
+	}
+	slug := slugify(issue.Identifier)
+	if pr.Branch != "" {
+		if issue.BranchName != nil && !isDefaultBranchName(*issue.BranchName) && pr.Branch == *issue.BranchName {
+			return true
+		}
+		if slug != "" && pr.Branch == "itervox/"+slug {
+			return true
+		}
+		if strings.IndexFunc(slug, unicode.IsLetter) >= 0 && tokenMatch(strings.ToLower(pr.Branch), slug, true) {
+			return true
+		}
+	}
+	if mentionsIdentifier(pr.Title, issue.Identifier) || mentionsIdentifier(pr.Description, issue.Identifier) {
+		return true
+	}
+	if issue.URL != nil && *issue.URL != "" && strings.Contains(pr.Description, *issue.URL) {
+		return true
+	}
+	return false
+}
+
+// mentionsIdentifier reports whether text names identifier on word
+// boundaries, ignoring case. An identifier that starts with a non-alphanumeric
+// character ("#12") has its own left boundary.
+func mentionsIdentifier(text, identifier string) bool {
+	if text == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(identifier)
+	return tokenMatch(strings.ToLower(text), strings.ToLower(identifier), isAlnum(first))
+}
+
+// tokenMatch reports whether needle occurs in haystack with no letter or
+// digit right after it and, when leftBoundary is set, none right before it.
+func tokenMatch(haystack, needle string, leftBoundary bool) bool {
+	if needle == "" {
+		return false
+	}
+	for start := 0; ; {
+		i := strings.Index(haystack[start:], needle)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(needle)
+		before, _ := utf8.DecodeLastRuneInString(haystack[:i])
+		after, _ := utf8.DecodeRuneInString(haystack[end:])
+		if (!leftBoundary || i == 0 || !isAlnum(before)) && (end == len(haystack) || !isAlnum(after)) {
+			return true
+		}
+		start = i + 1
+	}
+}
+
+func isAlnum(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
+// slugify mirrors workspace.SlugifyIdentifier ("ENG-12" → "eng-12",
+// "#12" → "12"); prdetector sits below workspace in the package order.
+func slugify(id string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(id)) {
+		if isAlnum(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	return out
+}
+
+// isDefaultBranchName mirrors workspace.IsDefaultBranch: these names never
+// identify an issue's own branch.
+func isDefaultBranchName(b string) bool {
+	switch b {
+	case "", "main", "master", "develop", "HEAD":
+		return true
+	}
+	return false
 }
 
 // FormatPRContext renders a PRContext as a plain-text block suitable for

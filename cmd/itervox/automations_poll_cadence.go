@@ -27,31 +27,39 @@ const automationPollMaxBackoff = 8
 type automationPollCadence struct {
 	base   time.Duration
 	factor int
+	// low / recovered are the log lines for a stretch and for a return to
+	// the base interval (the PR-event poll, #173, shares this cadence).
+	low, recovered string
 }
 
 func newAutomationPollCadence(intervalMs int) *automationPollCadence {
+	return newPollCadence(intervalMs,
+		"automation: tracker request budget is low, slowing the automation event poll",
+		"automation: tracker request budget recovered, automation event poll back to its interval")
+}
+
+func newPollCadence(intervalMs int, low, recovered string) *automationPollCadence {
 	if intervalMs <= 0 {
 		intervalMs = config.DefaultAutomationPollIntervalMs
 	}
-	return &automationPollCadence{base: time.Duration(intervalMs) * time.Millisecond, factor: 1}
+	return &automationPollCadence{base: time.Duration(intervalMs) * time.Millisecond, factor: 1, low: low, recovered: recovered}
 }
 
-// nextDelay is the wait before the next poll, given the budget the tracker
-// reports now.
-func (c *automationPollCadence) nextDelay(tr tracker.Tracker) time.Duration {
-	snap, low := trackerBudgetLow(tr, automationPollBackoffPercent)
+// nextDelay is the wait before the next poll, given the budget src (a
+// tracker, or any tracker.RateLimiter) reports now.
+func (c *automationPollCadence) nextDelay(src any) time.Duration {
+	snap, low := trackerBudgetLow(src, automationPollBackoffPercent)
 	switch {
 	case low:
 		if f := min(c.factor*2, automationPollMaxBackoff); f != c.factor {
 			c.factor = f
-			slog.Warn("automation: tracker request budget is low, slowing the automation event poll",
+			slog.Warn(c.low,
 				"requests_remaining", snap.RequestsRemaining, "requests_limit", snap.RequestsLimit,
 				"interval", c.base*time.Duration(c.factor))
 		}
 	case c.factor > 1:
 		c.factor = 1
-		slog.Info("automation: tracker request budget recovered, automation event poll back to its interval",
-			"interval", c.base)
+		slog.Info(c.recovered, "interval", c.base)
 	}
 	return c.base * time.Duration(c.factor)
 }
@@ -59,8 +67,8 @@ func (c *automationPollCadence) nextDelay(tr tracker.Tracker) time.Duration {
 // trackerBudgetLow reports whether the tracker's remaining request budget is
 // below percent of its limit. Like shouldShedPollingReads it fails open: an
 // adapter without counters, or a snapshot without a limit, is never low.
-func trackerBudgetLow(tr tracker.Tracker, percent int) (*tracker.RateLimitSnapshot, bool) {
-	limiter, ok := tr.(tracker.RateLimiter)
+func trackerBudgetLow(src any, percent int) (*tracker.RateLimitSnapshot, bool) {
+	limiter, ok := src.(tracker.RateLimiter)
 	if !ok {
 		return nil, false
 	}

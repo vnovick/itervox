@@ -22,7 +22,9 @@ use crate::menu::{append_app_section, build_menu, MenuAction, MenuEntry, MenuSpe
 use crate::model::{token_for, Core, NotificationTargets, PendingOp, REFRESH_INTERVAL};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
 use crate::remote::is_remote_key;
-use crate::sessions::{page_action, push_script, read_all, session_link, PageAction};
+use crate::sessions::{
+    new_session_link, page_action, push_script, read_all, session_link, PageAction,
+};
 use crate::supervisor::{self, last_line, output_log_name, record_for};
 use crate::token::{generate_token, platform_store, TokenStore};
 
@@ -798,6 +800,22 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
                 Some(base) => {
                     open_dashboard(app, shared, &daemon, Some(session_link(&base, &session)))
                 }
+                None => error_dialog(app, "That project's daemon is not running."),
+            }
+        }
+        PageAction::NewSession { daemon } => {
+            if is_remote_key(&daemon) {
+                let link = new_session_link("http://127.0.0.1/");
+                open_dashboard(app, shared, &daemon, Some(link));
+                return;
+            }
+            let base = lock(&shared.core)
+                .last_records()
+                .iter()
+                .find(|r| r.workflow == daemon)
+                .map(|r| r.base_url());
+            match base {
+                Some(base) => open_dashboard(app, shared, &daemon, Some(new_session_link(&base))),
                 None => error_dialog(app, "That project's daemon is not running."),
             }
         }

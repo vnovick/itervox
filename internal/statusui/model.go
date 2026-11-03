@@ -49,7 +49,10 @@ const (
 // Config holds optional display configuration passed from main.
 type Config struct {
 	DashboardURL string
-	MaxAgents    int
+	// RetirementNotice, when set, is a header line pointing to the terminal
+	// UI's replacements (#120): `itervox watch` and `--headless`.
+	RetirementNotice string
+	MaxAgents        int
 	// TrackerKind is "linear" or "github", shown in the header.
 	TrackerKind string
 	// BacklogStates are the states considered "backlog" (not ready for work).

@@ -4,6 +4,7 @@ import {
   Logs,
   MessagesSquare,
   type LucideProps,
+  ScrollText,
   Settings,
   TimerReset,
   Workflow,
@@ -42,4 +43,8 @@ export function SettingsIcon({ className }: { className?: string }) {
 
 export function SessionsIcon({ className }: { className?: string }) {
   return <MessagesSquare {...iconProps(className)} />;
+}
+
+export function RulesIcon({ className }: { className?: string }) {
+  return <ScrollText {...iconProps(className)} />;
 }

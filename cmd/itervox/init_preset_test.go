@@ -22,12 +22,10 @@ import (
 func writePresetWorkflow(t *testing.T, runner string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	content := generateWorkflow("github", runner, repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"}, path)
-	content, err := applyCrossReviewPreset(content, runner)
-	require.NoError(t, err)
+	opts := initOptions{Preset: presetCrossReview}
+	content := generateWorkflowWith("github", runner, repoInfo{ProjectName: "demo", Owner: "acme", Repo: "demo", DefaultBranch: "main"}, path, opts)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-	require.NoError(t, writeInitAgentFiles(path, runner))
-	require.NoError(t, writeCrossReviewerFiles(path, runner))
+	require.NoError(t, writeTemplateAgentFiles(path, runner, opts))
 	return path
 }
 

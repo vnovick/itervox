@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/workflow"
 )
@@ -208,7 +209,14 @@ type TrackerConfig struct {
 	// Labels narrows a Linear tracker to the issues carrying ANY of these
 	// labels (#182), ANDed with the project and assignee. Empty: no label
 	// filter. Load-time only, like Assignee.
-	Labels         []string
+	Labels []string
+	// Filter is tracker.filter (#198): groups of conditions, ANDed inside a
+	// group and ORed between groups. When set it replaces ProjectSlug (for
+	// Linear), Assignee, Team and Labels, which act as one implicit group
+	// otherwise; setting both is a validation error. Load-time config: the
+	// dashboard's scope save changes the tracker client's runtime filter
+	// (and WORKFLOW.md, reload-fenced), not this field.
+	Filter         issuefilter.Filter
 	ActiveStates   []string
 	TerminalStates []string
 	// WorkingState is the state name to transition an issue to when it is
@@ -802,16 +810,35 @@ type Config struct {
 	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
-	WorkflowHash   [32]byte
-	Tracker        TrackerConfig
-	Polling        PollingConfig
-	Workspace      WorkspaceConfig
-	Agent          AgentConfig
-	Hooks          HooksConfig
-	Server         ServerConfig
-	Dependencies   DependenciesConfig
+	WorkflowHash [32]byte
+	Tracker      TrackerConfig
+	Polling      PollingConfig
+	Workspace    WorkspaceConfig
+	Agent        AgentConfig
+	Hooks        HooksConfig
+	Server       ServerConfig
+	Dependencies DependenciesConfig
+	// Sessions configures the Sessions panel's discovery of agent sessions
+	// started by hand (#178). Read-only after startup.
+	Sessions SessionsConfig
+	// PREvents is pr_events (#173): how the PR-event automation triggers
+	// (pr_check_completed, pr_synchronized, pr_review_submitted,
+	// pr_mergeable_changed) learn about GitHub activity. Read once at
+	// startup.
+	PREvents       PREventsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
+}
+
+// PREventsConfig is pr_events (#173).
+type PREventsConfig struct {
+	// WebhookSecret, when set, serves POST /api/v1/webhooks/pr-events for
+	// signed GitHub check_run, status, pull_request and pull_request_review
+	// deliveries ($VAR resolves from the environment). Checks and reviews
+	// then arrive by webhook and the poll only reads each managed PR (head
+	// SHA and mergeable_state, which GitHub sends no event for). Empty: the
+	// poll also reads check runs, commit statuses and reviews.
+	WebhookSecret string
 }
 
 // Load reads a WORKFLOW.md file, parses front matter, applies defaults, and resolves env vars.
@@ -879,6 +906,16 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Assignee = conn.Assignee // #182
 	cfg.Tracker.Team = conn.Team
 	cfg.Tracker.Labels = conn.Labels
+	// #198: tracker.filter. A malformed filter fails the load, so a typo
+	// never silently widens what Itervox reads.
+	filter, err := issuefilter.Parse(tracker["filter"], "tracker.filter")
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	cfg.Tracker.Filter = filter
+	if filter != nil {
+		noteSetting(tracker, "filter", tracker["filter"])
+	}
 	cfg.Tracker.ActiveStates = conn.ActiveStates
 	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
@@ -910,6 +947,12 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.Sync = parseTrackerSync(tracker) // #118
 	if err := validateTrackerSync(cfg.Tracker); err != nil {
 		return nil, err
+	}
+	cfg.PREvents = PREventsConfig{
+		WebhookSecret: resolveSecret(strField(nestedMap(raw, "pr_events"), "webhook_secret", "")),
+	}
+	if s := cfg.PREvents.WebhookSecret; s != "" && len(s) < MinWebhookSecretLength {
+		return nil, fmt.Errorf("config: pr_events.webhook_secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
 	}
 	cc := nestedMap(tracker, "comment_commands")
 	cfg.Tracker.CommentCommands = CommentCommandsConfig{
@@ -1088,6 +1131,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
 		}
 	}
+
+	// Sessions (#178)
+	cfg.Sessions = parseSessionsConfig(nestedMap(raw, "sessions"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

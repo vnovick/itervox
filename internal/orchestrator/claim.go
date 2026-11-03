@@ -48,7 +48,9 @@ const (
 // tracked scope). ok is false when the read failed; the caller does not start
 // the issue then, because a change it cannot see might be pending.
 func (o *Orchestrator) claimRead(ctx context.Context, issue domain.Issue) (fresh domain.Issue, found, ok bool) {
-	issues, err := o.tracker.FetchIssueStatesByIDs(ctx, []string{issue.ID})
+	rctx, cancel := loopReadCtx(ctx) // #187: bounded by the loop iteration
+	defer cancel()
+	issues, err := o.tracker.FetchIssueStatesByIDs(rctx, []string{issue.ID})
 	if err != nil {
 		slog.Warn("orchestrator: claim check: tracker read failed, not starting the issue now",
 			"identifier", issue.Identifier, "error", err)

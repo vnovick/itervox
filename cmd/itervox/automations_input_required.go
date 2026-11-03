@@ -336,6 +336,7 @@ func matchesReplayInputRequiredAutomation(issue domain.Issue, automation orchest
 				MatchMode: automation.MatchMode,
 				States:    automation.States,
 				LabelsAny: automation.LabelsAny,
+				Groups:    automation.Groups,
 			},
 		},
 		identifierRe:   automation.IdentifierRegex,

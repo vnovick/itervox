@@ -33,7 +33,7 @@ case "$*" in
   "pr view --json url,state "*) echo "` + prURL + `" ;;
   "pr view ` + prURL + ` --json body"*) cat "` + bodyFile + `" ;;
   "pr edit ` + prURL + ` --body-file -") cat > "` + bodyFile + `" ;;
-  "pr view ` + prURL + ` --json state,headRefName,body,isDraft") echo '{"state":"OPEN","headRefName":"feature/human","body":"","isDraft":false}' ;;
+  "pr view ` + prURL + ` --json state,headRefName,body,isDraft,title") echo '{"state":"OPEN","headRefName":"feature/human","title":"ENG-3: human work","body":"","isDraft":false}' ;;
 esac
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755))
@@ -88,7 +88,7 @@ func TestPRFooterAddedOncePerPR(t *testing.T) {
 // with agent.pr_footer on.
 func TestPRFooterSkipsLinkedPullRequest(t *testing.T) {
 	body, calls := runFooterWorker(t, true, true)
-	assert.Contains(t, calls, "pr view https://github.com/o/r/pull/31 --json state,headRefName,body,isDraft",
+	assert.Contains(t, calls, "pr view https://github.com/o/r/pull/31 --json state,headRefName,body,isDraft,title",
 		"the linked PR must have been detected; gh calls: %v", calls)
 	assert.Equal(t, "Agent-written description.\n", body)
 	for _, c := range calls {

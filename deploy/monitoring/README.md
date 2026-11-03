@@ -13,7 +13,7 @@
 | `GET /api/v1/logs` | Authenticated; backs the dashboard log pane |
 | `GET /api/v1/state` → `recentFailures` | Authenticated; the last 100 operator-relevant failures (worker, tracker, persistence, outbox, panics, dashboard errors), redacted; also the dashboard's Recent failures panel |
 | `POST /api/v1/client-errors` | Authenticated; the dashboard reports its own crashes and schema drift here (logged at WARN as `web client error reported`, counted in `itervox_client_errors_total`) |
-| `.itervox/HEARTBEAT.md` | Capacity, queue depth, saturation, dependency audit (incl. cycles), backend breakers, input-required, retry depth, outbox pending/degraded, last error, last crash |
+| `.itervox/HEARTBEAT.md` | Tracker poll state (`- Poll:` ok / running for Xs / slow / degraded, #187), capacity, queue depth, saturation, dependency audit (incl. cycles), backend breakers, input-required, retry depth, outbox pending/degraded, last error, last crash |
 
 **Metrics are opt-in.** With `server.metrics.enabled: true` the dashboard listener serves
 `GET /metrics` in the Prometheus text format, behind the same bearer token as the API
@@ -62,8 +62,8 @@ Azure: add a custom-text-log data collection rule pointed at the same glob.
 Pass `--log-format=json` (or `ITERVOX_LOG_FORMAT=json`) to switch **both** headless sinks
 to structured JSON (CORE-059, `cmd/itervox/logformat.go`): the rotating file
 (`itervox.log`) and stderr — so under systemd `journalctl -u itervox -o cat` and any
-journald or container log shipper receive one redacted JSON object per line. With a
-controlling terminal stderr stays human-readable text whatever the flag says. The
+journald or container log shipper receive one redacted JSON object per line. Only with
+`--tui` on a controlling terminal (the deprecated terminal UI) do logs go to the file alone. The
 official container image sets `ITERVOX_LOG_FORMAT=json`; the systemd unit leaves the
 default (logfmt file, charm stderr) — add `--log-format json` to its `ExecStart` to opt in.
 
@@ -114,6 +114,7 @@ Outside Prometheus:
 | Process down | systemd restart count (journald) | The only true liveness signal without `/metrics` |
 | Not ready | uptime check on `/api/v1/ready` expecting 200 | Wedged event loop or 3+ failed polls; **503 during a drain is expected** |
 | `level=ERROR` rate | log-based metric (`jsonPayload.level="ERROR"` / `{ $.level = "ERROR" }`) | Tracker outages (3+ consecutive failed polls), exhausted retries, a failed failed-state move, recovered panics. A single failed poll and ordinary worker failures log at WARN/INFO |
+| Slow or degraded tracker poll (#187) | `level=WARN` lines `tracker poll is running longer than the poll interval` and `tracker poll degraded: skipping tracker reads after consecutive transport failures`; HEARTBEAT `- Poll:`; `/ready` `degraded` | The tracker is slow or unreachable. The poll runs off the event loop, so workers, the dashboard and operator actions keep working; dispatch waits for the tracker. `event loop iteration was slow` (WARN) means the loop itself was held for 10 s+ |
 | Disk > 80% | cloud agent default | Worktrees plus dependency trees accumulate; enable `itervox-cleanup.timer` (`docs/deploy-runbook.md`) |
 
 Never alert on `heartbeat_age_seconds` / HEARTBEAT.md mtime (see above).
