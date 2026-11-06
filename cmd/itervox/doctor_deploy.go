@@ -129,8 +129,9 @@ func runDeployChecks(ctx context.Context, cfg *config.Config, workflowPath strin
 	used := backendsInUse(cfg)
 	out = append(out, claudeCredentialCheck(used["claude"], env))
 	out = append(out, codexCredentialCheck(ctx, used["codex"], env))
+	out = append(out, unprobedCredentialChecks(used)...)
 	for _, host := range cfg.Agent.SSHHosts {
-		for _, b := range []string{"claude", "codex"} {
+		for _, b := range config.SupportedBackends {
 			if used[b] {
 				out = append(out, deployCheck{b + " credentials (ssh " + host + ")", deploySkipped,
 					"not probed — doctor checks this machine only; run `itervox doctor --deploy` on " + host})
@@ -141,6 +142,26 @@ func runDeployChecks(ctx context.Context, cfg *config.Config, workflowPath strin
 	out = append(out, gitPushCheck(ctx, filepath.Dir(workflowPath), env))
 	out = append(out, trackerAPICheck(ctx, cfg, env))
 	out = append(out, readyCheck(ctx, workflowPath, env))
+	return out
+}
+
+// unprobedCredentialHints say how to check the login of a backend whose
+// credentials doctor does not read.
+var unprobedCredentialHints = map[string]string{
+	config.BackendOpenCode: "not probed — run `opencode auth list` as the daemon's user to confirm a provider is logged in",
+	config.BackendCursor:   "not probed — run `cursor-agent status` as the daemon's user (or set CURSOR_API_KEY)",
+	config.BackendCustom:   "not probed — a custom backend's command owns its credentials",
+}
+
+// unprobedCredentialChecks lists, as skipped, the credentials of each
+// OpenCode, Cursor or custom backend in use.
+func unprobedCredentialChecks(used map[string]bool) []deployCheck {
+	var out []deployCheck
+	for _, b := range config.SupportedBackends {
+		if hint, ok := unprobedCredentialHints[b]; ok && used[b] {
+			out = append(out, deployCheck{b + " credentials", deploySkipped, hint})
+		}
+	}
 	return out
 }
 

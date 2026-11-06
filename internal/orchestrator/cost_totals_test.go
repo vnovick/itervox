@@ -116,3 +116,32 @@ func TestCostTotalsSessionCostPruned(t *testing.T) {
 	require.NotNil(t, got.CostUSDEstimated)
 	assert.InDelta(t, 0.40, *got.CostUSDEstimated, 1e-9, "fleet totals are kept")
 }
+
+// Runs on the other backends (OpenCode, Cursor, custom) are counted under
+// their own name, never as Claude runs, and the totals say which backends
+// reported a cost so the dashboard can name the runs the estimate leaves out.
+func TestCostTotalsCountEachBackendAndWhichReportCost(t *testing.T) {
+	o := New(testConfig(), nil, nil, nil)
+	ctx := context.Background()
+	state := NewState(o.cfg)
+	runs := []struct{ id, backend string }{{"a", ""}, {"b", "opencode"}, {"c", "cursor"}, {"d", "codex"}}
+	for _, r := range runs {
+		state.Running[r.id] = &RunEntry{Issue: domain.Issue{ID: r.id, Identifier: "ENG-" + r.id}, Backend: r.backend}
+	}
+	state = o.handleEvent(ctx, state, costUpdate("a", "s-a", 100, 10, usd(0.20)))
+	state = o.handleEvent(ctx, state, costUpdate("b", "s-b", 100, 10, usd(0.05)))
+	state = o.handleEvent(ctx, state, costUpdate("c", "s-c", 100, 10, nil))
+	state = o.handleEvent(ctx, state, costUpdate("d", "s-d", 100, 10, nil))
+
+	got := state.Totals.snapshot()
+	assert.Equal(t, 1, got.ClaudeRuns, "only the run with no backend (the default, Claude) counts as Claude")
+	assert.Equal(t, 1, got.CodexRuns)
+	assert.Equal(t, map[string]int{"claude": 1, "opencode": 1, "cursor": 1, "codex": 1}, got.RunsByBackend)
+	assert.Equal(t, []string{"claude", "opencode"}, got.CostBackends)
+	require.NotNil(t, got.CostUSDEstimated)
+	assert.InDelta(t, 0.25, *got.CostUSDEstimated, 1e-9)
+
+	// The snapshot is a copy: changing it leaves the event-loop totals alone.
+	got.RunsByBackend["claude"] = 99
+	assert.Equal(t, 1, state.Totals.snapshot().RunsByBackend["claude"])
+}

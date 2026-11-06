@@ -64,7 +64,7 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 	if err := os.Chmod(tmpPath, perm); err != nil {
 		return fmt.Errorf("atomicfs: chmod %s: %w", tmpPath, err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameReplace(tmpPath, path); err != nil {
 		return fmt.Errorf("atomicfs: rename %s -> %s: %w", tmpPath, path, err)
 	}
 	cleanup = false // rename succeeded; tmp no longer exists at tmpPath.

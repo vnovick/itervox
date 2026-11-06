@@ -3,6 +3,8 @@ import { useRunContext } from '../../queries/changes';
 import { useSendSessionMessage } from '../../queries/sessions';
 import { RequireScope } from './RequireScope';
 import { SteeringChips } from './SteeringChips';
+import { FIELD_CLASS } from '../ui/Input/fieldClass';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
 
 /**
  * #218 — the issue detail's steer box for a running issue: a message, or a
@@ -33,26 +35,37 @@ export function IssueSteerBox({ identifier }: { identifier: string }) {
   return (
     <RequireScope scope="operator">
       <section data-testid="issue-steer-box" className="space-y-2">
-        <h4 className="text-xs font-medium tracking-wider uppercase">Steer the run</h4>
+        <h4 className="field-label">Steer the run</h4>
         <SteeringChips onSend={submit} disabled={send.isPending} />
-        <textarea
-          aria-label={`Message to the agent on ${identifier}`}
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-          }}
-          rows={2}
-          placeholder="Message the running agent…"
-          className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
-        />
-        <div className="flex justify-end">
+        {/* One line that grows with its text, Send inline. */}
+        <div className="flex items-end gap-2">
+          <textarea
+            aria-label={`Message to the agent on ${identifier}`}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              // Ctrl/⌘+Enter sends; plain Enter keeps adding lines.
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                submit(draft);
+              }
+            }}
+            rows={1}
+            placeholder="Message the running agent…"
+            className={`${FIELD_CLASS} field-sizing-content max-h-40 min-h-10 resize-none rounded-[14px] py-2`}
+          />
           <button
             type="button"
             disabled={send.isPending || !draft.trim()}
             onClick={() => {
               submit(draft);
             }}
-            className="bg-theme-accent rounded-lg px-4 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className={plainButtonClass('primary', 'lg', {
+              pill: true,
+              extra: 'shrink-0 px-[18px] font-semibold',
+            })}
           >
             {send.isPending ? 'Sending…' : 'Send'}
           </button>

@@ -14,11 +14,11 @@ const DOT_SIZE: Record<Size, string> = {
 };
 
 const STATUS_COLOR: Record<Status, string> = {
-  live: 'var(--success)',
-  success: 'var(--success)',
-  warning: 'var(--warning)',
+  live: 'var(--dot-ok)',
+  success: 'var(--dot-ok)',
+  warning: 'var(--dot-warn)',
   error: 'var(--danger)',
-  idle: 'var(--muted)',
+  idle: 'var(--dot-idle)',
 };
 
 const PULSE_STATUS = new Set<Status>(['live']);

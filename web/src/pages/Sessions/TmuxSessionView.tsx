@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../../components/ui/button';
+import { FIELD_CLASS } from '../../components/ui/Input';
 import { ConfirmModal } from '../../components/ui/modal/ConfirmModal';
 import { useSendSessionMessage } from '../../queries/sessions';
 import {
@@ -10,6 +11,7 @@ import {
 } from '../../queries/sessionsTmux';
 import type { SessionRow } from '../../types/schemas';
 import { CopyButton } from '../../components/ui/CopyButton';
+import { SCREEN_TONE_CLASS, screenLineTone } from './screenLineTone';
 
 // #178 tmux control: the live screen of a session running in a tmux pane,
 // a composer that pastes text (and presses Enter), a row of keys, and — for
@@ -25,6 +27,27 @@ const KEYS: { key: SessionKey; label: string; title: string }[] = [
   { key: '3', label: '3', title: 'Answer 3' },
 ];
 
+/** The pane's lines, each tinted when its leading glyph says what it is. */
+function ScreenLines({ text }: { text: string }) {
+  const lines = text.split('\n');
+  return lines.map((line, i) => {
+    const tone = screenLineTone(line);
+    const end = i < lines.length - 1 ? '\n' : '';
+    // Lines are positional (a redraw replaces the whole pane), so the
+    // index is the identity here.
+    return (
+      <span
+        key={i}
+        data-tone={tone ?? undefined}
+        className={tone ? SCREEN_TONE_CLASS[tone] : undefined}
+      >
+        {line}
+        {end}
+      </span>
+    );
+  });
+}
+
 /** The pane's text, polled while the tab is visible. Plain text only. */
 export function TmuxScreen({ id }: { id: string }) {
   const { data, isError, error } = useSessionScreen(id, true);
@@ -39,9 +62,9 @@ export function TmuxScreen({ id }: { id: string }) {
     <pre
       data-testid="tmux-screen"
       aria-label="Session screen"
-      className="bg-theme-bg-elevated text-theme-text min-h-[240px] flex-1 overflow-auto rounded-lg p-3 font-mono text-xs leading-snug whitespace-pre"
+      className="text-theme-text min-h-[240px] flex-1 overflow-auto px-4 py-3.5 font-mono text-[12.5px] leading-relaxed whitespace-pre"
     >
-      {data?.text ?? 'Reading the screen…'}
+      {data ? <ScreenLines text={data.text} /> : 'Reading the screen…'}
     </pre>
   );
 }
@@ -67,43 +90,15 @@ export function TmuxControls({ session }: { session: SessionRow }) {
     );
   };
   return (
-    <div className="space-y-2" data-testid="tmux-controls">
-      <textarea
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value);
-        }}
-        rows={2}
-        aria-label="Text to type into the session"
-        placeholder="Type into the session…"
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={send.isPending || !draft.trim()}
-          onClick={() => {
-            submit(true);
-          }}
-        >
-          Send
-        </Button>
-        <Button
-          size="sm"
-          disabled={send.isPending || !draft.trim()}
-          onClick={() => {
-            submit(false);
-          }}
-        >
-          Type without Enter
-        </Button>
-        <span className="text-theme-muted mx-1 text-xs">Keys:</span>
+    <div className="space-y-3" data-testid="tmux-controls">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-theme-muted mr-1 text-xs">Keys:</span>
         {KEYS.map((k) => (
           <Button
             key={k.key}
-            size="sm"
-            variant="ghost"
+            size="lg"
+            variant="glass"
+            pill
             title={k.title}
             aria-label={`Press ${k.title}`}
             disabled={sendKey.isPending}
@@ -115,14 +110,49 @@ export function TmuxControls({ session }: { session: SessionRow }) {
           </Button>
         ))}
         <Button
-          size="sm"
-          variant="danger"
+          size="lg"
+          variant="glass-danger"
+          pill
           aria-label="Press Ctrl-C"
           onClick={() => {
             setConfirm('interrupt');
           }}
         >
           Ctrl-C
+        </Button>
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <textarea
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+          }}
+          rows={1}
+          aria-label="Text to type into the session"
+          placeholder="Type into the session…"
+          className={`${FIELD_CLASS} min-h-11 min-w-0 flex-1 basis-64 resize-y py-2.5`}
+        />
+        <Button
+          size="lg"
+          variant="glass"
+          className="h-11"
+          disabled={send.isPending || !draft.trim()}
+          onClick={() => {
+            submit(false);
+          }}
+        >
+          Type without Enter
+        </Button>
+        <Button
+          variant="primary"
+          size="lg"
+          className="h-11"
+          disabled={send.isPending || !draft.trim()}
+          onClick={() => {
+            submit(true);
+          }}
+        >
+          Send
         </Button>
       </div>
       {owned && session.attachCommand && (
@@ -134,7 +164,8 @@ export function TmuxControls({ session }: { session: SessionRow }) {
           <CopyButton text={session.attachCommand} label="Copy the attach command" />
           <Button
             size="sm"
-            variant="ghost"
+            variant="glass-danger"
+            pill
             onClick={() => {
               setConfirm('stop');
             }}

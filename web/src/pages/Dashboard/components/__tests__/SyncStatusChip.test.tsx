@@ -152,7 +152,7 @@ describe('SyncStatusChip in the LiveOps strip (#117)', () => {
     render(<LiveOpsStrip />);
     const chip = screen.getByTestId('sync-status-chip');
     expect(chip).toHaveTextContent(/^Sync lag 15m · last pull /);
-    expect(chip.className).toContain('bg-theme-warning-soft');
+    expect(chip.className).toContain('text-theme-warning-text');
   });
 
   it('is absent when the daemon sends no syncStatus', () => {

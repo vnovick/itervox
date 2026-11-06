@@ -37,18 +37,13 @@ export function FailuresPanel({
   return (
     <section
       aria-labelledby="recent-failures-heading"
-      className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-lg)] border"
+      className="glass-panel overflow-hidden"
       data-testid="failures-panel"
     >
       <div className="border-theme-line border-b px-4 py-3">
-        <h2
-          id="recent-failures-heading"
-          className="text-theme-text flex items-center gap-2 text-sm font-semibold"
-        >
+        <h2 id="recent-failures-heading" className="section-title flex items-center gap-2">
           Recent failures
-          <span className="bg-theme-danger-soft text-theme-danger-text rounded-full px-1.5 py-0.5 text-[10px] font-bold">
-            {failures.length}
-          </span>
+          <span className="count-pill text-theme-danger-text">{failures.length}</span>
         </h2>
         <p className="text-theme-text-secondary mt-0.5 text-xs">
           The daemon&apos;s last {failures.length === 1 ? 'failure' : 'failures'} this session,
@@ -76,10 +71,7 @@ export function FailuresPanel({
               )}
               {f.source && <span className="text-theme-muted font-mono">{f.source}</span>}
               {f.count > 1 && (
-                <span
-                  aria-label={`repeated ${String(f.count)} times`}
-                  className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold"
-                >
+                <span aria-label={`repeated ${String(f.count)} times`} className="count-pill">
                   ×{f.count}
                 </span>
               )}

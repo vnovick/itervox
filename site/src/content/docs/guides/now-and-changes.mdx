@@ -20,7 +20,12 @@ issue has a run (it reads **Last run** once the run has finished):
 - what is waiting on you: an input question or a guardrail approval,
   queued steering messages, and how many operations guardrails blocked in
   this run;
+- the workspace's port (`ITERVOX_PORT`, see
+  [Workspace setup](/configuration/#workspace-setup)), when it has one;
 - the files changed so far and the run's prior handoffs.
+- the run's resource use (CPU, memory, processes, disk I/O, the busiest
+  child commands) and its **Activity** audit (commands, files, network
+  connections) — see [System visibility](/guides/system-visibility/).
 
 Under the panel, while the issue runs, **Steer the run** sends a message or a one-click [steering phrase](/guides/playbooks/#steering-phrases) to the run. The Details tab also shows the issue's **Playbook** and a **Decisions** timeline: every run's [decision log](/guides/playbooks/#decision-log), oldest run first.
 
@@ -49,6 +54,27 @@ unified diff. The diff viewer loads only when you open the tab.
 
 Diffs are computed by `git` on request, never on the orchestrator's event
 loop, under a 15-second timeout, so a large worktree cannot slow dispatch.
+
+## Issue view
+
+The **issue view** (`/focus`) shows one issue on a page of its own: **Now**
+on the left and **Changes** on the right (stacked on a phone).
+
+- **Now** has the issue's run state and tracker state, its title, the
+  agent's latest step, the last tool call, counters (tool calls, turns, the
+  playbook), the question it waits on with the reply box, and **Steer the
+  run** while it is live.
+- **Changes** is the same file list and diff viewer as the issue detail's
+  Changes tab, with the same comment and review actions.
+
+`/focus` on its own follows the issue that needs you most: an issue
+waiting for your input (the one waiting longest), else the most recently
+started running issue, else the most recently finished run. It says so
+when there is none of these. `/focus/<identifier>` shows that issue. Open
+it from an issue's detail panel with **Open full view**, from the command
+palette (**Issue view**, or <kbd>g</kbd> <kbd>i</kbd>), or the desktop
+app's **Go** menu, where a project's window opens on it (see
+[Dashboard windows](/guides/desktop-app/#embedded-dashboard)).
 
 ## From the API
 

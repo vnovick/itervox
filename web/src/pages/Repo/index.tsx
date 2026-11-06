@@ -50,10 +50,10 @@ export default function RepoAnalysis() {
         title="Itervox | Repo Analysis"
         description="Itervox repo analysis — capabilities, runtime usage and cost, prompt versions, agent readiness, evals and failure hotspots"
       />
-      <div className="w-full max-w-5xl space-y-6">
-        <div>
-          <h1 className="text-theme-text text-2xl font-bold tracking-tight">Repo Analysis</h1>
-          <p className="text-theme-muted mt-1 text-sm">
+      <div className="page-container">
+        <div className="page-header">
+          <h1 className="page-title">Repo Analysis</h1>
+          <p className="text-theme-text-secondary mt-1 max-w-3xl text-sm">
             What your agents load, what it costs, which prompt version ran, whether the repository
             is ready for agents, how the evals score, and where agent work goes wrong.
           </p>
@@ -61,7 +61,7 @@ export default function RepoAnalysis() {
         <div
           role="tablist"
           aria-label="Repo Analysis sections"
-          className="border-theme-line hidden gap-1 border-b md:flex"
+          className="segmented hidden max-w-full overflow-x-auto md:inline-flex"
         >
           {REPO_SECTIONS.map((s, i) => {
             const selected = s.key === active;
@@ -74,11 +74,7 @@ export default function RepoAnalysis() {
                 aria-selected={selected}
                 aria-controls={s.key}
                 tabIndex={selected ? 0 : -1}
-                className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
-                  selected
-                    ? 'border-theme-accent text-theme-text'
-                    : 'text-theme-muted hover:text-theme-text border-transparent'
-                }`}
+                className="text-[15px] whitespace-nowrap"
                 onClick={() => {
                   select(s.key);
                 }}
@@ -97,12 +93,9 @@ export default function RepoAnalysis() {
             id={s.key}
             aria-labelledby={`repo-section-${s.key}`}
             data-active={s.key === active}
-            className={`space-y-3 ${s.key === active ? '' : 'md:hidden'}`}
+            className={`space-y-4 ${s.key === active ? '' : 'md:hidden'}`}
           >
-            <h2
-              id={`repo-section-${s.key}`}
-              className="text-xs font-semibold tracking-widest uppercase md:sr-only"
-            >
+            <h2 id={`repo-section-${s.key}`} className="section-title text-base md:sr-only">
               {s.label}
             </h2>
             {SECTION_BODY[s.key]()}

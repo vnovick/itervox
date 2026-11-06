@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { InputReplyBox } from '../../components/itervox/InputReplyBox';
 import { Button } from '../../components/ui/button';
+import { FIELD_CLASS } from '../../components/ui/Input';
 import { useDismissInput, useProvideInput } from '../../queries/issues';
 import { sessionKey, useSendSessionMessage } from '../../queries/sessions';
 import type { SessionRow, TmuxStatus } from '../../types/schemas';
@@ -120,12 +121,12 @@ export function SessionComposer({ session, inlineInput, tmux }: SessionComposerP
         rows={3}
         aria-label={`Message to the agent on ${label}`}
         placeholder="Message the running agent…"
-        className="border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted w-full rounded-lg border px-3 py-2 text-sm focus:ring-1 focus:ring-orange-400 focus:outline-none"
+        className={`${FIELD_CLASS} py-2.5`}
       />
       <div className="flex items-center gap-3">
         <Button
           variant="primary"
-          size="sm"
+          size="lg"
           disabled={send.isPending || !draft.trim()}
           onClick={() => {
             sendMessage(draft, () => {

@@ -32,7 +32,7 @@ export function NewSessionForm({ options, onClose, onStarted }: NewSessionFormPr
     <form
       data-testid="new-session-form"
       aria-label="New session"
-      className="bg-theme-panel border-theme-line space-y-3 rounded-lg border p-3"
+      className="glass-panel space-y-3 rounded-[26px] px-5 py-[18px]"
       onSubmit={(e) => {
         e.preventDefault();
         const input: NewSessionInput = { backend };
@@ -46,7 +46,7 @@ export function NewSessionForm({ options, onClose, onStarted }: NewSessionFormPr
         });
       }}
     >
-      <h2 className="text-theme-text text-sm font-semibold">New session in tmux</h2>
+      <h2 className="text-theme-text text-base font-semibold">New session in tmux</h2>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="text-theme-text-secondary space-y-1 text-xs">
           <label htmlFor={`${uid}-backend`}>Agent</label>
@@ -108,10 +108,10 @@ export function NewSessionForm({ options, onClose, onStarted }: NewSessionFormPr
         />
       </div>
       <div className="flex items-center gap-2">
-        <Button type="submit" variant="primary" size="sm" disabled={start.isPending}>
+        <Button type="submit" variant="primary" size="lg" disabled={start.isPending}>
           {start.isPending ? 'Starting…' : 'Start session'}
         </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+        <Button type="button" variant="glass" size="lg" onClick={onClose}>
           Cancel
         </Button>
       </div>

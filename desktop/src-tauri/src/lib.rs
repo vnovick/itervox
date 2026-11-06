@@ -1,17 +1,23 @@
 //! Itervox menu-bar app (#128): a thin Tauri v2 shell over the itervox
-//! daemons, local and remote (#156). Everything but `app`, `app_remote` and
-//! `app_update` is plain Rust with unit tests that run on any Unix; those
-//! three wire it to Tauri.
+//! daemons, local and remote (#156), on macOS, Linux and Windows (#260).
+//! Everything but `app`, `app_remote` and `app_update` is plain Rust with
+//! unit tests; those three wire it to Tauri. What differs per platform is
+//! in `platform` (and `autostart`), keyed by `platform::Os` so the tests
+//! cover every platform from any one.
 
+pub mod autostart;
 pub mod cli_tool;
 pub mod client;
 pub mod daemon_state;
 pub mod dashboard;
 pub mod events;
+pub mod go_menu;
 pub mod hub_notify;
 pub mod hub_source;
+pub mod material;
 pub mod menu;
 pub mod model;
+pub mod platform;
 pub mod projects;
 pub mod prompt;
 pub mod rail;
@@ -30,6 +36,7 @@ pub mod update;
 
 mod app;
 mod app_hub;
+mod app_material;
 mod app_remote;
 mod app_update;
 

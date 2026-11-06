@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { makeTestQueryClient } from '../test/queryClient';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { AppShell } from '../App';
@@ -44,6 +44,16 @@ describe('AppShell', () => {
     expect(drawer).not.toHaveAttribute('inert');
   });
 
+  it('following a link in the drawer closes it', async () => {
+    renderAppShell();
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('mobile-menu-button'));
+    const drawer = screen.getByRole('dialog', { name: 'Navigation' });
+    expect(drawer).not.toHaveAttribute('inert');
+    await user.click(within(drawer).getByRole('link', { name: 'Rules' }));
+    expect(drawer).toHaveAttribute('inert');
+  });
+
   // M5-close BH-M5-6 — widening the window past md hid the drawer (md:hidden)
   // but left it open, so its focus trap and inert-free state persisted.
   it('closes the drawer when the viewport crosses the md breakpoint', async () => {
@@ -72,5 +82,27 @@ describe('AppShell', () => {
     } finally {
       window.matchMedia = original;
     }
+  });
+
+  // Visual refresh — the labelled glass sidebar and the glass drawer.
+  it('renders the glass sidebar with the wordmark, labelled links and the Theme button', () => {
+    const { container } = renderAppShell();
+    const aside = container.querySelector('aside.glass-shell');
+    expect(aside).not.toBeNull();
+    if (!aside) return;
+    expect(aside).toHaveTextContent('Itervox');
+    for (const label of ['Dashboard', 'Timeline', 'Sessions', 'Logs', 'Settings']) {
+      expect(aside).toHaveTextContent(label);
+    }
+    expect(aside.querySelector('button.glass-chip')).toHaveTextContent('Theme');
+  });
+
+  it('the drawer is a glass sheet over a scrim', () => {
+    renderAppShell();
+    const drawer = screen.getByRole('dialog', { name: 'Navigation', hidden: true });
+    expect(drawer.querySelector('aside')).toHaveClass('glass-sheet');
+    expect(screen.getByRole('button', { name: 'Close navigation', hidden: true })).toHaveClass(
+      'glass-scrim',
+    );
   });
 });

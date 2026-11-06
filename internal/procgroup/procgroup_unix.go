@@ -1,11 +1,5 @@
-// Package procgroup runs a subprocess in its own process group and kills the
-// whole group on cancellation, re-sending SIGKILL until no member is left.
-//
-// It is the single shared home for this logic (CORE-150): both the agent
-// runners (internal/agent) and the workspace hooks (internal/workspace) spawn
-// shell pipelines whose children must die with them, and the package order
-// forbids workspace importing agent. It imports only the standard library so
-// it sits below every package that spawns subprocesses.
+//go:build unix
+
 package procgroup
 
 import (
@@ -24,6 +18,14 @@ const (
 	KillSweep         = time.Second
 	KillSweepInterval = 10 * time.Millisecond
 )
+
+// Start starts cmd. On Unix it is exactly cmd.Start(): Configure's Setpgid
+// already puts the child in its own group at fork time. It exists so the
+// callers share one start path with Windows, where the child must be
+// placed in a Job Object between creation and its first instruction.
+func Start(cmd *exec.Cmd) error {
+	return cmd.Start()
+}
 
 // Configure makes cmd run in its own process group (Setpgid) and makes
 // context cancellation kill the entire group via Kill rather than only the
@@ -79,4 +81,15 @@ func Kill(pgid int) error {
 		}
 	}
 	return nil
+}
+
+// ConfigureDetached is Configure for a command that must also leave the
+// caller's session (no controlling terminal): Setsid replaces Configure's
+// Setpgid. Setsid ALSO makes the child the leader of a new process group
+// (pgid == pid), so Configure's Cancel — Kill(cmd.Process.Pid) — still
+// reaches the whole group. Setsid and Setpgid cannot be combined: setpgid
+// after setsid fails with EPERM for a session leader.
+func ConfigureDetached(cmd *exec.Cmd, waitDelay time.Duration) {
+	Configure(cmd, waitDelay)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/vnovick/itervox/internal/procgroup"
@@ -70,13 +70,13 @@ func validateCLI(name, hint string) error {
 		}
 	}
 
-	if !validateCLIShellFallback {
-		return fmt.Errorf("%s CLI not available: not found on PATH (%s)", name, hint)
-	}
-
 	// Attempt 2: fall back to an interactive login shell so ~/.zshrc /
 	// ~/.bashrc PATH additions and shell aliases/functions are picked up.
+	// There is none on a Windows host without bash (loginShell is "").
 	shell := loginShell()
+	if !validateCLIShellFallback || shell == "" {
+		return fmt.Errorf("%s CLI not available: not found on PATH (%s)", name, hint)
+	}
 	// Bounded stderr (fix round 1, M7): an rc file can print arbitrarily
 	// much, and only the tail explains a failure.
 	stderr := newTailBuffer(maxValidationStderrBytes)
@@ -108,17 +108,15 @@ const validationWaitDelay = 2 * time.Second
 
 func buildValidationShellCommand(ctx context.Context, shell, invocation string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shell, "-ilc", invocation)
-	// Group kill on the 5s deadline plus a WaitDelay (M7). Configure sets
-	// Setpgid; it is replaced below by Setsid, which ALSO makes the shell
-	// the leader of a new process group (pgid == pid), so procgroup's
-	// Cancel — Kill(cmd.Process.Pid) — still reaches the whole group.
-	// Setsid and Setpgid cannot be combined: setpgid after setsid fails
-	// with EPERM for a session leader.
-	procgroup.Configure(cmd, validationWaitDelay)
-	// Detach the fallback login shell from the caller's controlling TTY so an
-	// interactive rc file cannot steal or leave behind the foreground process
-	// group just before Bubble Tea starts.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Group kill on the 5s deadline plus a WaitDelay (M7). On Unix
+	// ConfigureDetached replaces Configure's Setpgid with Setsid, which
+	// ALSO makes the shell the leader of a new process group (pgid == pid),
+	// so procgroup's Cancel — Kill(cmd.Process.Pid) — still reaches the
+	// whole group. Setsid detaches the fallback login shell from the
+	// caller's controlling TTY so an interactive rc file cannot steal or
+	// leave behind the foreground process group just before Bubble Tea
+	// starts.
+	procgroup.ConfigureDetached(cmd, validationWaitDelay)
 	return cmd
 }
 
@@ -166,6 +164,9 @@ func (c *ClaudeRunner) RunTurn(
 	if err := rejectNULPrompt(prompt); err != nil {
 		return TurnResult{Failed: true, FailureText: err.Error()}, err
 	}
+	if err := refuseRemoteIsolation(ctx, workerHost); err != nil { // #258
+		return TurnResult{Failed: true, FailureText: err.Error()}, err
+	}
 	// turnCtx is always cancellable, even when the hard turn timeout is
 	// disabled (turnTimeoutMs <= 0): on a read error we must be able to kill
 	// the subprocess immediately rather than relying on a no-op cancel that
@@ -182,6 +183,15 @@ func (c *ClaudeRunner) RunTurn(
 	}
 	defer cancel()
 
+	// Created before the command is built: a sandboxed turn (#258) gets
+	// the log dir writable only if it exists by then.
+	logDirEnv := ""
+	if logDir != "" && workerHost == "" {
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
+		}
+		logDirEnv = "CLAUDE_CODE_LOG_DIR=" + logDir
+	}
 	var cmd *exec.Cmd
 	var stdinFeed *remoteStdin // SSH only: the script, then held open (CORE-155)
 	var promptIn *os.File      // local only: the prompt, for the CLI's stdin (CORE-156)
@@ -236,10 +246,16 @@ func (c *ClaudeRunner) RunTurn(
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
 			}
 		}
-		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
-			// Clean absolute path with no flags — run the binary directly,
-			// no shell needed; the prompt file is its stdin.
-			cmd = exec.CommandContext(turnCtx, command, buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)
+		shell := loginShell()
+		if name, head, direct := directInvocation(command, shell, "claude"); direct {
+			// Clean absolute path with no flags (or, on Windows, no bash to
+			// run a command line with) — run the binary directly, no shell
+			// needed; the prompt file is its stdin.
+			var err error
+			argv := append(append([]string{name}, head...), buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)
+			if cmd, err = agentCommand(ctx, turnCtx, argv, logDir); err != nil { // #258: sandboxed when the run asks
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
 			if live != nil {
 				cmd.Stdin = live.r
 			} else {
@@ -254,10 +270,14 @@ func (c *ClaudeRunner) RunTurn(
 			if live != nil {
 				redirect = localPromptRedirect
 			}
-			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
-				RunEnvFrom(ctx).shellPrefix()+buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil))
+			var err error
+			argv := []string{shell, "-lc",
+				RunEnvFrom(ctx).shellPrefix() + buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil)}
+			if cmd, err = agentCommand(ctx, turnCtx, argv, logDir); err != nil { // #258
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
 			if live != nil {
-				cmd.ExtraFiles = []*os.File{live.r}
+				setPromptFD3(cmd, live.r)
 			} else {
 				setPromptFD3(cmd, promptIn)
 			}
@@ -266,13 +286,6 @@ func (c *ClaudeRunner) RunTurn(
 	setProcessGroup(cmd)
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
-	}
-	logDirEnv := ""
-	if logDir != "" && workerHost == "" {
-		if err := os.MkdirAll(logDir, 0o755); err != nil {
-			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
-		}
-		logDirEnv = "CLAUDE_CODE_LOG_DIR=" + logDir
 	}
 	// Set unconditionally: Go inherits the parent environment when cmd.Env is
 	// nil, so leaving it unset on any path silently drops the marker. For the
@@ -293,7 +306,7 @@ func (c *ClaudeRunner) RunTurn(
 	stderrBuf := newTailBuffer(maxStderrCaptureBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		live.abandon()
 		live = nil
 		return TurnResult{Failed: true}, fmt.Errorf("agent: start: %w", err)
@@ -552,12 +565,9 @@ func toolDescription(name string, rawInput json.RawMessage) string {
 			return fmt.Sprintf("waiting on %d sub-agent(s)", n)
 		}
 		return ""
-	case "read":
-		return str("file_path")
-	case "write":
-		return str("file_path")
-	case "edit", "multiedit":
-		return str("file_path")
+	case "read", "write", "edit", "multiedit", "delete":
+		// Claude's file_path; OpenCode's filePath; Cursor's path.
+		return cmp.Or(str("file_path"), str("filePath"), str("path"))
 	case "glob":
 		p := str("pattern")
 		if d := str("path"); d != "" {
@@ -698,12 +708,36 @@ func setProcessGroup(cmd *exec.Cmd) {
 	procgroup.Configure(cmd, 5*time.Second)
 }
 
-// loginShell returns the user's login shell from $SHELL, falling back to bash.
+// loginShell returns the user's login shell from $SHELL, falling back to
+// bash. On Windows it is procgroup.Shell's bash instead ($SHELL there is
+// an MSYS path when set at all), or "" when there is none.
 func loginShell() string {
-	if sh := os.Getenv("SHELL"); sh != "" {
-		return sh
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "bash"
 	}
-	return "bash"
+	return procgroup.Shell(sh)
+}
+
+// directInvocation reports whether a local turn starts the agent CLI
+// without a shell, and if so its executable and leading arguments (the
+// turn's own flags follow). A clean absolute path with no flags always
+// runs directly. Anything else needs a login shell to resolve it — and
+// when there is none (shell == "", a Windows host without bash) the
+// command is split on whitespace and executed directly, the Windows PATH
+// finding the CLI; an empty command falls back to fallback.
+func directInvocation(command, shell, fallback string) (name string, head []string, direct bool) {
+	if filepath.IsAbs(command) && !strings.Contains(command, " ") {
+		return command, nil, true
+	}
+	if shell != "" {
+		return "", nil, false
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return fallback, nil, true
+	}
+	return fields[0], fields[1:], true
 }
 
 // ShellQuote wraps s in single quotes for bash. Its output is parsed only by
@@ -793,13 +827,14 @@ const streamReaderOverheadBytes = 2*streamReadBufferBytes + 128<<10
 var errStreamLineTooLong = fmt.Errorf("agent: stream line exceeds %d MiB cap", maxStreamLineBytes>>20)
 
 // isTerminalStreamType reports whether a top-level "type" ends a turn for
-// either parser: Claude "result" (ParseLine) or Codex "turn.completed" /
-// "turn.failed" (ParseCodexLine). One set serves both runners — a
+// any parser: Claude and Cursor "result" (ParseLine), Codex
+// "turn.completed" / "turn.failed" (ParseCodexLine), the custom protocol's
+// "done" / "failed" (ParseCustomLine; OpenCode has no terminal line). One set serves both runners — a
 // Claude-only type on the Codex stream merely buffers and is then ignored by
 // ParseCodexLine.
 func isTerminalStreamType(t string) bool {
 	switch t {
-	case "result", "turn.completed", "turn.failed":
+	case "result", "turn.completed", "turn.failed", "done", "failed":
 		return true
 	}
 	return false

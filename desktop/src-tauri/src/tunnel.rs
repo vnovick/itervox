@@ -538,17 +538,16 @@ fn spawn_tunnel(
     log_dir: &Path,
     id: &str,
 ) -> Result<Child, String> {
-    use std::os::unix::process::CommandExt;
     std::fs::create_dir_all(log_dir).map_err(|e| format!("{}: {e}", log_dir.display()))?;
     let log = std::fs::File::create(log_dir.join(log_name(id))).map_err(|e| e.to_string())?;
-    Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .env("PATH", &tools.path_env)
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
-        .stderr(log)
-        .process_group(0)
-        .spawn()
+        .stderr(log);
+    crate::platform::own_process_group(&mut cmd);
+    cmd.spawn()
         .map_err(|e| format!("could not run {}: {e}", program.display()))
 }
 

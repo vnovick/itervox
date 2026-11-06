@@ -14,7 +14,7 @@ export function PromoteDiff({ result }: { result: MemoryPromoteResult }) {
       {result.diff && (
         <pre
           data-testid="memory-promote-diff"
-          className="bg-theme-panel-strong max-h-64 overflow-auto rounded p-2 font-mono text-[11px]"
+          className="code-block max-h-64 overflow-auto text-[11px]"
         >
           {result.diff}
         </pre>

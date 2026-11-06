@@ -60,13 +60,13 @@ export function IssueProfilePicker({
 
   return (
     <div>
-      <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Agent Profile</h4>
+      <h4 className="field-label mb-1.5">Agent Profile</h4>
       {locked ? (
         <div className="flex items-center gap-2">
           <span className="text-theme-text-secondary text-xs">
             {issue.agentProfile ?? EMPTY_PROFILE_LABEL}
           </span>
-          <span className="bg-theme-warning-soft text-theme-warning-text rounded px-1.5 py-0.5 text-[10px]">
+          <span className="tag pill-warn">
             locked while {issue.orchestratorState === 'running' ? 'running' : issue.state}
           </span>
         </div>
@@ -80,14 +80,7 @@ export function IssueProfilePicker({
           onChange={(e) => {
             setIssueProfile.mutate({ identifier: issue.identifier, profile: e.target.value });
           }}
-          className="focus:border-theme-accent rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
-          style={{
-            borderColor: 'var(--line)',
-            background: 'var(--panel-strong)',
-            color: 'var(--text)',
-            cursor: 'pointer',
-            minWidth: '160px',
-          }}
+          className="glass-chip text-theme-text focus-visible:ring-theme-accent min-h-10 w-full min-w-0 cursor-pointer rounded-[var(--radius-sm)] px-3 text-[13px] focus:outline-none focus-visible:ring-2"
         >
           <option value="">
             {EMPTY_PROFILE_LABEL} · {backendLabel(defaultBackend)}

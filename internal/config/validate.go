@@ -171,6 +171,9 @@ func ValidateDispatch(cfg *Config) error {
 	if err := ValidateWorkflowSchema(cfg); err != nil {
 		return err
 	}
+	if err := validatePlatform(cfg, hostGOOS); err != nil {
+		return err
+	}
 
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {
@@ -375,10 +378,8 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 			if !entry.Policy.AutoResume {
 				return fmt.Errorf("automation %q: rate_limited automations require policy.auto_switch: true or policy.auto_resume: true", id)
 			}
-			switch entry.Policy.SwitchToBackend {
-			case "", "claude", "codex":
-			default:
-				return fmt.Errorf("automation %q: policy.switch_to_backend must be empty, \"claude\", or \"codex\"", id)
+			if b := entry.Policy.SwitchToBackend; b != "" && !IsSupportedBackend(b) {
+				return fmt.Errorf("automation %q: policy.switch_to_backend must be empty or one of %s", id, SupportedBackendsText())
 			}
 			if err := validateSwitchBackendCommand(id, switchToProfile, switchProfile, entry.Policy.SwitchToBackend, defaultCommand); err != nil {
 				return err
@@ -520,7 +521,7 @@ func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]Agent
 	seen := make(map[string]struct{}, len(fb.Chain))
 	for _, b := range fb.Chain {
 		if !IsSupportedBackend(b) {
-			return fmt.Errorf("agent.backend_fallback.chain: unknown backend %q (must be claude or codex)", b)
+			return fmt.Errorf("agent.backend_fallback.chain: unknown backend %q (must be %s)", b, SupportedBackendsText())
 		}
 		if _, dup := seen[b]; dup {
 			return fmt.Errorf("agent.backend_fallback.chain: backend %q listed twice", b)
@@ -562,7 +563,7 @@ func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]Agent
 			target := row[backend]
 			where := fmt.Sprintf("agent.backend_fallback.profile_map.%s.%s", source, backend)
 			if !IsSupportedBackend(backend) {
-				return fmt.Errorf("%s: backend key %q must be claude or codex", where, backend)
+				return fmt.Errorf("%s: backend key %q must be %s", where, backend, SupportedBackendsText())
 			}
 			profile, ok := profiles[target]
 			if !ok {

@@ -57,6 +57,32 @@ type View struct {
 	// LoopLastIdle is when the event loop last finished an iteration; zero
 	// before it starts.
 	LoopLastIdle time.Time
+
+	// System is the run monitor's view (system visibility); nil when the
+	// daemon runs without it, and then none of its families is written.
+	System *SystemView
+}
+
+// SystemView is the run monitor's gauges: the machine and each live run.
+type SystemView struct {
+	LoadKnown         bool
+	Load1             float64
+	MemTotalBytes     uint64
+	MemAvailableBytes uint64
+	DiskKnown         bool
+	DiskFreeBytes     uint64
+	DiskLow           bool
+	// Runs are the live local runs' latest samples, sorted by identifier.
+	// Their identifier label is bounded by the running set.
+	Runs []RunGauge
+}
+
+// RunGauge is one live run's latest resource sample.
+type RunGauge struct {
+	Identifier string
+	CPUPercent float64
+	RSSBytes   uint64
+	Processes  int
 }
 
 // ContentType is the Prometheus text exposition format, version 0.0.4.
@@ -190,10 +216,45 @@ func WriteText(out io.Writer, v View) error {
 	x.gauge("itervox_event_loop_last_idle_timestamp_seconds",
 		"Unix time the orchestrator event loop last finished an iteration; 0 before it starts.", unixSeconds(v.LoopLastIdle))
 
+	if v.System != nil {
+		writeSystem(x, v.System)
+	}
+
 	if x.err != nil {
 		return x.err
 	}
 	return x.w.Flush()
+}
+
+// writeSystem writes the run monitor's families.
+func writeSystem(x *writer, s *SystemView) {
+	if s.LoadKnown {
+		x.gauge("itervox_host_load1", "Host one-minute load average.", s.Load1)
+	}
+	x.gauge("itervox_host_memory_total_bytes", "Host physical memory.", float64(s.MemTotalBytes))
+	x.gauge("itervox_host_memory_available_bytes", "Host memory available to new work.", float64(s.MemAvailableBytes))
+	if s.DiskKnown {
+		x.gauge("itervox_workspace_disk_free_bytes", "Free space on the volume holding workspace.root.", float64(s.DiskFreeBytes))
+		low := 0.0
+		if s.DiskLow {
+			low = 1
+		}
+		x.gauge("itervox_workspace_disk_low", "1 while free workspace disk is below workspace.disk_warn_free_gb (or the pause threshold).", low)
+	}
+	families := []struct {
+		name, help string
+		value      func(RunGauge) float64
+	}{
+		{"itervox_run_cpu_percent", "A live run's CPU use, percent of one core, summed over its processes.", func(r RunGauge) float64 { return r.CPUPercent }},
+		{"itervox_run_memory_rss_bytes", "A live run's resident memory, summed over its processes.", func(r RunGauge) float64 { return float64(r.RSSBytes) }},
+		{"itervox_run_processes", "A live run's process count.", func(r RunGauge) float64 { return float64(r.Processes) }},
+	}
+	for _, f := range families {
+		x.header(f.name, "gauge", f.help)
+		for _, r := range s.Runs {
+			x.sample(f.name, f.value(r), label{"identifier", r.Identifier})
+		}
+	}
 }
 
 var (

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AGENT_BACKENDS } from '../../../lib/backends';
 import { AllowedAgentActionSchema, type ProfileDef } from '../../../types/schemas';
 import { buildCanonicalCommand, draftFromProfileDef } from '../profileCommands';
 import type { SuggestedProfile } from './suggestedProfiles';
@@ -10,7 +11,7 @@ export const profileFormSchema = z
       .min(1, 'Profile name is required.')
       .regex(/^\S+$/, 'Profile name must not contain spaces.'),
     enabled: z.boolean(),
-    backend: z.enum(['claude', 'codex']),
+    backend: z.enum(AGENT_BACKENDS),
     model: z.string(),
     command: z.string().min(1, 'Command is required.'),
     prompt: z.string(),

@@ -101,7 +101,7 @@ describe('IssueDetailSlide', () => {
     const values = within(select)
       .getAllByRole('option')
       .map((o) => (o as HTMLOptionElement).value);
-    expect(values).toEqual(['', 'claude', 'codex']);
+    expect(values).toEqual(['', 'claude', 'codex', 'opencode', 'cursor', 'custom']);
     expect(within(select).getByRole('option', { name: 'Default (claude)' })).toBeInTheDocument();
   });
 

@@ -4,7 +4,7 @@
 # verification, an atomic swap and automatic rollback.
 #
 # Usage:
-#   sudo ./upgrade.sh --version v0.3.0 [options]
+#   sudo ./upgrade.sh --version v0.3.1 [options]
 #
 # Options:
 #   --version <tag|latest>  release tag to install                 (default: latest)

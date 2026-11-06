@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -470,14 +471,29 @@ func (t *Tracker) FindCommentByKey(ctx context.Context, issueID, key string) (*d
 	return nil, false, nil
 }
 
-// CreateIssue writes a new issue file with the next free number.
-func (t *Tracker) CreateIssue(_ context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
-	if strings.TrimSpace(title) == "" {
+// CreateIssue writes a new issue file with the next free number. in.Labels
+// go to its labels front matter and, with in.BlockedBySource, the source
+// issue to its blocked_by front matter.
+func (t *Tracker) CreateIssue(_ context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	if strings.TrimSpace(in.Title) == "" {
 		return nil, fmt.Errorf("local tracker: an issue needs a title")
+	}
+	f := issueFile{Title: strings.TrimSpace(in.Title), State: in.State, Body: strings.TrimSpace(in.Body)}
+	for _, l := range in.Labels {
+		if l = strings.TrimSpace(l); l != "" && !slices.ContainsFunc(f.Labels, func(have string) bool { return strings.EqualFold(have, l) }) {
+			f.Labels = append(f.Labels, l)
+		}
+	}
+	if in.BlockedBySource {
+		source := strings.TrimSpace(sourceIssueID)
+		if source == "" {
+			return nil, fmt.Errorf("local tracker: blocked_by_source needs a source issue")
+		}
+		f.BlockedBy = []string{source}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ident, err := t.createLocked(issueFile{Title: strings.TrimSpace(title), State: stateName, Body: strings.TrimSpace(body)})
+	ident, err := t.createLocked(f)
 	if err != nil {
 		return nil, err
 	}

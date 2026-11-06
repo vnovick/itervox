@@ -47,7 +47,7 @@ func (s *Server) handleClearBackendBreaker(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !config.IsSupportedBackend(body.Backend) {
-		writeErrorWithField(w, http.StatusBadRequest, "bad_request", `backend must be "claude" or "codex"`, "backend")
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "backend must be one of "+config.SupportedBackendsText(), "backend")
 		return
 	}
 	if !validBreakerHost(body.Host) {

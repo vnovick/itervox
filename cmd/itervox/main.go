@@ -125,6 +125,31 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		} else {
 			slog.Info("codex CLI validated successfully")
 		}
+	case config.BackendOpenCode, config.BackendCursor, config.BackendCustom:
+		resolvedCmd := cfg.Agent.Command
+		if profileName != "" {
+			if p, ok := cfg.Agent.Profiles[profileName]; ok && p.Command != "" {
+				resolvedCmd = p.Command
+			}
+		}
+		// A custom backend is one command per profile, so it is
+		// validated per command; the others once per backend.
+		key := backend
+		if backend == config.BackendCustom {
+			key = backend + ":" + resolvedCmd
+		}
+		if _, ok := validatedBackends[key]; ok {
+			return nil
+		}
+		validatedBackends[key] = struct{}{}
+		if err := validateExtraBackendCLI(backend, resolvedCmd); err != nil {
+			if profileName != "" {
+				slog.Warn(backend+" CLI validation failed for profile", "profile", profileName, "error", err)
+				return nil // profile failures are non-fatal
+			}
+			return fmt.Errorf("%s CLI not found or not executable: %w", backend, err)
+		}
+		slog.Info(backend+" CLI validated successfully", "profile", profileName)
 	default:
 		if profileName != "" {
 			slog.Warn("unsupported backend in profile, will fall back to default runner", "profile", profileName, "backend", backend)
@@ -133,6 +158,19 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		}
 	}
 	return nil
+}
+
+// validateExtraBackendCLI checks the CLI of an OpenCode, Cursor or custom
+// backend. A var so tests can stub the checks.
+var validateExtraBackendCLI = func(backend, command string) error {
+	switch backend {
+	case config.BackendOpenCode:
+		return agent.ValidateOpenCodeCLICommand(command)
+	case config.BackendCursor:
+		return agent.ValidateCursorCLICommand(command)
+	default:
+		return agent.ValidateCustomCommand(command, exec.LookPath)
+	}
 }
 
 // generateAPIToken returns a cryptographically random 32-byte hex token
@@ -233,6 +271,11 @@ var bootCrash crashReport
 var noPrintToken bool
 
 func main() {
+	// #258: the Landlock launcher re-executes this binary; it restricts
+	// itself and execs the agent before anything else runs.
+	if code, ok := agent.RunIsolationHelper(os.Args); ok {
+		exitWithoutCleanup(code)
+	}
 	runGuardrailEntrypoint(os.Args) // #204: shims and hooks, before any daemon start-up work
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
@@ -258,6 +301,9 @@ func main() {
 		switch os.Args[1] {
 		case "init":
 			runInit(os.Args[2:])
+			return
+		case "run": // #252: one issue, then exit (CI)
+			runIssueCLI(os.Args[2:])
 			return
 		case "clear":
 			runClear(os.Args[2:])
@@ -317,6 +363,9 @@ func main() {
 			return
 		case "report":
 			runReport(os.Args[2:])
+			return
+		case "task": // #251
+			runTask(os.Args[2:])
 			return
 		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply", "approve": // #120, #240
 			runClientCommand(os.Args[1], os.Args[2:])
@@ -729,12 +778,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		return fmt.Errorf("build tracker: %w", err)
 	}
 
-	var runner agent.Runner = agent.NewMultiRunner(
-		agent.NewClaudeRunner(),
-		map[string]agent.Runner{
-			"codex": agent.NewCodexRunner(),
-		},
-	)
+	var runner agent.Runner = agent.NewBackendMultiRunner()
 	runner = commandResolverRunner{inner: runner}
 	if demoSession != nil {
 		// `itervox demo` (#76): the session's memory tracker and scripted
@@ -745,6 +789,9 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	resolveTrackerAssignee(ctx, cfg, tr) // #182: off the event loop, before the store reads through it
 	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
 	tr = withLocalSync(cfg, workflowPath, tr) // #118
+	if demoSession == nil {
+		tr = withLocalTasks(cfg, tr) // #251: Itervox-only tasks next to Linear/GitHub
+	}
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
 	// generation, i.e. at startup AND on every WORKFLOW.md reload.
@@ -809,6 +856,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	// the sidecar they dismiss edges from, independent of --log placement.
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
+	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
@@ -846,12 +894,13 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		// CORE-053 — the backend circuit breakers survive a restart.
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
-		orch.SetPendingReviewsFile(pendingReviewsPath)                                     // M4-close BH-M4-2
-		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                       // #136
-		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                      // #173
-		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json")) // #177
-		orch.SetFeedFile(filepath.Join(logDir, "feed.jsonl"))                              // #213
-		orch.SetDispatchPauseFile(filepath.Join(logDir, "dispatch_paused.json"))           // #213
+		orch.SetPendingReviewsFile(pendingReviewsPath)                                      // M4-close BH-M4-2
+		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                        // #136
+		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                       // #173
+		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json"))  // #177
+		orch.SetReviewContinuationsFile(filepath.Join(logDir, "review_continuations.json")) // review and continue
+		orch.SetFeedFile(filepath.Join(logDir, "feed.jsonl"))                               // #213
+		orch.SetDispatchPauseFile(filepath.Join(logDir, "dispatch_paused.json"))            // #213
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
@@ -880,7 +929,10 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	// `srvListener != nil` block below — so it stays called from there.
 	depsSvc, bindDepsNotify := wireDepsAnalyzerService(ctx, orch, cfg, tr, runner, workflowPath, agentSessionsDir)
 
-	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath, depsSvc, ob)
+	// System visibility: the run monitor (sysmon_wire.go).
+	runMon, removeRunMon := startRunMonitor(ctx, cfg, workflowPath, orch)
+	defer removeRunMon()
+	snap := withSystemSnapshot(buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath, depsSvc, ob), runMon.mon)
 
 	// HTTP server setup. The listener was bound by main's reload loop —
 	// which owns the socket across reloads — before the TUI starts, so the
@@ -1044,6 +1096,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
 			ti.Review = reviewRow(snap, issue.Identifier)                // #135
 			app.ApplyPlaybook(&ti, *issue, snap, orch.PlaybookChooser()) // #218
+			ti.Task = issueTaskRow(orch, issue.Identifier)               // #251
 			return &ti, nil
 		}
 
@@ -1097,7 +1150,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		// CORE-045 — opt-in Prometheus endpoint, behind the bearer token.
 		var metricsHandler http.Handler
 		if cfg.Server.Metrics.Enabled {
-			metricsHandler = newMetricsHandler(orch, ob, cfg.Tracker.Kind)
+			metricsHandler = newMetricsHandler(orch, ob, cfg.Tracker.Kind, runMon.mon)
 		}
 		srv := server.New(server.Config{
 			Snapshot:         snap,
@@ -1142,16 +1195,18 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
 			// #178: the Sessions panel API.
 			Sessions:        sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
-			RepoReadiness:   repoReadinessProvider(workflowPath),           // #200: the doctor checks, off the event loop
-			RepoEvals:       repoEvalsProvider(workflowPath),               // #201: persisted eval reports, read-only
-			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath), // #201: background job, off the event loop
-			Version:         version,                                       // #212: GET /api/v1/summary
-			Dispatch:        dispatchAdapter{orch: orch},                   // #213: the feed and the dispatch pause
-			Changes:         changesAdapter{orch: orch},                    // #215: run context and worktree diff, off the event loop
-			ChangeReview:    changeReviewAdapter{orch: orch},               // #238: line comments, PR reviews, the diff's PR source
-			GitHubPRs:       githubPRs,                                     // #238: the PR-event watcher's GitHub client
-			Playbooks:       playbooksAdapter{orch: orch},                  // #218: playbooks, decision logs, verify-skill issue
-			SteeringPhrases: cfg.Sessions.SteeringPhrases,                  // #218
+			RepoReadiness:   repoReadinessProvider(workflowPath),                                          // #200: the doctor checks, off the event loop
+			RepoEvals:       repoEvalsProvider(workflowPath),                                              // #201: persisted eval reports, read-only
+			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath),                                // #201: background job, off the event loop
+			Version:         version,                                                                      // #212: GET /api/v1/summary
+			Dispatch:        dispatchAdapter{orch: orch},                                                  // #213: the feed and the dispatch pause
+			Changes:         changesAdapter{orch: orch, mon: runMon.mon},                                  // #215: run context and worktree diff, off the event loop
+			Activity:        runMon.mon,                                                                   // system visibility: the activity audit
+			ChangeReview:    changeReviewAdapter{orch: orch, tr: tr, moveState: adapter.UpdateIssueState}, // #238: line comments, PR reviews, the diff's PR source
+			GitHubPRs:       githubPRs,                                                                    // #238: the PR-event watcher's GitHub client
+			Playbooks:       playbooksAdapter{orch: orch},                                                 // #218: playbooks, decision logs, verify-skill issue
+			Tasks:           newTasksAdapter(orch, workflowPath),                                          // #251: New task and task templates
+			SteeringPhrases: cfg.Sessions.SteeringPhrases,                                                 // #218
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)
@@ -1162,6 +1217,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			srv.Notify()
 			heartbeat.Request()
 		}
+		runMon.bindNotify(srv.Notify)
 		srvDone = serveOnListener(ctx, srvListener, actualAddr, srv, srv.Shutdown)
 	}
 
@@ -1182,8 +1238,8 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	startAutomations(ctx, cfg, tr, orch)
 	// #133: a local issue file edit polls at once.
 	startLocalIssueWatch(ctx, tr, orch.Refresh)
-	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(tr), orch) // #84
-	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                // #118: local issue files <-> tracker.sync
+	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(trackerBehindTasks(tr)), orch) // #84
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                                    // #118: local issue files <-> tracker.sync
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1613,12 +1669,12 @@ func runAction(args []string) {
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/comment"
 		body = map[string]string{"body": *commentBody}
 	case "create-issue":
-		fs := flag.NewFlagSet("action create-issue", flag.ExitOnError)
-		title := fs.String("title", "", "title for the follow-up issue")
-		issueBody := fs.String("body", "", "body/description for the follow-up issue")
-		_ = fs.Parse(args[1:])
-		if strings.TrimSpace(*title) == "" {
-			fmt.Fprintln(os.Stderr, "itervox action create-issue: --title is required")
+		createBody, err := createIssueActionBody(args[1:], os.Stderr)
+		if errors.Is(err, flag.ErrHelp) {
+			fatalExit(0)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "itervox action create-issue:", err)
 			fatalExit(2)
 		}
 		if strings.TrimSpace(os.Getenv("ITERVOX_CREATE_ISSUE_STATE")) == "" {
@@ -1626,7 +1682,7 @@ func runAction(args []string) {
 			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/create-issue"
-		body = map[string]string{"title": *title, "body": *issueBody}
+		body = createBody
 	case "move-state":
 		fs := flag.NewFlagSet("action move-state", flag.ExitOnError)
 		state := fs.String("state", "", "target tracker state")

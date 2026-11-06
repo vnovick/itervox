@@ -25,9 +25,10 @@ import {
 export const SETTINGS_SCHEMA_KEY = ['settings', 'schema'] as const;
 export const SETTINGS_LAYERS_KEY = ['settings', 'layers'] as const;
 
-export function useSettingsSchema() {
+export function useSettingsSchema(enabled = true) {
   return useQuery({
     queryKey: SETTINGS_SCHEMA_KEY,
+    enabled,
     queryFn: async (): Promise<SettingsSchemaDoc> => {
       const { data } = await apiRequest('/api/v1/settings/schema', { op: 'settings schema fetch' });
       return SettingsSchemaDocSchema.parse(data);

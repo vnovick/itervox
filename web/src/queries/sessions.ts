@@ -32,14 +32,15 @@ export const SESSIONS_REFETCH_MS = 2_000;
 
 const EMPTY_SESSIONS: SessionRow[] = [];
 
-export function useSessions() {
+/** `poll: false` reads once (the command palette); the Sessions page polls. */
+export function useSessions({ poll = true }: { poll?: boolean } = {}) {
   const q = useQuery({
     queryKey: SESSIONS_KEY,
     queryFn: async (): Promise<SessionsResponse> => {
       const { data } = await apiRequest('/api/v1/sessions', { op: 'sessions' });
       return SessionsResponseSchema.parse(data);
     },
-    refetchInterval: SESSIONS_REFETCH_MS,
+    refetchInterval: poll ? SESSIONS_REFETCH_MS : false,
     retry: (failureCount, err) => !(err instanceof UnauthorizedError) && failureCount < 2,
   });
   return {

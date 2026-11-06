@@ -297,6 +297,28 @@ describe('schema-driven Settings section (#158)', () => {
     });
   });
 
+  it('starts with every section collapsed; a section link or the filter opens it', async () => {
+    const user = userEvent.setup();
+    const { container } = renderCard();
+    await screen.findByLabelText('Brand new knob');
+    const details = () => [...container.querySelectorAll('details')];
+    expect(details().length).toBeGreaterThan(1);
+    expect(details().every((d) => !d.open)).toBe(true);
+
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+    await user.click(within(nav).getByRole('link', { name: 'Polling' }));
+    expect(container.querySelector<HTMLDetailsElement>('#settings-section-polling')?.open).toBe(
+      true,
+    );
+    expect(container.querySelector<HTMLDetailsElement>('#settings-section-agent')?.open).toBe(
+      false,
+    );
+
+    // A filter opens every section that still has a match.
+    await user.type(screen.getByLabelText('Filter settings'), 'knob');
+    expect(container.querySelector<HTMLDetailsElement>('#settings-section-agent')?.open).toBe(true);
+  });
+
   it('filters the fields and reloads after a conflicting save', async () => {
     const user = userEvent.setup();
     renderCard();
@@ -327,5 +349,16 @@ describe('schema-driven Settings section (#158)', () => {
       ).toContain('changed since it was loaded');
     });
     expect(refreshSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('?setting=<key> (the command palette) opens the section and focuses the field', async () => {
+    useUIStore.setState({ settingsView: 'json' });
+    render(<SchemaSettingsCard />, { route: '/settings?setting=polling.interval_ms' });
+    const field = await screen.findByLabelText('Poll interval (ms)');
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+    });
+    expect(field.closest('details')).toHaveAttribute('open');
+    expect(useUIStore.getState().settingsView).toBe('form');
   });
 });

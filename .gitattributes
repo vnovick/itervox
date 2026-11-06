@@ -1,0 +1,3 @@
+# Keep LF line endings on every platform: byte-compared golden files and
+# the shell scripts CI runs under Git Bash on Windows depend on it.
+* text=auto eol=lf
