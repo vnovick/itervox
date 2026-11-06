@@ -8,8 +8,13 @@ export default defineConfig({
       title: 'Itervox',
       logo: {
         src: './src/assets/logo.svg',
-        replacesTitle: true,
+        alt: '',
       },
+      favicon: '/favicon.svg',
+      head: [
+        { tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/logo/apple-touch-icon.png' } },
+        { tag: 'meta', attrs: { name: 'theme-color', content: '#080c17' } },
+      ],
       description: 'Autonomous agents that narrate the fix. From issue to PR, every step visible.',
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/vnovick/itervox' },
