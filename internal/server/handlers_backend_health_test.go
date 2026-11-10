@@ -36,14 +36,22 @@ func TestHandleClearBackendBreaker(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, true, resp["queued"])
 
+	// A quota pool's breaker is cleared by its lane, as the snapshot row
+	// reports it.
+	w = postJSON(t, srv, "/api/v1/backend-health/clear", `{"backend":"claude/local","host":"build-1"}`)
+	require.Equal(t, http.StatusAccepted, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, "claude/local", gotBackend)
+	assert.Equal(t, "build-1", gotHost)
+
 	for _, body := range []string{
 		`{"backend":"gemini"}`, `{"backend":" claude"}`, `{"backend":""}`,
+		`{"backend":"gemini/local"}`, `{"backend":"claude/"}`, `{"backend":"claude/Local"}`, `{"backend":"claude/a/b"}`,
 		`{"backend":"claude","host":"-oProxyCommand=x"}`, `{"backend":"claude","host":"a b"}`, `{bad`,
 	} {
 		w = postJSON(t, srv, "/api/v1/backend-health/clear", body)
 		assert.Equal(t, http.StatusBadRequest, w.Code, body)
 	}
-	assert.Equal(t, 1, calls, "an invalid request never reaches the orchestrator")
+	assert.Equal(t, 2, calls, "an invalid request never reaches the orchestrator")
 
 	full := clearBreakerServer(t, func(string, string) bool { return false })
 	w = postJSON(t, full, "/api/v1/backend-health/clear", `{"backend":"codex"}`)

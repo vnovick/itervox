@@ -49,7 +49,7 @@ func TestTickLogCountsHeldIssuesSeparately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	state := NewState(o.cfg)
-	state.BackendHealth[BackendHealthKey("claude", "")] = BackendHealthEntry{
+	state.BackendHealth[BackendHealthKey("claude", "", "")] = BackendHealthEntry{
 		Backend: "claude", Status: BackendStatusLimited, LimitedUntil: time.Now().Add(time.Hour), ResetKnown: true,
 	}
 	for i := 0; i < 3; i++ {

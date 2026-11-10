@@ -902,6 +902,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 		Issue:        issue,
 		WorkerHost:   workerHost,
 		Backend:      backend,
+		Pool:         target.Pool,
 		ProfileName:  profileName,
 		Kind:         kind,
 		AutomationID: automation.AutomationID,

@@ -42,7 +42,7 @@ func TestSnapshot_BackendHealthRows(t *testing.T) {
 	require.Len(t, rows, 3, "one row per known backend plus the host-scoped breaker")
 	byKey := map[string]server.BackendHealthRow{}
 	for _, r := range rows {
-		byKey[orchestrator.BackendHealthKey(r.Backend, r.Host)] = r
+		byKey[orchestrator.BackendHealthKey(r.Backend, "", r.Host)] = r
 	}
 	claude := byKey["claude"]
 	assert.Equal(t, server.BackendHealthLimited, claude.Status)
@@ -144,4 +144,45 @@ func TestSnapshot_BackendHealthRows_HeldCountsActiveHoldsOnly(t *testing.T) {
 	}
 	assert.Equal(t, 1, byKey["claude"].HeldIssues)
 	assert.Equal(t, 0, byKey["codex"].HeldIssues)
+}
+
+// TestSnapshot_PooledBackendHealthRows: a quota pool's breaker renders as
+// its own row whose backend is the lane ("claude/local"), so backend[@host]
+// is still the breaker key the dashboard's Clear sends back, and a pooled
+// profile's lane is a known (healthy) row while it has no breaker.
+func TestSnapshot_PooledBackendHealthRows(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	cfg := &config.Config{}
+	cfg.Agent.Command = "claude --model opus"
+	profiles := map[string]config.AgentProfile{
+		"local": {Command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude", Pool: "local"},
+	}
+	cfg.Agent.BackendFallback = config.BackendFallbackConfig{Enabled: true, Chain: []string{"claude", "codex/spare"}}
+	known := knownBackends(cfg, profiles)
+	assert.Equal(t, []string{"claude", "claude/local", "codex/spare"}, known)
+
+	s := orchestrator.State{
+		BackendHealth: map[string]orchestrator.BackendHealthEntry{
+			"claude/local@build-1": {Backend: "claude", Pool: "local", Host: "build-1",
+				Status: orchestrator.BackendStatusLimited, LimitedUntil: reset, ResetKnown: true, Since: now},
+		},
+		BackendLimitedHolds: map[string]orchestrator.BackendHold{"ENG-1": {Key: "claude/local@build-1", Until: reset}},
+	}
+	rows := backendHealthRows(s, known)
+	byKey := map[string]server.BackendHealthRow{}
+	for _, r := range rows {
+		byKey[orchestrator.BackendHealthKey(r.Backend, "", r.Host)] = r
+	}
+	require.Contains(t, byKey, "claude/local@build-1")
+	pooled := byKey["claude/local@build-1"]
+	assert.Equal(t, "claude/local", pooled.Backend)
+	assert.Equal(t, "build-1", pooled.Host)
+	assert.Equal(t, server.BackendHealthLimited, pooled.Status)
+	assert.Equal(t, 1, pooled.HeldIssues)
+	assert.Equal(t, server.BackendHealthHealthy, byKey["claude/local"].Status, "the local pooled lane has no breaker")
+	assert.Equal(t, server.BackendHealthHealthy, byKey["claude"].Status, "plain claude is unaffected")
+
+	out := heartbeatBackendLine(pooled)
+	assert.True(t, strings.HasPrefix(out, "- claude/local@build-1: limited until "), out)
 }

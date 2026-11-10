@@ -20,6 +20,7 @@ const backendHealthFileVersion = 1
 
 type backendHealthRecord struct {
 	Backend      string    `json:"backend"`
+	Pool         string    `json:"pool,omitempty"`
 	Host         string    `json:"host,omitempty"`
 	Status       string    `json:"status"`
 	Kind         string    `json:"kind,omitempty"`
@@ -59,7 +60,7 @@ func (o *Orchestrator) saveBackendHealthToDisk(state *State) {
 			continue
 		}
 		env.Backends[key] = backendHealthRecord{
-			Backend: e.Backend, Host: e.Host, Status: e.Status, Kind: e.Kind,
+			Backend: e.Backend, Pool: e.Pool, Host: e.Host, Status: e.Status, Kind: e.Kind,
 			LimitType: e.LimitType, Source: e.Source, LimitedUntil: e.LimitedUntil.UTC(),
 			ResetKnown: e.ResetKnown, Since: e.Since.UTC(), Hits: e.Hits, LastIssue: e.LastIssue,
 		}
@@ -111,7 +112,7 @@ func (o *Orchestrator) loadBackendHealthFromDisk(state State) State {
 		// existed, or hand-edited) heals on load.
 		until := clampLimitedUntil(r.LimitedUntil, now, r.Kind, r.Source, r.LimitType)
 		state.BackendHealth[key] = BackendHealthEntry{
-			Backend: r.Backend, Host: r.Host, Status: r.Status, Kind: r.Kind,
+			Backend: r.Backend, Pool: r.Pool, Host: r.Host, Status: r.Status, Kind: r.Kind,
 			LimitType: r.LimitType, Source: r.Source, LimitedUntil: until,
 			ResetKnown: r.ResetKnown, Since: r.Since, Hits: r.Hits, LastIssue: r.LastIssue,
 		}

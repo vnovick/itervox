@@ -506,11 +506,13 @@ func validatePREventFilter(id, triggerType string, f AutomationFilterConfig) err
 }
 
 // ValidateBackendFallback validates agent.backend_fallback (CORE-054):
-// chain entries are known, distinct backends; switch_back and on_unmapped are
+// chain entries are known, distinct backends or backend/pool lanes
+// (config.BackendLane); switch_back and on_unmapped are
 // known policies; the minutes are in range; every profile_map source is a
 // known profile (or "default"), every backend key is a known backend, and
 // every target exists, is enabled and actually runs that backend — its
-// profile backend, else its command's binary, else agent.command's. A target
+// profile backend, else its command's binary, else agent.command's — in the
+// key's pool (a "claude/local" key needs a pool: local target). A target
 // whose backend cannot be determined (an opaque wrapper with no backend:) is
 // rejected, because the orchestrator would refuse to pair it (CORE-115).
 // A disabled block (enabled: false) is not validated.
@@ -521,7 +523,10 @@ func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]Agent
 	seen := make(map[string]struct{}, len(fb.Chain))
 	for _, b := range fb.Chain {
 		if !IsSupportedBackend(b) {
-			return fmt.Errorf("agent.backend_fallback.chain: unknown backend %q (must be %s)", b, SupportedBackendsText())
+			// A chain step may name a quota pool: "claude/local".
+			if err := ValidateBackendLane(b); err != nil {
+				return fmt.Errorf("agent.backend_fallback.chain: %w", err)
+			}
 		}
 		if _, dup := seen[b]; dup {
 			return fmt.Errorf("agent.backend_fallback.chain: backend %q listed twice", b)
@@ -563,8 +568,11 @@ func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]Agent
 			target := row[backend]
 			where := fmt.Sprintf("agent.backend_fallback.profile_map.%s.%s", source, backend)
 			if !IsSupportedBackend(backend) {
-				return fmt.Errorf("%s: backend key %q must be %s", where, backend, SupportedBackendsText())
+				if err := ValidateBackendLane(backend); err != nil {
+					return fmt.Errorf("%s: backend key %q must be %s, optionally followed by /<pool>: %w", where, backend, SupportedBackendsText(), err)
+				}
 			}
+			keyBackend, keyPool := SplitBackendLane(backend)
 			profile, ok := profiles[target]
 			if !ok {
 				return fmt.Errorf("%s: unknown profile %q", where, target)
@@ -574,10 +582,16 @@ func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]Agent
 			}
 			got := ProfileRunsBackend(profile, defaultCommand)
 			if got == "" {
-				return fmt.Errorf("%s: cannot tell which backend profile %q runs; set backend: %s on it", where, target, backend)
+				return fmt.Errorf("%s: cannot tell which backend profile %q runs; set backend: %s on it", where, target, keyBackend)
 			}
-			if got != backend {
-				return fmt.Errorf("%s: profile %q runs %q, not %q", where, target, got, backend)
+			if got != keyBackend {
+				return fmt.Errorf("%s: profile %q runs %q, not %q", where, target, got, keyBackend)
+			}
+			// The target must run the key's quota pool too: the gate
+			// compares the whole lane, so a mismatch would never reroute.
+			if profile.Pool != keyPool {
+				return fmt.Errorf("%s: profile %q runs %q, not %q; map it under %q",
+					where, target, ProfileRunsLane(profile, defaultCommand), backend, ProfileRunsLane(profile, defaultCommand))
 			}
 		}
 	}
