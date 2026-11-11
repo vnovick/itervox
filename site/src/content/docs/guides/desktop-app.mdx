@@ -77,6 +77,8 @@ Each project shows its state and running agents, for example `running · 2 agent
 
 To do as little as possible while idle, the app reads the daemon registry (`~/.itervox/daemons/`) itself instead of running `itervox status --all --json` on every refresh. It still runs that command at start, when you open the menu (at most every 30 seconds) or choose **Refresh Now**, and whenever the registry holds a format it does not know, so daemons started by an itervox older than the registry still show. Each daemon is read over one kept-alive connection: a small `GET /api/v1/summary` with the last `ETag`, and the full state only when the daemon answers that something changed ([`GET /summary`](/api-reference/#get-summary)).
 
+When a profile points its agent at a model server on your computer (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`), the menu adds a **Model servers** section with each server's state and the GPU, the project rail lists them under the projects, and the app notifies you when a server stops answering and when it is back. See [Local models](/guides/local-models/#in-the-desktop-app).
+
 ### With a hub (v0.2.9)
 
 When an [itervox hub](/guides/hub/) runs on your Mac (it publishes its address in `~/.itervox/daemons/hub.lock`), the app uses it instead of reading each project on its own:

@@ -113,6 +113,11 @@ pub struct RailSection {
 pub struct RailView {
     pub collapsed: bool,
     pub sections: Vec<RailSection>,
+    /// The machine's model servers and GPU (machine_health.rs), shown under
+    /// the projects; absent when no project uses a model server. The app
+    /// sets it after [`build_rail`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine: Option<crate::machine_health::MachinePanel>,
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -263,6 +268,7 @@ pub fn build_rail(
     RailView {
         collapsed: prefs.collapsed,
         sections,
+        machine: None,
     }
 }
 
@@ -1454,5 +1460,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The machine panel rides with the rail push, and is left out when no
+    /// project uses a model server.
+    #[test]
+    fn push_script_carries_the_machine_panel_only_when_there_is_one() {
+        use crate::machine_health::{DaemonModelServer, ListRead, MachineHealth};
+        let core = core_with_projects();
+        let mut view = build_rail(core.views(), &[], &RailPrefs::default());
+        assert!(!push_script(&view, None).contains("\"machine\""));
+        let mut m = MachineHealth::default();
+        m.apply_lists(vec![ListRead {
+            key: "/p/a/WORKFLOW.md".into(),
+            name: "a".into(),
+            rows: Ok(vec![DaemonModelServer {
+                var: "ANTHROPIC_BASE_URL".into(),
+                url: "http://127.0.0.1:8000".into(),
+                profiles: vec!["coder-local".into()],
+                pools: vec!["colibri".into()],
+                remote: false,
+                unchecked: false,
+            }]),
+        }]);
+        view.machine = m.panel();
+        let script = push_script(&view, None);
+        assert!(
+            script.contains("\"machine\":{\"servers\":[{\"label\":\"colibri 127.0.0.1:8000"),
+            "{script}"
+        );
+        assert!(script.contains("\"gpu\":[\"GPU: checking…\"]"), "{script}");
     }
 }
