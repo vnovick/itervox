@@ -170,14 +170,15 @@ fn read_gpu(tools: &Tools) -> GpuStatus {
     }
 }
 
-#[cfg(test)]
+// The only test needs a shell-script `nvidia-smi`, so the module is
+// Unix-only (on Windows its `use super::*` would be unused).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     /// A fake `nvidia-smi` on the tools' PATH is run with the query
     /// arguments and parsed; without one the GPU is Apple silicon's or
     /// not reported.
-    #[cfg(unix)]
     #[test]
     fn reads_the_gpu_through_nvidia_smi_on_the_path() {
         use std::os::unix::fs::PermissionsExt;
