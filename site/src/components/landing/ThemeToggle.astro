@@ -1,0 +1,25 @@
+---
+// Light/dark switch that shares Starlight's storage key ('starlight-theme'),
+// so the docs open in the theme picked here and the other way round.
+---
+<button class="btn btn-glass btn-icon theme-toggle" type="button" aria-label="Switch theme" data-theme-toggle>
+  <svg class="only-dark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
+  <svg class="only-light" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
+</button>
+<script>
+  const KEY = 'starlight-theme';
+  const label = (t: string) => (t === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]')) {
+    button.setAttribute('aria-label', label(document.documentElement.dataset.theme ?? 'dark'));
+    button.addEventListener('click', () => {
+      const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      document.documentElement.dataset.theme = next;
+      try {
+        localStorage.setItem(KEY, next);
+      } catch {
+        /* private mode: the choice lasts for this page only */
+      }
+      for (const b of document.querySelectorAll('[data-theme-toggle]')) b.setAttribute('aria-label', label(next));
+    });
+  }
+</script>

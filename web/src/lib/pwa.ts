@@ -11,7 +11,7 @@ import { getApiContext, type ApiContext } from '../auth/apiBase';
 export const MANIFEST_HREF = '/manifest.webmanifest';
 export const SERVICE_WORKER_URL = '/sw.js';
 export const SERVICE_WORKER_SCOPE = '/hub/';
-const THEME_COLOR = '#111113';
+const THEME_COLOR = '#080c17';
 
 function ensureHeadElement(doc: Document, selector: string, create: () => HTMLElement): void {
   if (doc.head.querySelector(selector)) return;

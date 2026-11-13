@@ -1,0 +1,18 @@
+---
+// One dashboard screenshot in both themes; glass.css hides the one that does
+// not match the page theme (a hidden lazy image is never fetched).
+import { SHOTS, type ShotName } from '../../data/screenshots';
+
+interface Props {
+  name: ShotName;
+  alt: string;
+  class?: string;
+  eager?: boolean;
+  sizes?: string;
+}
+const { name, alt, class: extra = '', eager = false, sizes = '(max-width: 820px) 100vw, 1176px' } = Astro.props;
+const [width, height] = SHOTS[name];
+const loading = eager ? 'eager' : 'lazy';
+---
+<img class={`shot only-dark ${extra}`} src={`/screenshots/itervox-${name}-dark.png`} alt={alt} width={width} height={height} loading={loading} decoding="async" sizes={sizes} />
+<img class={`shot only-light ${extra}`} src={`/screenshots/itervox-${name}-light.png`} alt={alt} width={width} height={height} loading={loading} decoding="async" sizes={sizes} />

@@ -1,0 +1,215 @@
+---
+import Shot from './Shot.astro';
+
+const install = 'brew tap vnovick/tap && brew install itervox';
+const worksWith = ['Linear', 'GitHub Issues', 'Markdown issues in your repo'];
+const agents = ['Claude Code', 'Codex', 'OpenCode', 'Cursor CLI'];
+---
+<section id="top" class="wrap hero">
+  <img class="app-icon" src="/logo/visor-hex-app-icon.svg" alt="" width="128" height="128" />
+  <a class="glass-chip hero-chip" href="https://github.com/vnovick/itervox/releases/latest">
+    <span class="pill pill-accent">Open source</span>
+    <span>Apache 2.0 · one static Go binary<span class="hide-sm"> · no runtime</span></span>
+  </a>
+  <h1 class="display">Your codebase's journey, narrated by agents</h1>
+  <p class="lead hero-lead">Orchestrate AI agents across issues, profiles, and machines. Full visibility from dispatch to PR.</p>
+  <div class="hero-ctas">
+    <a class="btn btn-primary" href="/getting-started/">Get started
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+    </a>
+    <a class="btn btn-glass" href="https://github.com/vnovick/itervox">Star on GitHub</a>
+  </div>
+  <div class="glass install">
+    <span class="mono install-prompt" aria-hidden="true">$</span>
+    <code class="install-cmd">{install}</code>
+    <button class="btn btn-glass install-copy" type="button" data-copy={install}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>
+      <span data-copy-label>Copy</span>
+    </button>
+  </div>
+  <p class="body hero-alt">or <code>go install github.com/vnovick/itervox/cmd/itervox@latest</code> · binaries for macOS, Linux and Windows</p>
+</section>
+
+<div class="wrap">
+  <div class="glass phone-frame show-sm">
+    <Shot name="phone-dashboard" alt="The Itervox dashboard on a phone: status bar, what needs you, status chips" sizes="300px" />
+  </div>
+  <div class="glass window hide-sm">
+    <div class="window-bar" aria-hidden="true">
+      <span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span>
+      <span>localhost:8090 — acme/backend</span>
+    </div>
+    <Shot name="live-dashboard" eager alt="The Itervox dashboard: what needs you, live status chips, capacity and the fleet overview" />
+  </div>
+</div>
+
+<div class="wrap works">
+  <span class="eyebrow">Works with</span>
+  {worksWith.map((w) => <span class="glass-chip work-chip">{w}</span>)}
+  <span class="works-sep" aria-hidden="true"></span>
+  {agents.map((w) => <span class="glass-chip work-chip">{w}</span>)}
+</div>
+
+<script>
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
+    button.addEventListener('click', async () => {
+      const label = button.querySelector('[data-copy-label]');
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy ?? '');
+        if (label) label.textContent = 'Copied';
+      } catch {
+        if (label) label.textContent = 'Select and copy';
+      }
+      setTimeout(() => label && (label.textContent = 'Copy'), 1500);
+    });
+  }
+</script>
+
+<style>
+  .hero {
+    padding-top: 96px;
+    padding-bottom: 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 26px;
+  }
+  .app-icon {
+    width: 128px;
+    height: 128px;
+    margin-bottom: -6px;
+  }
+  .hero .display {
+    max-width: 980px;
+  }
+  .hero-lead {
+    max-width: 640px;
+  }
+  .hero-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 16px 6px 6px;
+    color: var(--text2);
+    font-size: 14px;
+    text-decoration: none;
+  }
+  .hero-ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+  }
+  .install {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    max-width: 100%;
+    padding: 8px 8px 8px 22px;
+    border-radius: 999px;
+  }
+  .install-prompt {
+    color: var(--muted);
+  }
+  .install-cmd {
+    font-size: 15px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow-x: auto;
+  }
+  .install-copy {
+    min-height: 40px;
+    padding: 0 14px;
+    font-size: 13px;
+    flex: none;
+  }
+  .hero-alt {
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .hero-alt code {
+    color: var(--text2);
+    overflow-wrap: anywhere;
+  }
+  .works {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding-top: 40px;
+  }
+  .works .eyebrow {
+    margin-right: 8px;
+  }
+  .work-chip {
+    padding: 9px 16px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .works-sep {
+    width: 1px;
+    height: 22px;
+    margin: 0 6px;
+    background: var(--hairline);
+  }
+  .show-sm {
+    display: none;
+  }
+  .phone-frame {
+    max-width: 300px;
+    margin: 0 auto;
+    padding: 8px;
+    border-radius: 34px;
+  }
+  .phone-frame :global(.shot) {
+    border-radius: 26px;
+  }
+  @media (max-width: 820px) {
+    .show-sm {
+      display: block;
+    }
+    .hero {
+      padding-top: 56px;
+      align-items: stretch;
+      text-align: left;
+      gap: 20px;
+    }
+    .app-icon {
+      display: none;
+    }
+    .hero-chip {
+      align-self: flex-start;
+      font-size: 13px;
+    }
+    .hero-ctas {
+      flex-direction: column;
+    }
+    .install {
+      flex-wrap: wrap;
+      border-radius: 18px;
+      padding: 14px 16px;
+    }
+    .install-cmd {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      flex: 1 1 200px;
+      font-size: 14px;
+    }
+    .works {
+      justify-content: flex-start;
+      gap: 8px;
+    }
+    .works .eyebrow {
+      width: 100%;
+    }
+    .works-sep {
+      display: none;
+    }
+    .work-chip {
+      padding: 7px 13px;
+      font-size: 13px;
+    }
+  }
+</style>

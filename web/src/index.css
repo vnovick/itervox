@@ -839,7 +839,7 @@ body::before {
                     (buttons, links, tabs) light up when aria-selected,
                     aria-pressed, aria-current or data-active is set
      .nav-item      a sidebar row (icon + label + optional .nav-count)
-     .brand-tile    the 30px logo tile next to the wordmark
+     .brand-tile    the 30px Visor Hex logo tile next to the wordmark
      .banner-warn / .banner-danger  opaque-backed notice bars
      .status-dot    an 8px dot; colour with .dot-ok / -warn / -danger / -idle
      .page-title    28px / 700 / -0.02em
@@ -1041,8 +1041,10 @@ body::before {
     height: 30px;
     flex-shrink: 0;
     border-radius: 9px;
-    background: linear-gradient(160deg, #3b6cf0, #101a3a);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    /* The Visor Hex mark: a hex nut holding an agent's visor (site/ and the
+       desktop app use the same artwork). */
+    background: url('./assets/brand-mark.svg') center / cover no-repeat;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
   }
 
   /* Notices pinned above the top bar: the tint sits on an opaque surface so

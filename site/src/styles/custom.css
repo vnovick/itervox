@@ -1,92 +1,219 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+/*
+ * Starlight docs in the Liquid Glass style of the landing page and the
+ * dashboard: a floating glass header, the sidebar and the page as glass
+ * panels over the shared glow field, capsule controls. Tokens: glass.css.
+ */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import './glass.css';
 
-/* Dark mode (default) — Starlight uses [data-theme='dark'] */
 :root,
-[data-theme='dark'] {
-  /* Surfaces */
-  --sl-color-bg: #09090b;
-  --sl-color-bg-nav: #09090b;
-  --sl-color-bg-sidebar: #111113;
-  --sl-color-bg-inline-code: #18181b;
-
-  /* Text */
-  --sl-color-text: #fafafa;
-  --sl-color-text-accent: #818cf8;
-
-  /* Accents */
-  --sl-color-accent-low: #1e1b4b;
-  --sl-color-accent: #6366f1;
-  --sl-color-accent-high: #c7d2fe;
-
-  /* Borders */
-  --sl-color-hairline: rgba(255, 255, 255, 0.06);
-  --sl-color-hairline-light: rgba(255, 255, 255, 0.12);
-
-  /* Fonts */
-  --sl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --sl-font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace;
-
-  /* Custom tokens (for landing page) */
-  --bg: #09090b;
-  --bg-soft: #111113;
-  --bg-elevated: #18181b;
-  --accent: #6366f1;
-  --accent-strong: #818cf8;
-  --teal: #14b8a6;
-  --purple: #a855f7;
-  --text: #fafafa;
-  --text-secondary: #a1a1aa;
-  --muted: #71717a;
-  --line: rgba(255, 255, 255, 0.06);
-  --line-strong: rgba(255, 255, 255, 0.12);
-  --success: #22c55e;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --gradient-accent: linear-gradient(135deg, #6366f1, #14b8a6);
-  --shadow-glow: 0 0 40px -10px rgba(99, 102, 241, 0.4);
+:root[data-theme='dark'] {
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+  --sl-nav-height: 4.75rem;
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #e8edf7;
+  --sl-color-gray-2: #b4bfd3;
+  --sl-color-gray-3: #a3aec2;
+  --sl-color-gray-4: #6b7891;
+  --sl-color-gray-5: #2c3448;
+  --sl-color-gray-6: #161c2c;
+  --sl-color-black: #080c17;
+  --sl-color-accent-low: #1c2a5a;
+  --sl-color-accent: #3b6cf0;
+  --sl-color-accent-high: #c3d4ff;
+  --sl-color-text-accent: #a8c0ff;
+  --sl-color-bg: transparent;
+  --sl-color-bg-nav: transparent;
+  --sl-color-bg-sidebar: transparent;
+  --sl-color-bg-inline-code: var(--inline-code);
+  --sl-color-hairline: var(--hairline);
+  --sl-color-hairline-light: var(--hairline);
+  --sl-color-hairline-shade: transparent;
 }
 
-/* Light mode */
-[data-theme='light'] {
-  --sl-color-bg: #fafafa;
-  --sl-color-bg-nav: #ffffff;
-  --sl-color-bg-sidebar: #f4f4f5;
-  --sl-color-bg-inline-code: #e4e4e7;
-
-  --sl-color-text: #09090b;
-  --sl-color-text-accent: #4f46e5;
-
-  --sl-color-accent-low: #e0e7ff;
-  --sl-color-accent: #4f46e5;
-  --sl-color-accent-high: #312e81;
-
-  --sl-color-hairline: rgba(0, 0, 0, 0.08);
-  --sl-color-hairline-light: rgba(0, 0, 0, 0.04);
-
-  --bg: #fafafa;
-  --bg-soft: #f4f4f5;
-  --bg-elevated: #ffffff;
-  --accent: #4f46e5;
-  --accent-strong: #6366f1;
-  --teal: #0d9488;
-  --purple: #9333ea;
-  --text: #09090b;
-  --text-secondary: #3f3f46;
-  --muted: #71717a;
-  --line: rgba(0, 0, 0, 0.08);
-  --line-strong: rgba(0, 0, 0, 0.12);
-  --success: #16a34a;
-  --warning: #d97706;
-  --danger: #dc2626;
-  --gradient-accent: linear-gradient(135deg, #4f46e5, #0d9488);
-  --shadow-glow: 0 0 40px -10px rgba(79, 70, 229, 0.3);
+:root[data-theme='light'] {
+  --sl-color-white: #0f172a;
+  --sl-color-gray-1: #172033;
+  --sl-color-gray-2: #3b465c;
+  --sl-color-gray-3: #4b5568;
+  --sl-color-gray-4: #6b7589;
+  --sl-color-gray-5: #c5cbd8;
+  --sl-color-gray-6: #e3e8f1;
+  --sl-color-gray-7: #eef1f7;
+  --sl-color-black: #e9edf5;
+  --sl-color-accent-low: #dbe6ff;
+  --sl-color-accent: #1d4ed8;
+  --sl-color-accent-high: #1e3a8a;
+  --sl-color-text-accent: #1d4ed8;
 }
 
-/* Global font smoothing */
 html {
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+body {
+  background: transparent;
+}
+/* The glow field the glass panels blur. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle 480px at 6% 8%, var(--glow-blue), transparent),
+    radial-gradient(circle 440px at 96% 28%, var(--glow-peach), transparent),
+    radial-gradient(circle 520px at 45% 92%, var(--glow-mint), transparent);
+}
+
+/* Header: a floating glass capsule. */
+header.header {
+  padding: 0.7rem 1rem;
+  background: transparent;
+  border: 0;
+}
+/* Phones: leave room for Starlight's fixed menu button beside the capsule. */
+@media (max-width: 49.99rem) {
+  :root[data-has-sidebar] header.header {
+    padding-inline-end: calc(var(--sl-nav-gap) + var(--sl-nav-pad-x) + var(--sl-menu-button-size));
+  }
+}
+header.header > .header {
+  height: 100%;
+  padding: 0 0.5rem 0 1rem;
+  border-radius: 999px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-hi), var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.site-title {
+  gap: 0.6rem;
+  font-size: 1.3rem;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  text-transform: lowercase;
+  color: var(--text);
+}
+.site-title img {
+  height: 2rem;
+  width: 2rem;
+}
+site-search button[data-open-modal] {
+  border-radius: 999px;
+  background: var(--chip);
+  border: 1px solid var(--chip-border);
+  box-shadow: var(--chip-hi);
+}
+starlight-theme-select select,
+.social-icons a {
+  border-radius: 999px;
+}
+
+/* Sidebar: a glass panel; the current page is a lit segment. */
+@media (min-width: 50rem) {
+  .sidebar-pane {
+    background: transparent;
+    border: 0;
+  }
+  .sidebar-content {
+    height: auto;
+    min-height: 0;
+    margin: 0.75rem 0.5rem 1.5rem 1rem;
+    padding: 1rem 0.75rem;
+    border-radius: var(--radius-shell);
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-hi), var(--glass-shadow);
+  }
+}
+@media (max-width: 49.99rem) {
+  .sidebar-pane {
+    background: var(--glass-solid);
+  }
+}
+.sidebar-content a {
+  border-radius: var(--radius-sm);
+}
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover {
+  background: var(--seg-on);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--chip-hi);
+}
+.sidebar-content summary .large {
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Page: the article sits on one glass panel. */
+@media (min-width: 50rem) {
+  .main-pane > main {
+    margin: 0.75rem 1rem 2rem 0.5rem;
+    border-radius: 32px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-hi), var(--glass-shadow);
+    overflow: clip;
+  }
+}
+.content-panel + .content-panel {
+  border-top: 1px solid var(--hairline);
+}
+.sl-markdown-content h1,
+h1#_top {
+  letter-spacing: -0.035em;
+  font-weight: 700;
+}
+.sl-markdown-content :is(h2, h3) {
+  letter-spacing: -0.02em;
+}
+.sl-markdown-content :not(pre) > code {
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+}
+.sl-markdown-content table {
+  border-radius: var(--radius-md);
+}
+.expressive-code .frame {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.starlight-aside {
+  border-radius: var(--radius-md);
+  border-inline-start-width: 0;
+  background: var(--card);
+  box-shadow: var(--card-shadow);
+}
+
+/* Right-hand table of contents: a hairline rail with a lit current entry. */
+.right-sidebar {
+  background: transparent;
+  border: 0;
+}
+starlight-toc nav ul {
+  border-inline-start: 2px solid var(--hairline);
+}
+starlight-toc a {
+  margin-inline-start: -2px;
+  border-inline-start: 2px solid transparent;
+}
+starlight-toc a[aria-current='true'] {
+  border-inline-start-color: var(--accent-text);
+  color: var(--text);
+}
+
+/* Previous / next as glass cards. */
+.pagination-links a {
+  border-radius: 20px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  box-shadow: var(--card-shadow);
 }
