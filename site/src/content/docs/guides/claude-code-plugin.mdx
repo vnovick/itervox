@@ -1,0 +1,102 @@
+---
+title: Claude Code plugin
+description: Install the Itervox plugin in Claude Code to set up, run and troubleshoot Itervox by asking, with skills for each task and the itervox mcp server bundled.
+---
+
+The Itervox plugin for [Claude Code](https://code.claude.com/docs/en/plugins)
+lets you set up, run and troubleshoot Itervox without reading these docs
+first. Ask Claude Code to "set up itervox with GitHub issues", "run itervox
+doctor" or "what needs my attention?" and it loads the matching skill: a
+short, checked set of steps that names only commands, flags and settings this
+release has. The plugin also starts [`itervox mcp`](/guides/mcp/), so Claude
+Code can read the board and, if you allow it, run the fleet.
+
+## Install
+
+The plugin comes from this repository's marketplace. In Claude Code:
+
+```text
+/plugin marketplace add vnovick/itervox
+/plugin install itervox@itervox
+```
+
+Or from your shell:
+
+```bash
+claude plugin marketplace add vnovick/itervox
+claude plugin install itervox@itervox
+```
+
+`itervox` must be on the `PATH` Claude Code starts with: the MCP server runs
+it, and so do the skills. If it is not installed yet, ask for the
+`setup` skill; it installs it first.
+
+The plugin's version is the Itervox release it was written for, and its
+skills name that release's commands. Update it with
+`/plugin marketplace update itervox` when you upgrade the daemon.
+
+## Skills
+
+Claude Code picks a skill when your request matches its description. You can
+also run one by name, for example `/itervox:doctor`.
+
+| Skill | Use it to |
+|---|---|
+| `setup` | Install Itervox, run `itervox init` (or `itervox quickstart`) for Linear, GitHub or local issues, set up profiles (`SOUL.md`, `INSTRUCTIONS.md`), store secrets with `itervox secret set`, run `itervox doctor` and start the daemon |
+| `issue` | Write an agent-ready issue: the agent-task template's sections, blockers for each tracker, and handing the issue to the agents |
+| `doctor` | Run `itervox doctor` and `itervox config show`, read every section (Isolation, Permissions, Model servers, How agents run, repo readiness) and fix what they report |
+| `ci` | Set up the [GitHub Action and `itervox run --issue`](/guides/ci/): workflow files, the API-key secret, labels and least-privilege permissions |
+| `deploy` | [Deploy the daemon to a cloud VM](/guides/deployment/) (AWS, GCP or Azure), confirming before anything billable |
+| `local-models` | Point a profile at a [local model server](/guides/local-models/) such as colibri, raise the timeouts, give it a `pool` and use it in `agent.backend_fallback` |
+| `automations` | Write [automations](/guides/automations/), manage [dependencies](/guides/dependency-management/) and turn on [stacked PRs](/guides/stacked-prs/) |
+| `operate` | Day-to-day work through the MCP tools: the board summary, what needs your attention, dispatch, pause and resume, replies, steering and memory |
+
+Every skill follows the same rules about secrets: it never reads
+`.itervox/.env`, never prints a token, and has you type each key at the
+hidden prompt of `itervox secret set` in your own terminal.
+
+## The MCP server and its scopes
+
+The plugin runs, for the project Claude Code is open in:
+
+```bash
+itervox mcp --project <project directory> --token-scope viewer
+```
+
+It talks to the daemon already running for that project; start `itervox`
+there first. Its tools appear in Claude Code as
+`mcp__plugin_itervox_itervox__<tool>`.
+
+| Scope | Tools | Token |
+|---|---|---|
+| `viewer` (default) | `board_summary`, `list_issues`, `get_issue`, `explain_blockers`, `recent_failures`, `feed_since`, `recall` | a stored viewer token named `mcp`, created on first use |
+| `operator` | the viewer tools, plus `dispatch`, `pause_dispatch`, `resume_dispatch`, `reply_input`, `steer`, `remember` | an operator token named `mcp`, which replaces and revokes the viewer one |
+
+To change the scope, run `/plugin configure itervox@itervox`, set **Itervox
+MCP token scope**, and reconnect the server in `/mcp`. The token's secret is
+kept in `.itervox/mcp-token.json` (mode 0600, gitignored) and never printed;
+`itervox token list` shows it and `itervox token revoke ID` cuts the server
+off at once. See [Scopes](/guides/mcp/#scopes).
+
+**Guardrail approvals stay human-only** in every scope: `reply_input`
+refuses them, and the `operate` skill tells Claude Code to show you
+the command and leave the decision to you, on the dashboard or with
+`itervox approve`.
+
+## For contributors
+
+The plugin lives in `plugins/itervox/` and the marketplace file in
+`.claude-plugin/marketplace.json`. The deploy skill's only copy is
+`plugins/itervox/skills/deploy/SKILL.md`. To try changes before they
+are released, start Claude Code with `claude --plugin-dir plugins/itervox`,
+and check the manifest with `claude plugin validate plugins/itervox`.
+
+Tests in `cmd/itervox` keep the plugin in step with the CLI:
+
+- `TestPluginSkillsNameRealCommandsAndFlags`: every `itervox <command>` and
+  `--flag` a skill names exists, the bundled MCP server is `itervox mcp`
+  with a viewer default, and the operate skill covers every MCP tool;
+- `TestPluginSkillsNameRealSettings`: every setting key a skill names is one
+  Itervox reads;
+- `TestPluginVersionMatchesLatestRelease`: the plugin's version, and every
+  version a skill pins, is the newest release in `CHANGELOG.md`.

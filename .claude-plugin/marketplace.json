@@ -1,0 +1,16 @@
+{
+  "name": "itervox",
+  "description": "The Itervox Claude Code plugin: set up, run and troubleshoot the Itervox daemon.",
+  "owner": {
+    "name": "NovickLabs LTD",
+    "url": "https://itervox.dev"
+  },
+  "plugins": [
+    {
+      "name": "itervox",
+      "source": "./plugins/itervox",
+      "description": "Skills for setting up, running and troubleshooting Itervox, and the itervox mcp server.",
+      "category": "development"
+    }
+  ]
+}
