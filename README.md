@@ -260,6 +260,8 @@ Autonomous, not unsupervised. Agents do the work. You stay in control at every c
 
 Full setup guides: **[Linear](https://itervox.dev/guides/linear-setup/)** · **[GitHub Issues](https://itervox.dev/guides/github-issues/)**.
 
+**Claude Code plugin:** `/plugin marketplace add vnovick/itervox`, then `/plugin install itervox@itervox`, adds skills to set up, run and troubleshoot Itervox, and the `itervox mcp` server. Guide: **[itervox.dev/guides/claude-code-plugin/](https://itervox.dev/guides/claude-code-plugin/)**.
+
 ---
 
 ## Remote access & bearer-token auth

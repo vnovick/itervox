@@ -64,6 +64,7 @@ export default defineConfig({
             { label: 'Review changes', slug: 'guides/change-review' },
             { label: 'System visibility', slug: 'guides/system-visibility' },
             { label: 'MCP server (Claude Code, Codex)', slug: 'guides/mcp' },
+            { label: 'Claude Code plugin', slug: 'guides/claude-code-plugin' },
             { label: 'Agent Permissions & Repo Rules', slug: 'guides/agent-permissions' },
             { label: 'Guardrails', slug: 'guides/guardrails' },
             { label: 'Running in CI (GitHub Actions)', slug: 'guides/ci' },

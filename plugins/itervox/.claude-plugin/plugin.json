@@ -1,0 +1,23 @@
+{
+  "name": "itervox",
+  "displayName": "Itervox",
+  "version": "0.3.1",
+  "description": "Set up, run and troubleshoot Itervox from Claude Code: skills for init, agent-ready issues, doctor, CI, cloud deploy, local models and automations, plus the itervox mcp server for the board and memory.",
+  "author": {
+    "name": "NovickLabs LTD",
+    "url": "https://itervox.dev"
+  },
+  "homepage": "https://itervox.dev/guides/claude-code-plugin/",
+  "repository": "https://github.com/vnovick/itervox",
+  "license": "Apache-2.0",
+  "keywords": ["itervox", "agents", "orchestration", "linear", "github-issues", "mcp"],
+  "userConfig": {
+    "token_scope": {
+      "type": "string",
+      "title": "Itervox MCP token scope",
+      "description": "viewer (default): read tools only. operator: also dispatch, pause and resume dispatch, reply_input, steer and remember. Guardrail approvals stay human-only either way.",
+      "options": ["viewer", "operator"],
+      "default": "viewer"
+    }
+  }
+}

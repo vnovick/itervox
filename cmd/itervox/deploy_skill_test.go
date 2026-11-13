@@ -19,11 +19,17 @@ func repoFile(t *testing.T, rel string) string {
 	return string(data)
 }
 
+// deploySkillPath is the deploy skill's one copy: it ships in the Claude Code
+// plugin (plugins/itervox), so the repository's own .claude/skills no longer
+// holds it. A symlink was not used because a Windows checkout without
+// core.symlinks turns it into a text file naming the target.
+const deploySkillPath = "plugins/itervox/skills/deploy/SKILL.md"
+
 // TestDeploySkillReferencesExist (#88): the deploy skill's front matter
 // parses as strict YAML, and every deploy-kit path, provision flag and
 // itervox command it tells an agent to run exists.
 func TestDeploySkillReferencesExist(t *testing.T) {
-	skill := repoFile(t, ".claude/skills/deploy/SKILL.md")
+	skill := repoFile(t, deploySkillPath)
 	require.True(t, strings.HasPrefix(skill, "---\n"))
 	front := skill[4 : 4+strings.Index(skill[4:], "\n---\n")]
 	var meta struct{ Name, Description string }

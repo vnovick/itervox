@@ -5,7 +5,7 @@
 # they already exist) a Cloud Router + Cloud NAT and an IAP firewall rule, for
 # the few minutes the check runs.
 #
-# Follows the deploy skill (.claude/skills/deploy/SKILL.md) with its own
+# Follows the deploy skill (plugins/itervox/skills/deploy/SKILL.md) with its own
 # commands: deploy/gcp/provision.sh, deploy/bootstrap.sh at the release under
 # test, `itervox secret set` for the agent credential, `itervox doctor
 # --deploy`, `systemctl enable --now itervox`, and the IAP tunnel to the
