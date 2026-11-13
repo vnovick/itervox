@@ -1,0 +1,124 @@
+---
+title: Local models (colibri)
+description: Point an Itervox profile's agent at a model server on your own machine, such as colibri, so runs cost nothing per token and code never leaves the machine — and use it as the fallback when a vendor's usage limit is hit.
+sidebar:
+  order: 13
+---
+
+Itervox runs agent CLIs, and most of them can talk to a model server other
+than their vendor's. Point one at a server on your own machine and that
+profile's runs cost nothing per token, and your code and prompts never leave
+the machine.
+
+This guide uses [colibri](https://github.com/JustVugg/colibri), an
+open-source engine for very large open models. It serves an
+OpenAI-compatible API and an Anthropic-compatible `/v1/messages`. The steps
+are the same for any server with those APIs.
+
+:::caution[Speed decides what a local model is good for]
+An implementer run can use hundreds of thousands of tokens. On ordinary
+hardware a large local model decodes at a few tokens per second, or much
+less, so start with small jobs: dependency analysis, triage, summaries,
+reviews of small diffs. Measure before you move your main coding profile.
+Itervox has not tested how well any particular open model handles Claude
+Code's or OpenCode's tool calls.
+:::
+
+## 1. Start the server
+
+Follow colibri's own setup. It checks your hardware and recommends a model.
+Then start its API server:
+
+```sh
+coli serve        # OpenAI-compatible /v1 and Anthropic-compatible /v1/messages on 127.0.0.1:8000
+```
+
+## 2. Point a profile at it
+
+Set the agent CLI's base-URL variable at the start of the profile's command.
+Itervox skips `NAME=value` assignments when it works out the backend, so this
+profile is still the `claude` backend, with the same flags, resume and
+parsing.
+
+```yaml
+agent:
+  profiles:
+    deps-analyzer-local:
+      command: ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude --model <model name colibri serves>
+      soul_file: .itervox/agents/deps-analyzer/SOUL.md
+      instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md
+```
+
+- **Claude Code** reads `ANTHROPIC_BASE_URL`, without `/v1`. If the server
+  wants a key, put `ANTHROPIC_AUTH_TOKEN` in `.itervox/.env`, not in the
+  command.
+- **OpenCode** talks to any OpenAI-compatible provider you define in
+  `opencode.json` (base URL `http://127.0.0.1:8000/v1`). Choose it with
+  `--model <provider>/<model>`. See [Agent backends](/guides/backends/#opencode).
+- **Codex** reads custom providers from `~/.codex/config.toml`, not from
+  the command.
+
+To keep a local profile on this machine, don't combine it with
+`agent.ssh_hosts`. A run on a worker host would look for the server on that
+host.
+
+## 3. Give slow runs time
+
+A local model is slower than a vendor's, so raise the timeouts that would
+otherwise kill a healthy run:
+
+| Setting | Default | What to set |
+|---|---|---|
+| `agent.turn_timeout_ms` | `3600000` (1 h) | the longest a whole run may take |
+| `agent.stall_timeout_ms` | `300000` (5 min) | longer than the slowest gap between two events |
+| `agent.read_timeout_ms` | `30000` | longer than the slowest single response chunk |
+
+## 4. Check it
+
+`itervox doctor` probes every model server that a profile's command points
+at. It lists which profiles use each one, and warns when one does not
+answer:
+
+```text
+Model servers
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8000, used by deps-analyzer-local: not answering
+WARNING: deps-analyzer-local point their agent at http://127.0.0.1:8000, which did not answer (…); their runs will fail until it does — start the model server (for colibri: `coli serve`) or fix ANTHROPIC_BASE_URL
+```
+
+The warning does not change doctor's exit code, because the server may just
+not be started yet. A URL taken from a variable (`$LOCAL_MODEL_URL`) is
+listed but not checked. Doctor sees only assignments in the command itself,
+not a CLI's own config file.
+
+## 5. Fall back to it when a vendor's limit is hit
+
+Itervox pauses dispatch to a backend whose usage limit was hit, and can
+reroute work through
+[`agent.backend_fallback`](/configuration/#backend-health-and-fallback-agentbackend_fallback).
+Give the local profile its own `pool`, so a limit on Anthropic doesn't hold
+it, and add the pool as a step in the chain:
+
+```yaml
+agent:
+  profiles:
+    coder:
+      command: claude
+    coder-local:
+      command: ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude --model <model>
+      pool: local
+  backend_fallback:
+    chain: [claude, codex, claude/local]
+    profile_map:
+      coder: { "claude/local": coder-local }
+```
+
+When `claude` is limited and nothing else in the chain is healthy, `coder`
+issues run on `coder-local`. They switch back once the limit resets, using
+the usual `switch_back` policy.
+
+## Safety
+
+A local model does not make a run safer. The agent CLI runs with the same
+permissions whichever model it talks to. A run with `isolation: process`
+keeps network access, so it can still reach the server on `127.0.0.1`. See
+[Safety](/guides/safety/).

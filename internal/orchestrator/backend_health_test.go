@@ -135,7 +135,7 @@ func TestBackendHealth_GlobalBreaker_ReroutesOtherIssues(t *testing.T) {
 
 	// Issue A hits the Claude quota; the breaker opens for the whole backend.
 	state = limitExit(ctx, o, state, a, "coder", "claude", 0, TerminalRateLimited, quotaLimit(time.Now().Add(time.Hour)))
-	entry, ok := state.BackendHealth[BackendHealthKey("claude", "")]
+	entry, ok := state.BackendHealth[BackendHealthKey("claude", "", "")]
 	require.True(t, ok, "the limit must open the claude breaker")
 	assert.Equal(t, BackendStatusLimited, entry.Status)
 
@@ -189,9 +189,9 @@ func TestBackendHealth_AllLimited_IneligibleUntilEarliestReset(t *testing.T) {
 	assert.Empty(t, state.RetryAttempts, "and consumes no retry")
 
 	// The codex reset passes: the next tick admits exactly one probe on codex.
-	e := state.BackendHealth[BackendHealthKey("codex", "")]
+	e := state.BackendHealth[BackendHealthKey("codex", "", "")]
 	e.LimitedUntil = time.Now().Add(-time.Second)
-	state.BackendHealth[BackendHealthKey("codex", "")] = e
+	state.BackendHealth[BackendHealthKey("codex", "", "")] = e
 	state = o.onTick(ctx, state)
 	require.Len(t, state.Running, 1, "one probe on the reset backend")
 	for _, r := range state.Running {
@@ -207,7 +207,7 @@ func TestBackendHealth_HalfOpenProbe_SingleDispatch(t *testing.T) {
 	o, rr := breakerOrchestrator(t, config.BackendFallbackConfig{}, a, b, c)
 	state := NewState(o.cfg)
 	now := time.Now()
-	require.True(t, o.recordBackendLimit(&state, "claude", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now))
+	require.True(t, o.recordBackendLimit(&state, "claude", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now))
 	// The published reset has passed (LimitedUntil expired): half-open.
 	e := state.BackendHealth["claude"]
 	e.LimitedUntil = now.Add(-time.Second)
@@ -296,7 +296,7 @@ func TestBackendHealth_UnknownResetUsesDefaultCooldown(t *testing.T) {
 			o, _ := breakerOrchestrator(t, tc.fb)
 			state := NewState(o.cfg)
 			now := time.Now()
-			require.True(t, o.recordBackendLimit(&state, "codex", "", "ENG-1", quotaLimit(time.Time{}), now))
+			require.True(t, o.recordBackendLimit(&state, "codex", "", "", "ENG-1", quotaLimit(time.Time{}), now))
 			e := state.BackendHealth["codex"]
 			assert.Equal(t, BackendStatusLimited, e.Status, "unknown reset is limited, never healthy")
 			assert.False(t, e.ResetKnown)
@@ -311,7 +311,7 @@ func TestBackendHealth_KeyedByWorkerHost(t *testing.T) {
 	o, _ := breakerOrchestrator(t, config.BackendFallbackConfig{})
 	state := NewState(o.cfg)
 	now := time.Now()
-	require.True(t, o.recordBackendLimit(&state, "claude", "host-a", "ENG-1", quotaLimit(now.Add(time.Hour)), now))
+	require.True(t, o.recordBackendLimit(&state, "claude", "", "host-a", "ENG-1", quotaLimit(now.Add(time.Hour)), now))
 	assert.Contains(t, state.BackendHealth, "claude@host-a")
 	assert.NotContains(t, state.BackendHealth, "claude")
 }
@@ -388,7 +388,7 @@ func TestBackendHealth_QueuedAutomationHeldNotDropped(t *testing.T) {
 	o, _ := breakerOrchestrator(t, config.BackendFallbackConfig{}, a)
 	state := NewState(o.cfg)
 	now := time.Now()
-	o.recordBackendLimit(&state, "claude", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "claude", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
 	assert.True(t, IsQueueableAutomationReason(IneligibleBackendLimited))
 
 	accepted := o.dispatchOrQueueAutomation(ctx, &state, a, AutomationDispatch{
@@ -417,7 +417,7 @@ func TestBackendHealth_PendingInputResumeWaits(t *testing.T) {
 	o, _ := breakerOrchestrator(t, fallbackOn(), a)
 	state := NewState(o.cfg)
 	now := time.Now()
-	o.recordBackendLimit(&state, "claude", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "claude", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
 	state.PendingInputResumes[a.Identifier] = &PendingInputResumeEntry{
 		IssueID: a.ID, Identifier: a.Identifier, SessionID: "sess-1", Backend: "claude",
 		Command: "claude --model opus", UserMessage: "yes",
@@ -442,7 +442,7 @@ func TestBackendHealth_HeldRetryKeepsAttempt(t *testing.T) {
 	state := NewState(o.cfg)
 	now := time.Now()
 	reset := now.Add(time.Hour)
-	o.recordBackendLimit(&state, "claude", "", "ENG-9", quotaLimit(reset), now)
+	o.recordBackendLimit(&state, "claude", "", "", "ENG-9", quotaLimit(reset), now)
 	state = ScheduleRetry(state, a.ID, 3, a.Identifier, "boom", now.Add(-time.Minute), 0)
 
 	state = o.fireRetries(ctx, state, now)

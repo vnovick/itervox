@@ -27,6 +27,7 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			SoulFile:            strings.TrimSpace(profile.SoulFile),
 			InstructionsFile:    strings.TrimSpace(profile.InstructionsFile),
 			Backend:             profile.Backend,
+			Pool:                strings.TrimSpace(profile.Pool),
 			Enabled:             enabledField,
 			AllowedActions:      config.NormalizeAllowedActions(profile.AllowedActions),
 			CreateIssueState:    strings.TrimSpace(profile.CreateIssueState),

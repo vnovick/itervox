@@ -225,6 +225,8 @@ type ProfileEntry struct {
 	InstructionsFile string
 	// Backend is an optional explicit runner selection override.
 	Backend string
+	// Pool is the profile's quota pool ("" omits the key).
+	Pool string
 	// Enabled controls whether the profile is selectable and dispatchable.
 	// Nil means omit the field from WORKFLOW.md, which defaults to true.
 	Enabled *bool
@@ -330,6 +332,9 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				if entry.Backend != "" {
 					replacement = append(replacement, lvl3+"backend: "+entry.Backend)
+				}
+				if entry.Pool != "" {
+					replacement = append(replacement, lvl3+"pool: "+strconv.Quote(entry.Pool))
 				}
 				if entry.Enabled != nil && !*entry.Enabled {
 					replacement = append(replacement, lvl3+"enabled: false")

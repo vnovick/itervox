@@ -379,8 +379,13 @@ type RunEntry struct {
 	AgentSessionID string
 	WorkerHost     string // SSH host used for this worker, empty = local
 	Backend        string // e.g. "claude", "codex", or "" when unknown
-	ProfileName    string // resolved agent profile name, empty = default
-	Kind           string // "worker" (default) | "reviewer" | "automation"
+	// Pool is the run's quota pool (agent.profiles.<name>.pool), fixed at
+	// dispatch; "" for the backend's own quota. With Backend and WorkerHost
+	// it names the run's circuit breaker (BackendHealthKey). The runner is
+	// selected by Backend alone.
+	Pool        string
+	ProfileName string // resolved agent profile name, empty = default
+	Kind        string // "worker" (default) | "reviewer" | "automation"
 	// Isolation names the sandbox the run's agent runs in ("bubblewrap",
 	// "landlock", "sandbox-exec"; #258), empty when it runs unsandboxed.
 	// Reported by the worker once it resolved the sandbox.

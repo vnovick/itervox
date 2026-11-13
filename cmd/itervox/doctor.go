@@ -220,6 +220,10 @@ type DoctorReport struct {
 	// Permissions lists how each profile's agent runs and warns about the
 	// ones nothing confines (see guides/safety). Never changes the exit code.
 	Permissions PermissionsCheck
+	// ModelServers are the model servers profile commands point their
+	// agent at (ANTHROPIC_BASE_URL=… claude): one that does not answer
+	// warns. Never changes the exit code.
+	ModelServers ModelServerCheck
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -431,6 +435,7 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 	// Process isolation (#258): local probes only.
 	report.Isolation = checkIsolation(cfg)
 	report.Permissions = checkPermissions(cfg)
+	report.ModelServers = checkModelServers(cfg)
 
 	// Repo readiness (#200): the rows GET /api/v1/repo/readiness serves,
 	// built from the checks above.
@@ -578,6 +583,7 @@ func renderDoctorReport(r DoctorReport) string {
 	renderRepoReadiness(&b, r.Readiness)
 	renderIsolationCheck(&b, r.Isolation)
 	renderPermissionsCheck(&b, r.Permissions)
+	renderModelServerCheck(&b, r.ModelServers)
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)

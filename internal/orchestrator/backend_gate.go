@@ -54,6 +54,9 @@ type gateResult struct {
 	host        string
 	rerouted    bool
 	fromBackend string
+	// fromLane is fromBackend with its quota pool ("claude/local"), for
+	// logs and the tracker comment.
+	fromLane    string
 	fromProfile string
 	fromKey     string
 	held        bool
@@ -83,9 +86,9 @@ func (o *Orchestrator) gateDispatch(state *State, req gateRequest, now time.Time
 			hold = BackendHold{Key: key, Until: until}
 		}
 	}
-	admit := func(backend string) (string, bool) {
+	admit := func(backend, pool string) (string, bool) {
 		for _, h := range hostCandidates(req.host, req.hosts) {
-			key := BackendHealthKey(backend, h)
+			key := BackendHealthKey(backend, pool, h)
 			if admitBackendKey(state, key, req.identifier, now) {
 				return h, true
 			}
@@ -93,18 +96,21 @@ func (o *Orchestrator) gateDispatch(state *State, req gateRequest, now time.Time
 		}
 		return "", false
 	}
-	if h, ok := admit(t.Backend); ok {
+	if h, ok := admit(t.Backend, t.Pool); ok {
 		res.host = h
 		clearBackendHold(state, req.identifier)
 		return res
 	}
-	fromKey := BackendHealthKey(t.Backend, req.host)
+	fromKey := BackendHealthKey(t.Backend, t.Pool, req.host)
+	lane := t.Lane()
 	fb := o.cfg.Agent.BackendFallback
 	if req.allowReroute && fb.Enabled {
 		allowed := req.rerouteAllowed == nil
 		asked := false
+		// Chain steps are lanes: "claude", or "claude/local" for a quota
+		// pool, so the same backend in another pool is a separate step.
 		for _, b := range fb.Chain {
-			if b == t.Backend {
+			if b == lane {
 				continue
 			}
 			alt, altProfile, ok := o.fallbackTarget(req, b)
@@ -115,17 +121,17 @@ func (o *Orchestrator) gateDispatch(state *State, req gateRequest, now time.Time
 				asked, allowed = true, req.rerouteAllowed()
 				if !allowed {
 					slog.Warn("orchestrator: backend_fallback skipped, switch cap reached",
-						"identifier", req.identifier, "from", t.Backend, "to", b)
+						"identifier", req.identifier, "from", lane, "to", b)
 				}
 			}
 			if !allowed {
 				break
 			}
-			if h, ok := admit(b); ok {
+			if h, ok := admit(alt.Backend, alt.Pool); ok {
 				clearBackendHold(state, req.identifier)
 				return gateResult{
 					target: alt, profileName: altProfile, host: h, rerouted: true,
-					fromBackend: t.Backend, fromProfile: req.profileName, fromKey: fromKey,
+					fromBackend: t.Backend, fromLane: lane, fromProfile: req.profileName, fromKey: fromKey,
 				}
 			}
 		}
@@ -136,11 +142,13 @@ func (o *Orchestrator) gateDispatch(state *State, req gateRequest, now time.Time
 	return res
 }
 
-// fallbackTarget resolves the dispatch target for req on backend b through
-// agent.backend_fallback: the profile_map counterpart of the issue's profile
-// (whose own command runs), else — with on_unmapped: backend_hint — the
-// issue's own command hinted to b when the resolver accepts that (wrappers
-// only, CORE-115). ok is false when b cannot serve the issue.
+// fallbackTarget resolves the dispatch target for req on chain lane b
+// ("codex", "claude/local") through agent.backend_fallback: the profile_map
+// counterpart of the issue's profile (whose own command runs), else — with
+// on_unmapped: backend_hint — the issue's own command hinted to b's backend
+// when the resolver accepts that (wrappers only, CORE-115). The resolved
+// target must run lane b exactly (backend and pool). ok is false when b
+// cannot serve the issue.
 func (o *Orchestrator) fallbackTarget(req gateRequest, b string) (dispatchTarget, string, bool) {
 	fb := o.cfg.Agent.BackendFallback
 	name, mapped := o.fallbackProfileFor(req.profileName, b, req.in.DefaultCommand)
@@ -158,16 +166,17 @@ func (o *Orchestrator) fallbackTarget(req gateRequest, b string) (dispatchTarget
 			in.Profile = &profile
 		}
 		alt := resolveDispatchTarget(in)
-		if alt.Backend != b {
+		if alt.Lane() != b {
 			return dispatchTarget{}, "", false
 		}
 		return alt, name, true
 	}
 	if fb.OnUnmapped == config.BackendFallbackUnmappedBackendHint {
+		bBackend, _ := config.SplitBackendLane(b)
 		in := req.in
-		in.IssueBackend, in.RecoveryBackend = b, ""
+		in.IssueBackend, in.RecoveryBackend = bBackend, ""
 		alt := resolveDispatchTarget(in)
-		if alt.Backend != b || alt.Reason != "" {
+		if alt.Lane() != b || alt.Reason != "" {
 			return dispatchTarget{}, "", false
 		}
 		return alt, req.profileName, true
@@ -203,7 +212,7 @@ func (o *Orchestrator) fallbackProfileFor(profile, b, defaultCommand string) (st
 		if !isTarget {
 			continue
 		}
-		if o.profileKeyBackend(src, defaultCommand) == b {
+		if o.profileKeyLane(src, defaultCommand) == b {
 			return o.profileKeyToName(src), true
 		}
 		if name := row[b]; name != "" && name != profile {
@@ -226,6 +235,40 @@ func (o *Orchestrator) profileKeyToName(key string) string {
 		return key
 	}
 	return ""
+}
+
+// profileKeyLane is the lane (backend plus quota pool) a profile_map source
+// key runs on.
+func (o *Orchestrator) profileKeyLane(key, defaultCommand string) string {
+	o.cfgMu.RLock()
+	profile, ok := o.cfg.Agent.Profiles[key]
+	o.cfgMu.RUnlock()
+	if !ok {
+		if key == config.BackendFallbackDefaultProfileKey {
+			return config.BackendFromCommand(defaultCommand)
+		}
+		return ""
+	}
+	return config.ProfileRunsLane(profile, defaultCommand)
+}
+
+// profilePool is the quota pool of a run of profileName on backend, read
+// from the current profile config: the profile's pool when it runs that
+// backend, else "". For paths that carry no pool of their own: a resumed
+// input-required session (whose persisted entry predates pools) and the
+// rate_limited automation's switch provenance.
+func (o *Orchestrator) profilePool(profileName, backend string) string {
+	if profileName == "" {
+		return ""
+	}
+	o.cfgMu.RLock()
+	profile, ok := o.cfg.Agent.Profiles[profileName]
+	defaultCommand := o.cfg.Agent.Command
+	o.cfgMu.RUnlock()
+	if !ok || profile.Pool == "" || config.ProfileRunsBackend(profile, defaultCommand) != backend {
+		return ""
+	}
+	return profile.Pool
 }
 
 // profileKeyBackend is the backend a profile_map source key runs on.
@@ -252,9 +295,9 @@ func (o *Orchestrator) operatorPinnedBackend(identifier string) string {
 
 // backendFallbackCovers reports whether agent.backend_fallback, not the
 // rate_limited automations, handles a limited run of identifier on
-// (profile, backend): fallback enabled, no operator pin, and some other
-// chain backend has a counterpart (or on_unmapped: backend_hint).
-func (o *Orchestrator) backendFallbackCovers(identifier, profile, backend string) bool {
+// (profile, lane): fallback enabled, no operator pin, and some other chain
+// lane has a counterpart (or on_unmapped: backend_hint).
+func (o *Orchestrator) backendFallbackCovers(identifier, profile, lane string) bool {
 	fb := o.cfg.Agent.BackendFallback
 	if !fb.Enabled || o.operatorPinnedBackend(identifier) != "" {
 		return false
@@ -266,7 +309,7 @@ func (o *Orchestrator) backendFallbackCovers(identifier, profile, backend string
 	defaultCommand := o.cfg.Agent.Command
 	o.cfgMu.RUnlock()
 	for _, b := range fb.Chain {
-		if b == backend {
+		if b == lane {
 			continue
 		}
 		if _, ok := o.fallbackProfileFor(profile, b, defaultCommand); ok {
@@ -308,15 +351,15 @@ func (o *Orchestrator) recordFallbackSwitch(state *State, issue domain.Issue, g 
 	o.recordRateLimitSwitch(state, issue.ID, now)
 	o.saveAutoSwitchedToDisk(state)
 	o.logger().Warn("orchestrator: backend_fallback switched issue",
-		"identifier", ident, "from_backend", g.fromBackend, "to_backend", g.target.Backend,
+		"identifier", ident, "from_backend", g.fromLane, "to_backend", g.target.Lane(),
 		"from_profile", g.fromProfile, "to_profile", g.profileName, "reason", reason)
 	if o.logBuf != nil {
 		o.logBuf.Add(ident, makeBufLine("WARN", fmt.Sprintf("orchestrator: backend_fallback %s → %s (%s)",
-			fallbackProfileLabel(g.fromProfile)+"@"+g.fromBackend, fallbackProfileLabel(g.profileName)+"@"+g.target.Backend, reason)))
+			fallbackProfileLabel(g.fromProfile)+"@"+g.fromLane, fallbackProfileLabel(g.profileName)+"@"+g.target.Lane(), reason)))
 	}
 	body := fmt.Sprintf("🤖 Itervox: backend fallback\n\n"+
 		"Backend `%s` is limited (%s). This issue now runs profile **%s** on `%s`; it switches back per `agent.backend_fallback.switch_back`.",
-		g.fromBackend, reason, fallbackProfileLabel(g.profileName), g.target.Backend)
+		g.fromLane, reason, fallbackProfileLabel(g.profileName), g.target.Lane())
 	goSafe(&o.commentWg, "backend-fallback-comment", ident, func() {
 		o.postManagedComment(issue, body)
 	}, o.withPanicFailure("backend-fallback-comment", ident, nil))
@@ -421,16 +464,18 @@ func (o *Orchestrator) CheckIssueBackendPin(identifier, backend string) error {
 }
 
 // BackendLimitedForProfile reports whether the LOCAL breaker (CORE-053) of
-// the backend that profileKey runs on refuses new work now, and until when
-// (CORE-173 a). It is for agent runs outside the dispatch gate — the
+// the backend lane that profileKey runs on (its quota pool included, e.g.
+// "claude/local") refuses new work now, and until when (CORE-173 a); backend
+// is that lane. It is for agent runs outside the dispatch gate — the
 // dependency analyzer — so it reads the published snapshot, never State,
 // and takes no probe: an expired breaker does not refuse. Safe from any
 // goroutine; must not be called with cfgMu held (Snapshot rule).
 func (o *Orchestrator) BackendLimitedForProfile(profileKey string, now time.Time) (backend string, until time.Time, limited bool) {
-	backend = o.profileKeyBackend(profileKey, o.cfg.Agent.Command)
+	backend = o.profileKeyLane(profileKey, o.cfg.Agent.Command)
 	if backend == "" {
 		return "", time.Time{}, false
 	}
-	blocked, until := backendKeyBlocked(o.Snapshot(), BackendHealthKey(backend, ""), "", now)
+	b, pool := config.SplitBackendLane(backend)
+	blocked, until := backendKeyBlocked(o.Snapshot(), BackendHealthKey(b, pool, ""), "", now)
 	return backend, until, blocked
 }

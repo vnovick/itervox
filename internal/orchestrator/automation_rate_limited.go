@@ -390,7 +390,7 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomationsNote(
 				FromBackend: failedBackend, FromProfile: failedProfile,
 				ToBackend: toBackend, ToProfile: rule.SwitchToProfile,
 				Reason:     fmt.Sprintf("rate_limited automation %q", rule.ID),
-				FromKey:    BackendHealthKey(failedBackend, ""),
+				FromKey:    BackendHealthKey(failedBackend, o.profilePool(failedProfile, failedBackend), ""),
 				SwitchedAt: now,
 			}
 			// Gap §5.3 — the override is persisted (with the switch

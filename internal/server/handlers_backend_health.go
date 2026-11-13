@@ -34,6 +34,8 @@ func validBreakerHost(host string) bool {
 
 // handleClearBackendBreaker closes one agent-backend circuit breaker.
 // POST /api/v1/backend-health/clear  {"backend":"claude","host":""}
+// backend is a lane: a supported backend, optionally with a quota pool
+// ("claude/local"), exactly as backendHealth[].backend reports it.
 // 202 = queued on the event loop (poll /api/v1/state to observe it); 400 on
 // an unknown backend or a malformed host; 503 when the event queue is full;
 // 501 when the client cannot clear breakers.
@@ -46,8 +48,8 @@ func (s *Server) handleClearBackendBreaker(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
-	if !config.IsSupportedBackend(body.Backend) {
-		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "backend must be one of "+config.SupportedBackendsText(), "backend")
+	if err := config.ValidateBackendLane(body.Backend); err != nil {
+		writeErrorWithField(w, http.StatusBadRequest, "bad_request", "backend must be one of "+config.SupportedBackendsText()+", optionally followed by /<pool>", "backend")
 		return
 	}
 	if !validBreakerHost(body.Host) {
