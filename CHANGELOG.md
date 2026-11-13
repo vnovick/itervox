@@ -9,6 +9,16 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Safety guide and a full-permissions warning.** A new [Safety](https://itervox.dev/guides/safety/) guide covers three things:
+  - what an agent can do by default (approvals bypassed, no sandbox, open network);
+  - how to confine it, from a disposable machine down to repository rules;
+  - how to keep secrets out of reach.
+
+  `itervox doctor` gains a **Permissions** section. It lists `agent.command` as `(default)` and every enabled profile, with its backend, its permission mode and its isolation, and prints a `WARNING:` naming the runs with full permissions. A run has full permissions when no operating-system sandbox wraps it and its permission mode does not confine its backend: `bypass`, or any mode on Cursor or a custom backend. The warning does not change the exit code.
+- **`itervox config show` ends with "How agents run".** It shows the same per-profile summary after the settings table, so the command shows what the configured values add up to at dispatch, not only the values. `--json` is unchanged.
+
 ---
 
 ## [0.3.1] — 2026-11-03

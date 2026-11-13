@@ -1,0 +1,101 @@
+---
+title: Safety
+description: What an agent started by Itervox can do on your machine by default, how to confine it, and the checks that tell you which profiles still run with full permissions.
+sidebar:
+  order: 9
+---
+
+Itervox starts coding agents that run commands and edit files with no human
+watching. By default nothing confines them. This page is the short version of
+what that means and what to do about it. The linked guides have the details.
+
+:::caution[Itervox is not your only safety control]
+Treat every agent as a program that can do anything your user account can.
+Use Itervox's controls as extra layers on top of a machine you can afford to
+lose, not instead of one.
+:::
+
+## What an agent can do by default
+
+A profile with the defaults (`permission_mode: bypass`, `isolation: none`) runs
+its agent with **full permissions**:
+
+- **Approvals are bypassed.** Itervox runs headless, so there is no one to
+  answer a prompt. See [Agent permissions](/guides/agent-permissions/).
+- **There is no sandbox.** The agent and every process it starts can read and
+  change any file the daemon's user can. That includes `~/.ssh`, `~/.aws`, the
+  `gh` CLI's token, the project's `.itervox/.env`, and other projects' code.
+- **The network is open.** An agent can download and run code, and can send
+  what it reads anywhere.
+
+On SSH worker hosts (`agent.ssh_hosts`), the same applies on those machines.
+
+## Check what yours do
+
+Both commands below list every enabled profile, plus `agent.command` as
+`(default)`. For each one they show its backend, permission mode and
+isolation, and whether anything confines it.
+
+```sh
+itervox doctor        # the Permissions section, with a warning for full permissions
+itervox config show   # every effective setting, then "How agents run"
+```
+
+```text
+Permissions
+  (default): claude, permission_mode bypass, isolation none — full permissions
+  reviewer: codex, permission_mode sandbox, isolation none — restricted permission mode, no operating-system sandbox
+  coder: claude, permission_mode bypass, isolation process — operating-system sandbox
+WARNING: (default) run with full permissions: …
+```
+
+The warning does not change doctor's exit code. Full permissions are a choice
+you can make knowingly; doctor makes sure it is not one you made by accident.
+
+## Confine your agents
+
+From strongest to weakest:
+
+1. **A disposable machine.** Run the daemon in a VM, a container or a cloud
+   VM that holds no credentials beyond the ones its agents need, and that you
+   can rebuild. This is the only layer that limits *everything*, hooks and
+   network included. See [Deployment](/guides/deployment/).
+2. **`isolation: process`.** It runs the agent inside an operating-system
+   sandbox: bubblewrap or Landlock on Linux, sandbox-exec on macOS.
+   - The agent can write only to its own workspace.
+   - Your credentials and every other workspace are hidden from it.
+   - A run whose sandbox is unavailable does not start.
+
+   Set it per profile, or for all of them with `agent.isolation: process`.
+   See [Process isolation](/guides/isolation/).
+3. **`permission_mode: sandbox`.** It limits what the agent does without asking:
+   - on Codex, it writes only to the workspace;
+   - on Claude, it auto-accepts edits only;
+   - on OpenCode, only what its permission config allows.
+
+   It does not confine the process, and on Cursor and custom backends it
+   changes nothing.
+4. **Guardrails** (on by default). They refuse force-pushes, pushes to other
+   branches and self-merges, and hold deploy commands for your approval. See
+   [Guardrails](/guides/guardrails/).
+5. **Your repository's own rules.** For example, `PreToolUse` deny hooks, branch
+   protection and required CI. See [Agent permissions](/guides/agent-permissions/).
+
+## Keep secrets out of reach
+
+- Give the daemon tokens with the narrowest scopes that work, such as a
+  fine-grained GitHub token for one repository.
+- Keep secrets in `.itervox/.env` and never commit it. `itervox init` adds it
+  to `.gitignore`. A sandboxed agent cannot read it, but an unsandboxed one
+  can.
+- Protect the dashboard and API with tokens. See
+  [Security & access tokens](/guides/security/).
+
+## Keep a way back
+
+- Agents work in git worktrees on issue branches, and guardrails stop them
+  pushing anywhere else. Your default branch changes only through a merge
+  you or your merge policy approve.
+- Hooks (`hooks.*`) run outside any sandbox, with the daemon's permissions.
+  Review them like any other script you run.
+- Back up anything on the machine that is not in git.

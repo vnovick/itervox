@@ -47,6 +47,7 @@ export default defineConfig({
             { label: 'Repo Analysis', slug: 'guides/repo-analysis' },
             { label: 'Memory', slug: 'guides/memory' },
             { label: 'Playbooks, decisions & steering', slug: 'guides/playbooks' },
+            { label: 'Safety', slug: 'guides/safety' },
             { label: 'Security & access tokens', slug: 'guides/security' },
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
             { label: 'Sessions panel', slug: 'guides/sessions' },
