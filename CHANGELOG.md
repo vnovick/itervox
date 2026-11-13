@@ -9,10 +9,6 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
-### Security
-
-- **Go toolchain bumped to 1.26.11.** `govulncheck` flagged GO-2026-6859 (an HTTP/1 server crash due to a `MaxBytesReader` header race in `net/http`), fixed in Go 1.26.11. The pin moves in `go.mod`, the `Makefile` and the Docker image's `GO_VERSION`. There are no code changes.
-
 ### Added
 
 - **Safety guide and a full-permissions warning.** A new [Safety](https://itervox.dev/guides/safety/) guide covers three things:
