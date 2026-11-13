@@ -166,7 +166,7 @@ func TestMemoryTrackerCreateIssue(t *testing.T) {
 	issues := []domain.Issue{makeIssue("id-1", "ENG-1", "In Progress")}
 	mem := tracker.NewMemoryTracker(issues, []string{"Todo", "In Progress"}, []string{"Done"})
 
-	created, err := mem.CreateIssue(context.Background(), "id-1", "Follow-up", "Add regression test", "Todo")
+	created, err := mem.CreateIssue(context.Background(), "id-1", tracker.NewIssue{Title: "Follow-up", Body: "Add regression test", State: "Todo"})
 	require.NoError(t, err)
 	require.NotNil(t, created)
 	assert.Equal(t, "Follow-up", created.Title)
@@ -188,7 +188,7 @@ func TestMemoryTrackerCreateIssueUsesMaxExistingSuffix(t *testing.T) {
 	}
 	mem := tracker.NewMemoryTracker(issues, []string{"Todo"}, []string{"Done"})
 
-	created, err := mem.CreateIssue(context.Background(), "id-9", "Follow-up", "", "Todo")
+	created, err := mem.CreateIssue(context.Background(), "id-9", tracker.NewIssue{Title: "Follow-up", State: "Todo"})
 	require.NoError(t, err)
 	require.NotNil(t, created)
 	assert.Equal(t, "id-10", created.ID)

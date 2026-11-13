@@ -33,8 +33,14 @@ pub enum MenuAction {
     /// List the host's daemons again.
     Rediscover(String),
     RemoveRemote(String),
-    /// The Sessions window: every daemon's agent sessions (#178).
+    /// The Sessions window: every daemon's agent sessions (#178). The
+    /// window has no per-project filter, so a project's "Sessions…" item
+    /// opens it as the top-level item does.
     OpenSessions,
+    /// A project's "New Task…": its dashboard window, opened or focused,
+    /// navigated to [`NEW_TASK_PATH`] in place through the embedded
+    /// dashboard's navigate hook (the Go menu's mechanism).
+    NewTask(String),
     /// Pause / resume ALL dispatch on every reachable local daemon (#213).
     /// Running agents continue; nothing new starts until resumed.
     PauseAll,
@@ -46,6 +52,11 @@ pub enum MenuAction {
     CheckForUpdates,
     InstallUpdate,
     InstallCli,
+    /// Open a web page in the default browser (#260: the release page of an
+    /// update on Linux and Windows, the guide to local projects on Windows).
+    OpenExternal(String),
+    /// Turn Start at Login on or off (#260, Linux and Windows).
+    ToggleAutostart,
     Quit,
 }
 
@@ -56,6 +67,9 @@ pub enum MenuEntry {
         id: String,
         label: String,
         enabled: bool,
+        /// A platform-neutral accelerator (`CmdOrCtrl+Q`); `app.rs` shows
+        /// it as the platform spells it (`platform::accelerator`).
+        accelerator: Option<String>,
     },
     Submenu {
         label: String,
@@ -89,6 +103,7 @@ impl Builder {
             id,
             label: label.into(),
             enabled,
+            accelerator: None,
         }
     }
 
@@ -98,9 +113,20 @@ impl Builder {
             id: format!("itervox-{}", self.next),
             label: label.into(),
             enabled: false,
+            accelerator: None,
         }
     }
 }
+
+/// The in-app path of the dashboard's New task form (#251), which the
+/// tray's "New Task…" opens; the Go menu's New Task… uses the same path.
+pub const NEW_TASK_PATH: &str = "/?newTask=1";
+
+/// The Quit item's label: quitting the app leaves the daemons running.
+pub const QUIT_LABEL: &str = "Quit Itervox (daemons keep running)";
+
+/// The Quit item's accelerator: ⌘Q on macOS, Ctrl+Q on Linux and Windows.
+pub const QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
 
 /// The dashboard's Repo Analysis page (#200): `{base}repo`. A remote
 /// daemon's link is rebased onto its tunnel when it is opened.
@@ -112,6 +138,18 @@ pub fn repo_analysis_link(base_url: &str) -> String {
 /// daemon's tunnel like the Repo Analysis link.
 pub fn memory_link(base_url: &str) -> String {
     page_link(base_url, "memory")
+}
+
+/// The dashboard with its New task form open (#251): `{base}?newTask=1`.
+/// The dashboard opens the form once and drops the parameter
+/// (web/src/hooks/useUrlState.ts, useNewTaskUrlOpen). Rebased onto a remote
+/// daemon's tunnel like the other page links.
+pub fn new_task_link(base_url: &str) -> String {
+    let mut b = base_url.to_string();
+    if !b.ends_with('/') {
+        b.push('/');
+    }
+    format!("{b}?newTask=1")
 }
 
 fn page_link(base_url: &str, page: &str) -> String {
@@ -142,15 +180,27 @@ pub fn build_menu<'a>(
             .flat_map(|c| c.daemons.iter())
             .map(|d| d.needs_input())
             .sum::<usize>();
-    entries.push(b.label(match views.len() {
+    let mut header = match views.len() {
         0 => "No projects".to_string(),
         n => format!(
             "{n} project{} · {running} running",
             if n == 1 { "" } else { "s" }
         ),
-    }));
+    };
+    // The summary names what waits for a human, across every daemon.
+    if waiting > 0 {
+        header.push_str(&format!(
+            " · {waiting} need{} input",
+            if waiting == 1 { "s" } else { "" }
+        ));
+    }
+    entries.push(b.label(header));
     if let Some(e) = status_error {
         entries.push(b.label(format!("⚠ {e}")));
+    }
+    // System visibility: a project whose workspace disk is low.
+    for line in views.iter().filter_map(ProjectView::disk_warning) {
+        entries.push(b.label(format!("⚠ {line}")));
     }
     entries.push(MenuEntry::Separator);
 
@@ -182,6 +232,12 @@ pub fn build_menu<'a>(
                     url: memory_link(&v.record.as_ref().map(|r| r.base_url()).unwrap_or_default()),
                 },
             ),
+            b.item(
+                "New Task…",
+                v.running() && !busy,
+                MenuAction::NewTask(v.key.clone()),
+            ),
+            b.item("Sessions…", true, MenuAction::OpenSessions),
             MenuEntry::Separator,
             b.item(
                 "Start",
@@ -267,11 +323,11 @@ pub fn build_menu<'a>(
     entries.push(b.item("Add Remote…", true, MenuAction::AddRemote));
     entries.push(b.item("Refresh Now", true, MenuAction::RefreshNow));
     entries.push(MenuEntry::Separator);
-    entries.push(b.item(
-        "Quit Itervox (daemons keep running)",
-        true,
-        MenuAction::Quit,
-    ));
+    let mut quit = b.item(QUIT_LABEL, true, MenuAction::Quit);
+    if let MenuEntry::Item { accelerator, .. } = &mut quit {
+        *accelerator = Some(QUIT_ACCELERATOR.into());
+    }
+    entries.push(quit);
 
     MenuSpec {
         entries,
@@ -353,6 +409,8 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
                     url: memory_link(&d.url().unwrap_or_default()),
                 },
             ),
+            b.item("New Task…", up, MenuAction::NewTask(d.key.clone())),
+            b.item("Sessions…", true, MenuAction::OpenSessions),
             b.item(token_label, true, MenuAction::RemoteToken(d.key.clone())),
             b.label(d.workflow.clone()),
         ];
@@ -405,6 +463,7 @@ pub fn append_hub_section(spec: &mut MenuSpec, hub: &HubStatus) {
             id,
             label: label.into(),
             enabled: up,
+            accelerator: None,
         }
     };
     let section = vec![
@@ -413,6 +472,7 @@ pub fn append_hub_section(spec: &mut MenuSpec, hub: &HubStatus) {
             id: "itervox-hub-0".into(),
             label: hub.line(),
             enabled: false,
+            accelerator: None,
         },
         item(1, "Open Hub Dashboard", HubPage::Dashboard, spec),
         item(2, "Phone…", HubPage::Phones, spec),
@@ -446,7 +506,12 @@ pub fn append_app_section(spec: &mut MenuSpec, items: Vec<(String, bool, Option<
         if let Some(a) = action {
             spec.actions.insert(id.clone(), a);
         }
-        section.push(MenuEntry::Item { id, label, enabled });
+        section.push(MenuEntry::Item {
+            id,
+            label,
+            enabled,
+            accelerator: None,
+        });
     }
     spec.entries.splice(at..at, section);
 }
@@ -454,7 +519,7 @@ pub fn append_app_section(spec: &mut MenuSpec, items: Vec<(String, bool, Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon_state::{InputRequired, StateSummary};
+    use crate::daemon_state::{DiskWarning, InputRequired, StateSummary};
     use crate::model::{Health, PendingOp};
     use crate::status::DaemonRecord;
 
@@ -487,6 +552,7 @@ mod tests {
                         id,
                         label: il,
                         enabled,
+                        ..
                     } if il == label => Some((id.as_str(), *enabled)),
                     _ => None,
                 })
@@ -501,6 +567,7 @@ mod tests {
                 id: i,
                 label,
                 enabled,
+                ..
             } if i == id => Some((label.clone(), *enabled)),
             _ => None,
         })
@@ -643,6 +710,147 @@ mod tests {
         );
     }
 
+    /// #251: each daemon's submenu has "New Task…". It routes to
+    /// `NewTask(key)`, which opens or focuses that project's dashboard window
+    /// and navigates it to the New task form in place (`NEW_TASK_PATH`, the
+    /// Go menu's path), enabled while the daemon runs.
+    #[test]
+    fn new_task_menu_opens_form() {
+        let mut up = view("/up", true);
+        if let Some(r) = up.record.as_mut() {
+            r.url = "http://127.0.0.1:8090/".into();
+        }
+        let spec = build_menu(&[up, view("/down", false)], &[], [].iter(), None);
+        let (id, enabled) = find(&spec, "New Task…", "up").unwrap();
+        assert!(enabled);
+        assert_eq!(spec.actions[id], MenuAction::NewTask("/up".into()));
+        assert!(!find(&spec, "New Task…", "down").unwrap().1);
+        assert_eq!(NEW_TASK_PATH, "/?newTask=1");
+        assert_eq!(
+            crate::go_menu::go_menu_path(crate::go_menu::GO_NEW_TASK_ID),
+            Some(NEW_TASK_PATH),
+            "the tray and the Go menu open the same page"
+        );
+        assert_eq!(
+            new_task_link("http://127.0.0.1:50001"),
+            "http://127.0.0.1:50001/?newTask=1"
+        );
+    }
+
+    /// Each project's submenu, in order: the status line, the pages (with
+    /// New Task… and Sessions…), the daemon controls, the log and the key.
+    /// Every item id routes to that project's action; Sessions… opens the
+    /// Sessions window (it has no per-project filter).
+    #[test]
+    fn project_submenu_lists_new_task_and_sessions() {
+        let spec = build_menu(&[view("/up", true)], &[], [].iter(), None);
+        let items = spec
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                MenuEntry::Submenu { label, items } if label.contains("up") => Some(items),
+                _ => None,
+            })
+            .unwrap();
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|e| match e {
+                MenuEntry::Item { label, .. } => label.as_str(),
+                MenuEntry::Separator => "-",
+                MenuEntry::Submenu { .. } => "submenu",
+            })
+            .collect();
+        assert_eq!(
+            labels[1..],
+            [
+                "-",
+                "Open Dashboard",
+                "Repo Analysis",
+                "Memory",
+                "New Task…",
+                "Sessions…",
+                "-",
+                "Start",
+                "Stop",
+                "Restart",
+                "-",
+                "Show Daemon Output",
+                "Remove from List",
+                "/up"
+            ]
+        );
+        let (new_task, _) = find(&spec, "New Task…", "up").unwrap();
+        let (sessions, enabled) = find(&spec, "Sessions…", "up").unwrap();
+        assert!(enabled, "the Sessions window lists stopped daemons too");
+        assert_ne!(new_task, sessions);
+        assert_eq!(spec.actions[new_task], MenuAction::NewTask("/up".into()));
+        assert_eq!(spec.actions[sessions], MenuAction::OpenSessions);
+        // A stopped project still offers Sessions…, not New Task….
+        let down = build_menu(&[view("/down", false)], &[], [].iter(), None);
+        assert!(!find(&down, "New Task…", "down").unwrap().1);
+        assert!(find(&down, "Sessions…", "down").unwrap().1);
+    }
+
+    /// Quit is the last item, keeps its "(daemons keep running)" wording
+    /// and is the only item with an accelerator: CmdOrCtrl+Q, shown as ⌘Q
+    /// on macOS and Ctrl+Q on Linux and Windows.
+    #[test]
+    fn quit_has_the_platform_accelerator_and_nothing_else_does() {
+        use crate::platform::{accelerator, Os};
+        let mut spec = build_menu(&[view("/up", true)], &[], [].iter(), None);
+        append_hub_section(
+            &mut spec,
+            &HubStatus::Serving {
+                members: 1,
+                version: "0.3.1".into(),
+            },
+        );
+        append_app_section(
+            &mut spec,
+            vec![("x".into(), true, Some(MenuAction::InstallCli))],
+        );
+        fn accelerated<'a>(entries: &'a [MenuEntry], out: &mut Vec<(&'a str, &'a str, &'a str)>) {
+            for e in entries {
+                match e {
+                    MenuEntry::Item {
+                        id,
+                        label,
+                        accelerator: Some(a),
+                        ..
+                    } => out.push((id, label, a)),
+                    MenuEntry::Submenu { items, .. } => accelerated(items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut found = Vec::new();
+        accelerated(&spec.entries, &mut found);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let (id, label, accel) = found[0];
+        assert_eq!(label, QUIT_LABEL);
+        assert_eq!(label, "Quit Itervox (daemons keep running)");
+        assert_eq!(accel, QUIT_ACCELERATOR);
+        assert_eq!(spec.actions[id], MenuAction::Quit);
+        assert!(
+            matches!(spec.entries.last(), Some(MenuEntry::Item { id: last, .. }) if last == id)
+        );
+        assert_eq!(accelerator(Os::Mac, accel), "Cmd+Q");
+        assert_eq!(accelerator(Os::Linux, accel), "Ctrl+Q");
+        assert_eq!(accelerator(Os::Windows, accel), "Ctrl+Q");
+    }
+
+    /// Drift guard: the parameter is the one the dashboard reads.
+    #[test]
+    fn new_task_query_param_matches_the_dashboard() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../web/src/hooks/useUrlState.ts"
+        ))
+        .expect("web/src/hooks/useUrlState.ts");
+        assert!(src.contains("new URLSearchParams(location.search).get('newTask')"));
+        assert!(new_task_link("http://h:1/").ends_with("?newTask=1"));
+    }
+
     #[test]
     fn a_pending_operation_disables_the_controls() {
         let mut v = view("/up", true);
@@ -743,11 +951,12 @@ mod tests {
             spec.entries
                 .iter()
                 .find_map(|e| match e {
-                    MenuEntry::Item { id, label, enabled }
-                        if matches!(
-                            spec.actions.get(id),
-                            Some(MenuAction::PauseAll | MenuAction::ResumeAll)
-                        ) =>
+                    MenuEntry::Item {
+                        id, label, enabled, ..
+                    } if matches!(
+                        spec.actions.get(id),
+                        Some(MenuAction::PauseAll | MenuAction::ResumeAll)
+                    ) =>
                     {
                         Some((label.clone(), *enabled, spec.actions[id].clone()))
                     }
@@ -800,6 +1009,111 @@ mod tests {
         assert!(paused("/a", true)
             .status_line()
             .ends_with("dispatch paused"));
+    }
+
+    /// The header summarises the projects, the running daemons and, when
+    /// any, how many items wait for input across local and remote daemons.
+    #[test]
+    fn header_summarises_running_and_waiting() {
+        let header = |spec: &MenuSpec| match &spec.entries[0] {
+            MenuEntry::Item { label, enabled, .. } => {
+                assert!(!enabled, "the header is a label");
+                label.clone()
+            }
+            e => panic!("header: {e:?}"),
+        };
+        let input = |id: &str| InputRequired {
+            identifier: id.into(),
+            state: "input_required".into(),
+            queued_at: "t".into(),
+            context: String::new(),
+        };
+        assert_eq!(
+            header(&build_menu(&[], &[], [].iter(), None)),
+            "No projects"
+        );
+        let views = [view("/a", true), view("/b", false)];
+        assert_eq!(
+            header(&build_menu(&views, &[], [].iter(), None)),
+            "2 projects · 1 running"
+        );
+        let mut one = view("/a", true);
+        one.health = Health::Ok(StateSummary {
+            input_required: vec![input("ENG-1")],
+            ..Default::default()
+        });
+        assert_eq!(
+            header(&build_menu(
+                &[one.clone(), view("/b", false)],
+                &[],
+                [].iter(),
+                None
+            )),
+            "2 projects · 1 running · 1 needs input"
+        );
+        one.health = Health::Ok(StateSummary {
+            input_required: vec![input("ENG-1"), input("ENG-2")],
+            ..Default::default()
+        });
+        assert_eq!(
+            header(&build_menu(&[one], &[], [].iter(), None)),
+            "1 project · 1 running · 2 need input"
+        );
+    }
+
+    /// System visibility: a project's submenu label carries what its live
+    /// runs hold in memory ("2 agents · 1.2 GB"), and a low workspace disk
+    /// adds a warning line under the header (with the pause when critical).
+    #[test]
+    fn shows_run_memory_and_low_disk() {
+        let labels = |spec: &MenuSpec| -> Vec<String> {
+            spec.entries
+                .iter()
+                .filter_map(|e| match e {
+                    MenuEntry::Item { label, .. } | MenuEntry::Submenu { label, .. } => {
+                        Some(label.clone())
+                    }
+                    MenuEntry::Separator => None,
+                })
+                .collect()
+        };
+        let mut v = view("/a", true);
+        v.name = "web-app".into();
+        v.health = Health::Ok(StateSummary {
+            running: 2,
+            runs_rss_bytes: 1_288_490_188,
+            disk: Some(DiskWarning {
+                free_bytes: 3_435_973_836,
+                critical: false,
+            }),
+            ..Default::default()
+        });
+        let got = labels(&build_menu(&[v.clone()], &[], [].iter(), None));
+        assert_eq!(got[1], "⚠ web-app: low disk — 3.2 GB free");
+        assert!(
+            got.contains(&"▶ web-app — running · 2 agents · 1.2 GB".to_string()),
+            "{got:?}"
+        );
+
+        v.health = Health::Ok(StateSummary {
+            running: 0,
+            runs_rss_bytes: 0,
+            disk: Some(DiskWarning {
+                free_bytes: 1 << 30,
+                critical: true,
+            }),
+            ..Default::default()
+        });
+        let got = labels(&build_menu(&[v.clone()], &[], [].iter(), None));
+        assert_eq!(
+            got[1],
+            "⚠ web-app: disk almost full — 1.0 GB free, dispatch paused"
+        );
+        assert!(got.contains(&"▶ web-app — running · 0 agents".to_string()));
+
+        v.health = Health::Ok(StateSummary::default());
+        let got = labels(&build_menu(&[v], &[], [].iter(), None));
+        assert!(!got.iter().any(|l| l.contains("disk")), "{got:?}");
     }
 
     #[test]
@@ -946,13 +1260,13 @@ mod tests {
                 "Itervox 0.2.6 (you have 0.2.5)",
                 "Install Command-Line Tool…",
                 "-",
-                "Quit Itervox (daemons keep running)"
+                QUIT_LABEL
             ]
         );
         let install = spec.entries.iter().find_map(|e| match e {
-            MenuEntry::Item { id, label, enabled } if label.starts_with("Update available") => {
-                Some((id.clone(), *enabled))
-            }
+            MenuEntry::Item {
+                id, label, enabled, ..
+            } if label.starts_with("Update available") => Some((id.clone(), *enabled)),
             _ => None,
         });
         let (id, enabled) = install.unwrap();

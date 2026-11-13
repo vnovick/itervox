@@ -1,14 +1,9 @@
-import Badge from '../ui/badge/Badge';
 import { Card } from '../ui/Card/Card';
+import { buttonClass } from '../ui/button/buttonStyles';
 import { hubProjectHref } from '../../queries/hub';
 import type { HubProject } from '../../types/schemas';
 
 // #228 — one hub member on the hub's project switcher.
-
-const HEALTH_COLOR: Record<string, 'success' | 'warning' | 'error'> = {
-  ok: 'success',
-  unauthorized: 'warning',
-};
 
 function countsLine(p: HubProject): string {
   const c = p.summary?.counts;
@@ -17,31 +12,55 @@ function countsLine(p: HubProject): string {
   if (c.inputRequired) parts.push(`${String(c.inputRequired)} need input`);
   if (c.retrying) parts.push(`${String(c.retrying)} retrying`);
   if (p.summary?.paused) parts.push('dispatch paused');
-  return parts.join(' · ');
+  return parts.length === 1 && !c.running ? 'Nothing running' : parts.join(' · ');
 }
+
+type Tone = 'ok' | 'warn' | 'danger' | 'idle';
+
+/** The card's status: the member's health when it is not ok, else what it needs. */
+function projectStatus(p: HubProject): { label: string; tone: Tone } {
+  if (p.health === 'unauthorized') return { label: p.health, tone: 'warn' };
+  if (p.health !== 'ok') return { label: p.health, tone: 'danger' };
+  const c = p.summary?.counts;
+  if (c?.inputRequired) return { label: 'Needs you', tone: 'warn' };
+  if (c?.running) return { label: 'Healthy', tone: 'ok' };
+  return { label: 'Idle', tone: 'idle' };
+}
+
+const TONE_TEXT: Record<Tone, string> = {
+  ok: 'text-theme-success-text',
+  warn: 'text-theme-warning-text',
+  danger: 'text-theme-danger-text',
+  idle: 'text-theme-text-secondary',
+};
 
 export function HubProjectCard({ project }: { project: HubProject }) {
   const counts = countsLine(project);
+  const status = projectStatus(project);
   return (
-    <Card padding="md" className="flex flex-col gap-2">
+    <Card variant="panel" padding="none" className="flex h-full flex-col gap-2 px-5 py-[18px]">
       <div className="flex min-w-0 items-center gap-2">
-        <span className="text-theme-text truncate font-mono text-sm font-semibold">
-          {project.name}
+        <span aria-hidden="true" className={`status-dot dot-${status.tone}`} />
+        <span className="text-theme-text truncate text-[17px] font-semibold">{project.name}</span>
+        <span
+          className={`ml-auto shrink-0 text-xs font-semibold ${TONE_TEXT[status.tone]}`}
+          title={`health: ${project.health}`}
+        >
+          {status.label}
         </span>
-        <Badge size="sm" color={HEALTH_COLOR[project.health] ?? 'error'}>
-          {project.health}
-        </Badge>
-        <span className="text-theme-muted ml-auto shrink-0 text-xs">{project.version}</span>
       </div>
-      <p className="text-theme-text-secondary truncate text-xs" title={project.projectDir}>
-        {project.projectDir}
+      <p
+        className="text-theme-text-secondary truncate font-mono text-xs"
+        title={project.projectDir}
+      >
+        {project.projectDir} · {project.version}
       </p>
-      {counts && <p className="text-theme-text text-xs">{counts}</p>}
+      {counts && <p className="text-theme-text text-sm">{counts}</p>}
       {project.error && <p className="text-theme-danger-text text-xs">{project.error}</p>}
       {project.proxied ? (
         <a
           href={hubProjectHref(project.name)}
-          className="text-theme-accent-strong self-start text-sm font-medium hover:underline"
+          className={buttonClass('primary', 'lg', 'mt-1 self-start', true)}
         >
           Open dashboard
         </a>

@@ -23,8 +23,8 @@ export function MemoryFilterBar({ tags, profiles }: { tags: string[]; profiles: 
   const f = useUIStore((s) => s.memoryFilters);
   const set = useUIStore((s) => s.setMemoryFilters);
   return (
-    <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6" role="search">
-      <div className="sm:col-span-3 lg:col-span-6">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-3" role="search">
+      <div className="col-span-full">
         <label className={fieldLabelCls} htmlFor={`${uid}-q`}>
           Search
         </label>
@@ -130,8 +130,10 @@ function Filter({
   onChange: (value: string) => void;
   children: ReactNode;
 }) {
+  // The grid gives each select at least 9rem, room for its longest label
+  // ("All scopes", "Any profile"); the row wraps instead of squeezing them.
   return (
-    <div>
+    <div className="min-w-0">
       <label className={fieldLabelCls} htmlFor={uid}>
         {label}
       </label>

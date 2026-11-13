@@ -363,6 +363,27 @@ type WorkspaceConfig struct {
 	CloneURL string
 	// BaseBranch is the branch worktrees are created from (default: "main").
 	BaseBranch string
+	// CopyFiles are paths or globs, relative to the repository root that
+	// holds WORKFLOW.md, copied into each new worktree before
+	// hooks.after_create runs and refreshed on later runs (#250). Only
+	// gitignored files are copied. Empty (the default): nothing is copied.
+	CopyFiles []string
+	// CopyFilesMaxBytes caps the bytes CopyFiles copies into one worktree
+	// per run (default 10 MB); the rest is skipped and reported.
+	CopyFilesMaxBytes int
+	// PortRange is workspace.port_range as written ("41000-41999" by
+	// default); PortMin and PortMax are its bounds. Each issue's workspace
+	// gets one port from it as ITERVOX_PORT (#250).
+	PortRange        string
+	PortMin, PortMax int
+	// DiskWarnFreeGB: below this many GB free on the volume holding Root,
+	// the dashboard and the desktop tray warn (workspace.disk_warn_free_gb,
+	// default 5; 0 turns the warning off). Read-only after startup.
+	DiskWarnFreeGB int
+	// DiskPauseFreeGB: below this many GB free, all dispatch is paused
+	// until free space is back above it (workspace.disk_pause_free_gb,
+	// default 0 = never). Read-only after startup.
+	DiskPauseFreeGB int
 }
 
 // DefaultTrackerStoreSyncIntervalMs is tracker.store.sync_interval_ms when
@@ -422,12 +443,27 @@ type AgentProfile struct {
 	// CreateIssueState is the tracker state/column used when the create_issue
 	// action is allowed for this profile.
 	CreateIssueState string
+	// CreateIssueLabels is the allow-list of labels a create_issue call may
+	// put on the new issue (#253); a requested label outside it is refused
+	// with agent_action_denied. Empty (the default) allows no labels.
+	// YAML key: create_issue_labels.
+	CreateIssueLabels []string
 	// PermissionMode selects the approval/sandbox flags this profile's agent
 	// turns launch with: "bypass" (default, the long-standing behaviour) or
 	// "sandbox". Both are non-interactive — itervox is headless, so a mode
 	// that can pause for approval hangs the turn until the timeout kills it.
 	// See internal/agent/permission.go (issue #66).
 	PermissionMode string
+	// Isolation runs this profile's agent inside an operating-system
+	// sandbox (#258): "process", or "none" for no sandbox. Empty inherits
+	// agent.isolation. See internal/agent/isolation.go.
+	Isolation string
+	// IsolationExtraWrite are absolute paths (or ~/...) added to the
+	// sandbox's writable list. Used only with isolation "process".
+	IsolationExtraWrite []string
+	// IsolationExtraDeny are absolute paths (or ~/...) added to the
+	// sandbox's unreadable list. Used only with isolation "process".
+	IsolationExtraDeny []string
 	// RequireEvidence lists the checks a run of this profile must prove
 	// before Itervox moves its issue to completion_state (#80). Each name
 	// but "ci" must appear as a passing entry in the run's evidence file
@@ -616,6 +652,14 @@ type AgentConfig struct {
 	// wrapper script that reads its stdin to EOF before starting never sees
 	// EOF in streaming mode. Read-only after startup.
 	LiveSteering bool
+	// ResourceSampling samples each local run's process tree every 2s for
+	// CPU, memory, processes, disk I/O and connections
+	// (agent.resource_sampling, default true). Read-only after startup.
+	ResourceSampling bool
+	// ActivityAudit is the per-run activity recording mode
+	// (agent.activity_audit): ActivityAuditOff, ActivityAuditSampled (the
+	// default) or ActivityAuditPrecise. Read-only after startup.
+	ActivityAudit string
 	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
 	// automation can swap an issue to a different profile / backend within
 	// SwitchWindowHours. Default 2. 0 means "unlimited" (not recommended).
@@ -666,6 +710,10 @@ type AgentConfig struct {
 	// request an agent run produces, once per PR (#81). Off by default.
 	// YAML key: agent.pr_footer.
 	PRFooter bool
+	// Isolation is the default isolation for profiles that do not set
+	// their own (#258): "none" (the default, no sandbox) or "process" (the
+	// agent subprocess runs inside an OS sandbox). Read-only after startup.
+	Isolation string
 	// AvailableModels maps backend names ("claude", "codex") to model options
 	// discovered at init time. The dashboard profile editor uses these for the
 	// model dropdown. When empty, the frontend falls back to a built-in default
@@ -1013,6 +1061,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Workspace.Worktree = boolField(ws, "worktree", false)
 	cfg.Workspace.CloneURL = strField(ws, "clone_url", "")
 	cfg.Workspace.BaseBranch = strField(ws, "base_branch", "main")
+	if err := parseWorkspaceSetup(ws, &cfg.Workspace); err != nil { // #250
+		return nil, err
+	}
 
 	// Agent
 	agent := nestedMap(raw, "agent")
@@ -1067,6 +1118,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.LiveSteering = boolField(agent, "live_steering", false)
+	parseVisibilityConfig(agent, ws, cfg)                                     // system visibility
 	cfg.Agent.Playbooks = parsePlaybooksConfig(nestedMap(agent, "playbooks")) // #218
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	budget := nestedMap(agent, "budget")
@@ -1094,11 +1146,19 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.BackendFallback = backendFallback
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
 	cfg.Agent.PRFooter = boolField(agent, "pr_footer", false)
+	cfg.Agent.Isolation = strings.TrimSpace(strField(agent, "isolation", IsolationNone))
+	if err := ValidateIsolationMode("agent.isolation", cfg.Agent.Isolation, false); err != nil {
+		return nil, err
+	}
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
 		return nil, err
 	}
 	cfg.Agent.Profiles = profiles
+	// #258: process isolation is local only for now.
+	if err := ValidateIsolationHosts(cfg.Agent); err != nil {
+		return nil, err
+	}
 	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
 
 	// Hooks
@@ -1481,18 +1541,26 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			iso, err := profileIsolationFields(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
-				Command:          cmd,
-				SoulFile:         soulFile,
-				InstructionsFile: instructionsFile,
-				Soul:             soul,
-				Instructions:     instructions,
-				Backend:          backend,
-				Enabled:          boolPtr(boolField(m, "enabled", true)),
-				AllowedActions:   allowed,
-				CreateIssueState: strField(m, "create_issue_state", ""),
-				PermissionMode:   strField(m, "permission_mode", ""),
-				RequireEvidence:  requireEvidence,
+				Command:             cmd,
+				SoulFile:            soulFile,
+				InstructionsFile:    instructionsFile,
+				Soul:                soul,
+				Instructions:        instructions,
+				Backend:             backend,
+				Enabled:             boolPtr(boolField(m, "enabled", true)),
+				AllowedActions:      allowed,
+				CreateIssueState:    strField(m, "create_issue_state", ""),
+				CreateIssueLabels:   NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
+				PermissionMode:      strField(m, "permission_mode", ""),
+				RequireEvidence:     requireEvidence,
+				Isolation:           iso.Isolation,
+				IsolationExtraWrite: iso.IsolationExtraWrite,
+				IsolationExtraDeny:  iso.IsolationExtraDeny,
 			}
 			continue
 		}
@@ -1504,15 +1572,23 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 		if err != nil {
 			return nil, err
 		}
+		iso, err := profileIsolationFields(m, name)
+		if err != nil {
+			return nil, err
+		}
 		profiles[name] = AgentProfile{
-			Command:          cmd,
-			Prompt:           strField(m, "prompt", ""),
-			Backend:          strField(m, "backend", ""),
-			Enabled:          boolPtr(boolField(m, "enabled", true)),
-			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
-			CreateIssueState: strField(m, "create_issue_state", ""),
-			PermissionMode:   strField(m, "permission_mode", ""),
-			RequireEvidence:  requireEvidence,
+			Command:             cmd,
+			Prompt:              strField(m, "prompt", ""),
+			Backend:             strField(m, "backend", ""),
+			Enabled:             boolPtr(boolField(m, "enabled", true)),
+			AllowedActions:      NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
+			CreateIssueState:    strField(m, "create_issue_state", ""),
+			CreateIssueLabels:   NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
+			PermissionMode:      strField(m, "permission_mode", ""),
+			RequireEvidence:     requireEvidence,
+			Isolation:           iso.Isolation,
+			IsolationExtraWrite: iso.IsolationExtraWrite,
+			IsolationExtraDeny:  iso.IsolationExtraDeny,
 		}
 	}
 	if len(profiles) == 0 {

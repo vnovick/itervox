@@ -1,6 +1,6 @@
 [package]
 name = "itervox-desktop"
-version = "0.3.0"
+version = "0.3.1"
 description = "Itervox menu-bar app: a thin Tauri shell over the itervox daemons"
 license = "Apache-2.0"
 edition = "2021"
@@ -15,7 +15,9 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
+# `macos-private-api`: transparent windows and webviews on macOS, for the
+# system material behind the rail and the Sessions window (material.rs).
+tauri = { version = "2", features = ["tray-icon", "image-png", "unstable", "macos-private-api"] }
 tauri-plugin-notification = "2.6"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -24,10 +26,39 @@ serde_json = "1"
 ureq = { version = "3", default-features = false, features = ["json"] }
 getrandom = "0.3"
 libc = "0.2"
-# macOS Keychain on macOS; the crate also builds (unused) elsewhere, where the
-# app falls back to an in-memory token store.
+# The OS credential store: the macOS Keychain, the Secret Service on Linux
+# and the Windows Credential Manager; memory when none is reachable.
 keyring = "4"
 tauri-plugin-updater = "2"
+
+# Linux and Windows (#260): the update check reads the latest GitHub
+# release over HTTPS (no self-update there, only a link to the release).
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+
+# The system material behind the rail and the Sessions window
+# (material.rs): Liquid Glass or vibrancy on macOS, Mica on Windows 11.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+window-vibrancy = "0.8.1"
+
+# macOS: the OS version, whether AppKit has NSGlassEffectView, and the
+# Reduce Transparency and Increase Contrast settings.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace"] }
+
+# Windows (#260): process liveness, and the registry for the user PATH of
+# the command-line tool and the Run key of Start at Login.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_UI_Accessibility",
+  "Win32_UI_WindowsAndMessaging",
+] }
+winreg = "0.56"
+windows-version = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

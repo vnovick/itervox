@@ -29,7 +29,7 @@ export function MemoryDetailPanel({ entry }: { entry: MemoryEntry }) {
     <aside
       aria-label="Memory entry"
       data-testid="memory-detail"
-      className="border-theme-line space-y-4 rounded border p-4 text-sm"
+      className="glass-panel space-y-4 self-start px-5 py-[18px] text-sm"
     >
       <div className="text-theme-muted flex flex-wrap gap-x-3 text-xs">
         <span>{TYPE_LABELS[entry.type]}</span>

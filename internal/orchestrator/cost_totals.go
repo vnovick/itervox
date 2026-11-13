@@ -1,5 +1,10 @@
 package orchestrator
 
+import (
+	"maps"
+	"slices"
+)
+
 // RunTotals is the daemon-session cumulative token and estimated-cost
 // accounting behind the snapshot's `totals` (CORE-091). Event-loop state; it
 // is deliberately NOT persisted (like IssueStatusHistory, it describes this
@@ -37,6 +42,13 @@ type RunTotals struct {
 	CostKnown  bool
 	ClaudeRuns int
 	CodexRuns  int
+	// RunsByBackend counts the runs behind the token totals per backend name
+	// ("claude" when a run names none); ClaudeRuns and CodexRuns count only
+	// their own backend. CostBackends records each backend that has reported
+	// a cost this session, so the dashboard can say which runs the estimate
+	// leaves out (Codex, and any backend that reports no cost).
+	RunsByBackend map[string]int
+	CostBackends  map[string]bool
 	// SessionCost is the last total_cost_usd seen per agent session id.
 	SessionCost map[string]float64
 }
@@ -48,6 +60,8 @@ type TotalsSnapshot struct {
 	CostUSDEstimated *float64 // nil until a Claude run reports cost
 	ClaudeRuns       int
 	CodexRuns        int
+	RunsByBackend    map[string]int // a copy; nil when no run has counted
+	CostBackends     []string       // sorted
 }
 
 // Snapshot returns the reportable view of t.
@@ -55,6 +69,13 @@ func (t RunTotals) Snapshot() TotalsSnapshot { return t.snapshot() }
 
 func (t RunTotals) snapshot() TotalsSnapshot {
 	s := TotalsSnapshot{InputTokens: t.InputTokens, OutputTokens: t.OutputTokens, ClaudeRuns: t.ClaudeRuns, CodexRuns: t.CodexRuns}
+	if len(t.RunsByBackend) > 0 {
+		s.RunsByBackend = maps.Clone(t.RunsByBackend)
+	}
+	for name := range t.CostBackends {
+		s.CostBackends = append(s.CostBackends, name)
+	}
+	slices.Sort(s.CostBackends)
 	if t.CostKnown {
 		c := t.CostUSD
 		s.CostUSDEstimated = &c
@@ -77,12 +98,17 @@ func (t *RunTotals) accountRunUpdate(entry, update *RunEntry) (added Spend) {
 		entry.totalsOutput = max(entry.totalsOutput, update.OutputTokens)
 		if !entry.totalsCounted {
 			entry.totalsCounted = true
-			switch entry.Backend {
+			name := totalsBackend(entry.Backend)
+			switch name {
 			case "codex":
 				t.CodexRuns++
-			default:
+			case "claude":
 				t.ClaudeRuns++
 			}
+			if t.RunsByBackend == nil {
+				t.RunsByBackend = make(map[string]int)
+			}
+			t.RunsByBackend[name]++
 		}
 	}
 	if update.CostUSD == nil {
@@ -109,7 +135,20 @@ func (t *RunTotals) accountRunUpdate(entry, update *RunEntry) (added Spend) {
 	t.SessionCost[session] = cost
 	t.CostKnown = true
 	added.CostKnown = true
+	if t.CostBackends == nil {
+		t.CostBackends = make(map[string]bool)
+	}
+	t.CostBackends[totalsBackend(entry.Backend)] = true
 	return added
+}
+
+// totalsBackend is the backend name a run counts under: a run that names
+// none ran the default, Claude.
+func totalsBackend(backend string) string {
+	if backend == "" {
+		return "claude"
+	}
+	return backend
 }
 
 // pruneSessionCost drops the cost baseline of every agent session that

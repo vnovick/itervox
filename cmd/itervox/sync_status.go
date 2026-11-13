@@ -52,6 +52,7 @@ type syncStatusSource struct {
 }
 
 func newSyncStatusSource(cfg *config.Config, tr tracker.Tracker, ob *outbox.Outbox, orch *orchestrator.Orchestrator) *syncStatusSource {
+	tr = trackerBehindTasks(tr) // #251: the tracker's own status
 	src := &syncStatusSource{
 		outbox:       ob,
 		pollInterval: time.Duration(cfg.Polling.IntervalMs) * time.Millisecond,

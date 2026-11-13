@@ -35,9 +35,9 @@ export function HubNotificationMatrix({
 }: Props) {
   const until = snoozedUntil(settings, project, nowMs);
   return (
-    <Card padding="md" className="flex flex-col gap-3">
+    <Card variant="panel" padding="none" className="flex flex-col gap-3 px-5 py-[18px]">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-theme-text font-mono text-sm font-semibold">{project}</h3>
+        <h3 className="section-title">{project}</h3>
         {until ? (
           <>
             <Badge size="sm" color="warning">
@@ -73,14 +73,12 @@ export function HubNotificationMatrix({
         )}
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs" aria-label={`${project} notification routes`}>
+        <table className="data-table" aria-label={`${project} notification routes`}>
           <thead>
-            <tr className="text-theme-muted text-left">
-              <th scope="col" className="py-1 pr-2 font-medium">
-                Event
-              </th>
+            <tr>
+              <th scope="col">Event</th>
               {channels.map((ch) => (
-                <th key={ch.name} scope="col" className="px-2 py-1 text-center font-medium">
+                <th key={ch.name} scope="col" className="text-center">
                   {CHANNEL_LABELS[ch.name] ?? ch.name}
                 </th>
               ))}
@@ -90,15 +88,16 @@ export function HubNotificationMatrix({
             {kinds.map((k) => {
               const route = effectiveRoute(settings, project, k.name);
               return (
-                <tr key={k.name} className="border-theme-line border-t">
-                  <th scope="row" className="text-theme-text py-1 pr-2 text-left font-normal">
+                <tr key={k.name}>
+                  <th scope="row">
                     {KIND_LABELS[k.name] ?? k.name}
                     {k.urgent && <span className="text-theme-muted ml-1">(urgent)</span>}
                   </th>
                   {channels.map((ch) => (
-                    <td key={ch.name} className="px-2 py-1 text-center">
+                    <td key={ch.name} className="text-center">
                       <input
                         type="checkbox"
+                        className="switch align-middle"
                         aria-label={`${project} ${KIND_LABELS[k.name] ?? k.name} via ${CHANNEL_LABELS[ch.name] ?? ch.name}`}
                         checked={route.includes(ch.name)}
                         onChange={(e) => {

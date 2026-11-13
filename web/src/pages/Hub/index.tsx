@@ -30,16 +30,20 @@ export default function HubPage() {
   const [view, setView] = useState<HubView>(initialView);
   const projects = data?.projects ?? [];
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-4 p-4 md:p-8">
-      <header className="flex flex-wrap items-center gap-3">
-        <ItervoxLogo className="h-6 w-auto" aria-label="Itervox" />
-        <h1 className="text-theme-text text-lg font-semibold">Hub</h1>
-        {data && (
-          <span className="text-theme-muted text-xs">
-            {projects.length} project{projects.length === 1 ? '' : 's'} · itervox {data.hub.version}
-          </span>
-        )}
-        <div role="tablist" aria-label="Hub views" className="ml-auto flex gap-1">
+    <main className="mx-auto flex min-h-screen max-w-[1180px] flex-col gap-4 p-4 md:px-8 md:py-6">
+      <header className="glass-panel flex flex-wrap items-center gap-3 px-5 py-4">
+        <span aria-hidden="true" className="brand-tile h-9 w-9 rounded-[10px]" />
+        <div className="min-w-0">
+          <h1 className="text-theme-text text-2xl leading-tight font-bold tracking-tight">Hub</h1>
+          {data && (
+            <p className="text-theme-text-secondary text-[13px]">
+              {projects.length} project{projects.length === 1 ? '' : 's'} · itervox{' '}
+              {data.hub.version}
+            </p>
+          )}
+        </div>
+        <ItervoxLogo className="sr-only" aria-label="Itervox" />
+        <div role="tablist" aria-label="Hub views" className="segmented ml-auto">
           {VIEWS.map((v) => (
             <button
               key={v.id}
@@ -49,11 +53,7 @@ export default function HubPage() {
               onClick={() => {
                 setView(v.id);
               }}
-              className={
-                view === v.id
-                  ? 'bg-theme-accent-soft text-theme-accent-strong rounded px-2 py-1 text-xs font-medium'
-                  : 'text-theme-muted hover:text-theme-text rounded px-2 py-1 text-xs'
-              }
+              className="text-[15px]"
             >
               {v.label}
             </button>
@@ -77,7 +77,7 @@ export default function HubPage() {
         />
       )}
       {view === 'projects' && (
-        <ul className="grid grid-cols-1 gap-3 md:grid-cols-2" aria-label="Projects">
+        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Projects">
           {projects.map((p) => (
             <li key={p.workflow}>
               <HubProjectCard project={p} />

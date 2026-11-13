@@ -25,12 +25,12 @@ export function RulesPreviewPanel() {
   return (
     <section
       aria-labelledby={`${uid}-title`}
-      className="border-theme-line bg-theme-bg-elevated space-y-4 rounded-[var(--radius-md)] border p-4"
+      className="glass-panel min-w-0 space-y-3 px-5 py-[18px]"
     >
-      <h2 id={`${uid}-title`} className="text-theme-text text-sm font-semibold">
+      <h2 id={`${uid}-title`} className="text-theme-text text-base font-semibold">
         Effective rules
       </h2>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
         <div>
           <label className={fieldLabelCls} htmlFor={`${uid}-profile`}>
             Profile
@@ -75,7 +75,7 @@ export function RulesPreviewPanel() {
       {isError && <p className="text-theme-danger-text text-xs">Could not load the preview.</p>}
       {preview && (
         <div className="space-y-3" data-testid="rules-preview">
-          <p className="text-theme-muted text-xs">
+          <p className="text-theme-text-secondary text-[13px]">
             Profile <code>{preview.profile}</code> on <code>{preview.backend}</code>
             {preview.projects.length > 0 && <> in {preview.projects.join(' / ')}</>}
             {preview.hash && (
@@ -107,7 +107,7 @@ export function RulesPreviewPanel() {
           ) : (
             <ul className="space-y-2">
               {preview.rules.map((r) => (
-                <li key={`${r.layer}-${r.id}`} className="text-sm">
+                <li key={`${r.layer}-${r.id}`} className="glass-card px-3 py-2 text-sm">
                   <Badge size="sm" color={r.severity === 'must' ? 'error' : 'info'}>
                     {r.severity}
                   </Badge>{' '}
@@ -121,13 +121,11 @@ export function RulesPreviewPanel() {
             </ul>
           )}
           {preview.block && (
-            <details>
+            <details open>
               <summary className="text-theme-text-secondary cursor-pointer text-xs">
                 Prompt block
               </summary>
-              <pre className="bg-theme-bg-soft mt-2 overflow-x-auto rounded p-3 text-[11px] whitespace-pre-wrap">
-                {preview.block}
-              </pre>
+              <pre className="code-block mt-2">{preview.block}</pre>
             </details>
           )}
         </div>

@@ -189,7 +189,8 @@ func wireSessions(orch *orchestrator.Orchestrator, cfg *config.Config, workflowP
 		project = abs
 	}
 	t := &tmuxSessions{orch: orch, detect: &tmuxDetector{}, control: cfg.Sessions.TmuxControl,
-		projectRoot: project, workspaceRoot: cfg.Workspace.Root, agentCommand: cfg.Agent.Command}
+		projectRoot: project, workspaceRoot: cfg.Workspace.Root, agentCommand: cfg.Agent.Command,
+		isolation: cfg.Agent.Isolation}
 	if demo {
 		return t
 	}

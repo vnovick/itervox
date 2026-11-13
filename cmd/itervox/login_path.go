@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/x/term"
@@ -216,8 +215,7 @@ func loginShellPATH(shell string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, shell, loginShellArgs(shell)...)
-	procgroup.Configure(cmd, time.Second)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // also a new group: Configure's Cancel still reaches it
+	procgroup.ConfigureDetached(cmd, time.Second) // Setsid: also a new group, so Cancel still reaches it
 	out := &cappedBuffer{max: maxLoginShellOutput}
 	cmd.Stdout = out
 	err := cmd.Run()

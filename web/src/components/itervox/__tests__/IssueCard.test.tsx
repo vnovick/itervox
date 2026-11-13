@@ -138,45 +138,43 @@ describe('IssueCard', () => {
 
   it('shows green status dot for running issue', () => {
     const { container } = render(<IssueCard issue={baseIssue} onSelect={vi.fn()} />);
-    const dot = container.querySelector('.bg-theme-success');
+    const dot = container.querySelector('.status-dot.dot-ok');
     expect(dot).toBeInTheDocument();
   });
 
   it('shows warning status dot for paused issue', () => {
     const pausedIssue = { ...baseIssue, orchestratorState: 'paused' as const };
     const { container } = render(<IssueCard issue={pausedIssue} onSelect={vi.fn()} />);
-    const dot = container.querySelector('.bg-theme-warning');
+    const dot = container.querySelector('.status-dot.dot-warn');
     expect(dot).toBeInTheDocument();
   });
 
   it('shows danger status dot for retrying issue', () => {
     const retryingIssue = { ...baseIssue, orchestratorState: 'retrying' as const };
     const { container } = render(<IssueCard issue={retryingIssue} onSelect={vi.fn()} />);
-    const dot = container.querySelector('.bg-theme-danger');
+    const dot = container.querySelector('.status-dot.dot-danger');
     expect(dot).toBeInTheDocument();
   });
 
   it('shows orange status dot for input_required issue', () => {
     const inputIssue = { ...baseIssue, orchestratorState: 'input_required' as const };
     const { container } = render(<IssueCard issue={inputIssue} onSelect={vi.fn()} />);
-    const dot = container.querySelector('.bg-orange-400');
+    const dot = container.querySelector('.status-dot.dot-warn');
     expect(dot).toBeInTheDocument();
   });
 
   it('shows orange status dot for pending_input_resume issue', () => {
     const pendingIssue = { ...baseIssue, orchestratorState: 'pending_input_resume' as const };
     const { container } = render(<IssueCard issue={pendingIssue} onSelect={vi.fn()} />);
-    const dot = container.querySelector('.bg-orange-400');
+    const dot = container.querySelector('.status-dot.dot-warn');
     expect(dot).toBeInTheDocument();
   });
 
-  it('shows transparent/muted dot for idle issue', () => {
+  it('shows no status dot for an idle issue', () => {
     const idleIssue = { ...baseIssue, orchestratorState: 'idle' as const };
     const { container } = render(<IssueCard issue={idleIssue} onSelect={vi.fn()} />);
-    // idle => bg-transparent (not active), so no success/warning/danger dot
-    expect(container.querySelector('.bg-theme-success')).not.toBeInTheDocument();
-    expect(container.querySelector('.bg-theme-warning')).not.toBeInTheDocument();
-    expect(container.querySelector('.bg-transparent')).toBeInTheDocument();
+    // idle => not active, so no status dot at all
+    expect(container.querySelector('.status-dot')).not.toBeInTheDocument();
   });
 
   it('shows Claude backend badge by default', () => {
@@ -520,11 +518,11 @@ describe('IssueCard', () => {
 
     it('the card wrapper is no longer a role=button around nested controls', () => {
       render(<Board onSelect={vi.fn()} onDragStart={vi.fn()} />);
-      // Only real buttons remain, in DOM order: drag handle, review badge, title.
+      // Only real buttons remain, in DOM order: drag handle, title, review badge.
       const names = screen
         .getAllByRole('button')
         .map((b) => b.getAttribute('aria-label') ?? b.textContent);
-      expect(names).toEqual(['Move ABC-1', '📝 2 reviews', 'Fix the bug']);
+      expect(names).toEqual(['Move ABC-1', 'Fix the bug', '📝 2 reviews']);
     });
   });
 });

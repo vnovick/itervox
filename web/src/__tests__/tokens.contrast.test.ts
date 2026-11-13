@@ -77,24 +77,104 @@ function solid(t: Record<string, string>, name: string): RGB {
   return c.rgb;
 }
 
+/** Composite translucent token layers, in order, over an opaque base. */
+function stack(t: Record<string, string>, base: RGB, ...layers: string[]): RGB {
+  return layers.reduce((bg, name) => over(parse(resolveToken(t, name)), bg), base);
+}
+
+// Visual refresh — every surface is translucent, so contrast is measured on
+// the colour a surface actually shows: its recipe composited over the page
+// (--bg) and over the surfaces it sits on. A panel is --glass on the page; a
+// card is --card on a panel; chips float on the page or a panel; sheets
+// float on the page; --subtle wells sit inside panels; --surface is the
+// opaque backing of toasts and pinned banners.
+function surfaces(t: Record<string, string>): Record<string, RGB> {
+  const page = solid(t, '--bg');
+  const glass = stack(t, page, '--glass');
+  return {
+    page,
+    glass,
+    card: stack(t, glass, '--card'),
+    'chip on page': stack(t, page, '--chip'),
+    'chip on glass': stack(t, glass, '--chip'),
+    sheet: stack(t, page, '--sheet'),
+    'card on sheet': stack(t, page, '--sheet', '--card'),
+    'subtle in glass': stack(t, glass, '--subtle'),
+    surface: solid(t, '--surface'),
+  };
+}
+
+/** The page under each glow at its peak (the centre of the radial light). */
+function glowPeaks(t: Record<string, string>): Record<string, RGB> {
+  const page = solid(t, '--bg');
+  return {
+    blue: stack(t, page, '--glow-blue'),
+    peach: stack(t, page, '--glow-peach'),
+    mint: stack(t, page, '--glow-mint'),
+  };
+}
+
+/** `.pill-<tone>` from index.css → its background and text tokens. */
+function pillTokens(tone: string): { bg: string; fg: string } {
+  const body = block(`.pill-${tone} {`);
+  const bg = /background:\s*var\((--[\w-]+)\)/.exec(body)?.[1];
+  const fg = /color:\s*var\((--[\w-]+)\)/.exec(body)?.[1];
+  if (!bg || !fg) throw new Error(`.pill-${tone} must use var() tokens`);
+  return { bg, fg };
+}
+
 describe('tokens.contrast', () => {
   for (const [name, t] of Object.entries(THEMES)) {
     describe(name, () => {
-      it('--muted meets 4.5:1 on --panel, --bg and --bg-soft', () => {
-        for (const surface of ['--panel', '--bg', '--bg-soft']) {
-          expect(ratio(solid(t, '--muted'), solid(t, surface)), surface).toBeGreaterThanOrEqual(
-            4.5,
-          );
+      for (const text of ['--text', '--text-secondary', '--muted']) {
+        it(`${text} meets 4.5:1 on every composited surface`, () => {
+          const fg = solid(t, text);
+          for (const [surface, bg] of Object.entries(surfaces(t))) {
+            expect(ratio(fg, bg), `${text} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+          }
+        });
+      }
+
+      it('--text stays 4.5:1 on a panel and a card even at the peak of each glow', () => {
+        const fg = solid(t, '--text');
+        for (const [glow, under] of Object.entries(glowPeaks(t))) {
+          const glass = stack(t, under, '--glass');
+          expect(ratio(fg, glass), `glass over ${glow}`).toBeGreaterThanOrEqual(4.5);
+          const card = stack(t, glass, '--card');
+          expect(ratio(fg, card), `card over ${glow}`).toBeGreaterThanOrEqual(4.5);
         }
       });
 
-      for (const signal of ['success', 'warning', 'danger']) {
-        it(`--${signal}-text meets 4.5:1 on --panel and on --${signal}-soft composited over --panel`, () => {
+      it('legacy surface tokens alias the glass recipes', () => {
+        expect(resolveToken(t, '--bg-elevated')).toBe(resolveToken(t, '--glass'));
+        expect(resolveToken(t, '--panel')).toBe(resolveToken(t, '--card'));
+        expect(resolveToken(t, '--bg-soft')).toBe(resolveToken(t, '--subtle'));
+      });
+
+      it('each opaque -solid fallback matches its recipe composited over the page', () => {
+        const s = surfaces(t);
+        const pairs: [string, RGB][] = [
+          ['--glass-solid', s.glass],
+          ['--card-solid', s.card],
+          ['--chip-solid', s['chip on page']],
+          ['--sheet-solid', s.sheet],
+        ];
+        for (const [token, composite] of pairs) {
+          const fallback = solid(t, token);
+          for (let i = 0; i < 3; i++) {
+            expect(Math.abs(fallback[i] - composite[i]), token).toBeLessThanOrEqual(3);
+          }
+        }
+      });
+
+      for (const signal of ['success', 'warning', 'danger', 'purple']) {
+        it(`--${signal}-text meets 4.5:1 on every surface and on --${signal}-soft over each`, () => {
           const text = solid(t, `--${signal}-text`);
-          const panel = solid(t, '--panel');
-          expect(ratio(text, panel)).toBeGreaterThanOrEqual(4.5);
-          const soft = over(parse(resolveToken(t, `--${signal}-soft`)), panel);
-          expect(ratio(text, soft)).toBeGreaterThanOrEqual(4.5);
+          for (const [surface, bg] of Object.entries(surfaces(t))) {
+            expect(ratio(text, bg), surface).toBeGreaterThanOrEqual(4.5);
+            const soft = over(parse(resolveToken(t, `--${signal}-soft`)), bg);
+            expect(ratio(text, soft), `soft on ${surface}`).toBeGreaterThanOrEqual(4.5);
+          }
         });
       }
 
@@ -113,9 +193,14 @@ describe('tokens.contrast', () => {
         const source: string = readFileSync(resolve(SRC, 'components/common/Toast.tsx'), 'utf8');
         const button = /aria-label="Dismiss notification"[^>]*>/s.exec(source)?.[0] ?? '';
         const opacity = Number(/opacity-(\d+)/.exec(button)?.[1] ?? '100') / 100;
-        const panel = solid(t, '--panel');
+        // The toast tint is layered over the opaque --surface (Toast.tsx).
+        const underlay = /linear-gradient\(\$\{soft\}, \$\{soft\}\), var\((--[\w-]+)\)/.exec(
+          source,
+        )?.[1];
+        expect(underlay, 'toast tint must sit on an opaque token').toBeDefined();
+        const base = solid(t, underlay ?? '');
         for (const signal of ['success', 'danger']) {
-          const bg = over(parse(resolveToken(t, `--${signal}-soft`)), panel);
+          const bg = over(parse(resolveToken(t, `--${signal}-soft`)), base);
           const fg = over({ rgb: solid(t, `--${signal}-text`), alpha: opacity }, bg);
           expect(ratio(fg, bg), signal).toBeGreaterThanOrEqual(3);
         }
@@ -128,13 +213,13 @@ describe('tokens.contrast', () => {
   // and the header Resuming pill (3.52:1 in light).
   for (const [name, t] of Object.entries(THEMES)) {
     describe(`${name} accent`, () => {
-      it('--accent-text meets 4.5:1 on --panel, --bg, --bg-soft and --accent-soft over --panel', () => {
+      it('--accent-text meets 4.5:1 on every surface and on --accent-soft over each', () => {
         const text = solid(t, '--accent-text');
-        for (const surface of ['--panel', '--bg', '--bg-soft']) {
-          expect(ratio(text, solid(t, surface)), surface).toBeGreaterThanOrEqual(4.5);
+        for (const [surface, bg] of Object.entries(surfaces(t))) {
+          expect(ratio(text, bg), surface).toBeGreaterThanOrEqual(4.5);
+          const soft = over(parse(resolveToken(t, '--accent-soft')), bg);
+          expect(ratio(text, soft), `soft on ${surface}`).toBeGreaterThanOrEqual(4.5);
         }
-        const soft = over(parse(resolveToken(t, '--accent-soft')), solid(t, '--panel'));
-        expect(ratio(text, soft)).toBeGreaterThanOrEqual(4.5);
       });
 
       it('white on --accent and --danger (primary / destructive buttons) meets 4.5:1', () => {
@@ -143,9 +228,9 @@ describe('tokens.contrast', () => {
         }
       });
 
-      it('--accent-strong on --accent-soft (accent pills) meets 4.5:1 over --panel and --bg-soft', () => {
-        for (const surface of ['--panel', '--bg-soft']) {
-          const soft = over(parse(resolveToken(t, '--accent-soft')), solid(t, surface));
+      it('--accent-strong on --accent-soft (accent pills) meets 4.5:1 on every surface', () => {
+        for (const [surface, bg] of Object.entries(surfaces(t))) {
+          const soft = over(parse(resolveToken(t, '--accent-soft')), bg);
           expect(ratio(solid(t, '--accent-strong'), soft), surface).toBeGreaterThanOrEqual(4.5);
         }
       });
@@ -163,13 +248,28 @@ describe('tokens.contrast', () => {
         expect(ratio([255, 255, 255], solid(t, `--${bg ?? ''}`))).toBeGreaterThanOrEqual(4.5);
       });
 
-      it('header Resuming pill (PILL_TONE_CLASS.info on the header --bg-soft) meets 4.5:1', () => {
+      it('every header status pill tone (PILL_TONE_CLASS) meets 4.5:1 on the glass top bar and on cards', () => {
         const source: string = readFileSync(resolve(SRC, 'layout/AppHeader.tsx'), 'utf8');
-        const info = /info:\s*'([^']+)'/.exec(source)?.[1] ?? '';
-        const bgToken = /\bbg-theme-([\w-]+)/.exec(info)?.[1] ?? '';
-        const fgToken = /\btext-theme-([\w-]+)/.exec(info)?.[1] ?? '';
-        const bg = over(parse(resolveToken(t, `--${bgToken}`)), solid(t, '--bg-soft'));
-        expect(ratio(solid(t, `--${fgToken}`), bg)).toBeGreaterThanOrEqual(4.5);
+        const map = /PILL_TONE_CLASS[^{]*\{([^}]+)\}/.exec(source)?.[1] ?? '';
+        const tones = [...map.matchAll(/'pill-([\w-]+)'/g)].map((m) => m[1]);
+        expect(tones.sort()).toEqual(['accent', 'danger', 'neutral', 'ok', 'warn']);
+        const s = surfaces(t);
+        for (const tone of tones) {
+          const { bg, fg } = pillTokens(tone);
+          for (const surface of ['glass', 'card', 'page'] as const) {
+            const fill = over(parse(resolveToken(t, bg)), s[surface]);
+            expect(ratio(solid(t, fg), fill), `.pill-${tone} on ${surface}`).toBeGreaterThanOrEqual(
+              4.5,
+            );
+          }
+        }
+      });
+
+      it('sidebar count pill (.nav-count) meets 4.5:1', () => {
+        const body = block('.nav-count {');
+        const bg = /background:\s*var\((--[\w-]+)\)/.exec(body)?.[1] ?? '';
+        const fg = /color:\s*var\((--[\w-]+)\)/.exec(body)?.[1] ?? '';
+        expect(ratio(solid(t, fg), solid(t, bg))).toBeGreaterThanOrEqual(4.5);
       });
     });
   }
@@ -190,9 +290,63 @@ describe('tokens.contrast', () => {
     }
   });
 
+  it('the console surface (dark in both themes) keeps dark-token text at 4.5:1', () => {
+    // .console-surface is translucent: composite it over each theme's page
+    // colour, then measure the dark tokens it scopes (data-theme="dark") on
+    // the bare console, on a card inside it and on a soft pill fill.
+    const body = block('.console-surface {');
+    const fill = /background:\s*(rgba\([^)]+\))/.exec(body)?.[1] ?? '';
+    for (const page of [solid(light, '--bg'), solid(dark, '--bg')]) {
+      const consoleBg = over(parse(fill), page);
+      const onCard = over(parse(resolveToken(dark, '--card')), consoleBg);
+      for (const fg of [
+        '--text',
+        '--text-secondary',
+        '--muted',
+        '--accent-text',
+        '--warning-text',
+        '--danger-text',
+        '--success-text',
+        '--purple-text',
+      ]) {
+        expect(ratio(solid(dark, fg), consoleBg), `${fg} on console`).toBeGreaterThanOrEqual(4.5);
+        expect(ratio(solid(dark, fg), onCard), `${fg} on console card`).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const [bg, fg] of [
+        ['--accent-soft', '--accent-strong'],
+        ['--danger-soft', '--danger-text'],
+        ['--success-soft', '--success-text'],
+      ] as const) {
+        const pill = over(parse(resolveToken(dark, bg)), consoleBg);
+        expect(ratio(solid(dark, fg), pill), `${fg} on ${bg} in console`).toBeGreaterThanOrEqual(
+          4.5,
+        );
+      }
+    }
+  });
+
   it('Logs page uses the tokens, not the failing hex literals', () => {
     const logs: string = readFileSync(resolve(SRC, 'pages/Logs/index.tsx'), 'utf8');
     expect(logs).not.toMatch(/#374151/);
     expect(logs).not.toMatch(/#4b5563/);
   });
+});
+
+// Data-series bars (Repo provider split / context budget) are non-text
+// graphics: each fill needs 3:1 against the --subtle track it sits in.
+describe('data series tokens', () => {
+  for (const [name, t] of Object.entries(THEMES)) {
+    it(`${name}: every --series-N meets 3:1 on its track and on the panel`, () => {
+      const s = surfaces(t);
+      for (let n = 1; n <= 6; n++) {
+        const fill = solid(t, `--series-${String(n)}`);
+        expect(
+          ratio(fill, s['subtle in glass']),
+          `series-${String(n)} on track`,
+        ).toBeGreaterThanOrEqual(3);
+        expect(ratio(fill, s.glass), `series-${String(n)} on glass`).toBeGreaterThanOrEqual(3);
+      }
+      expect(theme['--color-theme-series-1']).toBe('var(--series-1)');
+    });
+  }
 });

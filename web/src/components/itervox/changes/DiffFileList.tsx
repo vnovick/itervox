@@ -22,22 +22,34 @@ const STATUS_TONE: Record<string, string> = {
  * #215 — the changed files of a worktree: status letter, path and line
  * counts. `onSelect` makes each row a button (the Changes tab); without it
  * the list is read-only (the Now panel).
+ *
+ * Review and continue — `onToggleViewed` adds a "viewed" tick per file
+ * (`viewed` holds the ticked paths) and `commentCounts` a draft-comment
+ * count; a viewed file's row is dimmed.
  */
 export function DiffFileList({
   files,
   selected,
   onSelect,
   limit,
+  viewed,
+  onToggleViewed,
+  commentCounts,
 }: {
   files: readonly DiffFile[];
   selected?: string | null;
   onSelect?: (path: string) => void;
   limit?: number;
+  viewed?: Readonly<Record<string, true>>;
+  onToggleViewed?: (path: string) => void;
+  commentCounts?: Readonly<Record<string, number>>;
 }) {
   const shown = limit === undefined ? files : files.slice(0, limit);
   return (
     <ul className="space-y-0.5 font-mono text-xs" aria-label="Changed files">
       {shown.map((f) => {
+        const isViewed = Boolean(viewed?.[f.path]);
+        const count = commentCounts?.[f.path] ?? 0;
         const body = (
           <>
             <span
@@ -49,6 +61,14 @@ export function DiffFileList({
             <span className="text-theme-text min-w-0 flex-1 truncate" title={f.path}>
               {f.path}
             </span>
+            {count > 0 && (
+              <span
+                className="pill pill-accent shrink-0 px-1.5 py-0 font-sans text-[10px]"
+                title={`${String(count)} draft ${count === 1 ? 'comment' : 'comments'}`}
+              >
+                {count}
+              </span>
+            )}
             {f.binary ? (
               <span className="text-theme-muted">binary</span>
             ) : (
@@ -60,7 +80,23 @@ export function DiffFileList({
           </>
         );
         return (
-          <li key={`${f.status}:${f.path}`}>
+          <li
+            key={`${f.status}:${f.path}`}
+            className={`flex items-center gap-1 ${isViewed ? 'opacity-60' : ''}`}
+            data-viewed={isViewed || undefined}
+          >
+            {onToggleViewed && (
+              <input
+                type="checkbox"
+                className="accent-theme-accent shrink-0"
+                checked={isViewed}
+                aria-label={`Viewed ${f.path}`}
+                title="Viewed"
+                onChange={() => {
+                  onToggleViewed(f.path);
+                }}
+              />
+            )}
             {onSelect ? (
               <button
                 type="button"
@@ -68,14 +104,14 @@ export function DiffFileList({
                   onSelect(f.path);
                 }}
                 aria-pressed={selected === f.path}
-                className={`flex w-full items-center gap-2 rounded px-1.5 py-0.5 text-left hover:opacity-80 ${
+                className={`flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-0.5 text-left hover:opacity-80 ${
                   selected === f.path ? 'bg-theme-bg-soft' : ''
                 }`}
               >
                 {body}
               </button>
             ) : (
-              <div className="flex items-center gap-2 px-1.5 py-0.5">{body}</div>
+              <div className="flex min-w-0 flex-1 items-center gap-2 px-1.5 py-0.5">{body}</div>
             )}
           </li>
         );

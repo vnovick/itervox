@@ -1,6 +1,6 @@
 /**
  * Shared timeline styling constants and utilities.
- * Replaces inline styles with reusable functions and Tailwind-compatible values.
+ * Tailwind class recipes and layout constants, so colours come from tokens.
  */
 
 import type { NormalisedSession } from './types';
@@ -16,64 +16,62 @@ export const SUB_BAR_HEIGHT = 16;
 /** Minimum row height for a run entry. */
 export const ROW_MIN_HEIGHT = 44;
 
-/** Width of the run number + time label column. */
-export const LABEL_WIDTH = 120;
+// ─── Shared row grid ─────────────────────────────────────────────────────────
+// Every row (the time axis, run rows, the expanded main/subagent rows) uses
+// the same columns, so a bar's left/width percentages land on one time axis.
+// The grid switches on the width of the run list (`@container` on its
+// wrapper), not the viewport: below ~36rem the bar track drops onto its own
+// full-width line under the label and metadata, and the axis spans it too.
+//   wide:   [chevron 16] [label 120] [track 1fr] [meta 200]   gap 8
+//   narrow: [chevron 16] [label 1fr] [meta auto] / [track spans all]
 
-/** Width of the elapsed time column. */
-export const ELAPSED_WIDTH = 60;
+/** Grid columns shared by every timeline row. */
+export const ROW_GRID =
+  'grid grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1.5 @xl:grid-cols-[16px_120px_minmax(0,1fr)_200px]';
 
-/** Width of the per-run token-count column. */
-export const TOKENS_WIDTH = 60;
+/** Places the bar track: its own line when narrow, the third column when wide. */
+export const ROW_TRACK = 'col-span-3 row-start-2 @xl:col-span-1 @xl:col-start-3 @xl:row-start-1';
 
-/** Width of the subagent name label. */
-export const SUBAGENT_LABEL_WIDTH = 80;
+/** Places the right-hand metadata (elapsed, tokens, status). */
+export const ROW_META =
+  'col-start-3 row-start-1 flex items-center justify-end gap-2 @xl:col-start-4';
 
-/** Left margin for the time axis (aligns with bar area). */
-export const AXIS_MARGIN_LEFT = 140;
+/** Axis insets that line the tick labels up with the wide-layout track
+ *  (16 + 8 + 120 + 8 on the left, 8 + 200 on the right). */
+export const AXIS_INSET = '@xl:ml-[152px] @xl:mr-[208px]';
 
-/** Right margin for the time axis (aligns with elapsed/status). */
-export const AXIS_MARGIN_RIGHT = 80;
-
-// ─── Status bar gradients ────────────────────────────────────────────────────
+// ─── Status bar fills ────────────────────────────────────────────────────────
+// Flat, muted fills: a finished run reads as quiet grey, so the eye lands on
+// the live, waiting and failed runs.
 
 type SessionStatus = NormalisedSession['status'];
 
-const BAR_GRADIENTS: Record<SessionStatus, string> = {
-  live: 'linear-gradient(90deg, var(--accent), var(--teal))',
-  succeeded: 'linear-gradient(90deg, var(--success), #16a34a)',
-  failed: 'linear-gradient(90deg, var(--danger), #dc2626)',
-  cancelled: 'linear-gradient(90deg, #52525b, #3f3f46)',
-  stalled: 'linear-gradient(90deg, var(--warning, #f59e0b), #d97706)',
-  input_required: 'linear-gradient(90deg, var(--warning, #f59e0b), #d97706)',
+const BAR_FILLS: Record<SessionStatus, string> = {
+  live: 'bg-theme-accent/80',
+  succeeded: 'bg-theme-dot-idle/85',
+  failed: 'bg-theme-danger/75',
+  cancelled: 'bg-theme-dot-idle/50',
+  stalled: 'bg-theme-dot-warn/75',
+  input_required: 'bg-theme-dot-warn/75',
 };
 
-/** Returns the CSS gradient background for a run bar based on status. */
-export function barGradient(status: SessionStatus): string {
-  return BAR_GRADIENTS[status];
+/** Returns the fill class for a run bar based on status. */
+export function barFillClass(status: SessionStatus): string {
+  return BAR_FILLS[status];
 }
 
 // ─── Status badge styling ────────────────────────────────────────────────────
 
-interface BadgeStyle {
-  background: string;
-  color: string;
-}
-
-const BADGE_STYLES: Record<string, BadgeStyle> = {
-  succeeded: { background: 'var(--success-soft)', color: 'var(--success-strong)' },
-  failed: { background: 'var(--danger-soft)', color: 'var(--danger-text)' },
-  stalled: { background: 'rgba(245,158,11,0.15)', color: 'var(--warning, #f59e0b)' },
-  input_required: { background: 'rgba(245,158,11,0.15)', color: 'var(--warning, #f59e0b)' },
+const BADGE_TONES: Partial<Record<SessionStatus, string>> = {
+  succeeded: 'pill-ok',
+  failed: 'pill-danger',
+  stalled: 'pill-warn',
+  input_required: 'pill-warn',
 };
 
-const DEFAULT_BADGE: BadgeStyle = {
-  background: 'rgba(113,113,122,0.15)',
-  color: 'var(--text-secondary)',
-};
-
-/** Returns background + color for a status badge. */
-export function statusBadgeStyle(status: SessionStatus): BadgeStyle {
-  return BADGE_STYLES[status] ?? DEFAULT_BADGE;
+/** Returns the `.tag` tone class for a status badge. */
+export function statusBadgeTone(status: SessionStatus): string {
+  return BADGE_TONES[status] ?? 'pill-neutral';
 }
 
 /** Returns the display label for a status badge. */
@@ -97,17 +95,12 @@ export function statusBadgeLabel(status: SessionStatus): string {
 // ─── Subagent bar colours (cycling) ──────────────────────────────────────────
 
 export const SUBAGENT_COLORS = [
-  { text: 'var(--accent-strong)', bar: 'linear-gradient(90deg, #a855f7, #6366f1)' },
-  { text: 'var(--teal)', bar: 'linear-gradient(90deg, #14b8a6, #22c55e)' },
-  { text: 'var(--accent-strong)', bar: 'linear-gradient(90deg, var(--accent), var(--teal))' },
+  { text: 'text-theme-purple-text', bar: 'bg-theme-purple/60' },
+  { text: 'text-theme-accent-text', bar: 'bg-theme-teal/60' },
+  { text: 'text-theme-accent-text', bar: 'bg-theme-accent/60' },
 ] as const;
 
-/** Returns subagent color pair by cycling index. */
+/** Returns subagent text/bar classes by cycling index. */
 export function subagentColor(idx: number) {
   return SUBAGENT_COLORS[idx % SUBAGENT_COLORS.length];
 }
-
-// ─── Tick mark styling ───────────────────────────────────────────────────────
-
-/** CSS for a tick mark (subagent boundary or action event). */
-export const TICK_MARK_STYLE = 'rgba(255,255,255,0.4)';

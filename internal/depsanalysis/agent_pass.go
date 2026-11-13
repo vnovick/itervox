@@ -76,6 +76,13 @@ type AgentPassInput struct {
 	// read from the rules files when the job runs. It leads the prompt,
 	// ahead of the profile's SOUL.md and INSTRUCTIONS.md. Empty: no rules.
 	RulesBlock string
+	// DefaultIsolation is agent.isolation, used when the profile sets no
+	// isolation (#258); ProjectDir is the WORKFLOW.md directory, whose
+	// .itervox secrets the sandbox hides. With process isolation the
+	// analyzer runs sandboxed with no writable workspace (WorkspacePath, the
+	// workspace root, is hidden), or not at all when no sandbox works.
+	DefaultIsolation string
+	ProjectDir       string
 }
 
 // RunAgentPass invokes the analyzer profile against the supplied issue set
@@ -91,6 +98,13 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 	if input.Profile.Command == "" {
 		return nil, fmt.Errorf("depsanalysis: profile %q has no command", input.ProfileName)
 	}
+
+	iso, err := agent.PrepareIsolation(config.ResolveIsolation(input.Profile.Isolation, input.DefaultIsolation),
+		agent.RunIsolationInputs("", input.WorkspacePath, input.ProjectDir, input.Profile), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrAnalyzerFailed, err)
+	}
+	ctx = agent.WithIsolation(ctx, iso)
 
 	prompt := buildAnalyzerPrompt(input.Profile, input.RulesBlock, input.Issues, input.TrackerEdges)
 	var sessionID string

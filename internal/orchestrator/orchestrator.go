@@ -39,6 +39,10 @@ type Orchestrator struct {
 	tracker   tracker.Tracker
 	runner    agent.Runner
 	workspace workspace.Provider // nil is safe — workspace ops skipped (useful in tests)
+	// isolationDetect resolves the sandbox mechanism for runs with
+	// isolation "process" (#258); nil means agent.DetectIsolation. Tests
+	// inject availability here. Set before Run; read-only afterwards.
+	isolationDetect func() (agent.IsolationMechanism, error)
 	// sink is the write path for completion/failed-state transitions and
 	// worker-exit outcome comments (see write_sink.go's WriteSink doc
 	// comment for the full call-site list). New() defaults it to a
@@ -181,6 +185,8 @@ type Orchestrator struct {
 	pendingReviewsFile string
 	// deferredStateMovesFile persists State.DeferredStateMoves (#177).
 	deferredStateMovesFile string
+	// reviewContinuationsFile persists State.ReviewContinuations.
+	reviewContinuationsFile string
 	// feedFile persists State.Feed / FeedSeq (feed.jsonl) and
 	// dispatchPauseFile persists State.DispatchPaused (dispatch_paused.json)
 	// (#213). Set before Run; read-only afterwards.
@@ -280,6 +286,11 @@ type Orchestrator struct {
 	issueBackendsMu sync.RWMutex
 	issueBackends   map[string]string // identifier → "claude"|"codex"
 
+	// tasks are the New task specs (#251): custom instructions, base branch
+	// and playbook per task identifier. Written by HTTP goroutines and read
+	// by startRun, under tasks.mu (task.go).
+	tasks taskBook
+
 	// commentCountsMu guards commentCounts, which is written by
 	// BumpCommentCount (any goroutine, called from the HTTP handler that
 	// serves /api/v1/agent-actions/{identifier}/comment) and read by
@@ -337,6 +348,9 @@ type Orchestrator struct {
 	// so Claude Code writes full session logs (including sub-agents) to disk.
 	// Set via SetAgentLogDir before calling Run.
 	agentLogDir string
+	// runMonitor is the system-visibility store (run_monitor.go); nil
+	// when not installed. Set before Run, read-only after.
+	runMonitor RunMonitor
 
 	// depsSidecarCache is the mtime-cached reader over
 	// `.itervox/dependencies.json`, read once per tick by onTick to feed
@@ -409,6 +423,10 @@ type Orchestrator struct {
 	// Tests replace them.
 	findOpenPRURL func(ctx context.Context, wsPath string) string
 	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// oneShot is the `itervox run` mode (#252); nil in the daemon. Set
+	// before Run by SetOneShot. Its Resume is consumed by the event loop.
+	oneShot *OneShot
+
 	// ensurePRFooter is the gh seam for the agent.pr_footer footer (#81); nil
 	// means workspace.EnsurePRFooter.
 	ensurePRFooter func(ctx context.Context, prURL string) (bool, error)

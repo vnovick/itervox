@@ -112,7 +112,8 @@ func buildBackendSwitchNoticeBlock(n *BackendSwitchNotice) string {
 // runBindings is the Liquid `run` object (CORE-101): the run context (with
 // the #218 decision log path next to the handoff file) plus
 // the switch provenance, empty strings on an ordinary run, and the branch a
-// pull request from this run should target (#73).
+// pull request from this run should target (#73). run.port (#250) is "" here;
+// the worker sets the workspace's port with setRunPort.
 func runBindings(timestamp, handoffPath, prBaseBranch, evidencePath string, n *BackendSwitchNotice) map[string]any {
 	run := map[string]any{
 		"timestamp":        timestamp,
@@ -124,6 +125,7 @@ func runBindings(timestamp, handoffPath, prBaseBranch, evidencePath string, n *B
 		"previous_profile": "",
 		"switch_reason":    "",
 		"limit_resets_at":  "",
+		"port":             "", // #250: set by the worker (setRunPort)
 	}
 	if n != nil {
 		run["previous_backend"] = n.PreviousBackend

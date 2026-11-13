@@ -5,125 +5,253 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ─── Control-room design tokens ──────────────────────────────────────────── */
-/* Dark is the default. Override with [data-theme='light'] on <html>.         */
+/* ─── Design tokens: translucent "glass" surfaces over a soft glow ─────────── */
+/* Dark is the default. Override with [data-theme='light'] on <html>.
+   Surface model (both themes):
+     --bg            the page colour, painted under the fixed glow layer
+     --glass         top-level panels (sidebar, top bar, sections), blurred
+     --card          items inside a panel (rows, tiles, list items)
+     --chip          small floating pills and toolbar buttons
+     --sheet         modals, slide-overs and the mobile drawer
+     --subtle        inset fills (tags inside cards, wells, code)
+   The legacy semantic tokens map onto these, so every existing component
+   inherits the palette: --bg-elevated = glass, --panel = card,
+   --bg-soft = subtle. Each translucent surface has an opaque `-solid` twin
+   used when backdrop-filter is unsupported or transparency is reduced.
+   Contrast is enforced by src/__tests__/tokens.contrast.test.ts, which
+   composites every surface over the page before measuring. */
 :root,
 [data-theme='dark'] {
   color-scheme: dark;
 
-  /* Surfaces — zinc-black (canonical spec) */
-  --bg: #09090b;
-  --bg-soft: #111113;
-  --bg-elevated: #18181b;
-  --panel: #18181b;
+  /* Page + glow layer */
+  --bg: #080c17;
+  --glow-blue: rgba(96, 140, 255, 0.4);
+  --glow-peach: rgba(255, 150, 110, 0.32);
+  --glow-mint: rgba(70, 200, 170, 0.27);
+
+  /* Glass surfaces (white at ~17% of the light-theme alpha) */
+  --glass: rgba(255, 255, 255, 0.075);
+  --glass-solid: #1b1e28;
+  /* Pinned bars (.glass-bar): the opaque glass tone at 90%, so content
+     scrolling beneath cannot pull their text below AA. */
+  --glass-bar: rgba(27, 30, 40, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.11);
+  --glass-highlight:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  --glass-shadow: 0 10px 30px rgba(0, 0, 0, 0.31);
+  --glass-blur: blur(26px) saturate(180%);
+  --card: rgba(255, 255, 255, 0.12);
+  --card-solid: #363942;
+  --card-border: rgba(255, 255, 255, 0.145);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.17), 0 4px 14px rgba(0, 0, 0, 0.21);
+  --chip: rgba(255, 255, 255, 0.09);
+  --chip-solid: #1e222c;
+  --chip-border: rgba(255, 255, 255, 0.12);
+  --chip-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  --chip-blur: blur(14px);
+  /* Neutral near-black glass (a navy base read as a saturated blue slab
+     once the blur pulled the page's blue glow through it). */
+  --sheet: rgba(24, 27, 34, 0.86);
+  --sheet-solid: #16191f;
+  --sheet-border: rgba(255, 255, 255, 0.14);
+  --sheet-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  --sheet-blur: blur(40px) saturate(120%);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --subtle: rgba(255, 255, 255, 0.06);
+  --hairline: rgba(255, 255, 255, 0.14);
+  /* Selected segment / active nav item */
+  --seg-on: rgba(255, 255, 255, 0.16);
+  /* Opaque surface for content that floats over arbitrary content (toasts). */
+  --surface: #121827;
+
+  /* Legacy surfaces, mapped onto the glass model */
+  --bg-soft: var(--subtle);
+  --bg-elevated: var(--glass);
+  --panel: var(--card);
+  --panel-strong: rgba(255, 255, 255, 0.14);
+  --panel-dark: rgba(0, 0, 0, 0.25);
 
   /* Text */
-  --text: #fafafa;
-  --text-secondary: #a1a1aa;
-  /* CORE-071: was #71717a (3.67:1 on --panel); now 5.25:1. */
-  --muted: #8b8b94;
+  --text: #e8edf7;
+  --text-secondary: #b4bfd3;
+  /* AA on page, glass, card and subtle-over-glass (tokens.contrast.test.ts). */
+  --muted: #a3aec2;
 
   /* Borders */
-  --line: rgba(255, 255, 255, 0.06);
-  --line-strong: rgba(255, 255, 255, 0.12);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: var(--hairline);
 
-  /* Accent — indigo → teal */
-  /* M5-close: #6366f1 gave white text 4.46:1; indigo-600 gives 6.3:1. */
-  --accent: #4f46e5;
-  --accent-soft: rgba(99, 102, 241, 0.15);
-  --accent-strong: #a5b4fc;
+  /* Accent — #4c7dff gives white text 3.7:1; #3b6cf0 is AA (4.58:1). */
+  --accent: #3b6cf0;
+  --accent-soft: rgba(76, 125, 255, 0.2);
+  --accent-strong: #c3d4ff;
   /* Accent-coloured TEXT on panels (links, identifiers): AA on every surface. */
-  --accent-text: #a5b4fc;
-  --teal: #14b8a6;
-  --purple: #a855f7;
+  --accent-text: #a8c0ff;
+  --teal: #2dd4bf;
+  --purple: #c084fc;
   --gradient-accent: linear-gradient(135deg, var(--accent), var(--teal));
 
-  /* Signal */
+  /* Signal — base tokens are fills, borders and dots */
   --success: #22c55e;
-  --success-soft: rgba(34, 197, 94, 0.15);
+  --success-soft: rgba(34, 197, 94, 0.16);
   --success-strong: #4ade80;
-  --warning: #f59e0b;
-  --warning-soft: rgba(245, 158, 11, 0.15);
-  /* M5-close: #ef4444 gave white text 3.8:1; red-600 is AA. */
+  --warning: #fb923c;
+  --warning-soft: rgba(251, 146, 60, 0.18);
+  /* white text on red-500 is 3.76:1; red-600 keeps destructive buttons AA. */
   --danger: #dc2626;
-  --danger-soft: rgba(239, 68, 68, 0.15);
-  /* CORE-071: signal colours for TEXT. The base tokens stay for fills,
-     borders and dots; text reads these, which meet 4.5:1 on --panel and on
-     their own -soft tint composited over --panel (tokens.contrast.test.ts). */
-  --success-text: #22c55e;
-  --warning-text: #f59e0b;
-  --danger-text: #f87171;
+  --danger-soft: rgba(239, 68, 68, 0.18);
+  /* Signal colours for TEXT: AA on every surface and on their own -soft tint. */
+  --success-text: #86efac;
+  --warning-text: #fdba74;
+  --danger-text: #fca5a5;
+  /* Status dots */
+  --dot-ok: #22c55e;
+  --dot-warn: #fb923c;
+  --dot-idle: #64748b;
 
   /* Extended palette */
-  --teal-soft: rgba(20, 184, 166, 0.15);
-  --purple-soft: rgba(168, 85, 247, 0.15);
+  --teal-soft: rgba(45, 212, 191, 0.16);
+  --purple-soft: rgba(192, 132, 252, 0.16);
+  --purple-text: #d8b4fe;
 
-  /* Radius */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  /* Radius — inputs/buttons 12, cards 16, panels 24, shell 28 */
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-shell: 28px;
   --radius-full: 9999px;
 
-  /* Extended surfaces */
-  --panel-strong: #1f1f23;
-  --panel-dark: #0a0a0c;
-
   /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
-  --accent-glow: rgba(99, 102, 241, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.21);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.31);
+  --accent-glow: rgba(76, 125, 255, 0.4);
   --shadow-glow: 0 0 40px -10px var(--accent-glow);
 
   /* Gradients */
-  --gradient-hero: linear-gradient(180deg, rgba(99, 102, 241, 0.1) 0%, transparent 50%);
-  --gradient-border: linear-gradient(135deg, rgba(99, 102, 241, 0.3), rgba(20, 184, 166, 0.3));
+  --gradient-hero: linear-gradient(180deg, rgba(76, 125, 255, 0.08) 0%, transparent 50%);
+  --gradient-border: linear-gradient(135deg, rgba(76, 125, 255, 0.3), rgba(45, 212, 191, 0.3));
 
   /* Animation durations */
   --duration-fast: 150ms;
   --duration-normal: 300ms;
+
+  /* Data series (bars, legends): 3:1 against a --subtle track as non-text
+     graphics. 1 claude, 2 shared, 3 codex; 4-6 extend the set. */
+  --series-1: #5b8cff;
+  --series-2: #2dd4bf;
+  --series-3: #fb923c;
+  --series-4: #c084fc;
+  --series-5: #f472b6;
+  --series-6: #94a3b8;
 }
 
 [data-theme='light'] {
   color-scheme: light;
-  --bg: #fafafa;
-  --bg-soft: #f4f4f5;
-  --bg-elevated: #ffffff;
-  --panel: #ffffff;
-  --text: #09090b;
-  --text-secondary: #3f3f46;
-  /* CORE-071: #71717a was 4.40:1 on --bg-soft; now >= 4.87:1 on every surface. */
-  --muted: #6a6a73;
-  --panel-strong: #fafafa;
-  --panel-dark: #f4f4f5;
-  --line: rgba(0, 0, 0, 0.06);
-  --line-strong: rgba(0, 0, 0, 0.12);
-  --gradient-border: linear-gradient(135deg, rgba(79, 70, 229, 0.25), rgba(13, 148, 136, 0.25));
-  --accent: #4f46e5;
-  --accent-soft: rgba(79, 70, 229, 0.1);
-  /* M5-close: #6366f1 on accent-soft was 3.5:1; indigo-700 is AA. */
-  --accent-strong: #4338ca;
-  --accent-text: #4338ca;
+  --bg: #e9edf5;
+  --glow-blue: rgba(96, 140, 255, 0.55);
+  --glow-peach: rgba(255, 150, 110, 0.45);
+  --glow-mint: rgba(70, 200, 170, 0.38);
+
+  --glass: rgba(255, 255, 255, 0.44);
+  --glass-solid: #f3f5f9;
+  --glass-bar: rgba(243, 245, 249, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.65);
+  --glass-highlight:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95), inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+  --glass-shadow: 0 10px 30px rgba(28, 38, 72, 0.12);
+  --card: rgba(255, 255, 255, 0.72);
+  --card-solid: #fcfcfd;
+  --card-border: rgba(255, 255, 255, 0.85);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 14px rgba(28, 38, 72, 0.08);
+  --chip: rgba(255, 255, 255, 0.55);
+  --chip-solid: #f7f8fb;
+  --chip-border: rgba(255, 255, 255, 0.7);
+  --chip-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --sheet: rgba(255, 255, 255, 0.8);
+  --sheet-solid: #fbfbfd;
+  --sheet-border: rgba(255, 255, 255, 0.8);
+  --sheet-shadow: 0 30px 80px rgba(28, 38, 72, 0.28);
+  --scrim: rgba(20, 28, 50, 0.2);
+  --subtle: rgba(23, 32, 51, 0.06);
+  --hairline: rgba(23, 32, 51, 0.12);
+  --seg-on: #ffffff;
+  --surface: #fbfbfd;
+
+  --panel-strong: rgba(255, 255, 255, 0.85);
+  --panel-dark: rgba(23, 32, 51, 0.04);
+
+  --text: #172033;
+  --text-secondary: #3b465c;
+  --muted: #4b5568;
+  --line: rgba(23, 32, 51, 0.08);
+
+  --accent: #1d4ed8;
+  --accent-soft: rgba(29, 78, 216, 0.1);
+  --accent-strong: #1e3a8a;
+  --accent-text: #1d4ed8;
+  --teal: #0f766e;
+  --purple: #7e22ce;
+  --gradient-border: linear-gradient(135deg, rgba(29, 78, 216, 0.25), rgba(15, 118, 110, 0.25));
+
   --success: #16a34a;
-  --success-soft: rgba(22, 163, 74, 0.12);
-  --success-strong: #22c55e;
-  --warning: #d97706;
-  --warning-soft: rgba(217, 119, 6, 0.12);
+  --success-soft: rgba(22, 163, 74, 0.14);
+  --success-strong: #15803d;
+  --warning: #ea580c;
+  --warning-soft: rgba(251, 146, 60, 0.18);
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.12);
-  /* CORE-071: --success #16a34a (3.30:1) and --warning #d97706 (3.19:1) fail
-     as text on white; these pass on white and on the composited -soft tint. */
-  --success-text: #15703a;
-  --warning-text: #a14a0a;
-  --danger-text: #b91c1c;
-  --teal-soft: rgba(20, 184, 166, 0.12);
-  --purple-soft: rgba(168, 85, 247, 0.12);
-  --accent-glow: rgba(79, 70, 229, 0.25);
+  --success-text: #166534;
+  --warning-text: #9a3412;
+  --danger-text: #ab1a1a;
+  --dot-ok: #16a34a;
+  --dot-warn: #ea580c;
+  --dot-idle: #94a3b8;
+  --teal-soft: rgba(15, 118, 110, 0.12);
+  --purple-soft: rgba(126, 34, 206, 0.1);
+  --purple-text: #6b21a8;
+
+  --accent-glow: rgba(29, 78, 216, 0.25);
   --shadow-glow: 0 0 40px -10px var(--accent-glow);
-  --gradient-hero: linear-gradient(180deg, rgba(79, 70, 229, 0.06) 0%, transparent 50%);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
+  --gradient-hero: linear-gradient(180deg, rgba(29, 78, 216, 0.05) 0%, transparent 50%);
+  --shadow-sm: 0 1px 2px rgba(28, 38, 72, 0.06);
+  --shadow-md: 0 4px 14px rgba(28, 38, 72, 0.08);
+  --shadow-lg: 0 10px 30px rgba(28, 38, 72, 0.12);
+
+  --series-1: #1d4ed8;
+  --series-2: #0f766e;
+  --series-3: #c2410c;
+  --series-4: #7e22ce;
+  --series-5: #be185d;
+  --series-6: #64748b;
+}
+
+/* No backdrop-filter, or the viewer asked for less transparency: every
+   translucent surface falls back to its opaque twin. `html[data-theme]`
+   outranks the theme blocks above. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html,
+  html[data-theme] {
+    --glass: var(--glass-solid);
+    --glass-bar: var(--glass-solid);
+    --card: var(--card-solid);
+    --chip: var(--chip-solid);
+    --sheet: var(--sheet-solid);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  html,
+  html[data-theme] {
+    --glass: var(--glass-solid);
+    --glass-bar: var(--glass-solid);
+    --card: var(--card-solid);
+    --chip: var(--chip-solid);
+    --sheet: var(--sheet-solid);
+    --glass-blur: none;
+    --chip-blur: none;
+    --sheet-blur: none;
+  }
 }
 /* ─────────────────────────────────────────────────────────────────────────── */
 
@@ -163,13 +291,36 @@
 }
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-/* Base body styles matching prototype */
+/* Base body styles */
+html {
+  background: var(--bg);
+}
 body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans, 'Inter', sans-serif);
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* The fixed glow layer behind every screen: three soft radial lights the
+   glass surfaces blur. A pseudo-element, so it is never in the
+   accessibility tree and never takes pointer events. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle 316px at 200px 160px, var(--glow-blue), transparent),
+    radial-gradient(circle 307px at calc(100% - 150px) 570px, var(--glow-peach), transparent),
+    radial-gradient(
+      circle 348px at calc(34% + 380px) calc(100% - 60px),
+      var(--glow-mint),
+      transparent
+    );
 }
 
 @theme {
@@ -198,6 +349,19 @@ body {
   --color-theme-teal-soft: var(--teal-soft);
   --color-theme-purple: var(--purple);
   --color-theme-purple-soft: var(--purple-soft);
+  --color-theme-purple-text: var(--purple-text);
+
+  /* Glass surfaces and dots (bg-theme-glass, bg-theme-card, bg-theme-dot-ok …) */
+  --color-theme-glass: var(--glass);
+  --color-theme-card: var(--card);
+  --color-theme-chip: var(--chip);
+  --color-theme-sheet: var(--sheet);
+  --color-theme-subtle: var(--subtle);
+  --color-theme-hairline: var(--hairline);
+  --color-theme-surface: var(--surface);
+  --color-theme-dot-ok: var(--dot-ok);
+  --color-theme-dot-warn: var(--dot-warn);
+  --color-theme-dot-idle: var(--dot-idle);
 
   --color-theme-success: var(--success);
   --color-theme-success-soft: var(--success-soft);
@@ -209,11 +373,17 @@ body {
   --color-theme-success-text: var(--success-text);
   --color-theme-warning-text: var(--warning-text);
   --color-theme-danger-text: var(--danger-text);
+  --color-theme-series-1: var(--series-1);
+  --color-theme-series-2: var(--series-2);
+  --color-theme-series-3: var(--series-3);
+  --color-theme-series-4: var(--series-4);
+  --color-theme-series-5: var(--series-5);
+  --color-theme-series-6: var(--series-6);
 
-  /* Radii */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  /* Radii (mirrors the :root tokens: Tailwind's rounded-sm/md/lg read them) */
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
   --radius-full: 9999px;
 
   /* Shadows */
@@ -406,7 +576,7 @@ body {
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: var(--color-gray-200, currentColor);
+    border-color: var(--line-strong, currentColor);
   }
   button:not(:disabled),
   [role='button']:not(:disabled) {
@@ -531,26 +701,17 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d1d5db; /* gray-300 */
+  background: var(--hairline);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af; /* gray-400 */
-}
-.dark ::-webkit-scrollbar-thumb {
-  background: #374151; /* gray-700 */
-}
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #4b5563; /* gray-600 */
+  background: var(--muted);
 }
 
 /* Firefox */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #d1d5db transparent;
-}
-.dark * {
-  scrollbar-color: #374151 transparent;
+  scrollbar-color: var(--hairline) transparent;
 }
 
 @keyframes blink {
@@ -607,6 +768,16 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* Dialogs take focus on their container when they open (useFocusTrap); the
+   container is not a control, so it draws no ring. Controls inside keep the
+   keyboard ring above. */
+:is([role='dialog'], [role='alertdialog'])[tabindex='-1']:focus {
+  outline: none;
+}
+/* Text fields (FIELD_CLASS) draw their own focus: accent border + soft ring. */
+.field-control:focus-visible {
+  outline: none;
+}
 
 /* M5-close (axe color-contrast) — the dashboard still uses a few Tailwind
    palette text colours tuned for the dark theme (-300/-400 shades). On the
@@ -650,6 +821,809 @@ body {
   color: #6b21a8;
 }
 
+/* ─── Glass surface classes ───────────────────────────────────────────────── */
+/* Shared building blocks for the visual refresh. They live in the
+   `components` layer, so any Tailwind utility on the same element (padding,
+   a different radius, a background override) still wins.
+
+     .glass-panel   top-level section / bar: glass + blur, radius 24
+     .glass-shell   the sidebar: glass panel at radius 28
+     .glass-card    an item inside a panel (row, tile, list item), radius 16
+     .glass-chip    floating pill / toolbar button (radius 999)
+     .glass-sheet   modal, slide-over, drawer surface, radius 28
+     .glass-scrim   the dimmed, slightly blurred layer behind a sheet
+     .subtle-fill   inset fill for tags and wells inside cards
+     .pill          a status pill; tone with .pill-ok / -warn / -danger /
+                    -accent / -neutral
+     .segmented     a pill-shaped segmented control; its direct children
+                    (buttons, links, tabs) light up when aria-selected,
+                    aria-pressed, aria-current or data-active is set
+     .nav-item      a sidebar row (icon + label + optional .nav-count)
+     .brand-tile    the 30px logo tile next to the wordmark
+     .banner-warn / .banner-danger  opaque-backed notice bars
+     .status-dot    an 8px dot; colour with .dot-ok / -warn / -danger / -idle
+     .page-title    28px / 700 / -0.02em
+     .section-title 15px / 600
+     .eyebrow       11px uppercase label
+   Translucent surfaces fall back to opaque twins without backdrop-filter or
+   under prefers-reduced-transparency (see the token section). */
+@layer components {
+  /* The blur sits on a ::before layer, not on the surface itself: a
+     backdrop-filter on an element makes it the containing block of every
+     position:fixed descendant, which would trap modals, slide-overs and
+     dnd-kit's drag coordinates inside the panel. */
+  .glass-panel,
+  .glass-shell,
+  .glass-sheet {
+    position: relative;
+    isolation: isolate;
+  }
+  .glass-panel::before,
+  .glass-shell::before,
+  .glass-sheet::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+  .glass-sheet::before {
+    -webkit-backdrop-filter: var(--sheet-blur);
+    backdrop-filter: var(--sheet-blur);
+  }
+  .glass-panel,
+  .glass-shell {
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--glass-highlight), var(--glass-shadow);
+  }
+  .glass-shell {
+    border-radius: var(--radius-shell);
+  }
+  .glass-card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--card-shadow);
+  }
+  .glass-chip {
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    border-radius: var(--radius-full);
+    box-shadow: var(--chip-highlight);
+    -webkit-backdrop-filter: var(--chip-blur);
+    backdrop-filter: var(--chip-blur);
+  }
+  .glass-sheet {
+    background: var(--sheet);
+    border: 1px solid var(--sheet-border);
+    border-radius: var(--radius-shell);
+    box-shadow: var(--sheet-shadow);
+  }
+  .glass-scrim {
+    background: var(--scrim);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+  }
+  .subtle-fill {
+    background: var(--subtle);
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: var(--radius-full);
+    padding: 3px 10px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 18px;
+    white-space: nowrap;
+  }
+  .pill-ok {
+    background: var(--success-soft);
+    color: var(--success-text);
+  }
+  .pill-warn {
+    background: var(--warning-soft);
+    color: var(--warning-text);
+  }
+  .pill-danger {
+    background: var(--danger-soft);
+    color: var(--danger-text);
+  }
+  .pill-accent {
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+  .pill-neutral {
+    background: var(--subtle);
+    color: var(--text-secondary);
+  }
+
+  .segmented {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border-radius: var(--radius-full);
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-highlight);
+    /* Narrow screens: the row scrolls sideways instead of wrapping a label
+       inside its pill. */
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .segmented::-webkit-scrollbar {
+    display: none;
+  }
+  .segmented > * {
+    flex-shrink: 0;
+    white-space: nowrap;
+    border-radius: var(--radius-full);
+    padding: 6px 14px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    transition: background-color var(--duration-fast) ease;
+  }
+  .segmented > :hover {
+    color: var(--text);
+  }
+  /* The row clips overflow (it scrolls), so focus rings draw inside. */
+  .segmented > :focus-visible {
+    outline-offset: -2px;
+  }
+  .segmented
+    > :is(
+      [aria-selected='true'],
+      [aria-pressed='true'],
+      [aria-checked='true'],
+      [aria-current],
+      [data-active='true']
+    ) {
+    background: var(--seg-on);
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: var(--card-shadow);
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 14px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    border: 1px solid transparent;
+    transition:
+      background-color var(--duration-fast) ease,
+      color var(--duration-fast) ease;
+  }
+  .nav-item:hover {
+    background: var(--subtle);
+    color: var(--text);
+  }
+  .nav-item[aria-current='page'] {
+    background: var(--card);
+    border-color: var(--card-border);
+    box-shadow: var(--card-shadow);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .nav-item svg {
+    width: 18px;
+    height: 18px;
+  }
+  .nav-count {
+    margin-left: auto;
+    min-width: 20px;
+    border-radius: var(--radius-full);
+    padding: 0 7px;
+    background: var(--warning-text);
+    color: var(--bg);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+  }
+
+  .brand-tile {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: 9px;
+    background: linear-gradient(160deg, #3b6cf0, #101a3a);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  }
+
+  /* Notices pinned above the top bar: the tint sits on an opaque surface so
+     the text contrast does not depend on what scrolls underneath. */
+  .banner-warn,
+  .banner-danger {
+    border: 1px solid;
+    border-radius: var(--radius-md);
+    padding: 8px 16px;
+    font-size: 14px;
+    box-shadow: var(--glass-shadow);
+  }
+  .banner-warn {
+    border-color: var(--warning);
+    background: linear-gradient(var(--warning-soft), var(--warning-soft)), var(--surface);
+    color: var(--warning-text);
+  }
+  .banner-danger {
+    border-color: var(--danger);
+    background: linear-gradient(var(--danger-soft), var(--danger-soft)), var(--surface);
+    color: var(--danger-text);
+  }
+
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: var(--radius-full);
+    background: var(--dot-idle);
+  }
+  .dot-ok {
+    background: var(--dot-ok);
+  }
+  .dot-warn {
+    background: var(--dot-warn);
+  }
+  .dot-danger {
+    background: var(--danger);
+  }
+  .dot-idle {
+    background: var(--dot-idle);
+  }
+
+  .page-title {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    color: var(--text);
+  }
+  .section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* --- Form fields: label, help text and a hairline field group --- */
+  .field-label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+  .field-help {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--muted);
+  }
+  .field-group {
+    min-width: 0;
+    margin: 0;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    padding: 10px 14px 12px;
+  }
+  .field-group > legend {
+    padding: 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  /* --- Selectable list rows (issue / session sidebars) --- */
+  .list-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 36px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    text-align: left;
+    transition: background-color var(--duration-fast) ease;
+  }
+  .list-row:hover {
+    background: var(--subtle);
+  }
+  .list-row:is(
+    [aria-current='true'],
+    [aria-current='page'],
+    [aria-selected='true'],
+    [data-active='true']
+  ) {
+    background: var(--card);
+    border-color: var(--card-border);
+    box-shadow: var(--card-shadow);
+  }
+
+  /* --- Tiles: compact option / template cards on the chip surface --- */
+  .glass-tile {
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--chip-highlight);
+  }
+
+  /* --- Console: the dark log / terminal surface, dark in both themes.
+     Pair it with data-theme="dark" (ConsoleSurface does) so everything
+     inside resolves the dark tokens. --- */
+  .console-surface {
+    background: rgba(14, 19, 34, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius-lg);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 16px 40px rgba(14, 19, 34, 0.3);
+    color: var(--text);
+    overflow: hidden;
+    /* The Terminal inside paints on the console, not the page colour. */
+    --terminal-bg: transparent;
+  }
+  .console-bar {
+    background: rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* --- Scoped themes: a subtree with its own data-theme (the console) re-reads
+     the colour utilities, since the @theme mappings resolve once on :root. --- */
+  [data-theme] [data-theme] {
+    --color-theme-bg: var(--bg);
+    --color-theme-bg-soft: var(--bg-soft);
+    --color-theme-bg-elevated: var(--bg-elevated);
+    --color-theme-panel: var(--panel);
+    --color-theme-panel-strong: var(--panel-strong);
+    --color-theme-panel-dark: var(--panel-dark);
+    --color-theme-text: var(--text);
+    --color-theme-text-secondary: var(--text-secondary);
+    --color-theme-muted: var(--muted);
+    --color-theme-line: var(--line);
+    --color-theme-line-strong: var(--line-strong);
+    --color-theme-accent: var(--accent);
+    --color-theme-accent-soft: var(--accent-soft);
+    --color-theme-accent-strong: var(--accent-strong);
+    --color-theme-accent-text: var(--accent-text);
+    --color-theme-teal: var(--teal);
+    --color-theme-teal-soft: var(--teal-soft);
+    --color-theme-purple: var(--purple);
+    --color-theme-purple-soft: var(--purple-soft);
+    --color-theme-purple-text: var(--purple-text);
+    --color-theme-glass: var(--glass);
+    --color-theme-card: var(--card);
+    --color-theme-chip: var(--chip);
+    --color-theme-sheet: var(--sheet);
+    --color-theme-subtle: var(--subtle);
+    --color-theme-hairline: var(--hairline);
+    --color-theme-surface: var(--surface);
+    --color-theme-dot-ok: var(--dot-ok);
+    --color-theme-dot-warn: var(--dot-warn);
+    --color-theme-dot-idle: var(--dot-idle);
+    --color-theme-success: var(--success);
+    --color-theme-success-soft: var(--success-soft);
+    --color-theme-success-strong: var(--success-strong);
+    --color-theme-warning: var(--warning);
+    --color-theme-warning-soft: var(--warning-soft);
+    --color-theme-danger: var(--danger);
+    --color-theme-danger-soft: var(--danger-soft);
+    --color-theme-success-text: var(--success-text);
+    --color-theme-warning-text: var(--warning-text);
+    --color-theme-danger-text: var(--danger-text);
+  }
+
+  /* --- Value chips, switches and code wells --- */
+  /* Code wells stay dark in both themes (prompt blocks, shell snippets). */
+  :root,
+  [data-theme='dark'] {
+    --code-bg: rgba(0, 0, 0, 0.38);
+    --code-text: #dfe6f3;
+    --switch-off: rgba(255, 255, 255, 0.18);
+  }
+  [data-theme='light'] {
+    --code-bg: rgba(23, 32, 51, 0.88);
+    --code-text: #dfe6f3;
+    --switch-off: rgba(23, 32, 51, 0.18);
+  }
+
+  /* A small value chip inside a card (scope values, states, tags). */
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: var(--radius-full);
+    padding: 2px 9px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--text);
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-highlight);
+  }
+
+  /* An on/off switch drawn on a native checkbox: <input type="checkbox"
+     class="switch" />. Keeps the checkbox role, label and keyboard. */
+  .switch {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 44px;
+    height: 26px;
+    margin: 0;
+    border-radius: var(--radius-full);
+    background: var(--switch-off);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--radius-full);
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    transition: transform var(--duration-fast) ease;
+  }
+  .switch:checked {
+    background: var(--dot-ok);
+  }
+  .switch:checked::after {
+    transform: translateX(18px);
+  }
+  .switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* A monospace code well (prompt blocks, commands). */
+  .code-block {
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    overflow-x: auto;
+    background: var(--code-bg);
+    color: var(--code-text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
+
+  /* --- Shared page recipes (one definition each) ---
+     .count-pill    the small glass count next to a section title
+     .tag, .pill-sm a small 11px pill inside a card or row; tint with
+                    .pill-ok / -warn / -danger / -accent (.pill-sm pairs with .pill)
+     .stat-tile     a card tile: .stat-tile-label / -value / -sub stack;
+                    lights up when pressed, expanded or data-active
+     .data-table    a real <table>: 12px/600 header, hairline rows
+     .table-head    the same header type for div-grid tables
+     .board-column  a chip-surface column holding cards
+     .kv-grid       a <dl> of label / value pairs in two columns
+     .code-line     a one-line dark mono strip (a command or tool call)
+     .choice-card   a selectable option card (radio choice, mode picker)
+     .segmented-plain  a .segmented row without its own chip surface */
+  .count-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    padding: 1px 9px;
+    border-radius: var(--radius-full);
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-highlight);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .tag,
+  .pill-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: var(--radius-full);
+    padding: 1px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 16px;
+    white-space: nowrap;
+  }
+  /* Zero specificity, so a .pill-* tone on the same element wins. */
+  :where(.tag) {
+    background: var(--subtle);
+    color: var(--text-secondary);
+  }
+
+  .stat-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 12px 14px;
+    border-radius: 18px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+    text-align: left;
+  }
+  .stat-tile:is(button, a, [role='button']) {
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease;
+  }
+  .stat-tile:is(button, a, [role='button']):hover {
+    background: var(--panel-strong);
+  }
+  .stat-tile:is([aria-pressed='true'], [aria-expanded='true'], [data-active='true']) {
+    background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--card);
+    border-color: var(--accent);
+  }
+  .stat-tile-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .stat-tile-value {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.25;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .stat-tile-sub {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .data-table thead th,
+  .table-head {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .data-table thead th {
+    padding: 8px 10px;
+  }
+  .data-table td,
+  .data-table tbody th {
+    padding: 10px;
+    border-top: 1px solid var(--line);
+    text-align: left;
+  }
+  .data-table tbody th {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .data-table tbody tr:hover > * {
+    background: var(--subtle);
+  }
+
+  .board-column {
+    border-radius: 22px;
+    padding: 10px;
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-highlight);
+  }
+  /* Dark: the column keeps only its rim. A white-alpha fill under the
+     cards would lift them past the contrast budget of their small text
+     (card over glass is the composite tokens.contrast.test.ts measures). */
+  :root:not([data-theme='light']) .board-column {
+    background: transparent;
+  }
+
+  .kv-grid {
+    display: grid;
+    grid-template-columns: minmax(96px, 132px) minmax(0, 1fr);
+    column-gap: 16px;
+    row-gap: 6px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .kv-grid > dt {
+    color: var(--text-secondary);
+  }
+  .kv-grid > dd {
+    min-width: 0;
+    margin: 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  /* Uses the code-well tokens, so it stays dark in both themes. */
+  .code-line {
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    background: var(--code-bg);
+    color: var(--code-text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .choice-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 8px 14px;
+    border-radius: 14px;
+    background: var(--chip);
+    border: 1px solid var(--chip-border);
+    box-shadow: var(--chip-highlight);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .choice-card:hover {
+    background: var(--card);
+  }
+  .choice-card:is(
+    [aria-pressed='true'],
+    [aria-checked='true'],
+    [data-active='true'],
+    [data-selected='true']
+  ),
+  .choice-card:has(input:checked) {
+    background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--card);
+    border-color: var(--accent);
+  }
+  .choice-card:is(:disabled, [aria-disabled='true']),
+  .choice-card:has(input:disabled) {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+  .choice-card:has(input:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .segmented.segmented-plain {
+    padding: 0;
+    background: none;
+    border: 0;
+    box-shadow: none;
+  }
+  .segmented-plain
+    > :is([aria-selected='true'], [aria-pressed='true'], [aria-current], [data-active='true']) {
+    background: var(--chip);
+    box-shadow:
+      inset 0 0 0 1px var(--chip-border),
+      var(--chip-highlight);
+  }
+
+  /* --- sticky bars --- */
+  /* A glass panel that stays pinned while the page scrolls under it (the
+     top bar). Page content passing beneath must not lift the bar's small
+     text below AA, so the fill is the opaque glass tone at high alpha; the
+     blur still tints it with whatever scrolls by. */
+  .glass-bar {
+    background: var(--glass-bar);
+  }
+
+  /* --- page container --- */
+  /* Every routed page's outer column and its title block, so titles sit at
+     the same inset and pages use the full content width. */
+  .page-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 100%;
+    min-width: 0;
+  }
+  .page-header {
+    padding: 4px 6px 0;
+  }
+
+  /* --- sticky sheet footer --- */
+  /* ModalFooter sticky: the action row stays pinned to the bottom of a
+     scrolling sheet. It spans the sheet's 24px side padding and takes the
+     opaque sheet tone so the body scrolling under it does not show through. */
+  .sheet-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin-inline: -24px;
+    padding: 12px 24px;
+    background: var(--sheet-solid);
+  }
+
+  /* --- scroll fade --- */
+  /* A scrolling list with more rows below: the last 28px fade out, so a
+     half-visible row reads as "more below" instead of cut off. */
+  .scroll-fade-end {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  }
+
+  /* --- chip buttons --- */
+  /* Buttons drawn as a glass chip (Button secondary / glass / glass-danger).
+     Dark: the chip's own white rim reads. Light: a white chip on a white
+     card vanishes, so the rim becomes the hairline plus a soft drop. */
+  .btn-chip {
+    border-color: var(--chip-border);
+  }
+  [data-theme='light'] .btn-chip {
+    border-color: var(--hairline);
+    box-shadow:
+      var(--chip-highlight),
+      0 1px 2px rgba(28, 38, 72, 0.08);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .console-surface {
+    background: #141a2a;
+  }
+  .console-surface[data-theme] {
+    --glass: var(--glass-solid);
+    --card: var(--card-solid);
+    --chip: var(--chip-solid);
+    --sheet: var(--sheet-solid);
+  }
+}
+
+/* Transitional bridge: the dashboard's existing top-level sections are
+   built as `bg-theme-bg-elevated rounded-[var(--radius-lg)] border`. Give
+   them the full glass recipe (blur, highlight, white rim) until each page
+   moves to .glass-panel. Unlayered on purpose: it must beat the
+   `border-theme-line` / `shadow-theme-sm` utilities on the same element. */
+.bg-theme-bg-elevated.rounded-\[var\(--radius-lg\)\] {
+  position: relative;
+  isolation: isolate;
+  border-color: var(--glass-border);
+  box-shadow: var(--glass-highlight), var(--glass-shadow);
+}
+.bg-theme-bg-elevated.rounded-\[var\(--radius-lg\)\]::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
 /* ─── CORE-024: respect prefers-reduced-motion ────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -659,5 +1633,9 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0s !important;
     scroll-behavior: auto !important;
+  }
+  /* The slide-in sheets and the drawer appear in place. */
+  .slide-panel-right {
+    animation: none;
   }
 }

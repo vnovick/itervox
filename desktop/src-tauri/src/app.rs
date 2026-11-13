@@ -19,11 +19,13 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::app_hub;
+use crate::app_material;
 use crate::app_remote::RemoteShared;
 use crate::app_update;
 use crate::client;
 use crate::dashboard::{token_init_script, window_label};
 use crate::hub_source::{hub_page_url, read_local, HubPage, HubReader, HubStatus};
+use crate::material::{self, Surface};
 use crate::menu::{
     append_app_section, append_hub_section, build_menu, MenuAction, MenuEntry, MenuSpec,
 };
@@ -96,11 +98,15 @@ fn read_token_file(path: &str) -> Option<String> {
 
 /// Entry point used by main.rs.
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(app_update::plugin())
+        .plugin(app_update::plugin());
+    let app = builder
         .setup(|app| {
+            // A menu-bar app has no Dock icon until a window opens. Linux
+            // and Windows have no such policy: windows show in the taskbar
+            // while open, and the tray icon is always there.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             setup(app.handle())?;
@@ -216,12 +222,17 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(move || update_menu(&change_app, &change_shared)),
     )?;
 
+    // The Mac tints a black template image for its menu bar; Linux and
+    // Windows panels do not, so they get the full-colour icon (#260).
+    #[cfg(target_os = "macos")]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    #[cfg(not(target_os = "macos"))]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?;
     let tray_shared = Arc::clone(&shared);
     let hover_shared = Arc::clone(&shared);
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .icon_as_template(true)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Itervox")
         .show_menu_on_left_click(true)
         .menu(&Menu::new(app)?)
@@ -253,13 +264,24 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(app)?;
     update_menu(app, &shared);
+    app_update::refresh_cli_copy(app, shared.sidecar.as_deref().ok());
 
     // #244: the Projects menu's shortcuts act on the focused dashboard
-    // window's rail.
+    // window's rail. The Mac has one app menu bar; Linux and Windows give
+    // each dashboard window its own menu bar (app_dash.rs `create`), with
+    // Ctrl accelerators (#260).
     #[cfg(target_os = "macos")]
     dash::install_app_menu(app)?;
     let rail_shared = Arc::clone(&shared);
     app.on_menu_event(move |app, event| {
+        // The Go menu: a page of the focused dashboard, in place.
+        if let Some(path) = crate::go_menu::go_menu_path(event.id().as_ref()) {
+            let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
+            let _ = std::thread::Builder::new()
+                .name("itervox-go".into())
+                .spawn(move || dash::go(&app, &shared, path));
+            return;
+        }
         if let Some(cmd) = crate::rail::menu_command(event.id().as_ref()) {
             let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
             let _ = std::thread::Builder::new()
@@ -339,7 +361,7 @@ fn list_daemons(shared: &Shared, sweep: bool) -> Result<Vec<crate::status::Daemo
     lock(&shared.lister).list(dir.as_deref(), sweep, Instant::now(), || {
         match &shared.sidecar {
             Ok(p) => supervisor::list_daemons(p),
-            Err(e) => Err(e.clone()),
+            Err(e) => supervisor::list_without_sidecar(crate::platform::Os::current(), e),
         }
     })
 }
@@ -449,10 +471,21 @@ fn update_menu(app: &AppHandle, shared: &Arc<Shared>) {
         )
     };
     append_hub_section(&mut spec, &lock(&shared.hub_status));
-    append_app_section(
-        &mut spec,
-        app_update::menu_items(app, shared.sidecar.as_deref().ok()),
-    );
+    let mut app_items = Vec::new();
+    // #260: Windows without a bundled itervox.exe (#259) runs no local
+    // daemon; the tray says what works instead.
+    if let Some((label, url)) = crate::platform::no_local_daemon_notice(
+        crate::platform::Os::current(),
+        shared.sidecar.is_ok(),
+    ) {
+        app_items.push((
+            label.to_string(),
+            true,
+            Some(MenuAction::OpenExternal(url.to_string())),
+        ));
+    }
+    app_items.extend(app_update::menu_items(app, shared.sidecar.as_deref().ok()));
+    append_app_section(&mut spec, app_items);
     let app2 = app.clone();
     let shared2 = Arc::clone(shared);
     let _ = app.run_on_main_thread(move || {
@@ -477,7 +510,10 @@ fn install_menu(app: &AppHandle, shared: &Shared, spec: MenuSpec) -> tauri::Resu
 fn set_tray(tray: &TrayIcon<Wry>, menu: Menu<Wry>, spec: &MenuSpec) -> tauri::Result<()> {
     tray.set_menu(Some(menu))?;
     tray.set_tooltip(Some(&spec.tooltip))?;
-    #[cfg(target_os = "macos")]
+    // The waiting count next to the icon: the Mac menu bar title, the
+    // AppIndicator label on Linux. Windows' notification area has no text;
+    // the tooltip carries the count there.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     tray.set_title(if spec.title.is_empty() {
         None
     } else {
@@ -507,13 +543,24 @@ fn append_entry<R: Runtime>(
 ) -> tauri::Result<()> {
     match entry {
         MenuEntry::Separator => parent.add(&PredefinedMenuItem::separator(app)?),
-        MenuEntry::Item { id, label, enabled } => parent.add(&MenuItem::with_id(
-            app,
-            id.as_str(),
+        MenuEntry::Item {
+            id,
             label,
-            *enabled,
-            None::<&str>,
-        )?),
+            enabled,
+            accelerator,
+        } => {
+            // ⌘Q on macOS, Ctrl+Q on Linux and Windows (platform::accelerator).
+            let accel = accelerator
+                .as_deref()
+                .map(|a| crate::platform::accelerator(crate::platform::Os::current(), a));
+            parent.add(&MenuItem::with_id(
+                app,
+                id.as_str(),
+                label,
+                *enabled,
+                accel.as_deref(),
+            )?)
+        }
         MenuEntry::Submenu { label, items } => {
             let sub = Submenu::new(app, label, true)?;
             for i in items {
@@ -528,6 +575,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
     match action {
         MenuAction::OpenDashboard(key) => open_dashboard(app, shared, &key, None),
         MenuAction::OpenUrl { project, url } => open_dashboard(app, shared, &project, Some(url)),
+        MenuAction::NewTask(key) => dash::open_page(app, shared, &key, crate::menu::NEW_TASK_PATH),
         MenuAction::Start(key) => spawn_op(app, shared, key, PendingOp::Starting),
         MenuAction::Stop(key) => spawn_op(app, shared, key, PendingOp::Stopping),
         MenuAction::Restart(key) => spawn_op(app, shared, key, PendingOp::Restarting),
@@ -594,6 +642,11 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
             app_update::install_cli(app, shared.sidecar.as_deref().ok());
             update_menu(app, shared);
         }
+        MenuAction::OpenExternal(url) => crate::platform::open(&url),
+        MenuAction::ToggleAutostart => {
+            app_update::toggle_autostart(app);
+            update_menu(app, shared);
+        }
         MenuAction::Quit => {
             // Tunnels belong to the app (unlike the daemons): stop them.
             shared.remote.shutdown();
@@ -632,11 +685,7 @@ fn remote_op(
 }
 
 fn open_path(path: &Path) {
-    #[cfg(target_os = "macos")]
-    let opener = "/usr/bin/open";
-    #[cfg(not(target_os = "macos"))]
-    let opener = "xdg-open";
-    let _ = std::process::Command::new(opener).arg(path).spawn();
+    crate::platform::open(&path.to_string_lossy());
 }
 
 fn error_dialog(app: &AppHandle, msg: &str) {
@@ -805,7 +854,7 @@ fn stop_daemon(shared: &Shared, key: &str) -> Result<(), String> {
     let records = list_daemons(shared, false)?;
     let rec = record_for(&records, key).ok_or("not running")?;
     let pid = rec.pid;
-    supervisor::send_sigterm(pid)?;
+    supervisor::request_stop(shared.sidecar.as_deref().ok(), pid, key)?;
     if !supervisor::wait_for_exit(
         || supervisor::process_alive(pid),
         supervisor::STOP_TIMEOUT,
@@ -945,7 +994,8 @@ fn open_sessions(app: &AppHandle, shared: &Arc<Shared>) {
         let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
         let nav_app = app2.clone();
         let nav_shared = Arc::clone(&shared2);
-        let built = WebviewWindowBuilder::new(
+        let material = app_material::material_for(Surface::Sessions);
+        let mut builder = WebviewWindowBuilder::new(
             &app2,
             SESSIONS_LABEL,
             WebviewUrl::App("sessions.html".into()),
@@ -959,10 +1009,21 @@ fn open_sessions(app: &AppHandle, shared: &Arc<Shared>) {
                 false
             }
             None => true,
-        })
-        .build();
-        match built {
+        });
+        // A system material behind the page: a transparent window and
+        // webview, and the page told before it loads (material.rs).
+        if let Some(m) = material {
+            builder = builder
+                .transparent(true)
+                .initialization_script(material::init_script(m));
+        }
+        match builder.build() {
             Ok(w) => {
+                if let Some(m) = material {
+                    app_material::apply_or_clear(&w.as_ref().window(), m, |js| {
+                        let _ = w.eval(js);
+                    });
+                }
                 let _ = w.set_focus();
                 wake(&shared2);
             }

@@ -31,6 +31,7 @@ export function resetAllStores(): void {
     dashboardStateFilter: 'all',
     expandedRunningId: null,
     expandedPausedId: null,
+    newTaskOpen: false,
     logsIssueSearch: '',
     rulesLayer: 'project',
     rulesView: 'form',

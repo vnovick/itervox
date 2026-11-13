@@ -1,32 +1,52 @@
+import { lazy, Suspense } from 'react';
 import { useRunContext } from '../../../queries/changes';
 import { DiffFileList } from './DiffFileList';
 import { fmtTokens } from '../../../utils/format';
+import { useItervoxStore } from '../../../store/itervoxStore';
+import { SYSTEM_VISIBILITY_CAPABILITY } from '../../../queries/activity';
+import { RunResources } from '../resources/RunResources';
+// The activity section pulls in the field primitives (and their class
+// merger); this panel ships with the app shell, so load it on demand.
+const IssueActivity = lazy(() =>
+  import('../resources/IssueActivity').then((m) => ({ default: m.IssueActivity })),
+);
 
 const NOW_FILES_SHOWN = 8;
 
 /**
  * #215 — the issue detail's "Now" panel: what the issue's run is doing
  * (its last step and tool call, never tool output), its counters, what is
- * waiting on a human, and the files changed so far. Polls while the run is
- * live; shows the last finished run otherwise. Renders nothing when the
- * issue has neither a run nor a worktree.
+ * waiting on a human, the workspace's port (#250) and the files changed so
+ * far, its resource use and activity audit (system visibility). Polls while
+ * the run is live; shows the last finished run otherwise.
+ * Renders nothing when the issue has neither a run nor a worktree.
  */
 export function IssueNowPanel({ identifier, live }: { identifier: string; live: boolean }) {
   const { data } = useRunContext(identifier, { enabled: true, live });
+  const systemVisibility = useItervoxStore(
+    (s) => s.snapshot?.capabilities?.includes(SYSTEM_VISIBILITY_CAPABILITY) ?? false,
+  );
   if (!data) return null;
   const run = data.run;
-  if (!run && data.changedFiles.length === 0 && data.handoffs.length === 0) return null;
+  if (!run && !data.port && data.changedFiles.length === 0 && data.handoffs.length === 0)
+    return null;
   return (
     <section
-      className="border-theme-line bg-theme-bg-soft space-y-2 rounded-[var(--radius-sm)] border p-3"
+      className="glass-card space-y-2 rounded-[22px] px-4 py-3.5"
       data-testid="issue-now-panel"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-theme-text text-xs font-medium tracking-wider uppercase">
+        <h4 className="text-theme-text flex items-center gap-2 text-sm font-semibold">
+          {run?.live && (
+            <span
+              aria-hidden="true"
+              className="status-dot dot-ok ring-theme-success-soft ring-[3px]"
+            />
+          )}
           {run?.live ? 'Now' : 'Last run'}
         </h4>
         {run && (
-          <span className="text-theme-muted text-xs">
+          <span className="text-theme-text-secondary text-xs">
             {[
               run.profile,
               run.backend,
@@ -39,19 +59,27 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           </span>
         )}
       </div>
-      {run?.currentStep && <p className="text-theme-text text-sm">{run.currentStep}</p>}
+      {data.port ? (
+        <p className="text-xs" data-testid="now-port">
+          <span className="text-theme-muted">Port: </span>
+          <code className="text-theme-text font-mono">{data.port}</code>
+          <span className="text-theme-muted"> (ITERVOX_PORT)</span>
+        </p>
+      ) : null}
+      {run?.currentStep && (
+        <p className="text-theme-text text-sm leading-[1.45]">{run.currentStep}</p>
+      )}
       {run?.lastToolCall && (
-        <p className="text-xs" data-testid="now-last-tool">
-          <span className="text-theme-muted">Last tool: </span>
-          <span className="text-theme-text font-medium">{run.lastToolCall.name}</span>
+        <p className="code-line" data-testid="now-last-tool">
+          <span className="sr-only">Last tool: </span>
+          <span className="font-semibold">{run.lastToolCall.name}</span>
           {run.lastToolCall.target && (
-            <code className="text-theme-text-secondary ml-1 font-mono break-all">
-              {run.lastToolCall.target}
-            </code>
+            <code className="ml-1 break-all">· {run.lastToolCall.target}</code>
           )}
-          <span className="text-theme-muted"> · {run.toolCalls} calls</span>
+          <span className="opacity-75"> · {run.toolCalls} calls</span>
         </p>
       )}
+      {run?.resources && <RunResources usage={run.resources} />}
       {run?.pendingInput && (
         <p className="text-theme-warning-text text-xs">
           {run.pendingApproval ? 'Waiting for approval: ' : 'Waiting for input: '}
@@ -59,7 +87,7 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
         </p>
       )}
       {run && (run.queuedSteers > 0 || run.steers.length > 0) && (
-        <p className="text-theme-muted text-xs">
+        <p className="text-theme-text-secondary text-xs">
           Steering: {run.steers.length} delivered
           {run.queuedSteers > 0 ? `, ${String(run.queuedSteers)} queued` : ''}
         </p>
@@ -78,6 +106,11 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           </p>
           <DiffFileList files={data.changedFiles} limit={NOW_FILES_SHOWN} />
         </div>
+      )}
+      {systemVisibility && (
+        <Suspense fallback={null}>
+          <IssueActivity identifier={identifier} live={live} />
+        </Suspense>
       )}
       {data.handoffs.length > 0 && (
         <div>

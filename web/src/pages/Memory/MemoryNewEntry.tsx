@@ -37,7 +37,8 @@ export function MemoryNewEntry({ files }: { files: MemoryView['files'] }) {
     return (
       <Button
         variant="primary"
-        size="sm"
+        size="lg"
+        pill
         onClick={() => {
           setScope(writable.includes('private') ? 'private' : 'project');
           setOpen(true);

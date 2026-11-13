@@ -1,9 +1,9 @@
 .PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark settings-schema size-budget no-os-exit no-bare-go deadcode dco-test check-changelog-split e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
-# always use go1.26.10, even on machines where /usr/local/go is an older version.
+# always use go1.26.11, even on machines where /usr/local/go is an older version.
 # Must stay in sync with the `go` directive in go.mod.
-export GOTOOLCHAIN := go1.26.10
+export GOTOOLCHAIN := go1.26.11
 GO_PACKAGES := ./cmd/... ./internal/...
 # Explicit go test timeout: internal/agent alone takes ~8-9 min under -race
 # (SSH process-group tests), too close to go test's 10-minute default.
@@ -152,8 +152,12 @@ size-budget:
 fmt:
 	gofmt -l -w cmd internal
 
+# The GOOS=windows pass (#259) catches Windows build breaks — a Unix-only
+# syscall, a Setsid outside a _unix.go file — on Linux and macOS, tests
+# included, without a Windows machine.
 vet:
 	go vet $(GO_PACKAGES)
+	GOOS=windows go vet $(GO_PACKAGES)
 
 lint-go:
 	golangci-lint run ./cmd/... ./internal/...
@@ -271,7 +275,8 @@ dev:
 # Shell tests for the deploy/ scripts (CORE-061 fetch-secrets, CORE-062
 # bootstrap data disk + HOME relocation, CORE-107 upgrade rollback + cleanup
 # retention, CORE-113 heartbeat exporter, watchdog and alert-rule family
-# names), and the CHANGELOG split check (#246). Cloud CLIs, curl,
+# names), the CHANGELOG split check (#246) and the GitHub Action's trust
+# check and run script (#252). Cloud CLIs, gh, curl,
 # blkid/mount/mkfs and systemctl are stubbed on
 # PATH; needs only bash, jq and python3 (the systemd EnvironmentFile parser port).
 .PHONY: deploy-test
@@ -290,6 +295,8 @@ deploy-test:
 	bash deploy/monitoring/rules_names_test.sh
 	bash deploy/acceptance/self-hosted-run_test.sh
 	bash deploy/acceptance/gcp-deploy-smoke_test.sh
+	bash action/trust-check_test.sh
+	bash action/run_test.sh
 
 # Deploy lint (CORE-105). Same targets as .github/workflows/deploy-lint.yml;
 # each tool runs from a pinned image, so only docker is needed.
@@ -303,7 +310,7 @@ SMOKE_IMAGE      ?= itervox:deploy-smoke
 deploy-lint: deploy-shellcheck deploy-hadolint deploy-actionlint deploy-promtool deploy-tofu
 
 deploy-shellcheck:
-	@files=$$(find deploy -name '*.sh' -type f | sort); printf 'shellcheck %s\n' $$files; \
+	@files=$$(find deploy action -name '*.sh' -type f | sort); printf 'shellcheck %s\n' $$files; \
 	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt $(SHELLCHECK_IMAGE) -x $$files
 
 deploy-hadolint:
@@ -311,7 +318,7 @@ deploy-hadolint:
 	docker run --rm -i $(HADOLINT_IMAGE) < deploy/docker/Dockerfile
 
 deploy-actionlint:
-	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo $(ACTIONLINT_IMAGE) -color=false .github/workflows/deploy-lint.yml
+	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo $(ACTIONLINT_IMAGE) -color=false .github/workflows/deploy-lint.yml .github/workflows/action.yml
 
 deploy-promtool:
 	docker run --rm -v "$(CURDIR)/deploy/monitoring:/w:ro" -w /w --entrypoint promtool $(PROMETHEUS_IMAGE) check rules prometheus-rules.yml
@@ -359,20 +366,23 @@ qa-daemon: e2e
 qa-current: verify qa-current-ui qa-daemon
 	@echo "qa-current: full existing-functionality baseline passed"
 
-# ── Mac app (#128) ───────────────────────────────────────────────────────
-# A Tauri v2 menu-bar shell in desktop/ that bundles the daemon as a sidecar
-# (see site/src/content/docs/mac-app.mdx). Needs a Rust toolchain; `make
-# desktop` additionally needs macOS (Xcode Command Line Tools) and the Tauri
-# CLI, installed on first use at TAURI_CLI_VERSION. Not part of `make verify`,
-# which stays Rust-free; CI runs `desktop-test` and the unsigned bundle on a
-# macOS runner (.github/workflows/desktop.yml).
+# ── Desktop app (#128, #260) ─────────────────────────────────────────────
+# A Tauri v2 tray app in desktop/ that bundles the daemon as a sidecar (see
+# site/src/content/docs/guides/desktop-app.mdx). Needs a Rust toolchain;
+# `make desktop` additionally needs the Tauri CLI, installed on first use at
+# TAURI_CLI_VERSION, and the platform's build tools: Xcode Command Line Tools
+# on macOS, the GTK/WebKitGTK/AppIndicator development packages on Linux.
+# Not part of `make verify`, which stays Rust-free; CI runs `desktop-test`
+# and the unsigned bundles on macOS, Linux and Windows runners
+# (.github/workflows/desktop.yml).
 DESKTOP_DIR := desktop/src-tauri
 TAURI_CLI_VERSION := 2.12.2
 HOST_TRIPLE = $(shell rustc -vV | sed -n 's/^host: //p')
 
 .PHONY: desktop desktop-sidecar desktop-sidecar-host desktop-test desktop-tauri-cli
 
-# Both macOS sidecars (arm64 + x86_64, plus a lipo'd universal one on a Mac).
+# Both macOS sidecars (arm64 + x86_64, plus a lipo'd universal one) on a Mac;
+# the host's sidecar elsewhere.
 desktop-sidecar: web-deps web-build
 	bash desktop/scripts/build-sidecar.sh
 
@@ -391,9 +401,10 @@ desktop-tauri-cli:
 	@cargo tauri --version 2>/dev/null | grep -qx 'tauri-cli $(TAURI_CLI_VERSION)' \
 	  || cargo install tauri-cli --version $(TAURI_CLI_VERSION) --locked
 
-# The unsigned app bundle for this Mac's architecture:
-# desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg).
-# Releases are signed and notarized by .github/workflows/desktop-release.yml
-# (#130, docs/release-mac.md).
+# The unsigned bundles for this machine: on a Mac
+# desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg), on
+# Linux bundle/appimage/*.AppImage and bundle/deb/*.deb. Releases are built
+# by .github/workflows/desktop-release.yml (#130, docs/release-mac.md; Linux
+# and Windows #260).
 desktop: desktop-sidecar desktop-tauri-cli
 	cd $(DESKTOP_DIR) && cargo tauri build

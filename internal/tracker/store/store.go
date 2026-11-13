@@ -1128,9 +1128,11 @@ func (s *Store) SetIssueBranch(ctx context.Context, issueID, branchName string) 
 }
 
 // CreateIssue implements tracker.Tracker; the new issue joins the store.
-func (s *Store) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
-	iss, err := s.up.CreateIssue(ctx, sourceIssueID, title, body, stateName)
-	if err == nil && iss != nil {
+func (s *Store) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	iss, err := s.up.CreateIssue(ctx, sourceIssueID, in)
+	// An adapter returns the issue with an error when it was created but a
+	// follow-up write (blocked_by_source) failed: it exists, so it joins.
+	if iss != nil {
 		s.mu.Lock()
 		s.gen++
 		s.touched[iss.ID] = s.gen

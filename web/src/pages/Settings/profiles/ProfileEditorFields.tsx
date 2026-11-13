@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { AGENT_BACKENDS, BACKEND_BINARIES, BACKEND_LABELS } from '../../../lib/backends';
 import {
   agentActionOptionsFor,
   normalizeAllowedActions,
@@ -9,14 +10,7 @@ import {
   type ModelOption,
   type SupportedBackend,
 } from '../profileCommands';
-import {
-  checkboxCls,
-  fieldLabelCls,
-  fieldSurfaceCls,
-  helperTextCls,
-  inputCls,
-  selectCls,
-} from '../formStyles';
+import { checkboxCls, fieldLabelCls, helperTextCls, inputCls, selectCls } from '../formStyles';
 import { MarkdownPromptEditor } from './MarkdownPromptEditor';
 import { ProfileReferencePicker } from './ProfileReferencePicker';
 import { appendReference, guessProfileBackend } from './backendInventory';
@@ -87,10 +81,19 @@ function BackendSelect({
       }}
       className={selectCls}
     >
-      <option value="claude">Claude</option>
-      <option value="codex">Codex</option>
+      {AGENT_BACKENDS.map((b) => (
+        <option key={b} value={b}>
+          {BACKEND_LABELS[b]}
+        </option>
+      ))}
     </select>
   );
+}
+
+function commandPlaceholder(backend: SupportedBackend): string {
+  if (backend === 'custom') return './my-agent.sh — a command speaking the itervox agent protocol';
+  const bin = BACKEND_BINARIES[backend];
+  return `${bin}, /path/to/${bin}, or a wrapper command`;
 }
 
 const PROMPT_VARIABLES = [
@@ -129,6 +132,10 @@ interface ProfileEditorFieldsProps {
   dynamicModels?: Record<string, ModelOption[]>;
   /** Profile name, used in reference-check messages (#123). */
   profileName?: string;
+  /** A field rendered first in the backend / model row (the profile name in the form). */
+  leadingField?: ReactNode;
+  /** Rendered right under the backend / model row (the form's Active toggle). */
+  afterFirstRow?: ReactNode;
 }
 
 export function ProfileEditorFields({
@@ -155,8 +162,12 @@ export function ProfileEditorFields({
   onCreateIssueStateChange,
   dynamicModels,
   profileName = '',
+  leadingField,
+  afterFirstRow,
 }: ProfileEditorFieldsProps) {
-  const isCustomCommand = !isSimpleBackendCommand(command, backend);
+  // A custom backend is always a hand-written command (the itervox agent
+  // protocol), so its command field is always shown.
+  const isCustomCommand = backend === 'custom' || !isSimpleBackendCommand(command, backend);
   const canCreateIssue = allowedActions.includes('create_issue');
   const actionOptions = agentActionOptionsFor(supportedAgentActions);
   const [advancedOpen, setAdvancedOpen] = useState(isCustomCommand);
@@ -178,7 +189,8 @@ export function ProfileEditorFields({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className={`grid gap-3 ${leadingField ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+        {leadingField}
         <div>
           <label htmlFor="profile-backend-select" className={fieldLabelCls}>
             Backend
@@ -199,21 +211,21 @@ export function ProfileEditorFields({
         </div>
       </div>
 
+      {afterFirstRow}
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-        <div className={fieldSurfaceCls}>
-          <div>
-            <p className="text-theme-text text-[11px] font-semibold">Daemon Actions</p>
-            <p className="text-theme-muted mt-0.5 text-[11px]">
-              Daemon-backed actions available to this profile. Invoke them with{' '}
-              <span className="font-mono">itervox action ...</span>, not with{' '}
-              <span className="font-mono">{'{{ }}'}</span>. Local workers only in v1.
-            </p>
-          </div>
-          <div className="space-y-2">
+        <fieldset className="field-group space-y-2">
+          <legend>Daemon Actions</legend>
+          <p className="field-help">
+            Daemon-backed actions available to this profile. Invoke them with{' '}
+            <span className="font-mono">itervox action ...</span>, not with{' '}
+            <span className="font-mono">{'{{ }}'}</span>. Local workers only in v1.
+          </p>
+          <div className="space-y-1.5">
             {actionOptions.map((option) => {
               const checked = allowedActions.includes(option.id);
               return (
-                <label key={option.id} className="flex items-start gap-2 text-[11px]">
+                <label key={option.id} className="flex items-start gap-2 text-[13px]">
                   <input
                     type="checkbox"
                     checked={checked}
@@ -232,8 +244,8 @@ export function ProfileEditorFields({
                     className={checkboxCls}
                   />
                   <span className="min-w-0">
-                    <span className="text-theme-text block font-medium">{option.label}</span>
-                    <span className="text-theme-muted block">{option.description}</span>
+                    <span className="text-theme-text block">{option.label}</span>
+                    <span className="text-theme-muted block text-xs">{option.description}</span>
                   </span>
                 </label>
               );
@@ -271,16 +283,16 @@ export function ProfileEditorFields({
               )}
             </div>
           )}
-        </div>
+        </fieldset>
 
-        <div className={fieldSurfaceCls}>
+        <div className="subtle-fill text-theme-text-secondary space-y-1.5 self-start rounded-[var(--radius-sm)] px-3 py-2.5 text-xs">
           <div>
-            <p className="text-theme-text text-[11px] font-semibold">Prompt variables</p>
-            <p className="text-theme-muted mt-0.5 text-[11px]">
+            <p className="text-theme-text font-semibold">Prompt variables</p>
+            <p className="mt-0.5">
               Liquid bindings available inside the profile text editors below.
             </p>
           </div>
-          <div className="space-y-1 font-mono text-[11px]">
+          <div className="space-y-1 font-mono">
             {PROMPT_VARIABLES.map(([token, description]) => (
               <p key={token}>
                 {token} — {description}
@@ -340,13 +352,13 @@ export function ProfileEditorFields({
       />
 
       <details
-        className={fieldSurfaceCls}
+        className="border-theme-line-strong border-t pt-3"
         open={advancedOpen}
         onToggle={(event) => {
           setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open);
         }}
       >
-        <summary className="text-theme-text cursor-pointer text-[11px] font-semibold">
+        <summary className="text-theme-text-secondary cursor-pointer text-xs font-semibold">
           Advanced runner command
         </summary>
         <div className="mt-3 space-y-2">
@@ -355,20 +367,23 @@ export function ProfileEditorFields({
             onChange={(e) => {
               onCommandChange(e.target.value);
             }}
-            placeholder={
-              backend === 'codex'
-                ? 'codex, /path/to/codex, or a wrapper command'
-                : 'claude, /path/to/claude, or a wrapper command'
-            }
+            placeholder={commandPlaceholder(backend)}
             className={`${selectCls} font-mono text-xs`}
           />
           <p className={helperTextCls}>
             Leave this alone unless you need a wrapper command or a non-standard binary path.
           </p>
-          {isCustomCommand && (
+          {backend === 'custom' ? (
             <p className={helperTextCls}>
-              Custom command detected — model selection may not apply.
+              Custom backend: the command reads the prompt on stdin and prints itervox agent
+              protocol events (see the Backends guide).
             </p>
+          ) : (
+            isCustomCommand && (
+              <p className={helperTextCls}>
+                Custom command detected — model selection may not apply.
+              </p>
+            )
           )}
         </div>
       </details>

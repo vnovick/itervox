@@ -8,18 +8,26 @@ import { buttonClass, type ButtonSize, type ButtonVariant } from './buttonStyles
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
+  /** Fully rounded (toolbar / chip-row buttons). Default: 12px corners. */
+  pill?: boolean;
   ref?: Ref<HTMLButtonElement>;
 }
 
 export function Button({
   variant = 'secondary',
   size = 'md',
+  pill = false,
   type = 'button',
   className,
   ref,
   ...rest
 }: ButtonProps) {
   return (
-    <button ref={ref} type={type} className={buttonClass(variant, size, className)} {...rest} />
+    <button
+      ref={ref}
+      type={type}
+      className={buttonClass(variant, size, className, pill)}
+      {...rest}
+    />
   );
 }

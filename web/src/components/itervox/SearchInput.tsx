@@ -1,4 +1,5 @@
 import { Search, X } from 'lucide-react';
+import { cn } from '../ui/cn';
 
 interface SearchInputProps {
   value: string;
@@ -25,7 +26,7 @@ export function SearchInput({
     <div className={`relative min-w-0 ${className}`}>
       <Search
         aria-hidden="true"
-        className="text-theme-muted pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2"
+        className="text-theme-muted pointer-events-none absolute top-1/2 left-3.5 z-10 h-3.5 w-3.5 -translate-y-1/2"
       />
       <input
         type="search"
@@ -36,7 +37,10 @@ export function SearchInput({
         onChange={(e) => {
           onChange(e.target.value);
         }}
-        className={`border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted focus:border-theme-accent h-8 w-full rounded-lg border py-1.5 pr-8 pl-8 text-sm focus:outline-none ${inputClassName}`}
+        className={cn(
+          'glass-chip text-theme-text placeholder:text-theme-muted focus-visible:ring-theme-accent h-9 w-full py-1.5 pr-8 pl-9 text-[13px] focus:outline-none focus-visible:ring-2',
+          inputClassName,
+        )}
       />
       {value.trim() !== '' && (
         <button
@@ -45,7 +49,7 @@ export function SearchInput({
           onClick={() => {
             onChange('');
           }}
-          className="text-theme-muted hover:text-theme-text absolute top-1/2 right-2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded transition-colors"
+          className="text-theme-muted hover:text-theme-text absolute top-1/2 right-2.5 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full transition-colors"
         >
           <X aria-hidden="true" className="h-3.5 w-3.5" />
         </button>

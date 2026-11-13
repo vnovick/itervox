@@ -112,7 +112,7 @@ func TestWebhookForAnUnknownIssuePullsOnce(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond)
 	pulls := metrics.StorePullCount(metrics.StorePullWebhook)
 
-	created, err := tr.CreateIssue(t.Context(), "", "New", "", "Todo")
+	created, err := tr.CreateIssue(t.Context(), "", tracker.NewIssue{Title: "New", State: "Todo"})
 	require.NoError(t, err)
 	for range 5 {
 		require.Equal(t, http.StatusAccepted, linearDelivery(t, h, "create", created.ID, time.Now()))
@@ -238,7 +238,7 @@ func TestScopedWebhookPlacesNewIssuesAndDropsOutOfScopeOnes(t *testing.T) {
 	require.Len(t, got, 2, "the cold pull (the memory tracker has no project filter)")
 	lists := tr.listCalls()
 
-	created, err := tr.CreateIssue(t.Context(), "", "New", "", "Todo")
+	created, err := tr.CreateIssue(t.Context(), "", tracker.NewIssue{Title: "New", State: "Todo"})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusAccepted, linearDelivery(t, h, "create", created.ID, time.Now()))
 	require.Eventually(t, func() bool {
@@ -268,7 +268,7 @@ func TestWebhooksKeepListPullsAtTheSafetyNet(t *testing.T) {
 	for i := 0; time.Since(start) < 4*safetyNet; i++ {
 		id := []string{"1", fmt.Sprintf("x%d", i)}[i%2]
 		if i%10 == 0 {
-			created, err := tr.CreateIssue(t.Context(), "", "New", "", "Todo")
+			created, err := tr.CreateIssue(t.Context(), "", tracker.NewIssue{Title: "New", State: "Todo"})
 			require.NoError(t, err)
 			id = created.ID
 		}

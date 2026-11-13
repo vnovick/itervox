@@ -41,6 +41,7 @@ describe('uiStore', () => {
       'memorySelectedId',
       'memoryTab',
       'memoryUndo',
+      'newTaskOpen', // #251 — the New task dialog
       'rulesLayer',
       'rulesPreviewIssue',
       'rulesPreviewProfile',
