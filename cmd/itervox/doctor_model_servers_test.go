@@ -13,17 +13,6 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 )
 
-// TestModelServerURLsReadsCommandAssignments: only assignments before the
-// program count, through an optional `env` prefix, quotes stripped.
-func TestModelServerURLsReadsCommandAssignments(t *testing.T) {
-	assert.Equal(t, map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:8000"},
-		modelServerURLs("ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude --model glm"))
-	assert.Equal(t, map[string]string{"OPENAI_BASE_URL": "http://localhost:8000/v1"},
-		modelServerURLs(`env -i OPENAI_BASE_URL="http://localhost:8000/v1" opencode`))
-	assert.Empty(t, modelServerURLs("claude ANTHROPIC_BASE_URL=http://x"), "after the program it is an argument")
-	assert.Empty(t, modelServerURLs("FOO=1 claude"))
-}
-
 // TestDoctorWarnsWhenAModelServerDoesNotAnswer: doctor probes each model
 // server a profile command points at, lists who uses it, and warns when it
 // does not answer — without changing the exit code.

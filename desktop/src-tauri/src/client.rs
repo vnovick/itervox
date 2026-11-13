@@ -72,6 +72,64 @@ pub fn fetch_sessions(base_url: &str, token: Option<&str>) -> Result<SessionsRea
     parse_read(&body).map_err(FetchError::Parse)
 }
 
+/// GET `{base_url}api/v1/model-servers`: the model servers the daemon's
+/// profile commands point at (machine_health.rs). A daemon older than the
+/// route (404) lists none.
+pub fn fetch_model_servers(
+    base_url: &str,
+    token: Option<&str>,
+) -> Result<Vec<crate::machine_health::DaemonModelServer>, FetchError> {
+    let a = request(
+        shared_agent(),
+        base_url,
+        "api/v1/model-servers",
+        token,
+        None,
+    )?;
+    match a.status {
+        200 => crate::machine_health::parse_model_servers(&a.body).map_err(FetchError::Parse),
+        404 => Ok(Vec::new()),
+        401 => Err(FetchError::Unauthorized),
+        other => Err(FetchError::Status(other)),
+    }
+}
+
+/// Whether a loopback model server answers at `url` within `timeout`. Any
+/// HTTP response counts, as in `itervox doctor`: the question is "is it
+/// up", not "is this the right endpoint". An `https` URL is checked by
+/// connecting only (the app has no TLS stack for loopback). Anything that
+/// is not `127.0.0.1`, `localhost` or `::1` is refused without a request.
+pub fn probe_model_server(url: &str, timeout: Duration) -> Result<(), String> {
+    use crate::machine_health::{host_port, is_loopback_url};
+    if !is_loopback_url(url) {
+        return Err("not a loopback address".into());
+    }
+    if url.trim().to_ascii_lowercase().starts_with("https://") {
+        use std::net::ToSocketAddrs;
+        let (host, port) = host_port(url).ok_or("not an http(s) URL")?;
+        let addrs = (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| e.to_string())?;
+        let mut last = "no address".to_string();
+        for a in addrs.filter(|a| a.ip().is_loopback()) {
+            match std::net::TcpStream::connect_timeout(&a, timeout) {
+                Ok(_) => return Ok(()),
+                Err(e) => last = e.to_string(),
+            }
+        }
+        return Err(last);
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .proxy(None)
+        .build()
+        .into();
+    let mut resp = agent.get(url).call().map_err(|e| e.to_string())?;
+    let _ = resp.body_mut().with_config().limit(64 << 10).read_to_vec();
+    Ok(())
+}
+
 /// POST `{base_url}api/v1/dispatch/pause` (or `/resume`) (#213): pause or
 /// resume ALL dispatch of one daemon. Running agents continue either way.
 pub fn set_dispatch_paused(
@@ -324,6 +382,62 @@ mod tests {
             .unwrap();
         });
         (format!("http://{addr}/"), rx)
+    }
+
+    #[test]
+    fn model_servers_are_read_with_the_token() {
+        let (url, seen) = serve_once(
+            "200 OK",
+            r#"{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:8000","profiles":["(default)"],"pools":["local"],"remote":false}]}"#,
+        );
+        let got = fetch_model_servers(&url, Some("tok-123")).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].pools, vec!["local".to_string()]);
+        assert_eq!(
+            seen.recv().unwrap(),
+            "GET /api/v1/model-servers HTTP/1.1 Bearer tok-123"
+        );
+        let (old, _seen_old) = serve_once("404 Not Found", "");
+        assert_eq!(
+            fetch_model_servers(&old, None),
+            Ok(Vec::new()),
+            "older daemon: none"
+        );
+        let (locked, _seen_locked) = serve_once("401 Unauthorized", "");
+        assert_eq!(
+            fetch_model_servers(&locked, None),
+            Err(FetchError::Unauthorized)
+        );
+    }
+
+    #[test]
+    fn any_http_answer_counts_as_a_model_server_answering() {
+        let (url, _seen) = serve_once("404 Not Found", "nope");
+        assert_eq!(probe_model_server(&url, Duration::from_secs(3)), Ok(()));
+        let (url, _seen) = serve_once("500 Internal Server Error", "");
+        assert_eq!(probe_model_server(&url, Duration::from_secs(3)), Ok(()));
+        // Nothing listening.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert!(
+            probe_model_server(&format!("http://127.0.0.1:{port}"), Duration::from_secs(3))
+                .is_err()
+        );
+        assert!(
+            probe_model_server(&format!("https://127.0.0.1:{port}"), Duration::from_secs(3))
+                .is_err()
+        );
+        // https: a listener is enough (no TLS stack).
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let tls = format!("https://127.0.0.1:{}/v1", l.local_addr().unwrap().port());
+        assert_eq!(probe_model_server(&tls, Duration::from_secs(3)), Ok(()));
+        assert_eq!(
+            probe_model_server("http://10.0.0.5:8000", Duration::from_secs(3)),
+            Err("not a loopback address".into())
+        );
     }
 
     /// A keep-alive HTTP server for a daemon with a summary endpoint: the

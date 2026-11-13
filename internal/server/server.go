@@ -1963,6 +1963,7 @@ func (s *Server) routes() {
 			r.Get("/settings/reviewer", s.handleGetReviewer)
 			r.Put("/settings/reviewer", s.handleSetReviewer)
 			r.Get("/settings/profiles", s.handleListProfiles)
+			r.Get("/model-servers", s.handleModelServers) // the desktop app probes them
 			r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
 			r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)
 			r.Put("/settings/automations", s.handleSetAutomations)

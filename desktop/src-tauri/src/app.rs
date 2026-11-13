@@ -25,9 +25,12 @@ use crate::app_update;
 use crate::client;
 use crate::dashboard::{token_init_script, window_label};
 use crate::hub_source::{hub_page_url, read_local, HubPage, HubReader, HubStatus};
+use crate::machine_health::HealthAlert;
+use crate::machine_poll::MachinePoller;
 use crate::material::{self, Surface};
 use crate::menu::{
-    append_app_section, append_hub_section, build_menu, MenuAction, MenuEntry, MenuSpec,
+    append_app_section, append_hub_section, append_model_servers_section, build_menu, MenuAction,
+    MenuEntry, MenuSpec,
 };
 use crate::model::{refresh_interval, Core, NotificationTargets, PendingOp};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
@@ -77,6 +80,8 @@ struct Shared {
     /// The local daemons the hub covered in the last refresh: not polled,
     /// and left out of the busy check (#232).
     hub_covered: Mutex<std::collections::HashSet<String>>,
+    /// Model servers and the GPU, read on their own thread.
+    machine: Arc<MachinePoller>,
 }
 
 /// A hub window: label, token, origin.
@@ -207,6 +212,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         hub_reader: HubReader::default(),
         hub_status: Mutex::default(),
         hub_covered: Mutex::default(),
+        machine: Arc::default(),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -322,6 +328,15 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(move || wake(&wake_shared)),
     )?;
 
+    // Model servers and the GPU: probes and nvidia-smi run on their own
+    // thread, never on the refresh thread or the main thread.
+    let (machine_app, machine_shared) = (app.clone(), Arc::clone(&shared));
+    let tools_remote = Arc::clone(&shared.remote);
+    shared.machine.start(
+        move || tools_remote.tools().clone(),
+        move |alerts| machine_changed(&machine_app, &machine_shared, alerts),
+    )?;
+
     let poll_app = app.clone();
     std::thread::Builder::new()
         .name("itervox-refresh".into())
@@ -379,6 +394,10 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
             &read_token_file,
         )
     };
+    // The machine-health thread reads every local daemon's model servers.
+    shared
+        .machine
+        .submit(lock(&shared.core).named_jobs(jobs.clone()));
     // #232: with the hub's stream up, its members come from one projects
     // read; every other daemon is read in parallel over its kept-alive
     // connection (#212: a summary first, the full state only when it
@@ -457,6 +476,27 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
     }
 }
 
+/// A machine-health round changed what the tray shows: rebuild the menu,
+/// push the rails and show the model-server notifications (a server that
+/// was answering went down, or came back).
+fn machine_changed(app: &AppHandle, shared: &Arc<Shared>, alerts: Vec<HealthAlert>) {
+    if debug_enabled() {
+        for line in shared.machine.menu_lines() {
+            eprintln!("itervox desktop: machine {line}");
+        }
+    }
+    update_menu(app, shared);
+    dash::push_all(app, shared, false);
+    for a in alerts {
+        let _ = app
+            .notification()
+            .builder()
+            .title(&a.title)
+            .body(&a.body)
+            .show();
+    }
+}
+
 /// Rebuilds the tray menu from the model, on the main thread.
 fn update_menu(app: &AppHandle, shared: &Arc<Shared>) {
     let mut spec = {
@@ -471,6 +511,7 @@ fn update_menu(app: &AppHandle, shared: &Arc<Shared>) {
         )
     };
     append_hub_section(&mut spec, &lock(&shared.hub_status));
+    append_model_servers_section(&mut spec, &shared.machine.menu_lines());
     let mut app_items = Vec::new();
     // #260: Windows without a bundled itervox.exe (#259) runs no local
     // daemon; the tray says what works instead.
