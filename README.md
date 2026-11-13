@@ -100,53 +100,63 @@ A real-time dashboard with everything you need to watch, steer, and debug a flee
 
 <table>
   <tr>
-    <td align="center">
-      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-kanban-board-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-kanban-board-light.png" width="440" alt="Kanban" /></picture><br/>
-      <sub><b>Kanban</b> — drag issues across tracker states</sub>
+    <td align="center" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-kanban-board-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-kanban-board-light.png" width="440" alt="Kanban board" /></picture><br/>
+      <sub><b>Kanban board</b> — drag issues across tracker states</sub>
     </td>
-    <td align="center">
-      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-steer-the-run-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-steer-the-run-light.png" width="440" alt="Steer the run" /></picture><br/>
-      <sub><b>Steer the run</b> — current step, changed files and a steering box</sub>
+    <td align="center" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-steer-the-run-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-steer-the-run-light.png" width="440" alt="Steer a run while it works" /></picture><br/>
+      <sub><b>Steer a run while it works</b> — see the current step and changed files, send the agent a message, review the diff</sub>
     </td>
   </tr>
   <tr>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-review-continue-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-review-continue-light.png" width="440" alt="Review and continue" /></picture><br/>
-      <sub><b>Review and continue</b> — send a review back to the agent and keep going</sub>
+      <sub><b>Review and continue</b> — comment on diff lines, collect a draft review, send it to the agent in one action</sub>
     </td>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-issue-view-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-issue-view-light.png" width="440" alt="Issue view" /></picture><br/>
-      <sub><b>Issue view</b> — the whole history of one issue on one page</sub>
+      <sub><b>Issue view</b> — one page per issue: its runs, status changes, decisions and changes</sub>
     </td>
   </tr>
   <tr>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-system-visibility-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-system-visibility-light.png" width="440" alt="System visibility" /></picture><br/>
-      <sub><b>System visibility</b> — what the daemon is doing and why</sub>
+      <sub><b>System visibility</b> — CPU, memory, processes and disk for every run, plus an audit of commands, files and connections</sub>
     </td>
-    <td align="center">
+    <td align="center" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-dependency-graph-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-dependency-graph-light.png" width="440" alt="See what blocks what" /></picture><br/>
+      <sub><b>See what blocks what</b> — tracker relations and inferred edges in one graph, with a per-issue override</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-command-palette-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-command-palette-light.png" width="440" alt="Command palette" /></picture><br/>
-      <sub><b>Command palette</b> — every action and page from the keyboard</sub>
+      <sub><b>Command palette</b> — Ctrl/⌘+K finds issues, actions, settings, profiles and automations</sub>
     </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-dependency-graph-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-dependency-graph-light.png" width="440" alt="Dependency graph" /></picture><br/>
-      <sub><b>Dependency graph</b> — tracker and inferred blockers</sub>
-    </td>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-new-task-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-new-task-light.png" width="440" alt="New task" /></picture><br/>
-      <sub><b>New task</b> — start work from the top bar on any page</sub>
+      <sub><b>New task</b> — a one-off task with its own instructions, no tracker issue needed</sub>
     </td>
   </tr>
   <tr>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-sessions-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-sessions-light.png" width="440" alt="Sessions" /></picture><br/>
-      <sub><b>Sessions</b> — agent sessions, including tmux</sub>
+      <sub><b>Sessions</b> — every agent session, including tmux sessions you start yourself</sub>
     </td>
-    <td align="center">
-      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-light.png" width="440" alt="Hub" /></picture><br/>
-      <sub><b>Hub</b> — every project's daemon in one place</sub>
+    <td align="center" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-light.png" width="440" alt="Every project, one hub" /></picture><br/>
+      <sub><b>Every project, one hub</b> — the hub lists every project on the machine and what needs you</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-memory-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-memory-light.png" width="440" alt="Memory" /></picture><br/>
+      <sub><b>Memory</b> — what agents learned, reviewable and editable before it is used</sub>
+    </td>
+    <td align="center" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-desktop-app-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-desktop-app-light.png" width="440" alt="Desktop app" /></picture><br/>
+      <sub><b>Desktop app</b> — your fleet from the menu bar or system tray, each dashboard in its own window</sub>
     </td>
   </tr>
 </table>
@@ -157,33 +167,23 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
 
 <table>
   <tr>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-agent-profiles-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-agent-profiles-light.png" width="440" alt="Agent profiles" /></picture><br/>
       <sub><b>Agent profiles</b> — identity, instructions, backend and model per profile</sub>
     </td>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-automations-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-automations-light.png" width="440" alt="Automations" /></picture><br/>
-      <sub><b>Automations</b> — triggers that dispatch work on their own</sub>
+      <sub><b>Automations</b> — cron and event-driven helper runs on your own profiles, from starter templates</sub>
     </td>
   </tr>
   <tr>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-automation-editor-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-automation-editor-light.png" width="440" alt="Automation editor" /></picture><br/>
-      <sub><b>Automation editor</b> — trigger, filter, profile and permissions</sub>
+      <sub><b>Automation editor</b> — trigger, filter, profile and permissions for one rule</sub>
     </td>
-    <td align="center">
+    <td align="center" valign="top">
       <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-rules-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-rules-light.png" width="440" alt="Rules" /></picture><br/>
       <sub><b>Rules</b> — project rules every agent follows</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-memory-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-memory-light.png" width="440" alt="Memory" /></picture><br/>
-      <sub><b>Memory</b> — what agents learned, reviewable and editable</sub>
-    </td>
-    <td align="center">
-      <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-phone-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-phone-light.png" width="440" alt="Hub on a phone" /></picture><br/>
-      <sub><b>Hub on a phone</b> — the same controls on a small screen</sub>
     </td>
   </tr>
 </table>
@@ -192,16 +192,13 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
 
 A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, `brew install --cask vnovick/tap/itervox-app`, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. The same app runs in the Linux and Windows system tray (AppImage, `.deb`, MSI and setup `.exe` on the releases). Guide: **[itervox.dev/guides/desktop-app/](https://itervox.dev/guides/desktop-app/)**.
 
-<div align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-desktop-app-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-desktop-app-light.png" width="700" alt="Itervox desktop app window" /></picture>
-</div>
-
 ### View from your phone, anywhere
 
 The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunnel, Tailscale, ngrok, or self-hosted Piko. Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
 
 <div align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-phone-dashboard-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-phone-dashboard-light.png" width="280" alt="Itervox dashboard on a phone" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-phone-dark.png" /><img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/itervox-hub-phone-light.png" width="280" alt="The hub on a phone: every project and what needs you" /></picture>
 </div>
 
 ---
