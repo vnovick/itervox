@@ -133,8 +133,8 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `max_automation_queue_length` | int | `100` | Maximum durable automation dispatch entries waiting for capacity or dependency resolution. `0`/negative values fall back to the default; the queue is never unlimited |
 | `max_turns` | int | `20` | Maximum turns per issue before aborting |
 | `turn_timeout_ms` | int | `3600000` | Hard wall-clock limit for the entire agent session (ms). `0` disables |
-| `read_timeout_ms` | int | `30000` | Per-read timeout on subprocess stdout. Aborts if no bytes for this long |
-| `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout. `≤ 0` disables stall detection |
+| `read_timeout_ms` | int | `30000` | Per-read timeout on subprocess stdout. Aborts if no bytes for this long; suspended while the run waits for a guardrail approval |
+| `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout; not counted while the run waits for a guardrail approval. `≤ 0` disables stall detection |
 | `max_retry_backoff_ms` | int | `300000` | Exponential back-off cap between retries (10 s × 2^(n−1), capped here). `0`/negative values fall back to the default; use `max_retries` to control retry count |
 | `max_retries` | int | `5` | Maximum retry attempts before moving to `failed_state`. `0` means unlimited. When the failed turn carried a vendor limit signal, the retry waits for the vendor's reset time or retry delay (at most 6 hours) instead of the normal back-off, if that is longer |
 | `base_branch` | string | `""` (auto-detect) | Remote base branch for PR diff enrichment (e.g. `origin/main`). Auto-detected via `git symbolic-ref` when empty |

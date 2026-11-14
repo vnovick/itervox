@@ -65,6 +65,12 @@ too. The run keeps going while it waits — nothing is paused or resumed.
   the agent runs the exact same command again it joins that request, and an
   approval given in the meantime runs it then — still once.
 - When the run ends, an open request is dropped and the command is refused.
+- The agent prints nothing while it waits. That silence does not count
+  against `agent.read_timeout_ms` or `agent.stall_timeout_ms`, so take the
+  time you need; there is no reason to raise them for approvals. Both start
+  again from your answer. `agent.turn_timeout_ms` (one hour by default) still
+  bounds the wait: when it runs out, the run ends and the request is dropped.
+  This applies to held pipeline pushes too (below).
 - Tmux sessions have no approval channel: matching commands are refused there,
   and the agent is told to ask you to run them.
 

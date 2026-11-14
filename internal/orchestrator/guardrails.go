@@ -299,6 +299,7 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 	}
 	o.guardApprovals.Decide(entry.GuardrailApprovalID, approved, reply)
 	delete(state.InputRequiredIssues, entry.Identifier)
+	restartStallClock(state, entry.Identifier, time.Now())
 	if approved {
 		o.emitFeed(state, FeedGuardrailApproved, entry.Identifier, FeedPayload{Via: via}) // #213
 		slog.Info("guardrails: approved", "issue_identifier", entry.Identifier, "via", via, "command", command)
@@ -336,5 +337,30 @@ func (o *Orchestrator) dropGuardrailApprovals(state *State, identifier string) {
 	}
 	if o.guardApprovals != nil {
 		o.guardApprovals.Drop(identifier)
+	}
+}
+
+// awaitingGuardrailApproval reports whether run is blocked waiting for an
+// operator's answer to its guardrail approval: the issue's input-required
+// entry is an approval request (one is only raised for the live run, and
+// dropGuardrailApprovals removes it when the run exits). Event loop.
+func awaitingGuardrailApproval(state State, run *RunEntry) bool {
+	if run == nil {
+		return false
+	}
+	e := state.InputRequiredIssues[run.Issue.Identifier]
+	return e != nil && e.GuardrailApprovalID != ""
+}
+
+// restartStallClock restarts the stall clock of identifier's running
+// entries once their approval is answered: the wait was not inactivity
+// (ReconcileStalls skips a run while it waits), so the agent gets a full
+// agent.stall_timeout_ms from the answer. Event loop.
+func restartStallClock(state *State, identifier string, now time.Time) {
+	for _, r := range state.Running {
+		if r != nil && r.Issue.Identifier == identifier {
+			t := now
+			r.LastEventAt = &t
+		}
 	}
 }

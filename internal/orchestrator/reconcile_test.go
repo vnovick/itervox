@@ -43,6 +43,32 @@ func TestReconcileStallsKillsStalled(t *testing.T) {
 	assert.False(t, still, "stalled session should be removed from running")
 }
 
+// A run waiting for an operator's guardrail approval is silent by design
+// and is not killed as stalled; an ordinary input request on the issue does
+// not exempt it (control).
+func TestReconcileStallsSkipsRunAwaitingGuardrailApproval(t *testing.T) {
+	cfg := cfgWithStall(1000)
+	old := time.Now().Add(-2 * time.Minute)
+	for name, tc := range map[string]struct {
+		approvalID string
+		wantKept   bool
+	}{
+		"guardrail approval pending": {"appr-1", true},
+		"ordinary input entry":       {"", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := orchestrator.NewState(cfg)
+			state.Running["id1"] = runningEntry("id1", "In Progress", &old)
+			state.InputRequiredIssues["ENG-1"] = &orchestrator.InputRequiredEntry{
+				IssueID: "id1", Identifier: "ENG-1", GuardrailApprovalID: tc.approvalID}
+			events := make(chan orchestrator.OrchestratorEvent, 10)
+			state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
+			_, still := state.Running["id1"]
+			assert.Equal(t, tc.wantKept, still)
+		})
+	}
+}
+
 func TestReconcileStallsDisabledWhenZero(t *testing.T) {
 	cfg := cfgWithStall(0)
 	state := orchestrator.NewState(cfg)
