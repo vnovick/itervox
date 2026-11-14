@@ -296,6 +296,7 @@ deploy-test:
 	bash deploy/acceptance/self-hosted-run_test.sh
 	bash deploy/acceptance/gcp-deploy-smoke_test.sh
 	bash action/trust-check_test.sh
+	bash action/pipeline-check_test.sh
 	bash action/run_test.sh
 
 # Deploy lint (CORE-105). Same targets as .github/workflows/deploy-lint.yml;

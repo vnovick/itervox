@@ -150,6 +150,10 @@ func configShow(workflow string, asJSON bool, out, errOut io.Writer) int {
 	// settings above say what was configured, this says what it adds up to.
 	if cfg, err := config.Load(workflow); err == nil {
 		_, _ = fmt.Fprint(out, renderRunModes(runModes(cfg.Agent)))
+		// The lanes in effect, with doctor's warnings about them.
+		var lanes strings.Builder
+		renderLanesCheck(&lanes, checkLanes(cfg))
+		_, _ = fmt.Fprint(out, lanes.String())
 	}
 	return 0
 }

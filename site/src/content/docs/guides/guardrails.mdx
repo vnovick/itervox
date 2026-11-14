@@ -163,6 +163,33 @@ guardrails:
     second_opinion: ["internal/auth/**", "migrations/**"]
 ```
 
+**Check the lanes with `itervox doctor`.** Its `Lanes` section prints the
+human and second-opinion globs in effect (`(default)` when `human` is not
+set, `off` for an empty list) and warns when the human lane is off. It also
+warns when a profile's [`verify`](#signed-checks) check is defined by a file
+the agent could change on its own. `make test` runs whatever the Makefile
+says, so a `Makefile` outside the human lane lets the agent change how the
+check checks:
+
+```text
+Lanes
+  human: .github/**, WORKFLOW.md
+  second_opinion: off
+WARNING: implementer: verify check test runs `make test`, defined by Makefile, which the agent can change without a human; add it to guardrails.lanes.human
+  implementer: require_evidence lint is agent-reported, not daemon-run (add a verify check of the same name to have the daemon run it)
+```
+
+The files doctor looks for: `Makefile` for `make`, `package.json` for `npm`,
+`pnpm` and `yarn`, `pytest.ini`, `pyproject.toml`, `setup.cfg`, `tox.ini` and
+`conftest.py` for `pytest`, `tox.ini` for `tox`, `justfile` for `just`, and a
+script run by relative path (`./scripts/test.sh`, `bash scripts/ci.sh`). A
+`cd dir &&` before the command is followed. `go test` is not on the list:
+what it runs is the code under test. The last line lists `require_evidence`
+names that no `verify` check runs, so the agent's own evidence file is the
+only proof (`ci` is the pull request's CI checks and is never listed). None
+of this changes doctor's exit code, and `itervox config show` ends with the
+same section.
+
 ## Audit
 
 Every refused or approved operation is logged (`guardrails: refused …`,
@@ -265,7 +292,9 @@ neither the agent nor the code it wrote can read the key to forge a record.
 **What it does not prove.** A signature says *this daemon ran this command on
 this tree and saw this exit code*; it does not say the command tests the right
 thing. Keep `verify` commands in `WORKFLOW.md`, not in files the agent edits:
-`make test` runs the Makefile on the agent's branch, so review changes to it.
+`make test` runs the Makefile on the agent's branch, so keep it in the human
+lane (it is by default); [`itervox doctor`](#lanes) warns about a check whose
+definition is not.
 Without `isolation: process` an agent runs as your user and could read the
 key; the signature then proves only that the record was not edited afterwards.
 

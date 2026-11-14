@@ -308,6 +308,8 @@ Then a `Permissions` section lists `agent.command` as `(default)` and every enab
 
 When a profile's command sets `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` or `OPENAI_API_BASE` before the program (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`), a `Model servers` section probes each server with a 3-second request. Any HTTP answer counts. The section lists which profiles use each server, and prints a `WARNING:` for one that does not answer; the warning does not change the exit code. A URL taken from a variable is listed but not checked. See [Local models](/guides/local-models/).
 
+A `Lanes` section prints the `guardrails.lanes` globs in effect: `human` (marked `(default)` when not set, `off` for `[]`) and `second_opinion`. It prints a `WARNING:` when the human lane or the guardrails are off. It also warns, per profile, about a `verify` check whose command is defined by a file outside the human lane, such as `make` with a `Makefile` or `pnpm` with a `package.json` the lane does not match. Last, it lists `require_evidence` names that no `verify` check runs as *agent-reported, not daemon-run*. None of it changes the exit code. `itervox config show` prints the same section after "How agents run". See [Lanes](/guides/guardrails/#lanes).
+
 ```
 Isolation
   bubblewrap: unavailable — bwrap is not installed
@@ -418,7 +420,7 @@ itervox config schema
 
 `show` prints every setting Itervox reads with its effective value and the layer it came from: `default`, `user` (`~/.itervox/settings.jsonc`), `workflow` (`WORKFLOW.md`, which wins over the user file), `project` (`.itervox/settings.jsonc`), `local` (`.itervox/settings.local.jsonc`) or `environment` (the server bind variables). Keys a layer sets that Itervox does not read, and wrong-typed values it ignored, carry a note. Secrets are hidden wherever they appear: in a note, and under any key of a map or list. `workspace.root` is the directory the daemon uses (the per-project default when unset, `~` and `$VAR` expanded). `set` and `unset` edit the project file, the user file with `--user`, or the gitignored project-local file with `--local` (which also makes sure `.itervox/.gitignore` ignores it), keeping its comments; a wrong-typed value, or a change the workflow does not load with, is refused and nothing changes. A running daemon watches the settings files and reloads once for the change (#245). `schema` prints the settings JSON Schema, generated from the config registry; it is the file published at [`https://itervox.dev/schema/settings.schema.json`](https://itervox.dev/schema/settings.schema.json). See [Settings files](/configuration/#settings-files-jsonc-layers).
 
-After the table, `show` prints **How agents run**. That section lists `agent.command` as `(default)` and every enabled profile, each with its backend, its permission mode and its isolation, as dispatch resolves them. It marks the ones nothing confines as *full permissions*. `--json` prints the settings only. See [Safety](/guides/safety/).
+After the table, `show` prints **How agents run**. That section lists `agent.command` as `(default)` and every enabled profile, each with its backend, its permission mode and its isolation, as dispatch resolves them. It marks the ones nothing confines as *full permissions*. Then **Lanes**: the `guardrails.lanes` globs in effect, with doctor's lane warnings ([Lanes](/guides/guardrails/#lanes)). `--json` prints the settings only. See [Safety](/guides/safety/).
 
 ---
 

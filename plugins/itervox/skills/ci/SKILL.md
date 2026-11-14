@@ -119,11 +119,21 @@ added by a user with write access, a comment by an `OWNER`, `MEMBER` or
 `COLLABORATOR`, or a `schedule` / `workflow_dispatch`; never for a pull
 request from a fork.
 
+**Pipeline check** (`action/pipeline-check.sh`, safer CI mode, on by default):
+the run is refused (exit 5) when `WORKFLOW.md`, `.itervox/settings.jsonc` or
+`.itervox/agents/` differ from `policy-ref` (default: the default branch), when
+`WORKFLOW.md` does not match `policy-sha256`, when the token is a classic token
+with the `workflow` scope, or when deploy credentials (`AWS_SECRET_ACCESS_KEY`,
+`NPM_TOKEN`, `*_DEPLOY_TOKEN`, …) are in the job's environment. Put no deploy
+secrets in the agent's job; deploy from a separate workflow after the merge.
+`safe-mode: false` turns the refusals into warnings.
+
 ## Action inputs
 
 `issue` (required), `agent` (`claude`, `codex` or `none`), `version` (pin it),
 `answer`, `approve`, `timeout` (default `60m`), `workflow`, `log-dir`,
-`fail-on-needs-input`, `github-token`, `dry-run`. Outputs: `status`,
+`fail-on-needs-input`, `github-token`, `dry-run`, `safe-mode` (default
+`true`), `policy-ref`, `policy-sha256`. Outputs: `status`,
 `exit-code`, `pr-url`, `summary`.
 
 ## Exit codes
@@ -134,7 +144,7 @@ request from a fork.
 | `2` | Failed (agent failure, timeout, issue not found) | Read the step summary and the log artifact; re-run the job |
 | `3` | Needs input: a question, or a guardrail approval (fails closed in CI) | Answer: `/itervox <answer>` or `itervox run --issue 12 --answer "Use Postgres"`. Approve: `/itervox approve vercel --prod` or `itervox run --issue 12 --approve "vercel --prod"` (that command, that run only) |
 | `4` | Budget exceeded (`agent.budget`) | Raise the budget or split the issue |
-| `5` | Configuration error | Run `itervox doctor` locally |
+| `5` | Configuration error, or the pipeline check refused the job | Read the `refused:` lines of the pipeline check step; otherwise run `itervox doctor` locally |
 
 The step fails on 2, 4 and 5; exit 3 succeeds with `status: needs_input`
 unless `fail-on-needs-input` is set. Approving a guardrail command is the

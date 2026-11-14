@@ -2,8 +2,8 @@ name: Action
 
 # #252: tests of the composite action in action/ (`uses: vnovick/itervox/action@<ref>`).
 # actionlint checks this workflow, and through the dry-run job's
-# `uses: ./action`, the action's inputs; shellcheck and the trust-check
-# script test cover action/*.sh; the dry run installs a release binary with
+# `uses: ./action`, the action's inputs; shellcheck and the trust-check and
+# pipeline-check script tests cover action/*.sh; the dry run installs a release binary with
 # its checksum verified. Fork-safe: `pull_request`, a read-only token, no
 # secrets, nothing published.
 on:
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   lint-and-test:
-    name: actionlint, shellcheck, trust-check test
+    name: actionlint, shellcheck, script tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -35,6 +35,8 @@ jobs:
         run: shellcheck -x action/*.sh
       - name: trust-check test
         run: bash action/trust-check_test.sh
+      - name: pipeline-check test
+        run: bash action/pipeline-check_test.sh
 
   dry-run:
     name: dry run of the action

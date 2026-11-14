@@ -53,7 +53,7 @@ of other issues — the process opens no listening socket at all.
 | `2` | Failed (the agent failed, the run timed out, the issue was not found) |
 | `3` | Needs input: the agent asked a question, or a guardrail approval is needed |
 | `4` | Budget exceeded (`agent.budget`): the issue is paused |
-| `5` | Configuration error (`WORKFLOW.md`, settings, flags, the agent CLI) |
+| `5` | Configuration error (`WORKFLOW.md`, settings, flags, the agent CLI); from the action, also a [pipeline check](#safer-ci-mode) refusal |
 
 The run prints a Markdown summary — the issue, branch, PR link, turns, tokens,
 cost and reviewer verdicts — and appends it to `$GITHUB_STEP_SUMMARY` when that
@@ -96,7 +96,8 @@ approval command is still refused. On GitHub, comment
 
 `vnovick/itervox/action` installs the `itervox` release binary (its SHA-256
 checked against the release's `checksums.txt`) and the agent CLI, checks that
-the trigger is trusted, and runs `itervox run`.
+the trigger is trusted and that the pipeline is out of the agent's reach
+([Safer CI mode](#safer-ci-mode)), and runs `itervox run`.
 
 | Input | Default | |
 |---|---|---|
@@ -111,6 +112,10 @@ the trigger is trusted, and runs `itervox run`.
 | `fail-on-needs-input` | `false` | make exit 3 fail the step |
 | `github-token` | `github.token` | trust check, release download, `gh pr create` and the GitHub tracker |
 | `dry-run` | `false` | install and check only |
+| `safe-mode` | `true` | refuse the run when the pipeline is within the agent's reach; `false` turns each refusal into a warning. See [Safer CI mode](#safer-ci-mode) |
+| `allow-env` | `''` | variable names the deploy-secrets check lets through (spaces or commas), such as the AWS or Google keys an agent on Bedrock or Vertex needs. Names only; the other checks still run |
+| `policy-ref` | the default branch | the ref `WORKFLOW.md`, `.itervox/settings.jsonc` and `.itervox/agents/` must match |
+| `policy-sha256` | | the SHA-256 `WORKFLOW.md` must have |
 
 Outputs: `status`, `exit-code`, `pr-url` and `summary` (the Markdown). The step
 fails on exit 2, 4 and 5; exit 3 succeeds with `status: needs_input` unless
@@ -127,6 +132,111 @@ that can push, so the action refuses to run unless:
 and it never runs for a **pull request from a fork**, whatever the trigger.
 Everything else — other events, failed permission lookups — is refused. The
 check is [`action/trust-check.sh`](https://github.com/vnovick/itervox/blob/main/action/trust-check.sh).
+
+## Safer CI mode
+
+Agents in CI can fix the build. They should not be able to change the
+pipeline that judges the fix. An agent may change **what** CI checks (the
+code and its tests), never **how** CI checks (the workflows, the run's policy,
+the credentials). The [lanes](/guides/guardrails/#lanes) hold an agent's push
+that touches pipeline files. Safer CI mode adds the other half: before the
+agent starts, the action checks that the job itself keeps the referee outside
+the branch. With `safe-mode: true` (the default), the step
+**Check the pipeline is out of the agent's reach** refuses the run with exit
+code `5` and lists every refusal:
+
+| Check | Refuses when | Why |
+|---|---|---|
+| Policy | `WORKFLOW.md` in the checkout differs from the one on `policy-ref`, or `.itervox/settings.jsonc` or anything under `.itervox/agents/` (next to `WORKFLOW.md`) does | `WORKFLOW.md` decides what the agent may do: its guardrails, lanes, `verify` checks and budgets. The run's policy must come from the base branch, not from the branch being worked on. Otherwise a pull request can relax the rules it is then run under. |
+| Hash | `policy-sha256` is set and `WORKFLOW.md` has another SHA-256 (printed) | An exact pin, for a policy that changes rarely. |
+| Token | the `github-token` is a classic token with the `workflow` scope (read from the `X-OAuth-Scopes` header of `gh api -i /`) | A token that can push `.github/workflows` changes lets the agent rewrite CI on its branch. `GITHUB_TOKEN` passes: it can't push changes to `.github/workflows`. A fine-grained token's Workflows permission can't be read this way, so leave it off. |
+| Deploy secrets | the job's environment holds a deploy credential: `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_CLIENT_SECRET`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `PYPI_TOKEN`, `TWINE_PASSWORD`, `CARGO_REGISTRY_TOKEN`, `DOCKER_PASSWORD`, `KUBECONFIG`, `CLOUDFLARE_API_TOKEN`, `VERCEL_TOKEN`, `NETLIFY_AUTH_TOKEN`, `FLY_API_TOKEN`, `HEROKU_API_KEY`, `*_DEPLOY_KEY`, `*_DEPLOY_TOKEN` and a few more | Whatever is in the job's environment, the agent can read. Only the variable **names** are read and printed, never their values. The agent's own keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) and `GH_TOKEN` / `GITHUB_TOKEN` are not deploy credentials. |
+
+A lookup that fails, such as a ref that cannot be fetched or a token whose
+scopes cannot be read, refuses too. `policy-ref` defaults to the repository's
+default branch. The step fetches it from `origin` (`git fetch origin <ref>`,
+with `--depth=1` in a shallow checkout) and compares the files byte for byte.
+With `dry-run: true` the step reports what it would refuse without failing.
+If the agent itself needs cloud credentials (Claude Code on Bedrock or Vertex), name them in `allow-env` rather than turning safe mode off.
+
+With `safe-mode: false` each refusal becomes a `::warning::` and the run goes
+on.
+
+The [example workflows](#example-workflows) pass as they are. They run on
+`issues`, `issue_comment` and `schedule` events, whose checkout is the default
+branch, so they need no `policy-ref`. Set it when the policy lives on another
+branch, for example a protected release branch.
+
+The pushes use the checkout's credentials (`persist-credentials`). Those come
+from the `token` input of `actions/checkout`, not from the action's
+`github-token`, so give both the same token, or leave both at `github.token`.
+
+### A recommended setup
+
+The agent's job gets the three permissions it needs and no deploy secrets.
+Deploying happens in a separate workflow, after a human has merged the pull
+request:
+
+```yaml
+# .github/workflows/itervox.yml: the agent's job
+name: itervox
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  run:
+    if: github.event.label.name == 'itervox'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    concurrency:
+      group: itervox-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: vnovick/itervox/action@v0.3.1
+        with:
+          issue: ${{ github.event.issue.number }}
+          version: 0.3.1
+          safe-mode: 'true'          # the default, shown for clarity
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # no deploy credentials in this job
+```
+
+```yaml
+# .github/workflows/deploy.yml: deploys what was merged, never the agent's branch
+name: deploy
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production        # give the environment required reviewers
+    steps:
+      - uses: actions/checkout@v6
+      - run: ./scripts/deploy.sh
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+```
+
+Keep the referee outside the branch on the repository side too. Protect the
+default branch, require the CI checks, and add a `CODEOWNERS` entry for
+`.github/` and `WORKFLOW.md`, so a change to them needs a human review however
+it was pushed. Keep deploy secrets in an environment that only the deploy job
+uses.
 
 ## Authentication
 

@@ -49,9 +49,33 @@ inputs:
     required: false
     default: ${{ github.token }}
   dry-run:
-    description: Install and check only (trust check reported, not enforced); no agent runs.
+    description: Install and check only (trust and pipeline checks reported, not enforced); no agent runs.
     required: false
     default: 'false'
+  safe-mode:
+    description: >-
+      Refuse the run (exit 5) when the pipeline is within the agent's reach: WORKFLOW.md, the
+      project settings or .itervox/agents/ differ from policy-ref, WORKFLOW.md does not match
+      policy-sha256, the token has the workflow scope, or deploy credentials are in the job's
+      environment. 'false' turns each refusal into a warning.
+    required: false
+    default: 'true'
+  policy-ref:
+    description: >-
+      The branch or ref the run's policy comes from: WORKFLOW.md, .itervox/settings.jsonc and
+      .itervox/agents/ in the checkout must match it. Empty: the repository's default branch.
+    required: false
+    default: ''
+  allow-env:
+    description: >-
+      Environment variable names the deploy-secrets check lets through, separated by spaces or
+      commas: the cloud keys an agent on Bedrock or Vertex needs. Names only; the other checks still run.
+    required: false
+    default: ''
+  policy-sha256:
+    description: When set, the SHA-256 that WORKFLOW.md must have.
+    required: false
+    default: ''
 
 outputs:
   status:
@@ -81,6 +105,24 @@ runs:
           sh "$GITHUB_ACTION_PATH/trust-check.sh" || echo "dry run: the trigger would be refused"
         else
           sh "$GITHUB_ACTION_PATH/trust-check.sh"
+        fi
+
+    - name: Check the pipeline is out of the agent's reach
+      id: pipeline
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        SAFE_MODE: ${{ inputs.safe-mode }}
+        POLICY_REF: ${{ inputs.policy-ref || github.event.repository.default_branch }}
+        POLICY_SHA256: ${{ inputs.policy-sha256 }}
+        ALLOW_ENV: ${{ inputs.allow-env }}
+        ITERVOX_WORKFLOW: ${{ inputs.workflow }}
+      run: |
+        if [ "$DRY_RUN" = true ]; then
+          sh "$GITHUB_ACTION_PATH/pipeline-check.sh" || echo "dry run: the pipeline check would refuse this job"
+        else
+          sh "$GITHUB_ACTION_PATH/pipeline-check.sh"
         fi
 
     - name: Install itervox
