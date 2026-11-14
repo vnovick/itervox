@@ -50,6 +50,7 @@ var routeScopes = map[string]routeAccess{
 	"POST /api/v1/agent-actions/{identifier}/guardrail/events":        accessAgentGrant,
 	"POST /api/v1/agent-actions/{identifier}/guardrail/approvals":     accessAgentGrant,
 	"GET /api/v1/agent-actions/{identifier}/guardrail/approvals/{id}": accessAgentGrant,
+	"POST /api/v1/agent-actions/{identifier}/guardrail/lanes":         accessAgentGrant,
 
 	// Viewer: reads and streams.
 	"GET /metrics":                                  accessViewer,

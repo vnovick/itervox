@@ -136,6 +136,8 @@ type RunRecord struct {
 	Identifier  string
 	Kind        string
 	ProfileName string
+	// Backend is the run's backend (the second-opinion reviewer check).
+	Backend string
 	// Stopped is set when reconcile or stall detection stopped the run: its
 	// work was cut short, so a success exit that follows does not start a
 	// review.
@@ -177,7 +179,7 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 		}
 		state.LatestRun[entry.Issue.ID] = RunRecord{
 			ID: h.id, Identifier: entry.Issue.Identifier, Kind: entry.Kind, ProfileName: entry.ProfileName,
-			RulesHash: used.Hash, RuleIDs: used.IDs,
+			Backend: entry.Backend, RulesHash: used.Hash, RuleIDs: used.IDs,
 		}
 	}
 	entry.RunID = h.id
@@ -286,7 +288,7 @@ func finishedRun(state State, live *RunEntry, ev OrchestratorEvent) (RunRecord, 
 	if live != nil {
 		return RunRecord{
 			ID: live.RunID, Identifier: live.Issue.Identifier, Kind: live.Kind, ProfileName: live.ProfileName,
-			Stopped: recorded && rec.Stopped, Exited: recorded && rec.Exited,
+			Backend: live.Backend, Stopped: recorded && rec.Stopped, Exited: recorded && rec.Exited,
 			RulesHash: live.RulesHash, RuleIDs: live.RuleIDs,
 		}, true
 	}

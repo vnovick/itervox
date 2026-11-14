@@ -198,7 +198,13 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 			_, _ = fmt.Fprintf(stderr, "guardrails: `%s` was approved for this run; running it.\n", display)
 			break
 		}
-		if code, ok := waitForApproval(p, d.pattern, display, commandKey(cwd, tool, args), stderr); !ok {
+		if code, ok := waitForApproval(p, approvalAsk{
+			req:             ApprovalRequest{Key: commandKey(cwd, tool, args), Command: display},
+			why:             fmt.Sprintf("(guardrails.approval_commands: %q)", d.pattern),
+			unavailableKind: KindApprovalUnavailable,
+			unavailableHint: "Ask the operator to run it.",
+			retryHint:       "If this command times out, run it again later: an approval is kept for this exact command and runs it once.",
+		}, stderr); !ok {
 			return code
 		}
 	}
@@ -218,22 +224,35 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 	return code
 }
 
+// approvalAsk is one approval a shim or the pre-push hook waits for: the
+// request, why it needs a human (shown to the agent), the refusal kind
+// reported when no human can answer, and what the agent should do then.
+type approvalAsk struct {
+	req             ApprovalRequest
+	why             string
+	unavailableKind string
+	unavailableHint string
+	retryHint       string
+}
+
 // waitForApproval asks the daemon for an approval and waits for the
 // answer. ok means approved (run the command once); otherwise code is the
 // shim's exit status.
-func waitForApproval(p Policy, pattern, display, key string, stderr io.Writer) (code int, ok bool) {
+func waitForApproval(p Policy, ask approvalAsk, stderr io.Writer) (code int, ok bool) {
 	c := newClient(p)
+	display := ask.req.Command
+	unavailable := Event{Kind: ask.unavailableKind, Tool: firstWord(display), Command: display}
 	if !p.ApprovalsEnabled {
-		_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval (guardrails.approval_commands: %q), and approvals are not available here. Ask the operator to run it.\n", display, pattern)
-		c.report(Event{Kind: KindApprovalUnavailable, Tool: firstWord(display), Command: display})
+		_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval %s, and approvals are not available here. %s\n", display, ask.why, ask.unavailableHint)
+		c.report(unavailable)
 		return 1, false
 	}
-	_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval (guardrails.approval_commands: %q). Waiting for the operator: the request is shown as input required on the dashboard and the tracker. If this command times out, run it again later: an approval is kept for this exact command and runs it once.\n", display, pattern)
-	st, err := c.awaitDecision(ApprovalRequest{Key: key, Command: display})
+	_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval %s. Waiting for the operator: the request is shown as input required on the dashboard and the tracker. %s\n", display, ask.why, ask.retryHint)
+	st, err := c.awaitDecision(ask.req)
 	switch {
 	case err != nil:
-		_, _ = fmt.Fprintf(stderr, "guardrails: approval channel unavailable: %v. Ask the operator to run `%s`.\n", err, display)
-		c.report(Event{Kind: KindApprovalUnavailable, Tool: firstWord(display), Command: display})
+		_, _ = fmt.Fprintf(stderr, "guardrails: approval channel unavailable: %v. %s\n", err, ask.unavailableHint)
+		c.report(unavailable)
 		return 1, false
 	case st.Status == StatusApproved:
 		_, _ = fmt.Fprintf(stderr, "guardrails: approved; running `%s` once.\n", display)
@@ -247,6 +266,9 @@ func waitForApproval(p Policy, pattern, display, key string, stderr io.Writer) (
 		return 1, false
 	default:
 		_, _ = fmt.Fprintf(stderr, "guardrails: the approval request for `%s` ended without an answer (the run ended or the daemon restarted). Do not retry it without asking the operator.\n", display)
+		if ask.req.Lane != "" {
+			c.report(unavailable)
+		}
 		return 1, false
 	}
 }

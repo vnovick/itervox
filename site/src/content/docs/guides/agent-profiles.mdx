@@ -326,6 +326,7 @@ Granting `merge_pr` does not mean "the agent can merge anything". Every merge re
 3. **No block label** — if the PR carries any label from `agent.merge_block_labels` (case-insensitive; default `["needs-human", "migration", "auth", "feature-flag", "breaking"]`), the merge refuses with `blocked_label:<label>`.
 4. **All required CI checks pass** — `gh pr checks --required` must exit clean; failing or pending required checks refuse with `checks_failed:<excerpt>`.
 5. **Valid strategy** — one of `squash` (default), `rebase`, or `merge`, taken from the request or `agent.merge_strategy`. The merge runs with `--delete-branch`.
+6. **Lanes allow it** — checked first, before any `gh` call. If the issue's agent pushes changed files in [`guardrails.lanes.human`](/guides/guardrails/#lanes) (CI workflows and config), the merge refuses with `lane_human:` — merging a pipeline change is a human's job. If they changed `guardrails.lanes.second_opinion` files, it refuses with `lane_second_opinion:` until a reviewer on a different backend than the writer's has approved, after the last such push.
 
 Example:
 

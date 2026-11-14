@@ -25,6 +25,10 @@ type GuardrailsClient interface {
 	// GuardrailApprovalStatus reads one; an approval is spent by the read
 	// that sees it.
 	GuardrailApprovalStatus(identifier, runID, id string) guardrails.ApprovalStatus
+	// GuardrailLane records that a push the hook let through reached a
+	// guardrails.lanes lane above auto (merge policy reads it). ErrBusy when
+	// the daemon cannot take it now.
+	GuardrailLane(identifier, runID string, rep guardrails.LaneReport) error
 	// ProvideAgentInput is the agent-actions provide-input path: it never
 	// answers a guardrail approval. Same error contract as ProvideInput.
 	ProvideAgentInput(identifier, message string) error
@@ -101,4 +105,23 @@ func (s *Server) handleGuardrailApprovalStatus(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, s.guardrails.GuardrailApprovalStatus(chi.URLParam(r, "identifier"), runID, chi.URLParam(r, "id")))
+}
+
+// handleGuardrailLane records the lane a pushed change reached.
+// POST /api/v1/agent-actions/{identifier}/guardrail/lanes
+func (s *Server) handleGuardrailLane(w http.ResponseWriter, r *http.Request) {
+	runID, ok := s.guardrailGrant(w, r)
+	if !ok {
+		return
+	}
+	var rep guardrails.LaneReport
+	if err := decodeJSONBody(w, r, &rep); err != nil || !guardrails.IsLane(rep.Lane) {
+		writeError(w, http.StatusBadRequest, "bad_request", "lane must be second_opinion or human")
+		return
+	}
+	if err := s.guardrails.GuardrailLane(chi.URLParam(r, "identifier"), runID, rep); err != nil {
+		writeBusyOr404(w, err, "bad_request", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

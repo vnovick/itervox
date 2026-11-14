@@ -4,6 +4,7 @@ import { InputReplyBox } from './InputReplyBox';
 import type { useDismissInput, useProvideInput } from '../../queries/issues';
 import type { TrackerIssue } from '../../types/schemas';
 import { RequireScope } from './RequireScope';
+import { PipelineChangeNotice } from './PipelineChangeNotice';
 
 interface InputRequiredPanelProps {
   issue: Pick<TrackerIssue, 'identifier' | 'orchestratorState' | 'error'>;
@@ -47,6 +48,7 @@ export function InputRequiredPanel({
         <span aria-hidden="true" className="status-dot dot-warn" />
         <h4 className="text-theme-warning-text text-sm font-semibold">Agent needs your input</h4>
       </div>
+      <PipelineChangeNotice identifier={issue.identifier} />
       {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
       <RequireScope
         scope="operator"

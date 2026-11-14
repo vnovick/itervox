@@ -180,6 +180,9 @@ type Orchestrator struct {
 	// playbookOverridesFile persists State.PlaybookOverrides (#218); guarded
 	// by depsOverridesMu like depsOverridesFile, set before Run.
 	playbookOverridesFile string
+	// pushLanesFile persists State.PushLanes (guardrails.lanes). Set before
+	// Run; read-only afterwards.
+	pushLanesFile string
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string

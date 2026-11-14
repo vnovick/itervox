@@ -21,6 +21,8 @@ refuse those operations, or hold them for a human:
 | `gh pr merge`, `glab mr merge`, a merge through `gh api` / `glab api` | refused |
 | `git merge` while the default branch is checked out | refused |
 | a command in `guardrails.approval_commands` (`vercel --prod`, `kubectl apply`, …) | waits for a human; runs once on approve |
+| push a change to CI workflows or CI config ([`guardrails.lanes.human`](#lanes)) | waits for a human; pushes once on approve; never auto-merged |
+| push a change to a [`guardrails.lanes.second_opinion`](#lanes) file | allowed; `merge_pr` then needs a reviewer on another backend |
 | anything else | runs unchanged |
 
 Every refusal tells the agent what to do instead — push with
@@ -72,6 +74,95 @@ each match an argument, in order, with other arguments allowed between them.
 matches `helm upgrade api-prod ./chart`. Setting `approval_commands` replaces
 the default list.
 
+## Lanes
+
+Where a push goes is one question; **what it changes** is another. An agent
+fixing a red build could add `continue-on-error: true` to
+`.github/workflows/ci.yml` on its own issue branch, and the push would be a
+perfectly ordinary fast-forward. Lanes draw the line:
+
+> An agent may change **what** CI checks, never **how** CI checks.
+
+The pre-push hook lists the files each push changes and puts every one in a
+lane, the highest that matches:
+
+| Lane | Files | What happens |
+|---|---|---|
+| `human` | `guardrails.lanes.human` (default below) | The push waits for a human approval, like an approval command; `merge_pr` never merges the issue's pull request |
+| `second_opinion` | `guardrails.lanes.second_opinion` (default: none) | The push goes through; `merge_pr` refuses until a reviewer on a **different backend** than the writer's has approved, after the last such push |
+| `auto` | everything else | Unchanged |
+
+The default human lane is deliberately short — files that decide how a
+change is checked rather than what it does:
+
+```text
+.github/**  .gitlab-ci.yml  .circleci/**
+.itervox/**  !.itervox/handoff/**  WORKFLOW.md
+CODEOWNERS  .github/CODEOWNERS
+jest.config.*  vitest.config.*  pytest.ini  .coveragerc  codecov.yml
+.golangci.yml  Makefile
+```
+
+`.itervox/handoff/` is excluded because every run commits its handoff there.
+`pyproject.toml`, `package.json` and `go.mod` are not in it: their test and
+coverage sections cannot be told apart from dependencies by path. Add what
+your project uses (`setup.cfg`, `tox.ini`, `noxfile.py`, `turbo.json`, a
+`scripts/ci/**` directory, …). Setting `human` **replaces** the default
+list, so copy it to keep it; `human: []` turns the lane off.
+
+Patterns are gitignore-style, over paths relative to the repository root:
+
+- `**` matches any number of directories, `*` and `?` stay inside one, `[…]` is a class;
+- a pattern without a `/` matches that name at any depth (`Makefile`
+  matches `services/api/Makefile`); one with a `/` (or a leading `/`) is
+  anchored at the root;
+- a pattern that matches a directory matches everything under it;
+- `!pattern` excludes what an earlier pattern of the same lane matched;
+- matching is case-sensitive, like git paths.
+
+**Which files count.** For a branch the remote already has, the files that
+differ between the remote tip and the pushed commit — and that also differ
+from the base branch, so merging the base in (as the guardrails tell agents
+to do) does not count as changing what the base changed. For a new branch,
+the files that differ from its merge base with the issue's base branch: the
+pull request's base (the blocker's branch for a stacked PR,
+`workspace.base_branch` otherwise), then `agent.base_branch`, `origin/HEAD`,
+`origin/main` and `main`, first found wins. Renames count as a deletion and
+an addition, so moving a workflow away is caught too. When the changed files
+cannot be listed, the push is held for a human.
+
+**A held push** shows as an input request labelled **Pipeline change**, on
+the dashboard, in the Mac app, on your phone and as a tracker comment, with
+the files it changes (up to ten, then "and N more"):
+
+> Pipeline change: the agent wants to push changes to `.github/workflows/ci.yml` (`git push origin refs/heads/itervox/eng-1`)
+
+It works exactly like an approval command: reply `approve` to let that push
+through once (new commits ask again); any other reply, or dismissing it,
+refuses the push, and the agent is told your reply. The agent cannot answer
+its own request. Tmux sessions have no approval channel: the push is
+refused and the agent is told to ask you.
+
+**Merge policy.** Pushes that the hook lets through in the `human` or
+`second_opinion` lane are recorded for the issue (kept across restarts in
+`.itervox/push_lanes.json`, dropped when the issue is done). `merge_pr`
+checks that record before anything else: an issue whose pushes changed
+human-lane files is refused with `lane_human` — even after you approved the
+push, merging it stays with a human. A second-opinion issue is refused with
+`lane_second_opinion` until a reviewer whose backend (`claude`, `codex`, …)
+is not one the writing runs used has recorded an approving verdict after the
+last second-opinion push.
+
+```yaml
+guardrails:
+  lanes:
+    human: [".github/**", ".gitlab-ci.yml", ".circleci/**", ".itervox/**", "!.itervox/handoff/**",
+            "WORKFLOW.md", "CODEOWNERS", ".github/CODEOWNERS", "jest.config.*", "vitest.config.*",
+            "pytest.ini", ".coveragerc", "codecov.yml", ".golangci.yml", "Makefile",
+            "tox.ini"]                       # your own
+    second_opinion: ["internal/auth/**", "migrations/**"]
+```
+
 ## Audit
 
 Every refused or approved operation is logged (`guardrails: refused …`,
@@ -80,7 +171,10 @@ credentials), written to the issue's log, and every refusal is recorded in
 Recent failures (kind `guardrail`) and counted in
 `itervox_guardrail_blocks_total{kind}` — `branch`, `force_push`, `delete`,
 `tag`, `hook_bypass`, `self_merge`, `approval_rejected`,
-`approval_unavailable`.
+`approval_unavailable`, `lane_human` (a pipeline push refused with no one
+to approve it, or left unanswered) and `lane_rejected` (a pipeline push a
+human rejected or dismissed). An approved pipeline push and a refused
+`merge_pr` are logged and written to the issue's log.
 
 ## How it works
 
@@ -96,9 +190,11 @@ Each guarded run gets a private directory with:
   every hook then chains to your repository's own hooks directory (its
   `core.hooksPath` or `.git/hooks`), so your hooks still run.
 
-Shims and hooks reach the daemon only through two token-gated endpoints
+Shims and hooks reach the daemon only through token-gated endpoints
 (`/api/v1/agent-actions/{issue}/guardrail/…`) with a per-run token: one
-records a refusal, the other raises and reads an approval request. Nothing on
+records a refusal, one raises and reads an approval request, and one
+records the lane a let-through push reached (a push whose lane cannot be
+recorded is refused). Nothing on
 the daemon runs a command for an agent. Itervox's own git commands are not
 affected.
 
@@ -114,6 +210,18 @@ remote** is what makes a protected-branch push impossible; keep it on.
 - Runs on [SSH worker hosts](/configuration/#ssh-dispatch) are not guarded in
   this version; a warning is logged at startup and for each such run.
 - Sessions you start by hand are never touched.
+- Lanes see only pushes that go through the hook. The same bypasses apply
+  (git by absolute path, `--no-verify` through another git, a push through
+  the GitHub or GitLab API, an agent with its own token), and a pull request
+  edited on the web is never classified. `merge_pr` refuses on the issue's
+  recorded pushes; it does not re-read the pull request's file list, so a
+  change that reached the branch another way is not caught there. Protect
+  CI files with **branch protection and CODEOWNERS review** on the remote;
+  lanes keep honest agents honest, they are not a substitute.
+- Lanes are path patterns. A test-runner setting inside a file that is not
+  in the human lane (`package.json`'s `jest` key, `pyproject.toml`'s
+  `[tool.pytest]`, a `conftest.py` that skips tests, a test marked skip) is
+  not seen. Code review still matters.
 - An agent CLI running in its own sandbox that blocks network access (for
   example Codex with `permission_mode: sandbox`) cannot reach the daemon:
   refusals still apply but are not reported, and approval commands are

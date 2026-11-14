@@ -19,6 +19,10 @@ func sortedInputRequiredRows(entries map[string]*orchestrator.InputRequiredEntry
 	for _, entry := range entries {
 		row := makeInputRequiredRow("input_required", entry.Identifier, entry.SessionID, entry.Context, entry.Backend, entry.ProfileName, entry.QueuedAt, staleAfter, now)
 		row.GuardrailApproval = entry.GuardrailApprovalID != "" // #240
+		if len(entry.GuardrailLanePaths) > 0 {                  // guardrails.lanes: a held pipeline change
+			row.GuardrailLanePaths = append([]string(nil), entry.GuardrailLanePaths...)
+			row.GuardrailLanePathsTotal = entry.GuardrailLanePathsTotal
+		}
 		rows = append(rows, row)
 	}
 	for _, entry := range pending {

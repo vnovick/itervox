@@ -398,6 +398,21 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   `TestNoRawGitExecOutsideGitexec` stays green. Test binaries that host
   shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
   dispatch the entrypoints in `TestMain`.
+- **Lanes** (`guardrails.lanes`, `internal/guardrails/lanes.go` +
+  `prepush_lanes.go`): the pre-push hook lists each pushed ref's changed
+  files through `gitexec` (`diff --name-only -z --no-renames`; existing ref:
+  `old..new` ∩ changed-vs-base, new branch: vs. its merge base with
+  `Policy.BaseRefs`, the PR base first) and classifies them. A `human`-lane
+  push is held through the same approval flow (`ApprovalRequest.Lane`,
+  `InputRequiredEntry.GuardrailLanePaths`, "Pipeline change"); a let-through
+  push in `second_opinion`/`human` is reported (`guardrail/lanes` →
+  `EventGuardrailLane`; a failed report refuses the push). `State.PushLanes`
+  (per issue identifier — the PR carries every run's pushes; persisted to
+  `push_lanes.json`, pruned on terminal) is event-loop state; `merge_pr`
+  reads it only through the loop (`MergeLaneRefusal` → `EventMergeLaneCheck`,
+  fails closed). `ReviewVerdict.Backend` is stamped by the loop for the
+  second-opinion check. `guardrails.lanes` is load-time config, NOT in the
+  cfgMu allowlist.
 
 ### Workspace port ledger is workspace state, not `State`
 

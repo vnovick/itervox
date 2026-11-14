@@ -48,6 +48,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPlaybookOverridesFromDisk(state) // #218
+	state = o.loadPushLanesFromDisk(state)         // guardrails.lanes
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
@@ -554,6 +555,7 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 	// Running workers are not cancelled — they complete naturally.
 	terminalIdents := buildTerminalIdentifierSet(&state)
 	terminalCounts := pruneTerminalRuntimeLedgers(&state, terminalIdents)
+	o.prunePushLanes(&state, func(ident string) bool { _, t := terminalIdents[ident]; return !t }) // guardrails.lanes
 	absentCounts := pruneAbsentTrackerIssues(&state, currentActive, prevActive)
 	// CORE-109 — a discard marker whose completion event was lost.
 	discardsExpired := expireDiscardMarkers(&state, now)
@@ -2151,6 +2153,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		return o.applyClaimBatch(ctx, state, ev.ClaimBatch, time.Now())
 	case EventGuardrailApproval: // #204
 		o.handleGuardrailApproval(&state, ev)
+	case EventGuardrailLane: // guardrails.lanes
+		o.handleGuardrailLane(&state, ev, time.Now())
+	case EventMergeLaneCheck: // guardrails.lanes
+		o.handleMergeLaneCheck(state, ev)
 	case EventWorkerExited:
 		// #187: a poll in flight may have listed this issue before its run
 		// moved it; that list must not dispatch it again.
@@ -2368,8 +2374,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// #58 — collect this reviewer's verdict and either dispatch
 				// the next reviewer in the chain or close the quorum.
 				state = o.advanceReviewChainForIssue(ctx, state, issue, finished.ProfileName, now)
-				noteReviewVerdict(state, liveEntry, issue.Identifier, finished.ProfileName) // #201
-				o.observeReviewerAsk(&state, liveEntry, issue, finished.ProfileName)        // #217
+				stampVerdictBackend(&state, issue.Identifier, finished.ProfileName, finished.Backend) // guardrails.lanes
+				noteReviewVerdict(state, liveEntry, issue.Identifier, finished.ProfileName)           // #201
+				o.observeReviewerAsk(&state, liveEntry, issue, finished.ProfileName)                  // #217
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
