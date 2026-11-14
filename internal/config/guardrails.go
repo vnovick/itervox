@@ -96,8 +96,8 @@ type GuardrailsConfig struct {
 
 // GuardrailEnvApproval is one environment-scoped approval_commands entry:
 //
-//	- match: "terraform apply"
-//	  when_env: {TF_WORKSPACE: "prod*"}
+//   - match: "terraform apply"
+//     when_env: {TF_WORKSPACE: "prod*"}
 //
 // Match has the plain-entry syntax. WhenEnv maps an environment variable to
 // a glob (`*` any run of characters, `?` one); a leading `!` negates it. An
