@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -90,14 +91,15 @@ func FuzzDecide(f *testing.F) {
 
 		// Deterministic: the same argv in the same directory always gets
 		// the same decision.
-		d := p.decide(tool, args, "/repo", branchOf)
-		if again := p.decide(tool, args, "/repo", branchOf); again != d {
+		d := p.decide(tool, args, "/repo", noEnv, branchOf)
+		if again := p.decide(tool, args, "/repo", noEnv, branchOf); again != d {
 			t.Fatalf("decide(%s %q) is not deterministic: %+v then %+v", tool, args, d, again)
 		}
 		if d.act == actRefuse && (d.kind == "" || !IsKind(d.kind) || d.message == "") {
 			t.Fatalf("decide(%s %q): a refusal without a known kind and a message: %+v", tool, args, d)
 		}
-		if d.act == actApprove && !slices.Contains(p.ApprovalCommands, d.pattern) {
+		// d.pattern is the rule's display form: a plain rule is quoted.
+		if pat, err := strconv.Unquote(d.pattern); d.act == actApprove && (err != nil || !slices.Contains(p.ApprovalCommands, pat)) {
 			t.Fatalf("decide(%s %q): approval names pattern %q, not one of the policy's", tool, args, d.pattern)
 		}
 
@@ -107,7 +109,7 @@ func FuzzDecide(f *testing.F) {
 		if len(args) > 0 {
 			k = int(split) % (len(args) + 1)
 		}
-		prefix := p.decide(tool, args[:k], "/repo", branchOf)
+		prefix := p.decide(tool, args[:k], "/repo", noEnv, branchOf)
 		ends := slices.ContainsFunc(args[k:], func(a string) bool { return a == "--abort" || a == "--quit" || a == "--continue" })
 		if rank(d) < rank(prefix) && (tool != "git" || prefix.kind != KindSelfMerge || !ends) {
 			t.Fatalf("appending %q to %s %q relaxed %+v to %+v", args[k:], tool, args[:k], prefix, d)
@@ -121,7 +123,7 @@ func FuzzDecide(f *testing.F) {
 		if !ok || !slices.Equal(back, append([]string{tool}, args...)) {
 			t.Fatalf("render/split round trip: %q -> %q -> %q", append([]string{tool}, args...), line, back)
 		}
-		if again := p.decide(back[0], back[1:], "/repo", branchOf); again != d {
+		if again := p.decide(back[0], back[1:], "/repo", noEnv, branchOf); again != d {
 			t.Fatalf("decide(%q) = %+v, but %+v for the same argv", line, again, d)
 		}
 
@@ -133,7 +135,7 @@ func FuzzDecide(f *testing.F) {
 			key := fuzzCase("core.hooksPath", style)
 			for _, pre := range [][]string{{"-c", key + "=" + branch}, {"-c" + key + "=" + branch},
 				{"--config-env", key + "=ENV"}, {"--config-env=" + key + "=ENV"}, {"-c", fuzzCase("include.path", style) + "=" + branch}} {
-				if got := p.decide("git", append(slices.Clone(pre), args...), "/repo", branchOf); got.kind != KindHookBypass {
+				if got := p.decide("git", append(slices.Clone(pre), args...), "/repo", noEnv, branchOf); got.kind != KindHookBypass {
 					t.Fatalf("git %q %q: want a hook_bypass refusal, got %+v", pre, args, got)
 				}
 			}
@@ -145,7 +147,7 @@ func FuzzDecide(f *testing.F) {
 				at = int(style/7) % (len(args) + 1)
 			}
 			push := append(append(append([]string{"push"}, args[:at]...), abbr), args[at:]...)
-			if got := p.decide("git", push, "/repo", branchOf); got.kind != KindHookBypass {
+			if got := p.decide("git", push, "/repo", noEnv, branchOf); got.kind != KindHookBypass {
 				t.Fatalf("git %q: want a hook_bypass refusal, got %+v", push, got)
 			}
 		case "gh", "glab":
@@ -156,7 +158,7 @@ func FuzzDecide(f *testing.F) {
 			ins := [][]string{{"-R", branch}, {"--repo", branch}, {"--repo=" + branch}, {"--auto"}}[style%4]
 			at := int(style/4) % 3
 			cmd := append(append(append(slices.Clone(merge[:min(at, 2)]), ins...), merge[min(at, 2):]...), args...)
-			if got := p.decide(tool, cmd, "/repo", branchOf); got.kind != KindSelfMerge {
+			if got := p.decide(tool, cmd, "/repo", noEnv, branchOf); got.kind != KindSelfMerge {
 				t.Fatalf("%s %q: want a self_merge refusal, got %+v", tool, cmd, got)
 			}
 		}
@@ -411,7 +413,7 @@ func TestDecideIsLinearInGitCOptions(t *testing.T) {
 	args := strings.Split(strings.Repeat("-C\x00x\x00", 200000)+"merge\x00feature", "\x00")
 	var dir string
 	start := time.Now()
-	d := fuzzPolicy.decide("git", args, "/repo", func(d string) string { dir = d; return "main" })
+	d := fuzzPolicy.decide("git", args, "/repo", noEnv, func(d string) string { dir = d; return "main" })
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("200000 -C options took %v", elapsed)
 	}
@@ -429,7 +431,10 @@ func TestDecideIsLinearInGitCOptions(t *testing.T) {
 		{[]string{"-C", "", "merge", "x"}, "/repo"},
 		{[]string{"merge", "x"}, "/repo"},
 	} {
-		fuzzPolicy.decide("git", tc.args, "/repo", func(d string) string { dir = d; return "" })
+		fuzzPolicy.decide("git", tc.args, "/repo", noEnv, func(d string) string { dir = d; return "" })
 		assert.Equal(t, tc.want, dir, "%q", tc.args)
 	}
 }
+
+// noEnv is an empty environment: env-scoped approval rules never match.
+var noEnv = LookupIn(nil)

@@ -81,6 +81,17 @@ Commands:
              --pubkey     public key (default: .itervox/attest.pub)
              --workflow   path to WORKFLOW.md (default: WORKFLOW.md)
 
+  hook    The guardrail policy as a PreToolUse hook for an agent session
+          you run yourself (no daemon). A convenience layer: it sees the
+          command before the shell expands it.
+             claude-pretooluse  Claude Code hook (stdin JSON → decision)
+             codex-pretooluse   Codex hook (asks become denies)
+               --workflow PATH     default: nearest WORKFLOW.md upward
+               --require-workflow  ask when no WORKFLOW.md is found
+             install claude|codex  write the hook into .claude/settings.json
+                          or .codex/hooks.json (--project, default) or
+                          your home's (--user); --print shows it only
+
   secret  Set or list .itervox/.env values without showing them
              set KEY    read the value with echo off (or from stdin)
              list       show each key as set / placeholder / empty

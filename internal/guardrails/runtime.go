@@ -55,8 +55,11 @@ type Options struct {
 	AllowForcePush    bool
 	ApprovalCommands  []string
 	ApprovalsEnabled  bool
-	DaemonURL         string
-	Token             string
+	// EnvApprovalCommands are the environment-scoped approval commands
+	// (Policy.EnvApprovalCommands).
+	EnvApprovalCommands []EnvApproval
+	DaemonURL           string
+	Token               string
 	// PreApproved are approval commands the operator approved before the
 	// run (Policy.PreApproved).
 	PreApproved []string
@@ -86,20 +89,21 @@ func Prepare(ctx context.Context, opts Options) (*Runtime, error) {
 		dir = resolved
 	}
 	p := Policy{
-		Identifier:        opts.Identifier,
-		IssueBranch:       opts.IssueBranch,
-		ProtectedBranches: opts.ProtectedBranches,
-		AllowForcePush:    opts.AllowForcePush,
-		ApprovalCommands:  opts.ApprovalCommands,
-		ApprovalsEnabled:  opts.ApprovalsEnabled && opts.DaemonURL != "" && opts.Token != "",
-		OrigHooksDir:      repoHooksDir(ctx, opts.WorkDir),
-		Dir:               dir,
-		BinDir:            filepath.Join(dir, "bin"),
-		DaemonURL:         opts.DaemonURL,
-		Token:             opts.Token,
-		PreApproved:       opts.PreApproved,
-		Lanes:             opts.Lanes,
-		BaseRefs:          opts.BaseRefs,
+		Identifier:          opts.Identifier,
+		IssueBranch:         opts.IssueBranch,
+		ProtectedBranches:   opts.ProtectedBranches,
+		AllowForcePush:      opts.AllowForcePush,
+		ApprovalCommands:    opts.ApprovalCommands,
+		EnvApprovalCommands: opts.EnvApprovalCommands,
+		ApprovalsEnabled:    opts.ApprovalsEnabled && opts.DaemonURL != "" && opts.Token != "",
+		OrigHooksDir:        repoHooksDir(ctx, opts.WorkDir),
+		Dir:                 dir,
+		BinDir:              filepath.Join(dir, "bin"),
+		DaemonURL:           opts.DaemonURL,
+		Token:               opts.Token,
+		PreApproved:         opts.PreApproved,
+		Lanes:               opts.Lanes,
+		BaseRefs:            opts.BaseRefs,
 	}
 	r := &Runtime{policy: p}
 	if err := r.write(opts.Executable); err != nil {
@@ -120,7 +124,7 @@ func (r *Runtime) write(exe string) error {
 		return err
 	}
 	policyPath := r.PolicyPath()
-	for _, name := range ShimNames(p.ApprovalCommands) {
+	for _, name := range ShimNames(p.approvalPatterns()) {
 		script := "#!/bin/sh\n# " + shimMarker + "\nexec " + agent.ShellQuote(exe) + " " + shimEntrypoint + " " +
 			agent.ShellQuote(policyPath) + " " + agent.ShellQuote(name) + " \"$@\"\n"
 		if err := os.WriteFile(filepath.Join(p.BinDir, name), []byte(script), 0o700); err != nil {

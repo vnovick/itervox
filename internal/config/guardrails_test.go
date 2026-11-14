@@ -70,3 +70,56 @@ func TestLanesConfigRoundtrip(t *testing.T) {
 		assert.Error(t, config.ValidateGuardrailLanes(bad), "%+v", bad)
 	}
 }
+
+// guardrails.approval_commands object entries: {match, when_env} is an
+// environment-scoped rule; an object without when_env is a plain entry;
+// absent, no scoped rule exists. Malformed entries fail validation rather
+// than being dropped (a dropped rule would let its command run).
+func TestGuardrailEnvApprovalConfigRoundtrip(t *testing.T) {
+	cases := []struct {
+		name      string
+		extra     string
+		wantPlain []string
+		wantEnv   []config.GuardrailEnvApproval
+	}{
+		{"absent: defaults, no scoped rules", "", config.DefaultGuardrailApprovalCommands, nil},
+		{"set: strings and objects mixed",
+			"guardrails:\n  approval_commands:\n    - \"vercel --prod\"\n    - match: \"terraform  apply\"\n      when_env:\n        TF_WORKSPACE: \"prod*\"\n    - match: \"kubectl apply\"\n      when_env: {KUBECONFIG: \"*prod*\", STAGE: \"!dev*\"}\n    - match: \"npm publish\"\n",
+			[]string{"vercel --prod", "npm publish"},
+			[]config.GuardrailEnvApproval{
+				{Match: "terraform apply", WhenEnv: map[string]string{"TF_WORKSPACE": "prod*"}},
+				{Match: "kubectl apply", WhenEnv: map[string]string{"KUBECONFIG": "*prod*", "STAGE": "!dev*"}},
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(workflowWithContent(t, minimal(tc.extra)))
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPlain, cfg.Guardrails.ApprovalCommands)
+			assert.Equal(t, tc.wantEnv, cfg.Guardrails.EnvApprovalCommands)
+			require.NoError(t, config.ValidateGuardrailApprovals(cfg.Guardrails))
+		})
+	}
+	for _, bad := range []string{
+		"    - when_env: {X: \"a\"}\n",
+		"    - match: \"terraform apply\"\n      when_env: \"prod\"\n",
+		"    - match: \"terraform apply\"\n      when_env: {\"BAD-NAME\": \"x\"}\n",
+		"    - match: \"terraform apply\"\n      when_env: {X: [\"a\"]}\n",
+		"    - match: \"terraform apply\"\n      when: {X: \"a\"}\n",
+	} {
+		cfg, err := config.Load(workflowWithContent(t, minimal("guardrails:\n  approval_commands:\n"+bad)))
+		require.NoError(t, err, bad)
+		assert.Error(t, config.ValidateGuardrailApprovals(cfg.Guardrails), bad)
+	}
+}
+
+// Plain-string approval_commands read exactly as before the object form
+// existed: whitespace collapsed, de-duplicated, empty dropped, no scoped
+// rules.
+func TestPlainApprovalCommandsUnchanged(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("guardrails:\n  approval_commands:\n    - \"helm  upgrade *-prod\"\n    - \"helm upgrade *-prod\"\n    - \"\"\n    - \"kubectl apply\"\n")))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"helm upgrade *-prod", "kubectl apply"}, cfg.Guardrails.ApprovalCommands)
+	assert.Nil(t, cfg.Guardrails.EnvApprovalCommands)
+	assert.NoError(t, config.ValidateGuardrailApprovals(cfg.Guardrails))
+}

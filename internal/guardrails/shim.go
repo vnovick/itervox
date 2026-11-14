@@ -28,6 +28,8 @@ type decision struct {
 	act     action
 	kind    string
 	message string
+	// pattern is the matching approval rule's display form (a quoted
+	// pattern, plus its when_env conditions for a scoped rule).
 	pattern string
 }
 
@@ -40,9 +42,9 @@ var gitGlobalsWithValue = []string{"-C", "-c", "--git-dir", "--work-tree", "--na
 // GraphQL mutations that do.
 var mergeAPIRe = regexp.MustCompile(`(^|/)(pulls/[0-9]+/merge|merge_requests/[0-9]+/merge)/?(\?|$)|mergePullRequest|enablePullRequestAutoMerge`)
 
-// decide classifies tool args… run in cwd. branchOf returns the branch
-// checked out in a directory.
-func (p Policy) decide(tool string, args []string, cwd string, branchOf func(dir string) string) decision {
+// decide classifies tool args… run in cwd with the environment lookup
+// reads. branchOf returns the branch checked out in a directory.
+func (p Policy) decide(tool string, args []string, cwd string, lookup EnvLookup, branchOf func(dir string) string) decision {
 	var d decision
 	switch tool {
 	case "git":
@@ -55,8 +57,8 @@ func (p Policy) decide(tool string, args []string, cwd string, branchOf func(dir
 	if d.act != actForward {
 		return d
 	}
-	if pattern, ok := MatchApproval(p.ApprovalCommands, tool, args); ok {
-		return decision{act: actApprove, pattern: pattern}
+	if why, ok := p.matchAnyApproval(tool, args, lookup); ok {
+		return decision{act: actApprove, pattern: why}
 	}
 	return decision{}
 }
@@ -87,12 +89,43 @@ func isNoVerify(arg string) bool {
 	return len(arg) > len("--no-") && strings.HasPrefix("--no-verify", arg)
 }
 
+// hookBypass refuses an attempt to skip or replace the guardrail hooks.
+var hookBypass = decision{act: actRefuse, kind: KindHookBypass, message: "guardrails: replacing or skipping Itervox's git hooks is refused (core.hooksPath, a config include, --no-verify on push). Push normally; the guardrail hook chains to the repository's own hooks."}
+
 func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) string) decision {
-	bypass := decision{act: actRefuse, kind: KindHookBypass, message: "guardrails: replacing or skipping Itervox's git hooks is refused (core.hooksPath, a config include, --no-verify on push). Push normally; the guardrail hook chains to the repository's own hooks."}
-	// dirs are the -C values from the last absolute one on (or cwd), joined
-	// once when a merge needs the directory: joining as they come costs
-	// quadratic time on a long run of -C options.
+	dir, i, bypass := gitGlobals(args, cwd)
+	if bypass {
+		return hookBypass
+	}
+	if i >= len(args) {
+		return decision{}
+	}
+	sub, rest := args[i], args[i+1:]
+	switch sub {
+	case "push":
+		if slices.ContainsFunc(rest, isNoVerify) {
+			return hookBypass
+		}
+	case "merge":
+		if slices.ContainsFunc(rest, func(a string) bool { return a == "--abort" || a == "--quit" || a == "--continue" }) {
+			return decision{}
+		}
+		if b := branchOf(dir); b != "" && p.protected(b) {
+			return decision{act: actRefuse, kind: KindSelfMerge, message: fmt.Sprintf(
+				"guardrails: merging into %s is refused: agents do not merge into the default branch. Merge the base into your issue branch instead, and leave merging the pull request to Itervox's merge policy or a human.", b)}
+		}
+	}
+	return decision{}
+}
+
+// gitGlobals reads git's global options: the directory the command acts
+// in (-C), the index of the subcommand (len(args) when none), and whether
+// an option replaces the hooks path. The -C values from the last absolute
+// one on (or cwd) are joined once at the end: joining as they come costs
+// quadratic time on a long run of -C options.
+func gitGlobals(args []string, cwd string) (dir string, sub int, bypass bool) {
 	dirs := []string{cwd}
+	defer func() { dir = filepath.Join(dirs...) }()
 	i := 0
 	for i < len(args) {
 		a := args[i]
@@ -103,15 +136,15 @@ func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) s
 		switch {
 		case a == "-c" || a == "--config-env":
 			if i+1 < len(args) && isHooksPathAssignment(args[i+1]) {
-				return bypass
+				return "", i, true
 			}
 		case strings.HasPrefix(a, "-c") && len(a) > 2 && !strings.HasPrefix(a, "--"):
 			if isHooksPathAssignment(a[2:]) {
-				return bypass
+				return "", i, true
 			}
 		case name == "--config-env" && hasValue:
 			if isHooksPathAssignment(value) {
-				return bypass
+				return "", i, true
 			}
 		}
 		if a == "-C" && i+1 < len(args) {
@@ -126,25 +159,7 @@ func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) s
 		}
 		i++
 	}
-	if i >= len(args) {
-		return decision{}
-	}
-	sub, rest := args[i], args[i+1:]
-	switch sub {
-	case "push":
-		if slices.ContainsFunc(rest, isNoVerify) {
-			return bypass
-		}
-	case "merge":
-		if slices.ContainsFunc(rest, func(a string) bool { return a == "--abort" || a == "--quit" || a == "--continue" }) {
-			return decision{}
-		}
-		if b := branchOf(filepath.Join(dirs...)); b != "" && p.protected(b) {
-			return decision{act: actRefuse, kind: KindSelfMerge, message: fmt.Sprintf(
-				"guardrails: merging into %s is refused: agents do not merge into the default branch. Merge the base into your issue branch instead, and leave merging the pull request to Itervox's merge policy or a human.", b)}
-		}
-	}
-	return decision{}
+	return "", min(i, len(args)), false
 }
 
 // decideMergeCLI refuses `<cli> <noun> merge` (gh pr merge, glab mr merge)
@@ -215,7 +230,7 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 	if err != nil {
 		cwd = "."
 	}
-	d := p.decide(tool, args, cwd, currentBranch)
+	d := p.decide(tool, args, cwd, LookupIn(env), currentBranch)
 	display := displayCommand(tool, args)
 	switch d.act {
 	case actRefuse:
@@ -229,7 +244,7 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 		}
 		if code, ok := waitForApproval(p, approvalAsk{
 			req:             ApprovalRequest{Key: commandKey(cwd, tool, args), Command: display},
-			why:             fmt.Sprintf("(guardrails.approval_commands: %q)", d.pattern),
+			why:             "(guardrails.approval_commands: " + d.pattern + ")",
 			unavailableKind: KindApprovalUnavailable,
 			unavailableHint: "Ask the operator to run it.",
 			retryHint:       "If this command times out, run it again later: an approval is kept for this exact command and runs it once.",

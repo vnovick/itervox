@@ -100,6 +100,9 @@ type Policy struct {
 	AllowForcePush bool `json:"allow_force_push"`
 	// ApprovalCommands is guardrails.approval_commands.
 	ApprovalCommands []string `json:"approval_commands"`
+	// EnvApprovalCommands are guardrails.approval_commands entries with
+	// when_env: held only when the command's environment matches.
+	EnvApprovalCommands []EnvApproval `json:"env_approval_commands,omitempty"`
 	// ApprovalsEnabled is false where no human can answer an approval
 	// (tmux sessions, no daemon endpoint): matching commands are refused.
 	ApprovalsEnabled bool `json:"approvals_enabled"`
