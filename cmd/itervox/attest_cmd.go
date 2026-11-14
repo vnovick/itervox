@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/vnovick/itervox/internal/attest"
 	"github.com/vnovick/itervox/internal/config"
@@ -155,65 +153,5 @@ func attestCmd(ctx context.Context, args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintf(errOut, "itervox attest verify: %s has no records\n", positional[0])
 		return 1
 	}
-	return printAttestVerification(ctx, out, errOut, attest.RunFile{Path: positional[0], Records: recs}, pub, *treeDir)
-}
-
-// printAttestVerification prints one line per record and returns the exit
-// code.
-func printAttestVerification(ctx context.Context, out, errOut io.Writer, run attest.RunFile, pub ed25519.PublicKey, treeDir string) int {
-	trees := map[string]string{} // excludes key -> current tree in treeDir
-	failed := 0
-	for _, res := range attest.VerifyRun(run, pub) {
-		r := res.Record
-		reason := res.Reason
-		if res.Verified && treeDir != "" && r.Kind == attest.KindCheck {
-			key := fmt.Sprint(r.TreeExcludes)
-			if _, seen := trees[key]; !seen {
-				treeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-				tree, err := attest.TreeHash(treeCtx, treeDir, r.TreeExcludes)
-				cancel()
-				if err != nil {
-					_, _ = fmt.Fprintf(errOut, "itervox attest verify: --tree %s: %v\n", treeDir, err)
-					return 2
-				}
-				trees[key] = tree
-			}
-			if err := attest.Verify(r, pub, trees[key]); err != nil {
-				reason = err.Error()
-			}
-		}
-		status := "ok  "
-		if reason != "" {
-			status = "FAIL"
-			failed++
-		}
-		label := r.Kind
-		if r.Name != "" {
-			label += " " + r.Name
-		}
-		line := fmt.Sprintf("%s %-14s exit=%d tree=%s head=%s", status, label, r.ExitCode, shortHex(r.TreeHash), shortHex(r.Head))
-		if r.Kind == attest.KindSeal {
-			line = fmt.Sprintf("%s %-14s tree=%s head=%s", status, label, shortHex(r.TreeHash), shortHex(r.Head))
-		}
-		if reason != "" {
-			line += "  (" + reason + ")"
-		}
-		_, _ = fmt.Fprintln(out, line)
-	}
-	if failed > 0 {
-		_, _ = fmt.Fprintf(out, "%d of %d records did not verify\n", failed, len(run.Records))
-		return 1
-	}
-	_, _ = fmt.Fprintf(out, "all %d records verify (key %s)\n", len(run.Records), attest.KeyID(pub))
-	return 0
-}
-
-func shortHex(h string) string {
-	if h == "" {
-		return "-"
-	}
-	if len(h) > 12 {
-		return h[:12]
-	}
-	return h
+	return attest.PrintVerification(ctx, out, errOut, "itervox attest verify", attest.RunFile{Path: positional[0], Records: recs}, pub, *treeDir)
 }

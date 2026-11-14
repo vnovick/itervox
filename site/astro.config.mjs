@@ -68,6 +68,7 @@ export default defineConfig({
             { label: 'Agent Permissions & Repo Rules', slug: 'guides/agent-permissions' },
             { label: 'Guardrails', slug: 'guides/guardrails' },
             { label: 'Running in CI (GitHub Actions)', slug: 'guides/ci' },
+            { label: 'referee (agents in CI, any harness)', slug: 'guides/referee' },
             { label: 'Process isolation', slug: 'guides/isolation' },
             { label: 'Deploying on a Cloud VM', slug: 'guides/deployment' },
             { label: 'Why Vercel Is Not Suitable', slug: 'guides/deploy-vercel' },

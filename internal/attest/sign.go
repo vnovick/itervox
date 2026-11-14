@@ -163,6 +163,16 @@ func LoadOrCreateKey(path string) (*Signer, error) {
 	return s, nil
 }
 
+// LoadKey reads the PEM private key at path. Unlike [LoadOrCreateKey] it
+// never creates one: a missing key is an error.
+func LoadKey(path string) (*Signer, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("attest: read key: %w", err)
+	}
+	return parsePrivateKey(raw)
+}
+
 // WritePublicKey writes pub as a PEM "PUBLIC KEY" file.
 func WritePublicKey(path string, pub ed25519.PublicKey) error {
 	der, err := x509.MarshalPKIXPublicKey(pub)
