@@ -132,13 +132,14 @@ func newTmuxGuardrails(cfg *config.Config, exe string, tokens *agentactions.Stor
 // prepare returns the command prefix of session id in cwd.
 func (g *tmuxGuardrails) prepare(ctx context.Context, id, cwd string) (string, error) {
 	opts := guardrails.Options{
-		Executable:        g.exe,
-		WorkDir:           cwd,
-		Identifier:        id,
-		IssueBranch:       checkedOutBranch(ctx, cwd),
-		ProtectedBranches: g.protected,
-		AllowForcePush:    g.cfg.AllowForcePush,
-		ApprovalCommands:  g.cfg.ApprovalCommands,
+		Executable:          g.exe,
+		WorkDir:             cwd,
+		Identifier:          id,
+		IssueBranch:         checkedOutBranch(ctx, cwd),
+		ProtectedBranches:   g.protected,
+		AllowForcePush:      g.cfg.AllowForcePush,
+		ApprovalCommands:    g.cfg.ApprovalCommands,
+		EnvApprovalCommands: guardrails.EnvApprovalsFromConfig(g.cfg.EnvApprovalCommands),
 		// guardrails.lanes: no approval channel here, so a human-lane push
 		// is refused; classified against the configured base branch.
 		Lanes:    guardrails.Lanes{Human: g.cfg.Lanes.Human, SecondOpinion: g.cfg.Lanes.SecondOpinion},

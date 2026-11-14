@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -78,12 +79,39 @@ type GuardrailsConfig struct {
 	// Default false.
 	AllowForcePush bool
 	// ApprovalCommands are the command patterns that need a human approval
-	// before they run. Absent: DefaultGuardrailApprovalCommands. A list
-	// replaces the defaults, so write them out to keep them; an empty list
-	// turns approvals off.
+	// before they run, whatever the environment: the plain-string entries
+	// of guardrails.approval_commands (and object entries without when_env).
+	// Absent: DefaultGuardrailApprovalCommands. A list replaces the
+	// defaults, so write them out to keep them; an empty list turns
+	// approvals off.
 	ApprovalCommands []string
+	// EnvApprovalCommands are the object entries of
+	// guardrails.approval_commands that carry when_env: the pattern needs a
+	// human approval only when every named environment variable matches its
+	// glob in the environment the command runs with. Default empty.
+	EnvApprovalCommands []GuardrailEnvApproval
 	// Lanes classifies what a push changes (guardrails.lanes).
 	Lanes GuardrailLanesConfig
+}
+
+// GuardrailEnvApproval is one environment-scoped approval_commands entry:
+//
+//	- match: "terraform apply"
+//	  when_env: {TF_WORKSPACE: "prod*"}
+//
+// Match has the plain-entry syntax. WhenEnv maps an environment variable to
+// a glob (`*` any run of characters, `?` one); a leading `!` negates it. An
+// unset variable is the empty string, so `!dev*` also holds a command run
+// with the variable unset. Every entry must match for the rule to apply.
+type GuardrailEnvApproval struct {
+	// Match is the command pattern (approval_commands syntax).
+	Match string
+	// WhenEnv maps a variable name to the glob its value must match.
+	WhenEnv map[string]string
+	// invalid is why the entry could not be read; ValidateGuardrailApprovals
+	// reports it (an entry is never dropped silently: that would let the
+	// command it names run without an approval).
+	invalid string
 }
 
 // parseGuardrailsConfig reads the guardrails: block. A pattern whose program
@@ -99,18 +127,114 @@ func parseGuardrailsConfig(m map[string]any) GuardrailsConfig {
 		raw = DefaultGuardrailApprovalCommands
 	}
 	for _, p := range raw {
-		p = strings.Join(strings.Fields(p), " ")
-		if p == "" || slices.Contains(c.ApprovalCommands, p) {
-			continue
+		if p = cleanApprovalPattern(p); p != "" && !slices.Contains(c.ApprovalCommands, p) {
+			c.ApprovalCommands = append(c.ApprovalCommands, p)
 		}
-		if program, _, _ := strings.Cut(p, " "); strings.ContainsAny(program, "/*?[") {
-			slog.Warn("config: guardrails.approval_commands entry names its program by path or glob; only a bare program name can be intercepted",
-				"pattern", p)
+	}
+	// Object entries ({match, when_env}); strSliceField keeps only strings,
+	// so the plain entries above are read exactly as before.
+	if list, ok := m["approval_commands"].([]any); ok {
+		for _, item := range list {
+			obj, isMap := toStringMap(item)
+			if !isMap {
+				continue
+			}
+			e := parseEnvApproval(obj)
+			if len(e.WhenEnv) == 0 && e.invalid == "" {
+				// No condition: a plain entry written as an object.
+				if !slices.Contains(c.ApprovalCommands, e.Match) {
+					c.ApprovalCommands = append(c.ApprovalCommands, e.Match)
+				}
+				continue
+			}
+			c.EnvApprovalCommands = append(c.EnvApprovalCommands, e)
 		}
-		c.ApprovalCommands = append(c.ApprovalCommands, p)
 	}
 	c.Lanes = parseGuardrailLanes(nestedMap(m, "lanes"))
 	return c
+}
+
+// cleanApprovalPattern collapses a pattern's whitespace and warns about a
+// program token no shim can intercept.
+func cleanApprovalPattern(p string) string {
+	p = strings.Join(strings.Fields(p), " ")
+	if program, _, _ := strings.Cut(p, " "); p != "" && strings.ContainsAny(program, "/*?[") {
+		slog.Warn("config: guardrails.approval_commands entry names its program by path or glob; only a bare program name can be intercepted",
+			"pattern", p)
+	}
+	return p
+}
+
+// toStringMap returns item as a map with string keys, when it is one.
+func toStringMap(item any) (map[string]any, bool) {
+	switch v := item.(type) {
+	case map[string]any:
+		return v, true
+	case map[any]any:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[fmt.Sprint(k)] = val
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// parseEnvApproval reads one {match, when_env} entry. Problems are kept on
+// the entry for ValidateGuardrailApprovals.
+func parseEnvApproval(obj map[string]any) GuardrailEnvApproval {
+	var e GuardrailEnvApproval
+	for k := range obj {
+		if k != "match" && k != "when_env" {
+			e.invalid = fmt.Sprintf("unknown key %q (want match, when_env)", k)
+		}
+	}
+	match, ok := obj["match"].(string)
+	if !ok && obj["match"] != nil {
+		e.invalid = "match must be a string"
+	}
+	e.Match = cleanApprovalPattern(match)
+	if e.Match == "" && e.invalid == "" {
+		e.invalid = "match names no command"
+	}
+	if raw, set := obj["when_env"]; set && raw != nil {
+		env, isMap := toStringMap(raw)
+		if !isMap {
+			e.invalid = "when_env must be a map of variable name to glob"
+			return e
+		}
+		e.WhenEnv = make(map[string]string, len(env))
+		for name, v := range env {
+			switch v.(type) {
+			case string, int, int64, uint64, float64, bool:
+				e.WhenEnv[name] = fmt.Sprint(v)
+			default:
+				e.invalid = fmt.Sprintf("when_env.%s must be a string glob", name)
+			}
+		}
+	}
+	return e
+}
+
+// envVarNameRe is a portable environment variable name.
+var envVarNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidateGuardrailApprovals rejects an approval_commands object entry that
+// cannot be applied as written (no match, an unknown key, a when_env that is
+// not a map of variable names to string globs): an entry
+// that silently never matched would let the command it names run.
+func ValidateGuardrailApprovals(g GuardrailsConfig) error {
+	for _, e := range g.EnvApprovalCommands {
+		if e.invalid != "" {
+			return fmt.Errorf("guardrails.approval_commands: entry %q: %s", e.Match, e.invalid)
+		}
+		for name := range e.WhenEnv {
+			if !envVarNameRe.MatchString(name) {
+				return fmt.Errorf("guardrails.approval_commands: entry %q: when_env name %q is not an environment variable name", e.Match, name)
+			}
+		}
+	}
+	return nil
 }
 
 // parseGuardrailLanes reads guardrails.lanes. An absent or null human list

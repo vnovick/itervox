@@ -280,6 +280,7 @@ func main() {
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
 	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"))))
+	runHookEntrypoint(os.Args) // itervox hook: the session's own environment, no daemon start-up
 	loadDotEnv()             // must run before config.LoadConfig / os.Getenv calls
 	installSupervisorToken() // #119: before anything reads ITERVOX_API_TOKEN
 	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that

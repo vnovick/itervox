@@ -74,6 +74,48 @@ each match an argument, in order, with other arguments allowed between them.
 matches `helm upgrade api-prod ./chart`. Setting `approval_commands` replaces
 the default list.
 
+## Environment-scoped rules
+
+A deploy command is often safe against one environment and not another:
+`terraform apply` in the `dev` workspace is routine, in `prod` it should wait
+for a human. An `approval_commands` entry may be an object with a `when_env`
+map; the command is held only when **every** named environment variable's
+value matches its glob in the environment the command runs with:
+
+```yaml
+guardrails:
+  approval_commands:
+    - "vercel --prod"                    # plain: always held, as before
+    - match: "terraform apply"
+      when_env: {TF_WORKSPACE: "prod*"}  # held for prod, prod-eu, …
+    - match: "kubectl apply"
+      when_env: {KUBECONFIG: "*prod*"}
+    - match: "helm upgrade"
+      when_env: {DEPLOY_ENV: "!dev*"}    # held unless DEPLOY_ENV is dev…
+```
+
+- `match` has the plain-entry syntax. The globs use `*` (anything) and `?`
+  (one character); a leading `!` negates. An unset variable is the empty
+  string, so `prod*` lets a command with the variable unset through, while
+  `!dev*` holds it — write the negated form when an unset variable should
+  fail closed.
+- The shim checks the environment the program is really started with, at exec
+  time: `TF_WORKSPACE=prod terraform apply`, an `export` earlier in the
+  session and a value computed by the shell all count.
+- The condition reads environment variables only. A target chosen by a flag
+  or a file is not an environment variable: `kubectl --context prod apply`
+  is matched by the pattern itself (`match: "kubectl --context prod* apply"`),
+  and kubectl's current context in `~/.kube/config` is not seen at all. Pick
+  the variable your tool really reads (`TF_WORKSPACE`, `KUBECONFIG`,
+  `AWS_PROFILE`, `CLOUDSDK_CORE_PROJECT`, …).
+- A plain string entry still matches in every environment; if a plain
+  `kubectl apply` is in the list, scoping another `kubectl apply` entry
+  changes nothing. Remember that a list replaces the defaults, which hold
+  `kubectl apply` and `terraform apply` unconditionally.
+- An entry that cannot be applied as written (no `match`, an unknown key, a
+  `when_env` that is not a map of variable names to strings) is a startup
+  error, never silently dropped.
+
 ## Lanes
 
 Where a push goes is one question; **what it changes** is another. An agent
@@ -298,6 +340,86 @@ definition is not.
 Without `isolation: process` an agent runs as your user and could read the
 key; the signature then proves only that the record was not edited afterwards.
 
+## Interactive sessions (itervox hook)
+
+The shims and the pre-push hook guard the agents Itervox starts. For an
+agent session you run yourself — Claude Code or Codex in your own terminal —
+`itervox hook` applies the same policy, read from the project's
+`WORKFLOW.md`, as a **PreToolUse hook**. No daemon has to run.
+
+```bash
+itervox hook install claude          # .claude/settings.json (this project)
+itervox hook install claude --user   # ~/.claude/settings.json (every project)
+itervox hook install codex           # .codex/hooks.json
+itervox hook install claude --print  # show the snippet, write nothing
+```
+
+`install` merges one `hooks.PreToolUse` entry into the settings file and
+keeps everything else (other hooks, permissions, key order); running it again
+changes nothing, and an older itervox entry is replaced, not duplicated. The
+project entry for Claude Code is:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "itervox hook claude-pretooluse --workflow \"$CLAUDE_PROJECT_DIR\"/WORKFLOW.md"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+For each tool call the hook answers:
+
+| The agent's tool call | Hook answer |
+|---|---|
+| a Bash command the guardrails refuse (`gh pr merge`, `git push --no-verify`, `git -c core.hooksPath=…`, `git merge` on the default branch, a push to a protected branch, a tag push, a force push or remote branch deletion unless `allow_force_push`) | **deny**, with the refusal's reason |
+| a Bash command in `approval_commands` (an [environment-scoped](#environment-scoped-rules) entry only when the session's environment, or the command's own `VAR=value` prefix, matches) | **ask**: you confirm it in the agent's permission prompt |
+| an edit (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) of a [`guardrails.lanes.human`](#lanes) file | **ask**: "pipeline file: an agent may change what CI checks, not how" |
+| anything else | no answer: the agent's own permission rules decide |
+
+Every command of a line is checked — after `&&`, `;` or `|`, inside `$(…)`,
+backticks, `bash -c '…'` and `eval`, behind `sudo`, `env`, `timeout` and
+`xargs`, and by its program name when called by path. A program the shell
+only knows at run time (`$TOOL apply`) asks, and so does a scoped rule whose
+variable is set from a substitution (`TF_WORKSPACE=$(cat ws) terraform apply`).
+
+**Fail-safe.** If the hook cannot apply the policy — the named `WORKFLOW.md`
+is missing or does not parse, a `guardrails:` entry is invalid, the hook input
+is not PreToolUse JSON — it answers **ask** with the reason, never a silent
+allow. Without `--workflow` (the `--user` install) the hook uses the nearest
+`WORKFLOW.md` at or above the session's directory; finding none means the
+project does not use Itervox, and the hook stays out of the way
+(`--require-workflow` asks instead). `guardrails.enabled: false` turns it off.
+
+**Codex.** Codex runs PreToolUse hooks from `.codex/hooks.json` (the same
+`hooks.PreToolUse` shape) for its shell tool and for `apply_patch`, whose
+patch's file headers the hook reads as the edited paths. Codex does not
+support an **ask** answer (it treats one as a hook failure and lets the call
+run), so `codex-pretooluse` turns every ask into a **deny** whose reason says a
+human has to run or approve the command. Codex asks you to review a new or
+changed hook before it runs it: open `/hooks` in Codex and trust it.
+
+:::caution[A convenience layer, not enforcement]
+A hook sees the command string the agent wrote, **before** the shell expands
+it; the shims check the program and arguments that really run, after
+expansion. A script file the agent writes and then runs, a command assembled
+at run time, an alias, or a tool that is not Bash (a language runtime, an MCP
+server) gets past the hook, and a Bash command that writes a pipeline file
+(`sed -i`, `>`) is not an edit to it. The exec-time shims and the pre-push
+hook of the runs Itervox starts, and **branch protection on your remote**,
+remain the enforcement; in a session you start yourself only the hook and
+the remote apply.
+:::
+
 ## Known limits
 
 :::caution[Guidance, not a sandbox]
@@ -309,7 +431,9 @@ remote** is what makes a protected-branch push impossible; keep it on.
 
 - Runs on [SSH worker hosts](/configuration/#ssh-dispatch) are not guarded in
   this version; a warning is logged at startup and for each such run.
-- Sessions you start by hand are never touched.
+- Sessions you start by hand are never touched by the shims and hooks; the
+  [PreToolUse hook](#interactive-sessions-itervox-hook) is an opt-in
+  convenience layer for them.
 - Lanes see only pushes that go through the hook. The same bypasses apply
   (git by absolute path, `--no-verify` through another git, a push through
   the GitHub or GitLab API, an agent with its own token), and a pull request

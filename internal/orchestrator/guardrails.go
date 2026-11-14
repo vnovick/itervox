@@ -92,16 +92,17 @@ func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, run
 		return agent.RunEnv{}, nil, ""
 	}
 	opts := guardrails.Options{
-		Executable:        exe,
-		WorkDir:           wsPath,
-		Identifier:        identifier,
-		IssueBranch:       branch,
-		ProtectedBranches: protectedBranches(o.cfg),
-		AllowForcePush:    g.AllowForcePush,
-		ApprovalCommands:  g.ApprovalCommands,
-		ApprovalsEnabled:  true,
-		Lanes:             guardrails.Lanes{Human: g.Lanes.Human, SecondOpinion: g.Lanes.SecondOpinion},
-		BaseRefs:          reviewBaseCandidates(prBase, o.cfg.Agent.BaseBranch),
+		Executable:          exe,
+		WorkDir:             wsPath,
+		Identifier:          identifier,
+		IssueBranch:         branch,
+		ProtectedBranches:   protectedBranches(o.cfg),
+		AllowForcePush:      g.AllowForcePush,
+		ApprovalCommands:    g.ApprovalCommands,
+		EnvApprovalCommands: guardrails.EnvApprovalsFromConfig(g.EnvApprovalCommands),
+		ApprovalsEnabled:    true,
+		Lanes:               guardrails.Lanes{Human: g.Lanes.Human, SecondOpinion: g.Lanes.SecondOpinion},
+		BaseRefs:            reviewBaseCandidates(prBase, o.cfg.Agent.BaseBranch),
 	}
 	if o.oneShot != nil { // #252: approvals the operator gave this run
 		opts.PreApproved = o.oneShot.PreApprovedCommands

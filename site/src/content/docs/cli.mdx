@@ -409,6 +409,36 @@ record from an earlier version of the code fails. It prints one line per
 record (`ok` or `FAIL` with the reason) and exits `0` when all verify, `1`
 when one does not, `2` for a usage or read error.
 
+## `itervox hook` — Guardrails for your own agent sessions
+
+```bash
+itervox hook claude-pretooluse [--workflow WORKFLOW.md] [--require-workflow]
+itervox hook codex-pretooluse  [--workflow WORKFLOW.md] [--require-workflow]
+itervox hook install claude|codex [--project | --user] [--dir DIR] [--workflow PATH] [--print]
+```
+
+Applies the project's [guardrail policy](/guides/guardrails/#interactive-sessions-itervox-hook)
+to a Claude Code or Codex session you run yourself, as a PreToolUse hook; no
+daemon is needed. `claude-pretooluse` and `codex-pretooluse` read the hook's
+JSON on stdin and always exit `0`: no output lets the call through the
+agent's own permission rules, otherwise they print the
+`hookSpecificOutput` decision — `deny` for a command the guardrails refuse,
+`ask` for an `approval_commands` command or an edit of a
+`guardrails.lanes.human` file (Codex has no ask, so there it is `deny`). A
+workflow that cannot be loaded answers `ask` (Codex: `deny`). Without
+`--workflow` the nearest `WORKFLOW.md` at or above the session's directory is
+used; none found means no policy, unless `--require-workflow`.
+
+`install` merges the hook into `.claude/settings.json` or `.codex/hooks.json`
+under `--dir` (default `.`; `--project` is the default), or with `--user` into
+`~/.claude/settings.json` / `~/.codex/hooks.json`, keeping every other key;
+it is idempotent. `--workflow` (with `--project`, default `WORKFLOW.md`) is
+the workflow's path relative to the project, written into the Claude Code
+entry as `"$CLAUDE_PROJECT_DIR"/<path>`. `--print` shows the entry and writes
+nothing. The hook reads the command before the shell expands it: a
+convenience layer, not the enforcement the shims give the runs Itervox
+starts.
+
 ## `itervox config` — Settings and where they come from
 
 ```bash
