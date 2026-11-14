@@ -198,6 +198,77 @@ recorded is refused). Nothing on
 the daemon runs a command for an agent. Itervox's own git commands are not
 affected.
 
+## Signed checks
+
+The writer is never the judge. An agent saying "done" is a claim, and with
+[`require_evidence`](/configuration/#done-needs-evidence) the agent that wrote
+the fix also writes the proof. With a profile's
+[`verify`](/configuration/#signed-checks) list, the daemon runs each check
+itself, on the tree the agent left, and signs what it saw: **done is a claim,
+a signed run on the same tree is proof.**
+
+```yaml
+agent:
+  profiles:
+    implementer:
+      require_evidence: [test]
+      verify:
+        - name: test
+          run: make test
+```
+
+After the agent's last turn, before the run counts as succeeded (and before
+the handoff, the pull request push or the completion move), the worker runs
+each command in the worktree. A non-zero exit, a timeout or a check that
+changes the tree holds the run **input required** with the check's name and
+exit code, exactly like missing evidence; every check exiting `0` lets the run
+succeed.
+
+**What is recorded.** One JSON line per check in
+`.itervox/attestations/<identifier>/<run id>.jsonl` next to `WORKFLOW.md`,
+followed by a `seal` line with the tree after the last check:
+
+| Field | Meaning |
+|---|---|
+| `command`, `argv`, `pipefail` | The configured command (redacted) and how it ran: `bash -lc` with `set -o pipefail`, so `make test \| tail` records make's status, not tail's. |
+| `exit_code`, `timed_out`, `error` | The process's real exit status; `-1` when it was killed or could not start. |
+| `started_at`, `duration_ms` | When it ran and for how long. |
+| `output_sha256`, `output_tail` | SHA-256 of the complete combined stdout and stderr; its last 4 KiB, redacted like log lines. |
+| `tree_hash`, `tree_excludes`, `head` | The git tree of the working tree when the check started — tracked files plus untracked files git does not ignore, committed or not, without `.itervox/handoff/` and `.itervox/evidence/` — and the HEAD commit. |
+| `key_id`, `sig` | The signing key's id and an ed25519 signature over every other field. |
+
+The tree hash is computed with a private copy of the index
+(`GIT_INDEX_FILE` in a temporary directory, `git add -A`, `git write-tree`),
+so your index, staged changes and `git status` are untouched.
+
+**Verifying.** A record is *verified* when its signature is valid for the
+daemon's key and its tree is the run's final tree (the seal's). The dashboard
+API reports this per record
+([`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations));
+anyone with the public key can check a file offline, and `--tree` proves the
+records are for the code in front of them:
+
+```bash
+itervox attest verify .itervox/attestations/ENG-1/2026-11-14T10-00-00.000Z_implementer.jsonl --tree ../worktree
+```
+
+A record copied from an earlier tree fails `--tree`; an edited exit code or
+output hash fails the signature.
+
+**The key.** The daemon (and `itervox run`) creates an ed25519 key pair the first time it starts with a profile that has `verify`:
+`.itervox/attest.key` (mode `0600`, gitignored) and `.itervox/attest.pub` (share
+it to let others verify). The private key is on the
+[process isolation](/guides/isolation/) deny list, and under
+`isolation: process` the checks themselves run in the agent's sandbox, so
+neither the agent nor the code it wrote can read the key to forge a record.
+
+**What it does not prove.** A signature says *this daemon ran this command on
+this tree and saw this exit code*; it does not say the command tests the right
+thing. Keep `verify` commands in `WORKFLOW.md`, not in files the agent edits:
+`make test` runs the Makefile on the agent's branch, so review changes to it.
+Without `isolation: process` an agent runs as your user and could read the
+key; the signature then proves only that the record was not edited afterwards.
+
 ## Known limits
 
 :::caution[Guidance, not a sandbox]

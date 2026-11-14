@@ -152,6 +152,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/issues` | viewer |
 | `GET` | `/api/v1/issues/{identifier}` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/context` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/attestations` | viewer (signed check records with `verified`; redacted at record time) |
 | `GET` | `/api/v1/issues/{identifier}/decisions` | viewer (redacted, bounded decision logs, #218) |
 | `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
 | `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
@@ -2048,6 +2049,31 @@ decision.
    "runTimestamp": "2026-05-02T10-00-00.000Z", "role": "implementer",
    "decisions": [{"time": "2026-05-02T10:01:00Z", "at": "2026-05-02T10:01:00Z",
      "decision": "Diff against the merge base", "why": "main moves on", "alternative": "main's tip"}]}
+]}
+```
+
+#### `GET /api/v1/issues/{identifier}/attestations`
+
+The issue's [signed check](../site/src/content/docs/guides/guardrails.mdx#signed-checks) records
+(`agent.profiles.<name>.verify`), one entry per run, oldest first (viewer).
+They are read from `.itervox/attestations/<identifier>/<run id>.jsonl` and
+verified on each request: a record is `verified` when its ed25519 signature is
+valid for the daemon's key and its `treeHash` is the run's final tree (the
+`seal` record's tree); `reason` says why not. Commands and output tails were
+redacted when the record was made. An issue with no records answers
+`{"identifier":"ENG-1","runs":[]}`; `503 not_supported` when signed checks are
+not wired.
+
+```json
+{"identifier": "ENG-1", "keyId": "3f1c9a0b5d7e2468", "runs": [
+  {"runId": "2026-11-14T10-00-00.000Z_implementer", "profile": "implementer",
+   "finalTree": "9c1e…", "records": [
+     {"kind": "check", "name": "test", "command": "make test", "pipefail": true,
+      "exitCode": 1, "startedAt": "2026-11-14T10:20:01Z", "durationMs": 8123,
+      "outputSha256": "e3b0…", "outputTail": "FAIL ./pkg …", "treeHash": "9c1e…",
+      "head": "4b2d…", "keyId": "3f1c9a0b5d7e2468", "verified": true},
+     {"kind": "seal", "exitCode": 0, "startedAt": "2026-11-14T10:20:09Z", "durationMs": 0,
+      "treeHash": "9c1e…", "head": "4b2d…", "keyId": "3f1c9a0b5d7e2468", "verified": true}]}
 ]}
 ```
 

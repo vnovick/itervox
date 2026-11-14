@@ -241,11 +241,42 @@ type ProfileEntry struct {
 	PermissionMode string
 	// RequireEvidence is the profile's require_evidence list (#80).
 	RequireEvidence []string
+	// Verify is the profile's verify list (signed checks; empty omits the
+	// key). A TimeoutMs of 0 omits timeout_ms (the default applies).
+	Verify []VerifyEntry
 	// Isolation is the profile's isolation ("" omits the key, #258);
 	// IsolationExtraWrite / IsolationExtraDeny its extra path lists.
 	Isolation           string
 	IsolationExtraWrite []string
 	IsolationExtraDeny  []string
+}
+
+// VerifyEntry is one agent.profiles.<name>.verify check as written back to
+// WORKFLOW.md.
+type VerifyEntry struct {
+	Name      string
+	Run       string
+	TimeoutMs int
+}
+
+// appendVerifyList appends the verify: block for checks, or nothing when
+// there are none. Values are quoted so a command with ':' or '#' stays one
+// YAML string.
+func appendVerifyList(lines []string, header, itemIndent string, checks []VerifyEntry) []string {
+	var body []string
+	for _, c := range checks {
+		if c.Name == "" || c.Run == "" {
+			continue
+		}
+		body = append(body, itemIndent+"- name: "+strconv.Quote(c.Name), itemIndent+"  run: "+strconv.Quote(c.Run))
+		if c.TimeoutMs > 0 {
+			body = append(body, itemIndent+"  timeout_ms: "+strconv.Itoa(c.TimeoutMs))
+		}
+	}
+	if len(body) == 0 {
+		return lines
+	}
+	return append(append(lines, header), body...)
 }
 
 type AutomationTriggerEntry = automationdef.Trigger
@@ -370,6 +401,7 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 						}
 					}
 				}
+				replacement = appendVerifyList(replacement, lvl3+"verify:", lvl4, entry.Verify)
 				if entry.Isolation != "" {
 					replacement = append(replacement, lvl3+"isolation: "+strconv.Quote(entry.Isolation))
 				}

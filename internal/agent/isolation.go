@@ -92,6 +92,14 @@ func (iso *Isolation) wrap(argv []string, extraWrite ...string) ([]string, error
 	return iso.Mechanism.Wrap(argv, p)
 }
 
+// WrapArgv returns argv run inside this run's sandbox, under the same
+// policy as the agent. The daemon runs its signed checks (internal/attest)
+// through it, so the code under test is confined like the agent that wrote
+// it and cannot read the signing key.
+func (iso *Isolation) WrapArgv(argv []string) ([]string, error) {
+	return iso.wrap(argv)
+}
+
 type isolationKey struct{}
 
 // WithIsolation returns ctx carrying iso for the runner. A nil iso leaves

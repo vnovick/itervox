@@ -349,6 +349,9 @@ func main() {
 		case "token": // #214
 			runToken(os.Args[2:])
 			return
+		case "attest": // signed checks
+			runAttest(os.Args[2:])
+			return
 		case "mcp": // #216
 			runMCP(os.Args[2:])
 			return
@@ -882,6 +885,10 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		wireCoalescedPush(cfg, ob, tr) // #115
 	}
 
+	if profilesUseVerify(cfg) {
+		setupAttestation(orch, workflowPath) // signed checks: key exists before any run
+	}
+
 	var agentSessionsDir string
 	if logFile != "" {
 		logDir := filepath.Dir(logFile)
@@ -1206,6 +1213,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			ChangeReview:    changeReviewAdapter{orch: orch, tr: tr, moveState: adapter.UpdateIssueState}, // #238: line comments, PR reviews, the diff's PR source
 			GitHubPRs:       githubPRs,                                                                    // #238: the PR-event watcher's GitHub client
 			Playbooks:       playbooksAdapter{orch: orch},                                                 // #218: playbooks, decision logs, verify-skill issue
+			Attestations:    attestationsAdapter{orch: orch},                                              // signed checks: records + verified, off the event loop
 			Tasks:           newTasksAdapter(orch, workflowPath),                                          // #251: New task and task templates
 			SteeringPhrases: cfg.Sessions.SteeringPhrases,                                                 // #218
 		})

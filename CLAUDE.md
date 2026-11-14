@@ -720,11 +720,14 @@ playbook (task-type playbooks, #218 — imports config only; used by
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
+attest (signed daemon-run checks, 0.3.3 — imports gitexec, logging,
+        procgroup, atomicfs; used by orchestrator and cmd/itervox)
+
 guardrails (agent shims, pre-push hook, approval broker — imports agent,
             atomicfs, gitexec, logging; never orchestrator or server)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, config, depsanalysis, domain, extsessions, guardrails,
+              atomicfs, attest, config, depsanalysis, domain, extsessions, guardrails,
               logbuffer, logging, memory, metrics, outbox, playbook, prdetector,
               procgroup, prompt, rules, sysmon, tracker, workspace)
 

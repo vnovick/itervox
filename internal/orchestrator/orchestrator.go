@@ -436,6 +436,10 @@ type Orchestrator struct {
 	// readPRChecks is the gh seam for require_evidence "ci" (#80); nil means
 	// workspace.ReadPRChecks.
 	readPRChecks func(ctx context.Context, prURL string) (workspace.PRChecks, error)
+	// attestation is the signed-checks signer and record store (verify);
+	// nil runs the checks and gates on them without signing or storing.
+	// Set by SetAttestation, read by workers.
+	attestation atomic.Pointer[attestationConfig]
 
 	// transitionFailed marks issues whose completion-state tracker write
 	// failed, so the event loop can record PauseReasonTransitionFailed rather

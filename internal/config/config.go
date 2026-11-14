@@ -480,6 +480,15 @@ type AgentProfile struct {
 	// requires the run's pull request to have only passing checks. Empty
 	// (the default) turns the gate off. YAML key: require_evidence.
 	RequireEvidence []string
+	// Verify lists checks the daemon runs itself in the worktree after a
+	// successful run of this profile, before the run counts as succeeded
+	// (signed checks: the writer is never the judge). Each is recorded and
+	// signed by internal/attest; any non-zero exit holds the run like a
+	// failed require_evidence gate. A name also in RequireEvidence is
+	// satisfied by this run, not by the agent's evidence file. Empty (the
+	// default) runs nothing. YAML key: verify. Load-time only: the
+	// dashboard profile editor carries it over.
+	Verify []VerifyCheck
 }
 
 // AgentConfig holds agent runner settings.
@@ -1550,6 +1559,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			verify, err := verifyChecksField(m, name)
+			if err != nil {
+				return nil, err
+			}
 			iso, err := profileIsolationFields(m, name)
 			if err != nil {
 				return nil, err
@@ -1572,6 +1585,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				CreateIssueLabels:   NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
 				PermissionMode:      strField(m, "permission_mode", ""),
 				RequireEvidence:     requireEvidence,
+				Verify:              verify,
 				Isolation:           iso.Isolation,
 				IsolationExtraWrite: iso.IsolationExtraWrite,
 				IsolationExtraDeny:  iso.IsolationExtraDeny,
@@ -1583,6 +1597,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			continue
 		}
 		requireEvidence, err := evidenceChecksField(m, name)
+		if err != nil {
+			return nil, err
+		}
+		verify, err := verifyChecksField(m, name)
 		if err != nil {
 			return nil, err
 		}
@@ -1605,6 +1623,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			CreateIssueLabels:   NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
 			PermissionMode:      strField(m, "permission_mode", ""),
 			RequireEvidence:     requireEvidence,
+			Verify:              verify,
 			Isolation:           iso.Isolation,
 			IsolationExtraWrite: iso.IsolationExtraWrite,
 			IsolationExtraDeny:  iso.IsolationExtraDeny,

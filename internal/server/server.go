@@ -1620,6 +1620,9 @@ type Config struct {
 	// Playbooks backs the playbook, decision-log and verify-skill-issue
 	// endpoints (#218). Nil answers 503.
 	Playbooks PlaybooksClient
+	// Attestations backs GET /api/v1/issues/{identifier}/attestations
+	// (signed checks). Nil answers 503.
+	Attestations AttestationsClient
 	// SteeringPhrases are the steering chips GET /api/v1/steering/phrases
 	// serves (#218, sessions.steering_phrases). Read-only after startup.
 	SteeringPhrases []config.SteeringPhrase
@@ -1705,6 +1708,8 @@ type Server struct {
 	// Config.SteeringPhrases (#218).
 	playbooks       PlaybooksClient
 	steeringPhrases []config.SteeringPhrase
+	// attestations mirrors Config.Attestations (signed checks).
+	attestations AttestationsClient
 	// tasks mirrors Config.Tasks (#251).
 	tasks TasksClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
@@ -1764,6 +1769,7 @@ func New(cfg Config) *Server {
 		changeReview:        cfg.ChangeReview,
 		github:              cfg.GitHubPRs,
 		playbooks:           cfg.Playbooks,
+		attestations:        cfg.Attestations,
 		steeringPhrases:     cfg.SteeringPhrases,
 		tasks:               cfg.Tasks,
 	}
@@ -1929,9 +1935,10 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
 			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
 			r.Post("/issues/{identifier}/review-continue", s.handleReviewContinue)
-			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)        // #238: never merges
-			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
-			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
+			r.Get("/issues/{identifier}/attestations", s.handleIssueAttestations) // signed checks
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)

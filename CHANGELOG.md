@@ -11,6 +11,11 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ### Added
 
+- **Signed checks: the daemon runs the checks itself.** A profile can set `verify: [{name, run, timeout_ms?}]`. After the agent's run, the daemon runs each command in the worktree itself (inside the run's sandbox under `isolation: process`), with `pipefail`, a timeout and a process-group kill.
+  - **What is recorded:** the command, the real exit code, duration, the output's SHA-256 and a redacted tail, HEAD, and a hash of the working tree including untracked files. The hash is computed through a private index, so yours is never touched.
+  - **Signing and storage:** records are signed with ed25519 and stored as `.itervox/attestations/<issue>/<run>_<profile>.jsonl`, each run sealed with its final tree. The key is `.itervox/attest.key`: gitignored, in the isolation deny list, and created only when a profile uses `verify`.
+  - **What "done" means:** a failing or tree-changing check holds the run as input-required, naming the check and its exit code. For a `require_evidence` name that is also in `verify`, the agent's own evidence file is ignored, so the writer is never the judge.
+  - **Where to see them:** `GET /api/v1/issues/{identifier}/attestations` (viewer scope) lists the records with `verified` and a reason. `itervox attest verify <file.jsonl> [--tree DIR]` checks the signatures and the tree.
 - **Safety guide and a full-permissions warning.** A new [Safety](https://itervox.dev/guides/safety/) guide covers three things:
   - what an agent can do by default (approvals bypassed, no sandbox, open network);
   - how to confine it, from a disposable machine down to repository rules;
