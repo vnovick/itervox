@@ -253,6 +253,13 @@ only the event loop mutates them.
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
   again). Event-loop state, session-scoped, not persisted.
+- **Patches only (`push: daemon`)** is worker-side, not State: `daemonPush`
+  (internal/orchestrator/patch_out.go) runs on the worker after the verify
+  gate, pushes by SHA through `workspace.PushRef` (gitexec), and reaches the
+  event loop only via `RequestGuardrailApproval` (EventGuardrailApproval),
+  `GuardrailLane` (EventGuardrailLane) and the worker's exit event.
+  `agent.push` / `AgentProfile.Push` are load-time config (Push is read via
+  the cfgMu Profiles snapshot); not in the cfgMu allowlist.
 - `SessionMessages` (#178) holds the operator messages sent from the Sessions
   panel, per issue identifier (bounded, 20). `SendSessionMessage` (HTTP
   goroutine) only classifies the target against `Snapshot()` and sends
@@ -398,6 +405,15 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   `TestNoRawGitExecOutsideGitexec` stays green. Test binaries that host
   shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
   dispatch the entrypoints in `TestMain`.
+- **Approval holds suspend the idle timeouts**: while
+  `guardrails.Approvals.Waiting(issue, run)` is true, the runner's read
+  deadline restarts instead of failing (`agent.WithIdleHold`, wired in the
+  worker) and `ReconcileStalls` skips the run. `agent.turn_timeout_ms`
+  still bounds the wait.
+- **Fuzz targets**: `FuzzDecide`, `FuzzMatchApproval`, `FuzzLanes`
+  (internal/guardrails), `FuzzRecordVerify`, `FuzzRecordByteFlip`
+  (internal/attest). `make fuzz` (`FUZZTIME`, `FUZZMINIMIZETIME`), not in
+  verify; their seeds run under `go test`. Keep crashers as corpus seeds.
 - **Lanes** (`guardrails.lanes`, `internal/guardrails/lanes.go` +
   `prepush_lanes.go`): the pre-push hook lists each pushed ref's changed
   files through `gitexec` (`diff --name-only -z --no-renames`; existing ref:
@@ -723,8 +739,9 @@ agent (claude/codex subprocess runners — imports domain, config, procgroup,
 attest (signed daemon-run checks, 0.3.3 — imports gitexec, logging,
         procgroup, atomicfs; used by orchestrator and cmd/itervox)
 
-guardrails (agent shims, pre-push hook, approval broker — imports agent,
-            atomicfs, gitexec, logging; never orchestrator or server)
+guardrails (agent shims, pre-push hook, approval broker, `itervox hook`
+            decisions — imports agent, atomicfs, config, gitexec, logging,
+            procgroup; never orchestrator or server)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
               atomicfs, attest, config, depsanalysis, domain, extsessions, guardrails,
@@ -751,6 +768,10 @@ hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
          cmd/itervox only)
 
 templates (WORKFLOW.md scaffolding)
+
+referee (cmd/referee: standalone CI referee for projects without Itervox —
+         imports attest, config, gitexec, guardrails; never orchestrator.
+         Its policy is read from the base ref only, never the working tree)
 
 cmd/itervox (wires everything)
 ```

@@ -46,6 +46,36 @@ Each release has its own section, newest first. Changes merged since the last ta
 
   `safe-mode: false` turns each refusal into a warning, and `dry-run` reports without enforcing. The check is `action/pipeline-check.sh`, tested offline by `action/pipeline-check_test.sh`. The [CI guide](https://itervox.dev/guides/ci/#safer-ci-mode) has a recommended setup: an agent job with `contents`, `pull-requests` and `issues: write` and no deploy secrets, and deploys from a separate workflow after the merge.
 - **`itervox doctor` gains a Lanes section.** It prints the `guardrails.lanes` globs in effect (the default marked, `[]` shown as off) and warns when the human lane or the guardrails are off. It also warns when a profile's `verify` check is defined by a file outside the human lane, for example `make test` with no `Makefile` in the lane, or `pnpm test` and `package.json`. It lists `require_evidence` names that no `verify` check runs as agent-reported, not daemon-run. None of it changes the exit code, and `itervox config show` prints the same section after "How agents run". `TestDoctorLanesWarnsMakefileOutsideHumanLane`, `TestDoctorLanesOff` and `TestDoctorLanesSelfReportedEvidence` pin it.
+- **`referee`: a standalone CI referee for any agent and any CI.** For projects that do not use Itervox (`cmd/referee`, built with `make referee`). An agent may change what CI checks, never how CI checks.
+  - `referee lanes --base <ref>` sorts a pull request's files into human, second_opinion and auto (exit 20 / 10 / 0). The rules come from `.referee.yml` read from the base ref, never from the branch being judged.
+  - `referee audit` reports changes that weaken checks: removed or renamed tests, added skips and `.only`, lowered coverage thresholds, `continue-on-error: true` or `|| true` in CI config, `--no-verify`.
+  - `referee pin` checks a policy file's sha256; `referee keygen`, `run` and `verify` sign check runs in the same record format as `itervox attest verify`.
+
+  Any error exits 2, never 0. A composite GitHub Action (`referee/action.yml`) and a [guide](https://itervox.dev/guides/referee/) ship with it.
+- **`itervox hook`: the guardrails in your own Claude Code and Codex sessions.** `itervox hook claude-pretooluse` and `codex-pretooluse` read the tool call before it runs. Refusals are denied; approval commands and edits to human-lane files ask you first (Codex has no ask, so they are denied). A workflow that cannot be loaded asks. `itervox hook install claude|codex` merges the entry into the project or user settings and keeps your other keys. The hook reads the command before the shell expands it, so it is a convenience layer: the shims and the pre-push hook remain the enforcement.
+- **Approval rules scoped to an environment.** A `guardrails.approval_commands` entry may be `{match, when_env}`, held only when the environment matches, for example `terraform apply` when `TF_WORKSPACE=prod*`. The shim checks the real environment at exec time. Plain string entries are unchanged; a malformed object is a startup error.
+- **Patches only: the daemon pushes (`push: daemon`).** Set it on a profile (or `agent.push` for all of them). That profile's agent gets no forge or tracker credentials, and its shims and pre-push hook refuse `git push` and pull-request writes. After the run and its gates (`after_run_required`, `verify`, `require_evidence`), Itervox sorts the diff into lanes (a human-lane change waits for approval), pushes the commit with its own credentials and opens the pull request. With `verify`, only the tree the signed checks ran on is pushed. Needs `guardrails.enabled`; refused with `agent.ssh_hosts`. The default (`agent`) is unchanged.
+- **Pipeline-guard demo.** `scripts/pipeline-guard-demo.sh` and `scripts/pipeline-guard-capture.mjs` reproduce "an agent asked to fix a red build edits the pipeline instead" with a scripted agent doing real git work behind the guardrails: unguarded (pushed, green, tests still fail) and guarded (held in the human lane, signed check exit 1, code fixed, signed check exit 0). `demo/pipeline-guard/RECORDING.md` explains how to run it and how to record it with a real agent.
+- **Fuzz tests for the guardrails and signed checks.** `FuzzDecide`, `FuzzMatchApproval`, `FuzzLanes`, `FuzzRecordVerify` and `FuzzRecordByteFlip`, run with `make fuzz` (`FUZZTIME`, default 30s; not part of `make verify`); their seeds run under `go test`. `scripts/guardrails-shim-latency.sh` measures the git shim: about 8–9 ms per call at p50 on a loaded 4-CPU test machine.
+
+### Security
+
+- **Guardrail bypasses closed** (found by the new fuzz tests):
+  - `git push --no-verif` and git's other abbreviations of `--no-verify` no longer skip the guardrail hook;
+  - `git -c include.path=…` and `includeIf.*.path` count as replacing the hooks, since an included file can set `core.hooksPath`;
+  - `gh pr -R owner/repo merge` and `glab mr -R … merge` are refused as self-merges;
+  - an argument with a literal `*` no longer slips past a `*` in an `approval_commands` pattern (`gsutil rm 'gs://prod/**'` against `gsutil rm gs://prod/*`).
+- **Signed checks:** a record verifies only with the exact signature encoding the daemon wrote. Base64's ignored trailing bits had let an altered `sig` still verify.
+
+### Fixed
+
+- **A held push no longer fails after `agent.read_timeout_ms`.** While a guardrail approval is pending, the agent prints nothing, so the turn used to fail after 30 seconds and be retried. The idle read deadline is now suspended while the run waits for the operator and restarts in full from the answer, and a run waiting for an approval is not treated as stalled. `agent.turn_timeout_ms` still bounds the wait.
+- **A held pipeline push shows its files.** The list of pipeline files now appears in the Needs-attention reply row and in the issue's Now panel. Before, it only rendered in the input-required panel, which a held push never reaches because its issue is still running.
+- **The lane matcher is polynomial** in `**` segments (it was exponential on deep paths), and a long run of `git -C` options is linear.
+
+### Changed
+
+- `internal/attest` shares `PrintVerification`, `LoadKey` and `AppendFile` between `itervox attest verify` and `referee verify`, with no change in behaviour.
 
 ---
 
