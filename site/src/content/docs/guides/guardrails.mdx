@@ -17,7 +17,7 @@ refuse those operations, or hold them for a human:
 | push to `main`, `master`, `develop`, the base branch or any other branch | refused |
 | push a tag | refused |
 | force-push or delete its issue branch | refused, unless `guardrails.allow_force_push` |
-| `git push --no-verify`, or `git -c core.hooksPath=…` | refused (it would skip the guardrail hook) |
+| `git push --no-verify` (or an abbreviation git accepts, such as `--no-verif`), `git -c core.hooksPath=…`, or a config include (`git -c include.path=…`) | refused (it would skip the guardrail hook) |
 | `gh pr merge`, `glab mr merge`, a merge through `gh api` / `glab api` | refused |
 | `git merge` while the default branch is checked out | refused |
 | a command in `guardrails.approval_commands` (`vercel --prod`, `kubectl apply`, …) | waits for a human; runs once on approve |
@@ -225,6 +225,31 @@ recorded is refused). Nothing on
 the daemon runs a command for an agent. Itervox's own git commands are not
 affected.
 
+## How it's tested
+
+- **End to end.** The shim and hook tests run real git against a bare
+  remote, with the test binary standing in for itervox, through the same
+  shims and hooks a run gets, including commands quoted and spaced the
+  ways a shell accepts.
+- **Fuzzing.** Go fuzz targets cover the command classifier
+  (`FuzzDecide`, `FuzzMatchApproval`), the lane matcher (`FuzzLanes`) and
+  the signed-check records (`FuzzRecordVerify`, `FuzzRecordByteFlip`).
+  They check that the classifier is deterministic, that adding arguments
+  never relaxes a refusal, that spellings git treats as the same
+  (`CORE.HOOKSPATH`, `-cKEY=VALUE`, `--config-env`, `--no-verif`) and
+  `gh`/`glab` flags placed between the words stay refused, and that the
+  glob and lane matchers agree with independent reference implementations.
+  They also check that path spellings (`./`, `//`, a trailing `/`, `\`)
+  never change a lane, and that no byte string verifies as a record the key
+  did not sign. The seeds run with every `go test`; `make fuzz` runs each
+  target for `FUZZTIME` (30s by default).
+- **Cost per call.** `scripts/guardrails-shim-latency.sh` times
+  `git rev-parse HEAD` and `git status --short` through the shim and
+  directly. On a shared 4-CPU Linux test machine under load, the shim added
+  about 8–9 ms at p50 and 10–15 ms at p95 per git call (git alone: about
+  2 ms). Most of that is starting `sh` and the itervox binary; the decision
+  itself is microseconds. Expect different numbers on your machine.
+
 ## Signed checks
 
 The writer is never the judge. An agent saying "done" is a claim, and with
@@ -310,6 +335,9 @@ remote** is what makes a protected-branch push impossible; keep it on.
 - Runs on [SSH worker hosts](/configuration/#ssh-dispatch) are not guarded in
   this version; a warning is logged at startup and for each such run.
 - Sessions you start by hand are never touched.
+- The shim reads the command line, not git's configuration: a git alias
+  for `push` (`git config alias.p push`, then `git p --no-verify`) is not
+  recognised as a push.
 - Lanes see only pushes that go through the hook. The same bypasses apply
   (git by absolute path, `--no-verify` through another git, a push through
   the GitHub or GitLab API, an agent with its own token), and a pull request

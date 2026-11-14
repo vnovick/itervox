@@ -61,14 +61,38 @@ func (p Policy) decide(tool string, args []string, cwd string, branchOf func(dir
 	return decision{}
 }
 
+// isHooksPathAssignment reports whether a `-c`/`--config-env` assignment
+// can replace the guardrail hooks: core.hooksPath itself, or a config
+// include (include.path, includeIf.<condition>.path), whose file is read
+// in the same command-line scope after GIT_CONFIG_PARAMETERS and so can set
+// core.hooksPath behind the shim's back. Section and key names are
+// case-insensitive in git, the includeIf condition is not.
 func isHooksPathAssignment(kv string) bool {
 	key, _, _ := strings.Cut(kv, "=")
-	return strings.EqualFold(strings.TrimSpace(key), "core.hooksPath")
+	key = strings.TrimSpace(key)
+	if strings.EqualFold(key, "core.hooksPath") || strings.EqualFold(key, "include.path") {
+		return true
+	}
+	section, rest, ok := strings.Cut(key, ".")
+	return ok && strings.EqualFold(section, "includeIf") && len(rest) > len(".path") &&
+		strings.EqualFold(rest[len(rest)-len(".path"):], ".path")
+}
+
+// isNoVerify reports whether a git push argument is --no-verify or one of
+// the abbreviations git's option parser accepts for it (`--no-verif`,
+// `--no-veri`; the shorter `--no-ver` and `--no-v` are ambiguous with
+// --no-verbose today and refused too, so a future git that resolves them
+// differently cannot slip past).
+func isNoVerify(arg string) bool {
+	return len(arg) > len("--no-") && strings.HasPrefix("--no-verify", arg)
 }
 
 func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) string) decision {
-	bypass := decision{act: actRefuse, kind: KindHookBypass, message: "guardrails: replacing or skipping Itervox's git hooks is refused (core.hooksPath, --no-verify on push). Push normally; the guardrail hook chains to the repository's own hooks."}
-	dir := cwd
+	bypass := decision{act: actRefuse, kind: KindHookBypass, message: "guardrails: replacing or skipping Itervox's git hooks is refused (core.hooksPath, a config include, --no-verify on push). Push normally; the guardrail hook chains to the repository's own hooks."}
+	// dirs are the -C values from the last absolute one on (or cwd), joined
+	// once when a merge needs the directory: joining as they come costs
+	// quadratic time on a long run of -C options.
+	dirs := []string{cwd}
 	i := 0
 	for i < len(args) {
 		a := args[i]
@@ -92,9 +116,9 @@ func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) s
 		}
 		if a == "-C" && i+1 < len(args) {
 			if next := args[i+1]; filepath.IsAbs(next) {
-				dir = next
+				dirs = append(dirs[:0], next)
 			} else {
-				dir = filepath.Join(dir, next)
+				dirs = append(dirs, next)
 			}
 		}
 		if slices.Contains(gitGlobalsWithValue, a) {
@@ -108,14 +132,14 @@ func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) s
 	sub, rest := args[i], args[i+1:]
 	switch sub {
 	case "push":
-		if slices.Contains(rest, "--no-verify") {
+		if slices.ContainsFunc(rest, isNoVerify) {
 			return bypass
 		}
 	case "merge":
 		if slices.ContainsFunc(rest, func(a string) bool { return a == "--abort" || a == "--quit" || a == "--continue" }) {
 			return decision{}
 		}
-		if b := branchOf(dir); b != "" && p.protected(b) {
+		if b := branchOf(filepath.Join(dirs...)); b != "" && p.protected(b) {
 			return decision{act: actRefuse, kind: KindSelfMerge, message: fmt.Sprintf(
 				"guardrails: merging into %s is refused: agents do not merge into the default branch. Merge the base into your issue branch instead, and leave merging the pull request to Itervox's merge policy or a human.", b)}
 		}
@@ -127,7 +151,12 @@ func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) s
 // and API calls that merge.
 func decideMergeCLI(args []string, noun, what string) decision {
 	var pos []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-R" || a == "--repo" {
+			i++ // its value is not a command word: `gh pr -R owner/repo merge`
+			continue
+		}
 		if !strings.HasPrefix(a, "-") {
 			pos = append(pos, a)
 		}

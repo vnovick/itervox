@@ -161,31 +161,32 @@ func MatchLanePattern(pattern, p string) bool {
 	}
 	// A match of the whole path or of any leading directory (a pattern that
 	// matches a directory matches everything under it).
-	for n := len(segs); n > 0; n-- {
-		if matchSegments(pat, segs[:n]) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(matchSegments(pat, segs)[1:], true)
 }
 
 // matchSegments matches path segments against pattern segments, where a
-// `**` pattern segment matches any number of path segments.
-func matchSegments(pat, segs []string) bool {
-	if len(pat) == 0 {
-		return len(segs) == 0
-	}
-	if pat[0] == "**" {
-		for i := 0; i <= len(segs); i++ {
-			if matchSegments(pat[1:], segs[i:]) {
-				return true
+// `**` pattern segment matches any number of path segments. Element n of
+// the result reports whether the whole pattern matches segs[:n]. It is a
+// dynamic programme over (pattern, path) positions, so a pattern with
+// several `**` costs O(len(pat)*len(segs)) path.Match calls on any path,
+// where trying every split recursively was exponential in the `**` count.
+func matchSegments(pat, segs []string) []bool {
+	// m[n]: the pattern's first i segments match segs[:n].
+	m := make([]bool, len(segs)+1)
+	m[0] = true
+	for _, ps := range pat {
+		next := make([]bool, len(segs)+1)
+		for n := range next {
+			if ps == "**" {
+				next[n] = m[n] || (n > 0 && next[n-1])
+				continue
+			}
+			if n > 0 && m[n-1] {
+				ok, err := path.Match(ps, segs[n-1])
+				next[n] = err == nil && ok
 			}
 		}
-		return false
+		m = next
 	}
-	if len(segs) == 0 {
-		return false
-	}
-	ok, err := path.Match(pat[0], segs[0])
-	return err == nil && ok && matchSegments(pat[1:], segs[1:])
+	return m
 }

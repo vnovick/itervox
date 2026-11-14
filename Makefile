@@ -1,4 +1,4 @@
-.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark settings-schema size-budget no-os-exit no-bare-go deadcode dco-test check-changelog-split e2e
+.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark settings-schema size-budget no-os-exit no-bare-go deadcode dco-test check-changelog-split e2e fuzz
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.11, even on machines where /usr/local/go is an older version.
@@ -196,6 +196,24 @@ clean:
 # fails when the published file is stale.
 settings-schema:
 	go generate ./cmd/itervox/
+
+# fuzz runs every native Go fuzz target for FUZZTIME each (go test runs one
+# target per invocation). Not part of verify: the seed corpora (f.Add and
+# testdata/fuzz/) already run as ordinary tests under `make test`. A new
+# crasher lands in the package's testdata/fuzz/<target>/; commit it once
+# the bug is fixed.
+FUZZTIME ?= 30s
+# Minimising a new input is not counted in the exec rate and defaults to
+# 60s per input, which would eat a short FUZZTIME.
+FUZZMINIMIZETIME ?= 5s
+FUZZ_TARGETS := internal/guardrails:FuzzDecide internal/guardrails:FuzzMatchApproval internal/guardrails:FuzzLanes \
+	internal/attest:FuzzRecordVerify internal/attest:FuzzRecordByteFlip
+fuzz:
+	@set -e; for t in $(FUZZ_TARGETS); do \
+		pkg=$${t%%:*}; name=$${t##*:}; \
+		echo "fuzz: $$name ($$pkg, $(FUZZTIME))"; \
+		go test -run '^$$' -fuzz "^$$name\$$" -fuzztime $(FUZZTIME) -fuzzminimizetime $(FUZZMINIMIZETIME) ./$$pkg; \
+	done
 
 # Run benchmarks with memory allocation stats.
 benchmark:

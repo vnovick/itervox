@@ -54,12 +54,14 @@ func globMatch(pattern, s string) bool {
 	star, mark := -1, 0
 	for i < len(s) {
 		switch {
-		case p < len(pattern) && (pattern[p] == '?' || pattern[p] == s[i]):
-			p++
-			i++
+		// A `*` is always a wildcard, also where the input has a literal
+		// `*`: tried first, so `gs://prod/*` matches `gs://prod/**`.
 		case p < len(pattern) && pattern[p] == '*':
 			star, mark = p, i
 			p++
+		case p < len(pattern) && (pattern[p] == '?' || pattern[p] == s[i]):
+			p++
+			i++
 		case star >= 0:
 			p = star + 1
 			mark++

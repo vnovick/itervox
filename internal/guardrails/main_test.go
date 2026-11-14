@@ -28,14 +28,14 @@ func TestMain(m *testing.M) {
 // rig is a real git setup: a bare remote, a clone on the issue branch, and
 // a prepared guardrails runtime for it.
 type rig struct {
-	t      *testing.T
+	t      testing.TB
 	root   string
 	remote string
 	work   string
 	rt     *Runtime
 }
 
-func git(t *testing.T, dir string, args ...string) string {
+func git(t testing.TB, dir string, args ...string) string {
 	t.Helper()
 	cmd := gitexec.Command(context.Background(), dir, args...)
 	cmd.Env = append(cmd.Env, "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
@@ -45,7 +45,7 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func newRig(t *testing.T, mutate func(*Options)) *rig {
+func newRig(t testing.TB, mutate func(*Options)) *rig {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)

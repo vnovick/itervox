@@ -94,8 +94,11 @@ func VerifySignature(r Record, pub ed25519.PublicKey) error {
 	if r.KeyID != KeyID(pub) {
 		return fmt.Errorf("%w: signed by key %q, not %q", ErrBadSignature, r.KeyID, KeyID(pub))
 	}
+	// Only the canonical encoding Sign writes: base64 decoding ignores the
+	// unused low bits of the last character and embedded newlines, so
+	// otherwise several Sig strings would verify as one signature.
 	sig, err := base64.StdEncoding.DecodeString(r.Sig)
-	if err != nil || len(sig) != ed25519.SignatureSize {
+	if err != nil || len(sig) != ed25519.SignatureSize || base64.StdEncoding.EncodeToString(sig) != r.Sig {
 		return fmt.Errorf("%w: malformed signature", ErrBadSignature)
 	}
 	msg, err := signedMessage(r)
