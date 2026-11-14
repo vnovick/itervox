@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -67,11 +66,7 @@ func gitRefResolves(ctx context.Context, dir, ref string) bool {
 
 // pushBranch pushes branch from dir to origin.
 func pushBranch(ctx context.Context, dir, branch string) error {
-	ref := "refs/heads/" + branch
-	if out, err := gitexec.Command(ctx, dir, "push", "origin", ref+":"+ref).CombinedOutput(); err != nil {
-		return fmt.Errorf("git push origin %s: %w: %s", branch, err, logging.RedactString(strings.TrimSpace(string(out))))
-	}
-	return nil
+	return workspace.PushRef(ctx, dir, "refs/heads/"+branch, branch)
 }
 
 // openPR is OneShot.OpenPR: when the branch has commits beyond the base, it
@@ -104,36 +99,16 @@ func (s *runSession) openPR(ctx context.Context, wsPath, branch string, issue do
 
 // runPRBody links the PR to its issue (GitHub closes it on merge).
 func runPRBody(issue domain.Issue, trackerKind string) string {
-	var b strings.Builder
-	if trackerKind == "github" && strings.HasPrefix(issue.Identifier, "#") {
-		b.WriteString("Closes " + issue.Identifier + "\n\n")
-	} else {
-		b.WriteString("Resolves " + issue.Identifier + "\n\n")
+	issueURL := ""
+	if issue.URL != nil {
+		issueURL = *issue.URL
 	}
-	if issue.URL != nil && *issue.URL != "" {
-		b.WriteString(*issue.URL + "\n\n")
-	}
-	b.WriteString("Opened by `itervox run`.\n")
-	return b.String()
+	return workspace.IssuePRBody(issue.Identifier, issueURL, trackerKind, "Opened by `itervox run`.")
 }
 
-// ghCreatePR opens a PR with `gh pr create` and returns its URL (the last
-// line gh prints).
+// ghCreatePR opens a PR with `gh pr create` and returns its URL.
 func ghCreatePR(ctx context.Context, dir, head, base, title, body string) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--head", head, "--base", base, "--title", title, "--body", body)
-	cmd.Dir = dir
-	cmd.Env = gitexec.Environ()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("gh pr create: %w: %s", err, logging.RedactString(strings.TrimSpace(string(out))))
-	}
-	lines := strings.Fields(string(out))
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.HasPrefix(lines[i], "https://") {
-			return lines[i], nil
-		}
-	}
-	return "", fmt.Errorf("gh pr create printed no PR URL")
+	return workspace.CreatePR(ctx, dir, head, base, title, body)
 }
 
 // resumeContext continues the previous run when --answer or --approve is

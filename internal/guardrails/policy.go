@@ -72,12 +72,15 @@ const (
 	// KindLaneRejected: a human rejected (or dismissed) a push changing
 	// human-lane files.
 	KindLaneRejected = "lane_rejected"
+	// KindPatchOut: an agent of a push: daemon profile tried to push or to
+	// open, merge or change a pull request; the daemon pushes for it.
+	KindPatchOut = "patch_out"
 )
 
 // Kinds lists every block kind (for metrics pre-initialisation and for
 // rejecting a report with an unknown kind).
 var Kinds = []string{KindBranch, KindForcePush, KindDelete, KindTag, KindHookBypass,
-	KindSelfMerge, KindApprovalRejected, KindApprovalUnavailable, KindLaneHuman, KindLaneRejected}
+	KindSelfMerge, KindApprovalRejected, KindApprovalUnavailable, KindLaneHuman, KindLaneRejected, KindPatchOut}
 
 // IsKind reports whether kind is one of Kinds.
 func IsKind(kind string) bool { return slices.Contains(Kinds, kind) }
@@ -126,6 +129,10 @@ type Policy struct {
 	// base (origin/<pull request base>, <pull request base>, agent.base_branch,
 	// origin/HEAD, origin/main, main).
 	BaseRefs []string `json:"base_refs,omitempty"`
+	// PatchOut is push: daemon (patches only): every push, and every gh or
+	// glab command that opens, merges or changes a pull request or calls
+	// a write API, is refused; the daemon pushes after its checks.
+	PatchOut bool `json:"patch_out,omitempty"`
 }
 
 // policyFileName and adoptedFileName live in the runtime directory.

@@ -37,6 +37,13 @@ var (
 	// daemon creates at startup so it exists before any run's policy is
 	// built.
 	IsolationProjectDeny = []string{".itervox/.env", ".itervox/*token*", ".itervox/attest.key"}
+
+	// IsolationPatchOutHomeDeny is also never readable, relative to $HOME,
+	// for a profile with push: daemon (patches only): the stored
+	// credentials of git's credential-store helper, glab and hub, on top of
+	// IsolationHomeDeny (which already holds ~/.ssh, ~/.config/gh and
+	// ~/.netrc). Other runs keep reading them, as before.
+	IsolationPatchOutHomeDeny = []string{".git-credentials", ".config/git/credentials", ".config/glab-cli", ".config/hub"}
 )
 
 // IsolationInputs is what one run's sandbox policy is built from.
@@ -56,6 +63,8 @@ type IsolationInputs struct {
 	// isolation_extra_deny (absolute paths).
 	ExtraWrite []string
 	ExtraDeny  []string
+	// PatchOut is push: daemon: IsolationPatchOutHomeDeny is denied too.
+	PatchOut bool
 }
 
 // IsolationPolicy is what a sandbox enforces. Every path is absolute,
@@ -118,6 +127,9 @@ func BuildIsolationPolicy(in IsolationInputs) IsolationPolicy {
 	write = append(write, in.ExtraWrite...)
 
 	deny = append(deny, joinAll(in.Home, IsolationHomeDeny)...)
+	if in.PatchOut {
+		deny = append(deny, joinAll(in.Home, IsolationPatchOutHomeDeny)...)
+	}
 	deny = append(deny, joinAll(in.ProjectDir, IsolationProjectDeny)...)
 	if in.WorkspaceRoot != "" && in.WorkspaceRoot != in.Workspace {
 		deny = append(deny, in.WorkspaceRoot)

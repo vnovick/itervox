@@ -101,6 +101,8 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		Isolation:           existingProfile.Isolation,
 		IsolationExtraWrite: existingProfile.IsolationExtraWrite,
 		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
+		// Patches only (push: daemon): load-time, carried over.
+		Push: existingProfile.Push,
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {

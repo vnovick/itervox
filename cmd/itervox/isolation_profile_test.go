@@ -58,3 +58,41 @@ Prompt.
 	assert.Equal(t, []string{"/opt/cache dir"}, boxed.IsolationExtraWrite)
 	assert.Equal(t, []string{"/srv/secrets"}, boxed.IsolationExtraDeny)
 }
+
+// TestUpsertProfileKeepsPush (push: daemon): the dashboard does not edit a
+// profile's push mode, so a profile save writes push back to WORKFLOW.md
+// unchanged, and the result loads again as patches only.
+func TestUpsertProfileKeepsPush(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  profiles:
+    patches:
+      command: claude
+      push: daemon
+` + testProfileFileFields(t, dir, "patches") + `---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, cfg: cfg, tr: mt, workflowPath: workflowPath, notify: func() {}}
+
+	require.NoError(t, adapter.UpsertProfile("patches", server.ProfileDef{Command: "claude --model m", Enabled: true}, "patches"))
+
+	reloaded, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	p := reloaded.Agent.Profiles["patches"]
+	assert.Equal(t, "claude --model m", p.Command, "the save applied")
+	assert.Equal(t, config.PushDaemon, p.Push, "push: daemon survives a dashboard save")
+}

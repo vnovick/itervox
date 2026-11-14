@@ -74,9 +74,11 @@ func (o *Orchestrator) SetGuardrailExecutable(path string) { o.guardrailExe = pa
 // runtime and its token (nil/"" when the guardrails are off, the run is
 // remote, or preparation failed — the run then proceeds unguarded with a
 // warning). prBase is the branch the issue's pull request targets: pushes
-// are classified into guardrails.lanes against it. Worker goroutine;
-// touches no State.
-func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, runID, wsPath, workerHost, branch, prBase string, turnTimeoutMs, maxTurns int) (agent.RunEnv, *guardrails.Runtime, string) {
+// are classified into guardrails.lanes against it. patchOut is push:
+// daemon: the agent's environment then carries no forge credentials and its
+// pushes are refused (a patch-out run whose guardrails cannot be prepared
+// must not start; the worker checks). Worker goroutine; touches no State.
+func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, runID, wsPath, workerHost, branch, prBase string, turnTimeoutMs, maxTurns int, patchOut bool) (agent.RunEnv, *guardrails.Runtime, string) {
 	g := o.cfg.Guardrails
 	if !g.Enabled {
 		return agent.RunEnv{}, nil, ""
@@ -102,6 +104,10 @@ func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, run
 		ApprovalsEnabled:  true,
 		Lanes:             guardrails.Lanes{Human: g.Lanes.Human, SecondOpinion: g.Lanes.SecondOpinion},
 		BaseRefs:          reviewBaseCandidates(prBase, o.cfg.Agent.BaseBranch),
+		PatchOut:          patchOut,
+	}
+	if patchOut {
+		opts.StripEnv = o.patchOutStripEnv()
 	}
 	if o.oneShot != nil { // #252: approvals the operator gave this run
 		opts.PreApproved = o.oneShot.PreApprovedCommands

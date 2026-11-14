@@ -77,6 +77,18 @@ type verifyVerdict struct {
 
 func (v verifyVerdict) ok() bool { return len(v.Failed) == 0 }
 
+// sealTree is the tree the run was sealed on ("" without a seal or when it
+// could not hash the tree): what a daemon push (push: daemon) compares the
+// pushed commit's tree with.
+func (v verifyVerdict) sealTree() string {
+	for i := len(v.Records) - 1; i >= 0; i-- {
+		if v.Records[i].Kind == attest.KindSeal {
+			return v.Records[i].TreeHash
+		}
+	}
+	return ""
+}
+
 // verifyRun is one run's identity for its records.
 type verifyRun struct {
 	issue    domain.Issue

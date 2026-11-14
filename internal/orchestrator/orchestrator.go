@@ -426,6 +426,9 @@ type Orchestrator struct {
 	// Tests replace them.
 	findOpenPRURL func(ctx context.Context, wsPath string) string
 	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// createPR opens a pull request for the daemon's own push (push:
+	// daemon); nil means workspace.CreatePR. SetPRCreator replaces it.
+	createPR func(ctx context.Context, dir, head, base, title, body string) (string, error)
 	// oneShot is the `itervox run` mode (#252); nil in the daemon. Set
 	// before Run by SetOneShot. Its Resume is consumed by the event loop.
 	oneShot *OneShot
