@@ -274,3 +274,27 @@ func TestAttestLoadOrCreateKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, s1.PublicKey(), pub)
 }
+
+// CommitTreeHash (push: daemon): for a clean work tree at HEAD it equals
+// TreeHash with the same excludes (excluded paths ignored on both sides),
+// and it differs once the work tree has a change the commit does not.
+func TestCommitTreeHashMatchesCleanTreeHash(t *testing.T) {
+	dir := newRepo(t)
+	ctx := context.Background()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".itervox", "handoff"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "handoff", "h.md"), []byte("h\n"), 0o644))
+	gitT(t, dir, "add", "-A")
+	gitT(t, dir, "commit", "-q", "-m", "a")
+	excludes := []string{".itervox/handoff"}
+	work, err := TreeHash(ctx, dir, excludes)
+	require.NoError(t, err)
+	commit, err := CommitTreeHash(ctx, dir, "HEAD", excludes)
+	require.NoError(t, err)
+	assert.Equal(t, work, commit)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a // changed\n"), 0o644))
+	work, err = TreeHash(ctx, dir, excludes)
+	require.NoError(t, err)
+	assert.NotEqual(t, work, commit, "an uncommitted change is not in the commit's tree")
+}

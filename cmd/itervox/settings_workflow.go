@@ -38,6 +38,7 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			Isolation:           strings.TrimSpace(profile.Isolation),
 			IsolationExtraWrite: profile.IsolationExtraWrite,
 			IsolationExtraDeny:  profile.IsolationExtraDeny,
+			Push:                strings.TrimSpace(profile.Push),
 		}
 	}
 	return out

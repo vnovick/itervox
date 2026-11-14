@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/vnovick/itervox/internal/gitexec"
+	"github.com/vnovick/itervox/internal/logging"
 )
 
 // GetCurrentBranch returns the name of the current git branch in wsPath,
@@ -208,4 +209,75 @@ func ReadPRChecks(ctx context.Context, prURL string) (PRChecks, error) {
 		}
 	}
 	return sum, nil
+}
+
+// PushRef pushes rev (a commit or ref) from wsPath to refs/heads/<branch>
+// on origin, never forced, with the daemon's credentials (gitexec's
+// environment: the guardrail hooks and shims are not in it). The remote's
+// output in an error is redacted.
+func PushRef(ctx context.Context, wsPath, rev, branch string) error {
+	if wsPath == "" || rev == "" || branch == "" {
+		return errors.New("workspace: push needs a workspace, a revision and a branch")
+	}
+	if out, err := gitexec.Command(ctx, wsPath, "push", "origin", rev+":refs/heads/"+branch).CombinedOutput(); err != nil {
+		return fmt.Errorf("git push origin %s: %w: %s", branch, err, logging.RedactString(strings.TrimSpace(string(out))))
+	}
+	return nil
+}
+
+// RemoteBranchSHA is the commit refs/heads/<branch> points at on origin, as
+// the remote reports it now (git ls-remote), or "" when the branch is not
+// there or the remote cannot be asked.
+func RemoteBranchSHA(ctx context.Context, wsPath, branch string) string {
+	if wsPath == "" || branch == "" {
+		return ""
+	}
+	out, err := gitexec.Command(ctx, wsPath, "ls-remote", "origin", "refs/heads/"+branch).Output()
+	if err != nil {
+		return ""
+	}
+	sha, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	return strings.TrimSpace(sha)
+}
+
+// CreatePR opens a pull request from head to base with `gh pr create` in
+// dir and returns its URL (the last https:// word gh prints). An empty base
+// leaves the repository's default branch to gh.
+func CreatePR(ctx context.Context, dir, head, base, title, body string) (string, error) {
+	args := []string{"pr", "create", "--head", head}
+	if base != "" {
+		args = append(args, "--base", base)
+	}
+	args = append(args, "--title", title, "--body", body)
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = dir
+	cmd.Env = gitexec.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("gh pr create: %w: %s", err, logging.RedactString(strings.TrimSpace(string(out))))
+	}
+	lines := strings.Fields(string(out))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], "https://") {
+			return lines[i], nil
+		}
+	}
+	return "", errors.New("gh pr create printed no PR URL")
+}
+
+// IssuePRBody is the body of a pull request Itervox opens for an issue: a
+// line that links it to the issue (GitHub closes a `#N` issue on merge),
+// the issue's URL when known, and openedBy.
+func IssuePRBody(identifier, issueURL, trackerKind, openedBy string) string {
+	var b strings.Builder
+	if trackerKind == "github" && strings.HasPrefix(identifier, "#") {
+		b.WriteString("Closes " + identifier + "\n\n")
+	} else {
+		b.WriteString("Resolves " + identifier + "\n\n")
+	}
+	if issueURL != "" {
+		b.WriteString(issueURL + "\n\n")
+	}
+	b.WriteString(openedBy + "\n")
+	return b.String()
 }

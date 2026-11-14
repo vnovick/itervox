@@ -160,7 +160,7 @@ func (c *CodexRunner) RunTurn(
 	if workerHost == "" {
 		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
 	}
-	cmd.Env = itervoxAgentEnv(runEnv...)
+	cmd.Env = RunEnvFrom(ctx).strip(itervoxAgentEnv(runEnv...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

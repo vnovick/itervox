@@ -473,6 +473,13 @@ type AgentProfile struct {
 	// IsolationExtraDeny are absolute paths (or ~/...) added to the
 	// sandbox's unreadable list. Used only with isolation "process".
 	IsolationExtraDeny []string
+	// Push is who publishes this profile's branch: "agent" (the agent
+	// pushes and opens its pull request, as before) or "daemon" (patches
+	// only: the agent gets no forge credentials, its push and pull-request
+	// commands are refused, and the daemon pushes after the run's gates).
+	// Empty inherits agent.push. See internal/config/push.go. YAML key:
+	// push. Load-time only: the dashboard profile editor carries it over.
+	Push string
 	// RequireEvidence lists the checks a run of this profile must prove
 	// before Itervox moves its issue to completion_state (#80). Each name
 	// but "ci" must appear as a passing entry in the run's evidence file
@@ -732,6 +739,10 @@ type AgentConfig struct {
 	// their own (#258): "none" (the default, no sandbox) or "process" (the
 	// agent subprocess runs inside an OS sandbox). Read-only after startup.
 	Isolation string
+	// Push is the default push mode for profiles that do not set their
+	// own: "agent" (the default) or "daemon" (patches only; see
+	// AgentProfile.Push). Read-only after startup.
+	Push string
 	// AvailableModels maps backend names ("claude", "codex") to model options
 	// discovered at init time. The dashboard profile editor uses these for the
 	// model dropdown. When empty, the frontend falls back to a built-in default
@@ -1168,6 +1179,10 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	if err := ValidateIsolationMode("agent.isolation", cfg.Agent.Isolation, false); err != nil {
 		return nil, err
 	}
+	cfg.Agent.Push = strings.TrimSpace(strField(agent, "push", PushAgent))
+	if err := ValidatePushMode("agent.push", cfg.Agent.Push, false); err != nil {
+		return nil, err
+	}
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
 		return nil, err
@@ -1260,6 +1275,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// Guardrails (#204)
 	cfg.Guardrails = parseGuardrailsConfig(nestedMap(raw, "guardrails"))
+	if err := ValidatePushDaemon(cfg); err != nil {
+		return nil, err
+	}
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")
@@ -1571,6 +1589,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			push, err := profilePushField(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
 				Command:             cmd,
 				SoulFile:            soulFile,
@@ -1589,6 +1611,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				Isolation:           iso.Isolation,
 				IsolationExtraWrite: iso.IsolationExtraWrite,
 				IsolationExtraDeny:  iso.IsolationExtraDeny,
+				Push:                push,
 			}
 			continue
 		}
@@ -1612,6 +1635,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 		if err != nil {
 			return nil, err
 		}
+		push, err := profilePushField(m, name)
+		if err != nil {
+			return nil, err
+		}
 		profiles[name] = AgentProfile{
 			Command:             cmd,
 			Prompt:              strField(m, "prompt", ""),
@@ -1627,6 +1654,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			Isolation:           iso.Isolation,
 			IsolationExtraWrite: iso.IsolationExtraWrite,
 			IsolationExtraDeny:  iso.IsolationExtraDeny,
+			Push:                push,
 		}
 	}
 	if len(profiles) == 0 {

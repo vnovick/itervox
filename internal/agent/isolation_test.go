@@ -399,3 +399,23 @@ func (unavailableMechanism) Available() error { return errors.New("not here") }
 func (unavailableMechanism) Wrap([]string, IsolationPolicy) ([]string, error) {
 	return nil, errors.New("unavailable")
 }
+
+// push: daemon with isolation: process: the stored credentials of git's
+// credential-store helper and glab are denied on top of the usual list;
+// without push: daemon they stay readable, as before.
+func TestPatchOutIsolationDeniesCredentialFiles(t *testing.T) {
+	f := newIsolationListFixture(t)
+	creds := filepath.Join(f.home, ".git-credentials")
+	glab := filepath.Join(f.home, ".config", "glab-cli")
+	require.NoError(t, os.WriteFile(creds, []byte("x"), 0o600))
+	require.NoError(t, os.MkdirAll(glab, 0o755))
+
+	assert.NotContains(t, BuildIsolationPolicy(f.in).Deny, creds, "not denied without push: daemon")
+	f.in.PatchOut = true
+	p := BuildIsolationPolicy(f.in)
+	assert.Contains(t, p.Deny, creds)
+	assert.Contains(t, p.Deny, glab)
+	args := bubblewrapArgs(p)
+	assert.GreaterOrEqual(t, argsIndexSeq(args, []string{"--ro-bind", "/dev/null", creds}), 0, "bwrap hides the file")
+	assert.GreaterOrEqual(t, argsIndexSeq(args, []string{"--tmpfs", glab}), 0, "bwrap hides the directory")
+}

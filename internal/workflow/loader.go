@@ -249,6 +249,9 @@ type ProfileEntry struct {
 	Isolation           string
 	IsolationExtraWrite []string
 	IsolationExtraDeny  []string
+	// Push is the profile's push mode ("" omits the key; "daemon" is
+	// patches only).
+	Push string
 }
 
 // VerifyEntry is one agent.profiles.<name>.verify check as written back to
@@ -407,6 +410,9 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_write:", lvl4, entry.IsolationExtraWrite)
 				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_deny:", lvl4, entry.IsolationExtraDeny)
+				if entry.Push != "" {
+					replacement = append(replacement, lvl3+"push: "+strconv.Quote(entry.Push))
+				}
 				if entry.Prompt != "" {
 					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))
 				}

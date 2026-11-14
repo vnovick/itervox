@@ -295,7 +295,7 @@ func (c *ClaudeRunner) RunTurn(
 	if workerHost == "" {
 		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
 	}
-	cmd.Env = itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...)
+	cmd.Env = RunEnvFrom(ctx).strip(itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
