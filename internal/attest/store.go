@@ -58,6 +58,12 @@ func (s Store) Append(issue, runID string, recs ...Record) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("attest: store dir: %w", err)
 	}
+	return AppendFile(path, recs...)
+}
+
+// AppendFile writes recs, one JSON line each, to the end of the record file
+// at path, creating it (mode 0600) if needed. Its directory must exist.
+func AppendFile(path string, recs ...Record) error {
 	var buf bytes.Buffer
 	for _, r := range recs {
 		line, err := json.Marshal(r)

@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - 'action/**'
+      - 'referee/**'
       - '.github/workflows/action.yml'
   workflow_dispatch:
 
@@ -32,11 +33,13 @@ jobs:
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.7 -color=false .github/workflows/action.yml
       - name: shellcheck
-        run: shellcheck -x action/*.sh
+        run: shellcheck -x action/*.sh referee/*.sh
       - name: trust-check test
         run: bash action/trust-check_test.sh
       - name: pipeline-check test
         run: bash action/pipeline-check_test.sh
+      - name: referee action test
+        run: bash referee/run_test.sh
 
   dry-run:
     name: dry run of the action

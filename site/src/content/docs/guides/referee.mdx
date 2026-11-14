@@ -1,0 +1,321 @@
+---
+title: referee (agents in CI)
+description: A standalone tool for any agent harness and any CI. An agent may change what CI checks, never how CI checks. referee classifies a pull request into lanes by a policy read from the base branch, audits it for weakened checks, pins the policy hash and signs check runs.
+sidebar:
+  order: 13
+---
+
+Agents in CI can fix the build. Don't let them touch the pipeline.
+
+`referee` is a small standalone binary for projects that do **not** use
+Itervox. It needs only `git`, works with any agent harness (Claude Code, Codex,
+Aider, a shell script) and any CI, and enforces one rule:
+
+> An agent may change **what** CI checks, never **how** CI checks.
+
+A test, a fix, a new lint finding: what CI checks, fine. A workflow file, the
+test runner's config, a coverage threshold, a `t.Skip`: how CI checks, so a
+human looks first. Three properties make that hold:
+
+- **The referee lives outside the branch.** The binary comes from the Action's
+  pinned ref, not from the pull request.
+- **The policy is read from the base branch** (`git show <base>:.referee.yml`),
+  never from the working tree or the head. A pull request that edits the
+  policy is judged by the old one, and the policy file itself is always in the
+  human lane.
+- **The writer is never the judge.** Checks can run through `referee run`,
+  which signs what it saw with a key the agent cannot read.
+
+## Install
+
+```bash
+go install github.com/vnovick/itervox/cmd/referee@latest   # or pin a version
+# from a checkout of this repository:
+make referee                                              # writes bin/referee
+```
+
+In GitHub Actions, use [the Action](#the-github-action), which builds it.
+
+## The commands
+
+### `referee lanes`
+
+```bash
+referee lanes --base origin/main [--head HEAD] [--policy .referee.yml] [--json]
+```
+
+Lists the files that differ between the merge base of `--base` and `--head`,
+and `--head` (`git diff --name-only -z --no-renames`: a moved file counts as its
+old path and its new one), and puts each in a lane:
+
+| Lane | Meaning | Exit |
+|---|---|---|
+| `auto` | nothing in the policy matched | `0` |
+| `second_opinion` | a reviewer other than the writer must approve | `10` |
+| `human` | a human must approve this pipeline change | `20` |
+
+The highest lane any file reaches is the result. Committed changes only:
+uncommitted files in the working tree are not part of the diff.
+
+The policy is `.referee.yml` (or `--policy <path>`), **read from the base
+ref**, with two lists of gitignore-style globs:
+
+```yaml
+# .referee.yml on your default branch
+human:
+  - ".github/**"
+  - "Makefile"
+  - "jest.config.*"
+  - "deploy/**"
+second_opinion:
+  - "src/auth/**"
+  - "migrations/**"
+```
+
+- `*` and `?` match within one path segment; a `**` segment spans any number
+  of directories; a pattern without a `/` matches that name at any depth;
+  a leading `/` or any inner `/` anchors it at the repository root; a pattern
+  that matches a directory matches everything under it; `!pattern` excludes
+  what an earlier pattern of the same lane matched.
+- A missing key takes its default; a list replaces the default; `[]` turns the
+  lane off. Unknown keys and malformed patterns are errors (exit `2`), so a
+  typo cannot fall back to the defaults silently. JSON works too.
+- No policy file on the base ref: the default human lane, which is
+  `.github/**`, `.gitlab-ci.yml`, `.circleci/**`, `.itervox/**` (but not
+  `.itervox/handoff/**`), `WORKFLOW.md`, `CODEOWNERS`, `jest.config.*`,
+  `vitest.config.*`, `pytest.ini`, `.coveragerc`, `codecov.yml`,
+  `.golangci.yml` and `Makefile`. Build manifests (`package.json`,
+  `pyproject.toml`, `go.mod`) are deliberately not in it: their tool sections
+  cannot be told apart from their dependency lists by path.
+- The policy file is always added to the human lane, last, so no `!` pattern
+  can exclude it.
+
+`--json` prints a stable shape (`version` 1):
+
+```json
+{
+  "version": 1,
+  "lane": "human",
+  "exit_code": 20,
+  "base": "origin/main",
+  "base_commit": "…",
+  "merge_base": "…",
+  "head": "HEAD",
+  "head_commit": "…",
+  "policy": ".referee.yml@1a2b3c4d5e6f",
+  "human": [".github/workflows/ci.yml"],
+  "second_opinion": [],
+  "auto": ["src/app.ts"]
+}
+```
+
+With `GITHUB_STEP_SUMMARY` set (any GitHub Actions step), `lanes` also appends
+a Markdown summary of the lanes and their files to the job summary.
+
+### `referee audit`
+
+```bash
+referee audit --base origin/main [--head HEAD] [--json]
+```
+
+Reads the same diff and reports changes that weaken checks. Each rule is
+small, looks only at **added** lines of the files where the construct means
+what the rule says, and skips comment lines:
+
+| Rule | Flags |
+|---|---|
+| `test_deleted` | a test file (`*_test.go`, `*.test.ts`, `*.spec.js`, `test_*.py`, `*_spec.rb`, `*Test.java`, `__tests__/…`) deleted or renamed |
+| `go_skip` | `t.Skip(`, `t.SkipNow(`, `t.Skipf(` added in a `_test.go` file |
+| `js_skip` | `it.skip(`, `test.skip(`, `describe.skip(`, `xit(` added in a JS/TS file |
+| `js_only` | `it.only(`, `test.only(`, `describe.only(` added |
+| `py_skip` | `@pytest.mark.skip`, `@pytest.mark.skipif`, `@unittest.skip` added |
+| `coverage_lowered` | a coverage threshold (`fail_under`, `--cov-fail-under`, `branches`, `lines`, `functions`, `statements`, codecov `target`) set lower in the same hunk of a common coverage config file |
+| `ci_continue_on_error` | `continue-on-error: true` (or GitLab `allow_failure: true`) added in a workflow |
+| `ci_or_true` | `\|\| true` added in a workflow |
+| `git_no_verify` | `git commit --no-verify`, `git push --no-verify` or `git commit -n` added in a script, Makefile, `package.json`, hook config or workflow |
+
+`git push -n` is not flagged: for `push`, `-n` is `--dry-run`. A threshold
+removed outright is not flagged either; the human lane covers the common
+coverage config files. Exit `20` with any finding, `0` with none, `2` on an
+error. `GITHUB_STEP_SUMMARY` gets a summary here too.
+
+### `referee pin`
+
+```bash
+referee pin --print [--file .referee.yml]
+referee pin --policy-sha256 <hex> [--file .referee.yml]
+```
+
+Fails (exit `20`) when the file's sha256 is not the pinned one, and prints the
+actual hash. Put the hash in the workflow file, which is itself human lane:
+then the policy cannot change without a reviewed workflow change, even on a
+repository where the base branch is not protected. Works for any file
+(`WORKFLOW.md`, `CODEOWNERS`).
+
+### `referee run`, `keygen` and `verify`
+
+```bash
+referee keygen --out "$RUNNER_TEMP/keys"          # attest.key (0600) + attest.pub
+referee run --name test --key "$RUNNER_TEMP/keys/attest.key" --out checks.jsonl -- 'go test ./... | tee test.log'
+referee run --name lint --key "$RUNNER_TEMP/keys/attest.key" --out checks.jsonl -- golangci-lint run
+referee verify checks.jsonl --pubkey attest.pub --tree .
+```
+
+`run` runs one check and appends two signed records (ed25519): the check (its
+real exit code, duration, the SHA-256 of its output and a redacted tail, the
+git tree hash of the working tree it ran on, tracked plus untracked
+non-ignored files, and `HEAD`) and a seal (the tree after it). One argument
+after `--` is a shell command line, run by bash with `pipefail`, so a failing
+command piped into `tee` or `tail` still fails; more arguments run directly
+with no shell. It exits with the check's own exit code (`1` when the check was
+killed, timed out or did not start) and `2` when it cannot sign or write the
+record. It refuses a key inside the working tree: whatever the check runs
+could read it.
+
+`verify` checks every signature and that each check ran on the final tree;
+`--tree DIR` also requires that tree to be `DIR`'s tree now, so "the tests
+passed" is about this code, not some earlier version of it. Exit `0` when every
+record verifies, `1` when one does not, `2` on an error.
+
+Keep the private key where the agent cannot read it (a CI secret available only
+to the job that runs the checks, not to the job the agent runs in), and give
+reviewers the public key.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | auto lane, no audit findings, pin matches, check passed, records verify |
+| `1` | `run`: the check failed; `verify`: a record did not verify |
+| `10` | `lanes`: second_opinion lane |
+| `20` | `lanes`: human lane; `audit`: findings; `pin`: mismatch |
+| `2` | usage, git or I/O error (bad ref, malformed policy, missing file) |
+
+referee fails closed: an error is never `0`. A base ref that is not in the
+checkout is an error, not an empty diff; fetch it (`fetch-depth: 0`).
+
+## The GitHub Action
+
+`vnovick/itervox/referee` is a composite Action: it installs Go with
+`actions/setup-go`, builds `referee` from the Action's own ref with
+`go install ./cmd/referee`, and runs one mode.
+
+| Input | Default | |
+|---|---|---|
+| `mode` | (required) | `lanes`, `audit`, `pin` or `verify` |
+| `base` | `origin/<base branch>` | the ref the pull request merges into |
+| `head` | `HEAD` | the ref under review |
+| `policy` | `.referee.yml` | lanes: the policy path on the base ref; pin: the file to hash |
+| `policy-sha256` | | pin: the pinned hash |
+| `fail-on` | `human` | lanes: `human`, `second_opinion` or `never`; audit: `never` reports without failing |
+| `records`, `pubkey`, `tree` | | verify |
+
+Outputs: `lane` (lanes) and `exit-code`. An error fails the step whatever
+`fail-on` says.
+
+Pin the Action to a commit SHA. Do not use it as `uses: ./referee` from the
+repository under review: the pull request could change the referee.
+
+### Example: human-lane pull requests need a label
+
+```yaml
+name: referee
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  lanes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the merge base and the base branch's policy
+          persist-credentials: false
+      # Pin to a commit SHA in real use.
+      - id: lanes
+        uses: vnovick/itervox/referee@main
+        with:
+          mode: lanes
+          fail-on: never # decided below, with the label
+      - id: audit
+        uses: vnovick/itervox/referee@main
+        with:
+          mode: audit
+          fail-on: never # decided below, with the label
+      - name: Pipeline changes need the pipeline-approved label
+        if: >-
+          (steps.lanes.outputs.lane == 'human' || steps.audit.outputs.exit-code == '20')
+          && !contains(github.event.pull_request.labels.*.name, 'pipeline-approved')
+        run: |
+          echo "::error::This pull request changes how CI checks (human lane, or checks weakened: see the job summary). A maintainer must review it and add the pipeline-approved label."
+          exit 1
+```
+
+Make the job a required check in branch protection. The same file is
+`referee/examples/referee-pr.yml` in the repository.
+
+**The trade-off.** The workflow checks the label by name, not who added it.
+Anyone with triage access can add labels, and so can any token with pull
+request write access, so the agent's token must never have that permission
+(otherwise the agent can approve itself). The label also stays on when more
+commits are pushed after it was added. If that matters, remove the label on
+every `synchronize` in a separate workflow with `pull-requests: write`, or
+check the label event's actor and permission through the API, or use
+CODEOWNERS with required reviews on the same paths instead of a label. referee
+itself does not authenticate labels: it only decides the lane.
+
+## With any harness
+
+The enforcement is the CI job on the base branch's policy. Anything run next
+to the agent is early feedback the agent can read; it is not a control,
+because the agent can edit or skip it.
+
+**A plain shell CI step** (GitLab, Jenkins, Buildkite, anything with git):
+
+```bash
+git fetch --no-tags origin main
+referee lanes --base origin/main; lane=$?
+referee audit --base origin/main; audit=$?
+case "$lane" in 0|10) ;; 20) echo "pipeline change: needs a human" ;; *) exit 2 ;; esac
+[ "$lane" -ne 20 ] && [ "$audit" -eq 0 ] || exit 1
+```
+
+**Claude Code.** A `Stop` hook in `.claude/settings.json` shows Claude what
+the referee will say before it finishes. A hook command that exits `2` blocks
+and its stderr goes back to Claude:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "referee audit --base origin/main >&2 || exit 2" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Codex, Aider and others.** Run the agent in one job (or step) and referee in
+a later one that the agent's job cannot change: `codex exec …` or
+`aider --message … --yes` then `referee lanes` and `referee audit` on the
+pushed branch. Aider's `--test-cmd` can also run `referee audit --base
+origin/main` so its own test loop sees the findings.
+
+**Git hooks.** `referee lanes --base origin/main` in a `pre-push` hook warns
+early. An agent can push with `--no-verify`, which `referee audit` reports
+when it lands in a script, and which CI does not care about either way.
+
+## Using Itervox?
+
+Itervox has the same rule built in: [guardrails lanes](/guides/guardrails/)
+hold a push that changes human-lane files for an approval, and signed checks
+(`agent.profiles.<name>.verify`, `itervox attest verify`) use the same record
+format as `referee run`.

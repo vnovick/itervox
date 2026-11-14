@@ -1,0 +1,49 @@
+# Example: copy to .github/workflows/referee.yml in your repository.
+#
+# Every pull request is classified by referee. A pull request that changes
+# a human-lane file (CI workflows, test-runner and coverage config, ownership
+# rules, the referee policy itself), or that referee audit finds weakens a
+# check (a skipped or deleted test, a lowered coverage threshold, an ignored
+# failure), fails this check unless it carries the `pipeline-approved` label. Make the check required in branch protection.
+#
+# Trade-off: the label is checked by name, not by who added it. Anyone with
+# triage access can label, and so can any token with pull request write
+# access, so never give the agent's token that permission. The label also
+# stays on when more commits are pushed after it was added; remove it on
+# every push (a separate workflow with pull-requests: write) if that matters
+# to you, or use CODEOWNERS reviews on the same paths instead.
+name: referee
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  lanes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the merge base and the base branch's policy
+          persist-credentials: false
+      # Pin to a commit SHA in real use.
+      - id: lanes
+        uses: vnovick/itervox/referee@main
+        with:
+          mode: lanes
+          fail-on: never # decided below, with the label
+      - id: audit
+        uses: vnovick/itervox/referee@main
+        with:
+          mode: audit
+          fail-on: never # decided below, with the label
+      - name: Pipeline changes need the pipeline-approved label
+        if: >-
+          (steps.lanes.outputs.lane == 'human' || steps.audit.outputs.exit-code == '20')
+          && !contains(github.event.pull_request.labels.*.name, 'pipeline-approved')
+        run: |
+          echo "::error::This pull request changes how CI checks (human lane, or checks weakened: see the job summary). A maintainer must review it and add the pipeline-approved label."
+          exit 1
