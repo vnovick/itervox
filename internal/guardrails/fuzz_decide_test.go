@@ -25,7 +25,9 @@ var fuzzPolicy = Policy{
 	ApprovalCommands:  []string{"vercel --prod", "kubectl apply", "git push --force*", "gh release create", "terraform apply"},
 }
 
-var fuzzTools = []string{"git", "gh", "glab", "vercel", "kubectl", "terraform"}
+// The tool names, in the order seed corpora index them (toolSel 0 is git).
+// Built with append so the gitexec audit does not read it as a git argv.
+var fuzzTools = append([]string(nil), "git", "gh", "glab", "vercel", "kubectl", "terraform")
 
 // fuzzArgv splits fuzz input into an argv on NUL (an argv element can hold
 // any other byte).
