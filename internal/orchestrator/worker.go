@@ -524,11 +524,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	pb := runPlaybook(ctx)
 	_, taskBlock := runTask(ctx) // #251
 	requiredEvidence := runEvidenceChecks(profilesSnap[profileName].RequireEvidence, pb)
+	// Signed checks: the daemon runs these itself after the run; a
+	// require_evidence name they cover is not read from the agent's file.
+	verifyChecks := profilesSnap[profileName].Verify
+	if automationRun || readOnlyReviewer {
+		verifyChecks = nil // like the evidence gate: these runs do not move the issue
+	}
 	runEvidenceRelPath := ""
 	evidenceBlock := ""
-	if len(requiredEvidence) > 0 {
+	if len(requiredEvidence) > 0 || len(verifyChecks) > 0 {
 		runEvidenceRelPath = evidenceRelPathFor(profileName)
-		evidenceBlock = buildEvidenceBlock(requiredEvidence, runEvidenceRelPath)
+		evidenceBlock = buildRunEvidenceBlock(requiredEvidence, verifyChecks, runEvidenceRelPath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), runEvidenceRelPath, switchNotice)
 	setRunPort(runVars, wsPort)                                                                             // #250
@@ -1144,6 +1150,34 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		return
 	}
 
+	// Signed checks: the writer is never the judge. With a verify list the
+	// daemon runs each check itself in the worktree, signs what it saw and
+	// gates the run on it, before any success side effect (handoff, PR,
+	// completion move). A failure holds the run input-required like a
+	// failed evidence gate (#80). Off the event loop: the outcome reaches
+	// it only as this worker's exit event.
+	if len(verifyChecks) > 0 && wsPath != "" && ctx.Err() == nil {
+		verdict := o.runVerifyChecks(ctx, wsPath, verifyRun{
+			issue: issue, runID: attestRunID(runTimestamp, profileName), profile: profileName, runLogID: runLogID,
+		}, verifyChecks)
+		if ctx.Err() != nil {
+			o.sendExit(ctx, issue, attempt, TerminalFailed, fmt.Errorf("worker: signed checks interrupted: %w", ctx.Err()))
+			return
+		}
+		if !verdict.ok() {
+			slog.Info("worker: holding issue for failed signed checks (verify)",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "failed", len(verdict.Failed))
+			o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, claudeSessionID, backend, agentCommand,
+				workerHost, profileName, activeBranchName, verifyHoldContext(verdict), "",
+				buildInputRequiredExitRunEntry(issue, attempt, startedAt, turn, runLogID, workerHost, backend,
+					cumulativeInput, cumulativeCached, cumulativeOutput, agent.TurnResult{}))
+			return
+		}
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", "worker: signed checks passed (verify)", runLogID))
+		}
+	}
+
 	// If the agent created a PR during this run, comment its URL on the tracker
 	// issue.  This runs before the session summary so the PR link is visible even
 	// on trackers that truncate long comments.  Uses the same gh CLI check as the
@@ -1361,7 +1395,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// the reason and the issue stays where it is. Reviewer and automation
 	// runs do not move the issue for themselves, so they are not gated.
 	// #218: a playbook's require_evidence is part of the same list.
-	if required := requiredEvidence; len(required) > 0 &&
+	// Names the signed checks above already proved are not read from the
+	// agent's evidence file.
+	if required := withoutVerified(requiredEvidence, verifyChecks); len(required) > 0 &&
 		completionState != "" && ctx.Err() == nil && !automationRun && !isReviewerRun {
 		evCtx, evCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		verdict := checkEvidence(evCtx, wsPath, evidenceRelPathFor(profileName), required, detectedPRURL, o.prChecksReader())

@@ -73,6 +73,14 @@ Commands:
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --all      also list daemons from other projects
 
+  attest  Check signed check records (agent.profiles.<name>.verify)
+             verify FILE  the .jsonl records of one run: signatures and the
+                          run's final tree
+             --tree DIR   also require each check's tree to be DIR's
+                          working tree now
+             --pubkey     public key (default: .itervox/attest.pub)
+             --workflow   path to WORKFLOW.md (default: WORKFLOW.md)
+
   secret  Set or list .itervox/.env values without showing them
              set KEY    read the value with echo off (or from stdin)
              list       show each key as set / placeholder / empty

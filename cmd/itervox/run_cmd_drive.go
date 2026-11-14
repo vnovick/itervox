@@ -38,6 +38,12 @@ func (s *runSession) run(ctx context.Context, runner agent.Runner) runSummary {
 	staging := stageIssueLogs(logBuf, s.opts.logDir)
 	orch.SetLogBuffer(logBuf)
 	orch.SetAppSessionID(newAppSessionID())
+	if profilesUseVerify(s.cfg) {
+		// Signed checks, as in the daemon. Only when a profile has verify:
+		// `itervox run` works in the user's own checkout, which must not
+		// gain a key or .itervox/.gitignore for a feature it does not use.
+		setupAttestation(orch, s.opts.workflow)
+	}
 	var spendBefore orchestrator.Spend
 	if s.opts.logDir != "" {
 		spendPath := filepath.Join(s.opts.logDir, "issue_spend.json")

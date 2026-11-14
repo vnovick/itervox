@@ -740,6 +740,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `isolation_extra_write` | string[] | Optional. Absolute (or `~/`) paths a sandboxed run may also write, e.g. `~/.npm`. |
 | `isolation_extra_deny` | string[] | Optional. Absolute (or `~/`) paths a sandboxed run may not read or write, on top of the built-in deny list. |
 | `require_evidence` | string[] | Optional, off by default. Checks a run of this profile must prove before Itervox moves its issue to `completion_state`, e.g. `[test, lint, ci]`. See [Done needs evidence](#done-needs-evidence). Kept as is when the profile is saved from the dashboard. |
+| `verify` | list of `{name, run, timeout_ms}` | Optional, off by default. Checks the **daemon** runs itself in the worktree after a successful run, before the run counts as succeeded, e.g. `[{name: test, run: "make test"}]`. Each run is recorded and signed; a non-zero exit holds the run like failed evidence. A name also in `require_evidence` is proved by this run, never by the agent's evidence file. `timeout_ms` defaults to `600000` (10 minutes). See [Signed checks](#signed-checks). Kept as is when the profile is saved from the dashboard. |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
 
@@ -778,6 +779,38 @@ Without the evidence, the issue is **not moved**: the run ends **input required*
 Reviewer and automation runs are not gated, since they do not move the issue. Without `require_evidence` nothing changes. The value must be a list: a single value such as `require_evidence: true` is a config error, not a silent "off".
 
 A [playbook](#playbooks) can also declare `require_evidence` in its frontmatter. Its checks are added to the profile's for runs that get that playbook: one list, one `## Evidence (required)` block, one gate.
+
+### Signed checks
+
+`require_evidence` trusts the agent to record its own checks: the writer of the fix also writes the proof. `verify` takes the pen away. Itervox runs each command itself, in the issue's worktree, after the agent's run ends and before the run counts as succeeded:
+
+```yaml
+agent:
+  profiles:
+    implementer:
+      command: claude
+      require_evidence: [test, ci]   # test is proved by verify below; ci by the PR's checks
+      verify:
+        - name: test
+          run: make test
+        - name: lint
+          run: "golangci-lint run ./... | tail -n 50"
+          timeout_ms: 300000
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | The check's name: lower-case letters, digits, `-`, `_` (up to 32). `ci` is reserved for the pull request's checks. Names must be unique. |
+| `run` | string | required | The command line. It runs as `bash -lc` with `set -o pipefail` first, so a failing command piped into `tail` or `tee` still fails. |
+| `timeout_ms` | int | `600000` | How long the check may run. Past it, the check's whole process group is killed and the check fails as timed out. |
+
+- The checks run in order and stop at the first failure. Under [`isolation: process`](/guides/isolation/) they run in the same sandbox as the agent.
+- Every check passes (exit `0`) → the run succeeds as usual. A check fails, times out, or changes the working tree → the issue is **not moved**: the run ends **input required** with a "Signed checks failed (verify)" reason naming the check, its exit code, the command and its last output lines. Reply to resume the agent; the checks run again when the resumed run ends.
+- Each check is written as a signed record to `.itervox/attestations/<identifier>/<run id>.jsonl` next to `WORKFLOW.md`: the command, its real exit code, start time and duration, the SHA-256 of the combined output and a redacted output tail, the hash of the working tree it ran on and the HEAD commit. Read them with [`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations) or check a file with [`itervox attest verify`](/cli/#itervox-attest--check-signed-check-records).
+- The agent's prompt names the checks (`- signed checks: …` in the `## Evidence (required)` block) so it does not spend turns recording them; anything it writes for them in its evidence file is ignored. Other `require_evidence` names are read from the file as before.
+- Reviewer and automation runs are not checked, as with `require_evidence`. The value must be a list of maps; a malformed entry is a config error, never dropped. Load-time only.
+
+See [Signed checks](/guides/guardrails/#signed-checks) for the record format, the key and what it does and does not prove.
 
 ### Playbooks
 

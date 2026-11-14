@@ -32,8 +32,11 @@ var (
 	}
 
 	// IsolationProjectDeny is never readable, relative to the directory
-	// holding WORKFLOW.md: the daemon's .env and its token files.
-	IsolationProjectDeny = []string{".itervox/.env", ".itervox/*token*"}
+	// holding WORKFLOW.md: the daemon's .env, its token files and the
+	// signed-checks private key (internal/attest.KeyFileName), which the
+	// daemon creates at startup so it exists before any run's policy is
+	// built.
+	IsolationProjectDeny = []string{".itervox/.env", ".itervox/*token*", ".itervox/attest.key"}
 )
 
 // IsolationInputs is what one run's sandbox policy is built from.

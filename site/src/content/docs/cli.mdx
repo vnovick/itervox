@@ -390,6 +390,23 @@ Manages the stored API tokens in `.itervox/tokens.json` next to `--workflow` (de
 
 `--hub` (#228) points every subcommand at the [hub](/guides/hub/)'s own store, `~/.itervox/hub/tokens.json`, instead of the project's: hub tokens open the hub URL, and their scope caps what the hub may do on every member (`itervox token create --hub --name phone --scope viewer`).
 
+## `itervox attest` — Check signed check records
+
+```bash
+itervox attest verify FILE.jsonl [--pubkey PATH | --workflow WORKFLOW.md] [--tree DIR]
+```
+
+Checks one run's [signed check](/guides/guardrails/#signed-checks) records
+(`.itervox/attestations/<identifier>/<run id>.jsonl`, written when a profile
+has `verify`). Every record's ed25519 signature must be valid for the public
+key (default: `.itervox/attest.pub` next to `--workflow`), and every check
+must have run on the run's final tree (its `seal` record). `--tree DIR` also
+requires each check's tree to be the working tree in `DIR` now — tracked plus
+untracked, non-ignored files, computed without touching `DIR`'s index — so a
+record from an earlier version of the code fails. It prints one line per
+record (`ok` or `FAIL` with the reason) and exits `0` when all verify, `1`
+when one does not, `2` for a usage or read error.
+
 ## `itervox config` — Settings and where they come from
 
 ```bash

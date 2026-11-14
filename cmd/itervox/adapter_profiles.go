@@ -95,6 +95,7 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		// The quota pool (backend_fallback lanes) is load-time only.
 		Pool:              existingProfile.Pool,
 		RequireEvidence:   existingProfile.RequireEvidence,
+		Verify:            existingProfile.Verify, // signed checks: load-time, carried over
 		CreateIssueLabels: existingProfile.CreateIssueLabels,
 		// #258: likewise the sandbox settings.
 		Isolation:           existingProfile.Isolation,

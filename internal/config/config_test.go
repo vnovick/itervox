@@ -1843,6 +1843,48 @@ func TestProfileRequireEvidence(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent.profiles.impl.require_evidence must be a list of check names")
 }
 
+// TestProfileVerify (signed checks): verify parses {name, run, timeout_ms}
+// entries with a 10-minute default timeout, defaults to off, and rejects
+// malformed entries instead of dropping them.
+func TestProfileVerify(t *testing.T) {
+	load := func(profileBlock string) (*config.Config, error) {
+		content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nagent:\n  profiles:\n    impl:\n      command: claude\n" + profileBlock + "---\n\nPrompt.\n"
+		return config.Load(workflowWithContent(t, content))
+	}
+	cfg, err := load("")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Agent.Profiles["impl"].Verify, "off by default")
+
+	cfg, err = load("      verify:\n        - name: Test\n          run: make test\n        - name: lint\n          run: \"golangci-lint run | tail -n 20\"\n          timeout_ms: 5000\n")
+	require.NoError(t, err)
+	assert.Equal(t, []config.VerifyCheck{
+		{Name: "test", Run: "make test", TimeoutMs: config.DefaultVerifyTimeoutMs},
+		{Name: "lint", Run: "golangci-lint run | tail -n 20", TimeoutMs: 5000},
+	}, cfg.Agent.Profiles["impl"].Verify)
+	assert.Equal(t, 600_000, config.DefaultVerifyTimeoutMs)
+
+	for _, tc := range []struct{ block, want string }{
+		{"      verify: make test\n", "verify must be a list of {name, run} checks"},
+		{"      verify: [test]\n", "verify[0] must be a map with name and run"},
+		{"      verify: [{name: test}]\n", "needs a run command"},
+		{"      verify: [{name: ci, run: x}]\n", "reserved for the pull request's CI checks"},
+		{"      verify: [{name: \"unit tests\", run: x}]\n", "must be a short name"},
+		{"      verify: [{name: test, run: x}, {name: test, run: y}]\n", "names \"test\" twice"},
+		{"      verify: [{name: test, run: x, timeout_ms: 0}]\n", "timeout_ms must be a positive number"},
+		{"      verify: [{name: test, run: x, timeout: 5}]\n", "unknown key \"timeout\""},
+	} {
+		_, err := load(tc.block)
+		require.Error(t, err, tc.block)
+		assert.Contains(t, err.Error(), tc.want, tc.block)
+	}
+
+	// The schema-2 (file-backed profiles) branch parses it the same way.
+	block := "      command: claude\n" + schema2ProfileFileFields(t, "      ") + "      verify: [{name: test, run: go test ./...}]\n"
+	cfg, err = config.Load(workflowWithContent(t, minimalV2("agent:\n  profiles:\n    impl:\n"+block)))
+	require.NoError(t, err)
+	assert.Equal(t, []config.VerifyCheck{{Name: "test", Run: "go test ./...", TimeoutMs: config.DefaultVerifyTimeoutMs}}, cfg.Agent.Profiles["impl"].Verify)
+}
+
 // TestCommentCommandsConfig (#84): tracker.comment_commands parses, is off
 // by default, and is GitHub-only.
 func TestCommentCommandsConfig(t *testing.T) {
