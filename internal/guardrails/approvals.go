@@ -76,6 +76,8 @@ type Approval struct {
 	Status     string
 	Message    string
 	CreatedAt  time.Time
+	// DecidedAt is when a human answered (zero while pending).
+	DecidedAt time.Time
 }
 
 // Approvals holds the daemon's approval requests. Concurrency-safe: HTTP
@@ -147,6 +149,35 @@ func (a *Approvals) Status(identifier, runID, id string) ApprovalStatus {
 	return ApprovalStatus{ID: id, Status: r.Status, Message: r.Message}
 }
 
+// decisionPickup is how long a decided request still counts as a wait
+// (Waiting): its shim reads the decision within one approval poll (a
+// second); the rest is slack for a loaded machine. A decision no shim ever
+// reads (the shim gave up or was killed) stops holding after it.
+const decisionPickup = 10 * time.Second
+
+// Waiting reports whether identifier's run runID has an agent blocked in a
+// shim on an approval: a request no human has answered yet, or one answered
+// within decisionPickup that its shim has not read yet. The agent's silence
+// is then expected; the runner's idle read deadline is suspended while this
+// is true (agent.WithIdleHold). Safe on a nil receiver (false).
+func (a *Approvals) Waiting(identifier, runID string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	for _, r := range a.byID {
+		if r.Identifier != identifier || r.RunID != runID {
+			continue
+		}
+		if r.Status == StatusPending || now.Sub(r.DecidedAt) < decisionPickup {
+			return true
+		}
+	}
+	return false
+}
+
 // Get returns a copy of request id.
 func (a *Approvals) Get(id string) (Approval, bool) {
 	a.mu.Lock()
@@ -174,6 +205,7 @@ func (a *Approvals) Decide(id string, approved bool, message string) bool {
 		r.Status = StatusApproved
 	}
 	r.Message = message
+	r.DecidedAt = a.now()
 	return true
 }
 

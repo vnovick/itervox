@@ -8,7 +8,12 @@ import { authedFetch } from '../../../../auth/authedFetch';
 import { AttentionInbox } from '../AttentionInbox';
 import { render } from '../../../../test/render';
 import { axeViolations } from '../../../../test/axe';
-import { makeRetryRow, makeSnapshot } from '../../../../test/fixtures/snapshots';
+import {
+  makeInputRequiredRow,
+  makeRetryRow,
+  makeRunningRow,
+  makeSnapshot,
+} from '../../../../test/fixtures/snapshots';
 import { makeIssue } from '../../../../test/fixtures/issues';
 import { useItervoxStore } from '../../../../store/itervoxStore';
 import { useToastStore } from '../../../../store/toastStore';
@@ -103,6 +108,54 @@ describe('AttentionInbox', () => {
       useItervoxStore.setState({ snapshot: makeSnapshot() });
     });
     expect(screen.queryByTestId('attention-item-needs_input-ENG-1')).not.toBeInTheDocument();
+  });
+
+  // guardrails.lanes — a held pipeline push belongs to a RUNNING issue (its
+  // agent waits in the guardrail shim), so the input-required panel never
+  // shows it; the reply row must name the pipeline files.
+  function heldPushSnapshot(lanePaths?: string[]): StateSnapshot {
+    return makeSnapshot({
+      running: [makeRunningRow({ identifier: 'ENG-1' })],
+      inputRequired: [
+        makeInputRequiredRow({
+          identifier: 'ENG-1',
+          context: lanePaths
+            ? 'Pipeline change: the agent wants to push changes to .github/workflows/ci.yml'
+            : 'Agent wants to run: `vercel --prod`',
+          guardrailApproval: true,
+          ...(lanePaths
+            ? { guardrailLanePaths: lanePaths, guardrailLanePathsTotal: lanePaths.length }
+            : {}),
+        }),
+      ],
+    });
+  }
+
+  it('the reply row of a held pipeline push on a running issue shows the pipeline files', () => {
+    routeFetch([makeIssue({ identifier: 'ENG-1' })]);
+    render(<AttentionInbox onSelectIssue={vi.fn()} />, {
+      snapshot: heldPushSnapshot(['.github/workflows/ci.yml', 'Makefile']),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Reply to ENG-1' }));
+    const row = screen.getByTestId('attention-item-needs_input-ENG-1');
+    const notice = row.querySelector('[data-testid="pipeline-change-notice"]');
+    expect(notice).not.toBeNull();
+    const files = within(notice as HTMLElement).getByRole('list', {
+      name: 'Pipeline files changed',
+    });
+    expect(within(files).getByText('.github/workflows/ci.yml')).toBeInTheDocument();
+    expect(within(files).getByText('Makefile')).toBeInTheDocument();
+  });
+
+  it('the reply row of an approval command (no lane) shows no pipeline notice', () => {
+    routeFetch([makeIssue({ identifier: 'ENG-1' })]);
+    render(<AttentionInbox onSelectIssue={vi.fn()} />, { snapshot: heldPushSnapshot() });
+    fireEvent.click(screen.getByRole('button', { name: 'Reply to ENG-1' }));
+    const row = screen.getByTestId('attention-item-needs_input-ENG-1');
+    expect(
+      within(row).getByRole('textbox', { name: 'Reply to the agent on ENG-1' }),
+    ).toBeInTheDocument();
+    expect(row.querySelector('[data-testid="pipeline-change-notice"]')).toBeNull();
   });
 
   it('Resume and Discard call the existing hooks', async () => {
