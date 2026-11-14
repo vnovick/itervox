@@ -31,7 +31,10 @@ export function PipelineChangeNotice({ identifier }: { identifier: string }) {
         This push changes how CI checks the work. Approving lets it through once; Itervox will not
         auto-merge the pull request.
       </p>
-      <ul className="text-theme-text-secondary font-mono text-xs" aria-label="Pipeline files changed">
+      <ul
+        className="text-theme-text-secondary font-mono text-xs"
+        aria-label="Pipeline files changed"
+      >
         {shown.map((p) => (
           <li key={p}>{p}</li>
         ))}
