@@ -31,6 +31,10 @@ type decision struct {
 	// pattern is the matching approval rule's display form (a quoted
 	// pattern, plus its when_env conditions for a scoped rule).
 	pattern string
+	// dropHooksPath: a git builtin that runs no hook, called with a
+	// core.hooksPath override (readOnlyHooksOverride); the override is left
+	// out of what is forwarded (forwardArgs).
+	dropHooksPath bool
 }
 
 // gitGlobalsWithValue are git's global options that take the next argument
@@ -68,9 +72,9 @@ func (p Policy) decide(tool string, args []string, cwd string, lookup EnvLookup,
 		return d
 	}
 	if why, ok := p.matchAnyApproval(tool, args, lookup); ok {
-		return decision{act: actApprove, pattern: why}
+		return decision{act: actApprove, pattern: why, dropHooksPath: d.dropHooksPath}
 	}
-	return decision{}
+	return d
 }
 
 // isHooksPathAssignment reports whether a `-c`/`--config-env` assignment
@@ -105,6 +109,9 @@ var hookBypass = decision{act: actRefuse, kind: KindHookBypass, message: "guardr
 func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) string) decision {
 	dir, i, bypass := gitGlobals(args, cwd)
 	if bypass {
+		if _, ok := readOnlyHooksOverride(args); ok {
+			return decision{dropHooksPath: true} // a builtin that runs no hook
+		}
 		return hookBypass
 	}
 	if i >= len(args) {
@@ -273,7 +280,7 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 	if tool == "git" {
 		env = withHooksPath(env, filepath.Join(p.Dir, "hooks"))
 	}
-	code, err := execFn(real, append([]string{tool}, args...), env)
+	code, err := execFn(real, append([]string{tool}, forwardArgs(d, args)...), env)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "guardrails: run %s: %v\n", tool, err)
 		return 126

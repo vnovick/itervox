@@ -66,7 +66,7 @@ The schema is in docs/report.md.
 | `labels` | no | A list. Read in lower case, like the other trackers. |
 | `blocked_by` | no | Identifiers of issues that block this one. A blocker that is not terminal keeps this issue from being dispatched; a blocker with no file also keeps it blocked. |
 | `branch` | no | The issue's branch. Itervox records it when an agent starts; [stacked work](/guides/stacked-prs/) builds on a blocker's branch. |
-| `created`, `updated` | no | RFC 3339 times. Itervox sets `updated` on every write. |
+| `created`, `updated` | no | RFC 3339 times. Itervox sets `updated` on every write. A file without `created` is treated as created at its modification time when the daemon first read it; a later edit (moving its state) does not change that, and nothing is written to the file. That time is what lets an `issue_entered_state` [automation](/guides/automations/) tell an issue you moved into the trigger state from one written there fresh. |
 | `remote` | no | The linked Linear or GitHub issue (`ENG-42`, or `"#42"` — quoted, since `#` starts a YAML comment), written by the [sync](#sync-with-linear-or-github). |
 
 When Itervox rewrites a file it edits the front matter in place: key order, YAML comments, other keys and the spelling of every value it does not change are kept. A value it changes is rewritten where it is (its line comment stays), a key it adds goes at the end, and a key whose value it empties (no labels left, say) is removed. A file Itervox creates uses the layout shown above.
