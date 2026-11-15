@@ -27,9 +27,9 @@ pub fn origin_of(base_url: &str) -> Option<String> {
 }
 
 /// The global the dashboard reads, once at boot, to know it is embedded in
-/// the app's window (web/src/hooks/useEmbeddedShell.ts): it then drops its
-/// own sidebar (the window has the rail and the Go menu), lands on the issue
-/// view, and exposes `window.__itervoxNavigate` for the Go menu.
+/// the app's window (web/src/hooks/useEmbeddedShell.ts): it then titles its
+/// top bar `project · ISSUE` (the window's project tabs sit above it), lands
+/// on the issue view, and exposes `window.__itervoxNavigate` for the Go menu.
 pub const SHELL_GLOBAL: &str = "__ITERVOX_SHELL__";
 /// [`SHELL_GLOBAL`]'s value in the app's dashboard windows.
 pub const SHELL_DESKTOP: &str = "desktop";

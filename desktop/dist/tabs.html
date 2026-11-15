@@ -1,0 +1,407 @@
+<!doctype html>
+<!-- The project tabs of a dashboard window (#244): one tab per project the
+     app knows — pinned first, then hub members, daemons outside the hub and
+     remote daemons by host — with a health dot, the name, the running
+     count and a "needs you" badge, across the top of the window above the
+     dashboard. The app pushes the tabs after each refresh
+     (src-tauri/src/rail.rs push_script); the page has no IPC and no
+     network access of its own. Choosing a tab navigates to
+     /__itervox/rail/switch, which the window intercepts and shows that
+     project's dashboard under the strip; ⌘/Ctrl-click and middle-click,
+     drag-and-drop, the "+" button, a tab's menu and the "⌄" list work the
+     same way. The menus are native popups the app draws (the strip is one
+     row high). The strip is opaque: no system material, no blur. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects — Itervox</title>
+<link rel="stylesheet" href="theme.css">
+<style>
+  /* Layout only: colours, radii and shadows come from theme.css. */
+  html, body { height:100%; background:var(--strip); }
+  body { font-size:13px; line-height:1; overflow:hidden; user-select:none; -webkit-user-select:none; }
+  body.page::before { display:none; }
+  .strip { display:flex; align-items:center; gap:4px; height:100%; padding:0 6px 0 8px;
+    border-bottom:1px solid var(--hairline); }
+  #tabs { display:flex; align-items:center; gap:2px; min-width:0; flex:0 1 auto; height:100%;
+    overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+  #tabs::-webkit-scrollbar { display:none; }
+  .group { display:flex; align-items:center; gap:2px; flex:none; height:100%; }
+  .sep { flex:none; width:1px; height:16px; margin:0 4px; background:var(--hairline); }
+  .slot { position:relative; flex:none; display:flex; align-items:center; height:100%; }
+  button.tab { display:flex; align-items:center; gap:6px; height:28px; min-width:72px; max-width:200px;
+    padding:0 10px; border:1px solid transparent; border-radius:var(--r-item); background:none;
+    color:var(--text2); font-size:13px; white-space:nowrap; cursor:pointer; }
+  button.tab:hover { background:var(--hover); }
+  button.tab[aria-selected="true"] { background:var(--tab-active); border-color:var(--tab-active-border);
+    color:var(--text); font-weight:600; box-shadow:var(--shadow-tab); }
+  button.tab.closed { color:var(--muted); cursor:default; }
+  button.tab:focus-visible, .tool:focus-visible, #machine:focus-visible { outline-offset:-2px; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--dot-idle); }
+  .dot.running, .dot.answering { background:var(--dot-ok); }
+  .dot.unreachable, .dot.not_answering { background:var(--dot-down); }
+  .dot.token_required { background:var(--dot-warn); }
+  .dot.pending, .dot.checking { background:var(--dot-pending); }
+  .name { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .initials { display:none; font-weight:600; font-size:12px; }
+  .count { display:flex; align-items:center; gap:2px; flex:none; color:var(--muted); font-size:12px;
+    font-weight:400; font-variant-numeric:tabular-nums; }
+  .count svg { width:10px; height:10px; }
+  .badge { flex:none; min-width:18px; padding:0 5px; border-radius:var(--r-pill); background:var(--badge-solid);
+    color:var(--on-badge); font-size:11px; font-weight:700; line-height:18px; text-align:center;
+    font-variant-numeric:tabular-nums; }
+  .pin { flex:none; width:10px; height:10px; color:var(--muted); }
+  .slot.drop-before::before, .slot.drop-after::after { content:""; position:absolute; top:8px; bottom:8px;
+    width:2px; background:var(--accent); border-radius:1px; }
+  .slot.drop-before::before { left:-2px; }
+  .slot.drop-after::after { right:-2px; }
+  .tool { flex:none; display:flex; align-items:center; justify-content:center; width:28px; height:28px;
+    padding:0; border:1px solid transparent; border-radius:var(--r-item); background:none; color:var(--text2);
+    cursor:pointer; font-size:18px; }
+  .tool:hover { background:var(--hover); }
+  .tool svg { width:14px; height:14px; }
+  .tool[hidden], #machine[hidden] { display:none; }
+  .spacer { flex:1 1 0; min-width:0; }
+  #machine { flex:none; display:flex; align-items:center; gap:6px; height:28px; padding:0 8px;
+    border-radius:var(--r-item); color:var(--muted); font-size:12px; white-space:nowrap; }
+  .empty { flex:none; color:var(--muted); padding:0 6px; white-space:nowrap; }
+  @media (forced-colors: active) {
+    button.tab[aria-selected="true"] { outline:2px solid CanvasText; }
+  }
+  /* Compact tabs: dot, initials and badge; names stay for screen readers. */
+  body.compact button.tab { min-width:0; padding:0 8px; gap:5px; }
+  body.compact .name { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+  body.compact .initials { display:block; }
+  body.compact .count, body.compact #machine .label { display:none; }
+</style>
+</head>
+<body class="page">
+<div class="strip">
+  <div id="tabs" role="tablist" aria-label="Projects" aria-orientation="horizontal"></div>
+  <button id="add-project" class="tool" type="button" aria-label="Add project"
+    title="Add a project (its WORKFLOW.md)"><span aria-hidden="true">+</span></button>
+  <span class="spacer" aria-hidden="true"></span>
+  <span id="machine" tabindex="0" role="note" hidden><span class="dot" id="machine-dot"></span><span class="label">Model servers</span></span>
+  <button id="overflow" class="tool" type="button" aria-haspopup="menu" aria-label="All projects"
+    title="All projects" hidden><svg aria-hidden="true" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+</div>
+<div id="live" class="sr-only" aria-live="polite"></div>
+<script>
+(function () {
+  var BASE = '/__itervox/rail/';
+  var SVG = 'http://www.w3.org/2000/svg';
+  var tabsEl = document.getElementById('tabs');
+  var overflowEl = document.getElementById('overflow');
+  var liveEl = document.getElementById('live');
+  var machineEl = document.getElementById('machine');
+  var machineDotEl = document.getElementById('machine-dot');
+  var view = { collapsed: false, sections: [] };
+  var active = null;
+  var shownActive = null;
+  var dragKey = null;
+
+  function go(action, params) {
+    var q = Object.keys(params || {}).map(function (k) {
+      return k + '=' + encodeURIComponent(params[k]);
+    }).join('&');
+    window.location.href = BASE + action + (q ? '?' + q : '');
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function img(cls, label, text) {
+    var e = el('span', cls, text);
+    e.setAttribute('role', 'img');
+    e.setAttribute('aria-label', label);
+    return e;
+  }
+
+  // A small stroke icon (currentColor): `d` is its path.
+  function icon(cls, d) {
+    var s = document.createElementNS(SVG, 'svg');
+    s.setAttribute('viewBox', '0 0 24 24');
+    s.setAttribute('fill', 'none');
+    s.setAttribute('stroke', 'currentColor');
+    s.setAttribute('stroke-width', '2.4');
+    s.setAttribute('stroke-linecap', 'round');
+    s.setAttribute('aria-hidden', 'true');
+    if (cls) s.setAttribute('class', cls);
+    var p = document.createElementNS(SVG, 'path');
+    p.setAttribute('d', d);
+    s.appendChild(p);
+    return s;
+  }
+
+  function initials(name) {
+    var words = name.split(/[\s_\-.]+/).filter(Boolean);
+    var s = words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2);
+    return s.toUpperCase();
+  }
+
+  function tabs() {
+    return Array.prototype.slice.call(tabsEl.querySelectorAll('button.tab'));
+  }
+
+  function rowData(key) {
+    for (var i = 0; i < view.sections.length; i++) {
+      var s = view.sections[i];
+      for (var j = 0; j < s.rows.length; j++) {
+        if (s.rows[j].key === key) return { section: s, index: j, row: s.rows[j] };
+      }
+    }
+    return null;
+  }
+
+  function healthText(h) {
+    return { running: 'running', stopped: 'stopped', unreachable: 'unreachable',
+      token_required: 'token required', pending: 'changing state' }[h] || h;
+  }
+
+  function announce(text) {
+    liveEl.textContent = '';
+    setTimeout(function () { liveEl.textContent = text; }, 30);
+  }
+
+  function tab(r, s) {
+    var slot = el('span', 'slot');
+    slot.setAttribute('role', 'none');
+    slot.dataset.key = r.key;
+    var b = el('button', r.openable ? 'tab' : 'tab closed');
+    b.type = 'button';
+    b.setAttribute('role', 'tab');
+    b.dataset.key = r.key;
+    b.draggable = true;
+    b.tabIndex = -1;
+    b.setAttribute('aria-selected', r.key === active ? 'true' : 'false');
+    if (!r.openable) b.setAttribute('aria-disabled', 'true');
+    // The tooltip carries the full status line (row_label) and the shortcut.
+    b.title = r.label + (r.shortcut ? ' (⌘' + r.shortcut + ')' : '') + '\n' + r.detail;
+    if (r.shortcut) b.setAttribute('aria-keyshortcuts', 'Meta+' + r.shortcut);
+    b.appendChild(img('dot ' + r.health, healthText(r.health)));
+    b.appendChild(el('span', 'initials', initials(r.name))).setAttribute('aria-hidden', 'true');
+    b.appendChild(el('span', 'name', r.name));
+    if (r.pinned) {
+      b.appendChild(icon('pin', 'M12 17v5M8 3h8l-1 7 3 3H6l3-3z'));
+      b.appendChild(el('span', 'sr-only', ', pinned'));
+    }
+    if (r.running > 0) {
+      var c = img('count', r.running + (r.running === 1 ? ' agent running' : ' agents running'));
+      c.appendChild(icon(null, 'M4 12h3l3-7 4 14 3-7h3'));
+      c.appendChild(el('span', null, String(r.running)));
+      b.appendChild(c);
+    }
+    if (r.needsYou > 0) {
+      b.appendChild(img('badge', r.needsYou + ' waiting for you (input or approval)', String(r.needsYou)));
+    }
+    b.addEventListener('click', function (e) {
+      if (e.metaKey || e.ctrlKey) openNew(r);
+      else choose(r);
+    });
+    // Middle-click opens a new window (and never starts autoscroll).
+    b.addEventListener('mousedown', function (e) { if (e.button === 1) e.preventDefault(); });
+    b.addEventListener('auxclick', function (e) {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      openNew(r);
+    });
+    b.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      menu(r, e.clientX, e.clientY);
+    });
+    b.addEventListener('dragstart', function (e) {
+      dragKey = r.key;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', r.name);
+    });
+    b.addEventListener('dragend', function () { dragKey = null; clearDrop(); });
+    slot.addEventListener('dragover', function (e) { dragOver(e, slot, s); });
+    slot.addEventListener('drop', function (e) { drop(e, slot, s); });
+    slot.appendChild(b);
+    return slot;
+  }
+
+  function render() {
+    var focused = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.key : null;
+    document.body.classList.toggle('compact', !!view.collapsed);
+    tabsEl.textContent = '';
+    if (view.sections.length === 0) {
+      tabsEl.appendChild(el('span', 'empty', 'No projects yet — add one with +'));
+    }
+    view.sections.forEach(function (s, n) {
+      if (n > 0) tabsEl.appendChild(el('span', 'sep')).setAttribute('aria-hidden', 'true');
+      var g = el('span', 'group');
+      g.setAttribute('role', 'none');
+      g.dataset.section = s.id;
+      g.title = s.title;
+      s.rows.forEach(function (r) { g.appendChild(tab(r, s)); });
+      tabsEl.appendChild(g);
+    });
+    // Roving focus: one tab is in the tab order.
+    var list = tabs();
+    var again = list.filter(function (b) { return b.dataset.key === focused; })[0];
+    var current = list.filter(function (b) { return b.dataset.key === active; })[0];
+    var first = again || current || list[0];
+    if (first) first.tabIndex = 0;
+    if (again) again.focus();
+    if (current && active !== shownActive) {
+      current.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      shownActive = active;
+    }
+    renderMachine();
+    updateOverflow();
+  }
+
+  // The machine's model servers and GPU: one read-only note at the end.
+  function renderMachine() {
+    var m = view.machine;
+    machineEl.hidden = !m;
+    if (!m) return;
+    var worst = 'answering';
+    m.servers.forEach(function (s) {
+      if (s.state === 'not_answering') worst = 'not_answering';
+      else if (s.state === 'checking' && worst !== 'not_answering') worst = 'checking';
+    });
+    machineDotEl.className = 'dot ' + (m.servers.length ? worst : '');
+    var lines = m.servers.map(function (s) {
+      return s.label + ' (' + s.uses.map(function (u) {
+        return u.project + ': ' + u.profiles.join(', ');
+      }).join('; ') + ')';
+    }).concat(m.gpu);
+    machineEl.title = lines.join('\n');
+    machineEl.setAttribute('aria-label', 'Model servers: ' + lines.join('. '));
+  }
+
+  // The "⌄" list shows only while the tabs do not all fit.
+  function updateOverflow() {
+    overflowEl.hidden = !(tabsEl.scrollWidth > tabsEl.clientWidth + 1);
+  }
+
+  function choose(r) {
+    if (!r.openable) {
+      announce(r.name + ' is ' + healthText(r.health) + '; it has no dashboard to show.');
+      return;
+    }
+    if (r.key !== active) go('switch', { key: r.key });
+  }
+
+  function openNew(r) {
+    if (!r.openable) {
+      announce(r.name + ' is ' + healthText(r.health) + '; it has no dashboard to show.');
+      return;
+    }
+    go('open-new', { key: r.key });
+  }
+
+  // The tab's menu is a native popup (Open in New Window, Pin, Move, …).
+  function menu(r, x, y) {
+    go('menu', { key: r.key, x: String(Math.max(0, Math.round(x))), y: String(Math.max(0, Math.round(y))) });
+  }
+
+  // --- drag and drop (within a group) ------------------------------------
+
+  function clearDrop() {
+    Array.prototype.forEach.call(document.querySelectorAll('.drop-before, .drop-after'), function (n) {
+      n.classList.remove('drop-before', 'drop-after');
+    });
+  }
+
+  function dropPlace(e, slot, s) {
+    var from = dragKey && rowData(dragKey);
+    if (!from || from.section.id !== s.id || slot.dataset.key === dragKey) return null;
+    var rect = slot.getBoundingClientRect();
+    return e.clientX < rect.left + rect.width / 2 ? 'before' : 'after';
+  }
+
+  function dragOver(e, slot, s) {
+    var place = dropPlace(e, slot, s);
+    if (!place) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearDrop();
+    slot.classList.add(place === 'before' ? 'drop-before' : 'drop-after');
+  }
+
+  function drop(e, slot, s) {
+    var place = dropPlace(e, slot, s);
+    clearDrop();
+    if (!place) return;
+    e.preventDefault();
+    var key = dragKey;
+    var target = rowData(slot.dataset.key);
+    var before = place === 'before' ? slot.dataset.key
+      : (s.rows[target.index + 1] ? s.rows[target.index + 1].key : '');
+    if (before === key) return;
+    go('move', { key: key, before: before });
+  }
+
+  function nudge(r, delta) {
+    announce('Moved ' + r.name + (delta < 0 ? ' left' : ' right'));
+    go('nudge', { key: r.key, delta: String(delta) });
+  }
+
+  // --- keyboard ----------------------------------------------------------
+
+  tabsEl.addEventListener('keydown', function (e) {
+    var list = tabs();
+    var i = list.indexOf(document.activeElement);
+    if (i < 0) return;
+    var d = rowData(list[i].dataset.key);
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      if (d) nudge(d.row, e.key === 'ArrowLeft' ? -1 : 1);
+      return;
+    }
+    if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      e.preventDefault();
+      var rect = list[i].getBoundingClientRect();
+      if (d) menu(d.row, rect.left, rect.bottom);
+      return;
+    }
+    var next = -1;
+    if (e.key === 'ArrowRight') next = Math.min(i + 1, list.length - 1);
+    else if (e.key === 'ArrowLeft') next = Math.max(i - 1, 0);
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = list.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    list.forEach(function (b) { b.tabIndex = -1; });
+    list[next].tabIndex = 0;
+    list[next].focus();
+    list[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+
+  // A vertical wheel scrolls the strip sideways.
+  tabsEl.addEventListener('wheel', function (e) {
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    tabsEl.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
+
+  window.addEventListener('resize', updateOverflow);
+
+  document.getElementById('add-project').addEventListener('click', function () { go('add-project'); });
+
+  overflowEl.addEventListener('click', function () {
+    var rect = overflowEl.getBoundingClientRect();
+    go('overflow', { x: String(Math.round(rect.left)), y: String(Math.round(rect.bottom)) });
+  });
+
+  window.__itervoxRail = function (next, current) {
+    view = next;
+    active = current;
+    render();
+  };
+  // Ask the app for the tabs (the navigation is intercepted).
+  go('ready');
+})();
+</script>
+</body>
+</html>

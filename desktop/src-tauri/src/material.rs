@@ -1,13 +1,14 @@
-//! The system material behind the app's own pages: the project rail
-//! (`rail.html`) and the Sessions window (`sessions.html`).
+//! The system material behind the app's own Sessions window
+//! (`sessions.html`). The dashboard windows' project tabs (`tabs.html`)
+//! are opaque and never get one.
 //!
-//! Both pages draw a CSS imitation of glass (`desktop/dist/theme.css`).
+//! The page draws a CSS imitation of glass (`desktop/dist/theme.css`).
 //! Where the platform has a real material, the app puts it behind the page
 //! instead and tells the page so, and the page lets it show through:
 //!
 //! - **macOS 26 and later**: Liquid Glass (AppKit's `NSGlassEffectView`).
 //! - **Older macOS** (11 and later): vibrancy (`NSVisualEffectView`), the
-//!   `sidebar` material behind the rail and `hudWindow` behind Sessions.
+//!   `hudWindow` material.
 //! - **Windows 11** (build 22000 and later): Mica.
 //! - **Linux, Windows 10**: none; the CSS look stays.
 //!
@@ -37,8 +38,6 @@ pub enum Material {
 /// The `NSVisualEffectView.Material` used for vibrancy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VibrancyMaterial {
-    /// `.sidebar`: the rail is the window's sidebar.
-    Sidebar,
     /// `.hudWindow`: the Sessions window is a floating utility window.
     HudWindow,
 }
@@ -57,8 +56,6 @@ impl Material {
 /// Which page the material goes behind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
-    /// The project rail of a dashboard window.
-    Rail,
     /// The Sessions window.
     Sessions,
 }
@@ -97,7 +94,6 @@ pub fn choose(os: Os, look: &SystemLook, surface: Surface) -> Option<Material> {
                 Some(Material::LiquidGlass)
             } else {
                 Some(Material::Vibrancy(match surface {
-                    Surface::Rail => VibrancyMaterial::Sidebar,
                     Surface::Sessions => VibrancyMaterial::HudWindow,
                 }))
             }
@@ -115,7 +111,7 @@ pub fn choose(os: Os, look: &SystemLook, surface: Surface) -> Option<Material> {
 /// when `<html>` already exists).
 pub const MATERIAL_GLOBAL: &str = "__ITERVOX_MATERIAL__";
 
-/// The initialization script of a rail or Sessions webview with `m`
+/// The initialization script of the Sessions webview with `m`
 /// behind it. It acts only on the app's own pages (never on a page a
 /// navigation might reach).
 pub fn init_script(m: Material) -> String {
@@ -167,7 +163,13 @@ mod tests {
         };
         let none = SystemLook::default();
         let cases: Vec<(&str, Os, SystemLook, Surface, Option<Material>)> = vec![
-            ("macOS 26", Os::Mac, mac(26, true), Rail, Some(LiquidGlass)),
+            (
+                "macOS 26",
+                Os::Mac,
+                mac(26, true),
+                Sessions,
+                Some(LiquidGlass),
+            ),
             (
                 "macOS 26 sessions",
                 Os::Mac,
@@ -175,28 +177,34 @@ mod tests {
                 Sessions,
                 Some(LiquidGlass),
             ),
-            ("macOS 27", Os::Mac, mac(27, true), Rail, Some(LiquidGlass)),
+            (
+                "macOS 27",
+                Os::Mac,
+                mac(27, true),
+                Sessions,
+                Some(LiquidGlass),
+            ),
             // No class (or a compatibility version): vibrancy.
             (
                 "macOS 26 no class",
                 Os::Mac,
                 mac(26, false),
-                Rail,
-                Some(Vibrancy(Sidebar)),
+                Sessions,
+                Some(Vibrancy(HudWindow)),
             ),
             (
                 "macOS 25 with class",
                 Os::Mac,
                 mac(25, true),
-                Rail,
-                Some(Vibrancy(Sidebar)),
+                Sessions,
+                Some(Vibrancy(HudWindow)),
             ),
             (
-                "macOS 15 rail",
+                "macOS 15",
                 Os::Mac,
                 mac(15, false),
-                Rail,
-                Some(Vibrancy(Sidebar)),
+                Sessions,
+                Some(Vibrancy(HudWindow)),
             ),
             (
                 "macOS 15 sessions",
@@ -212,19 +220,19 @@ mod tests {
                 Sessions,
                 Some(Vibrancy(HudWindow)),
             ),
-            ("macOS unknown", Os::Mac, none, Rail, None),
+            ("macOS unknown", Os::Mac, none, Sessions, None),
             (
                 "macOS reduce transparency",
                 Os::Mac,
                 reduce(mac(26, true)),
-                Rail,
+                Sessions,
                 None,
             ),
             (
                 "macOS reduce, old",
                 Os::Mac,
                 reduce(mac(14, false)),
-                Rail,
+                Sessions,
                 None,
             ),
             (
@@ -235,7 +243,13 @@ mod tests {
                 None,
             ),
             ("Windows 11", Os::Windows, win(22000), Sessions, Some(Mica)),
-            ("Windows 11 rail", Os::Windows, win(26100), Rail, Some(Mica)),
+            (
+                "Windows 11 24H2",
+                Os::Windows,
+                win(26100),
+                Sessions,
+                Some(Mica),
+            ),
             ("Windows 10", Os::Windows, win(19045), Sessions, None),
             ("Windows unknown", Os::Windows, none, Sessions, None),
             (
@@ -249,10 +263,10 @@ mod tests {
                 "Windows high contrast",
                 Os::Windows,
                 contrast(win(26100)),
-                Rail,
+                Sessions,
                 None,
             ),
-            ("Linux", Os::Linux, none, Rail, None),
+            ("Linux", Os::Linux, none, Sessions, None),
             // Linux ignores what another platform would read.
             ("Linux, any look", Os::Linux, mac(26, true), Sessions, None),
         ];
@@ -271,29 +285,31 @@ mod tests {
         let f = s.find(global).expect("global");
         let a = s.find(attr).expect("attribute");
         assert!(g < f && f < a, "{s}");
-        let vib = init_script(Material::Vibrancy(VibrancyMaterial::Sidebar));
+        let vib = init_script(Material::Vibrancy(VibrancyMaterial::HudWindow));
         assert!(vib.contains(r#"="vibrancy";"#), "{vib}");
         assert!(init_script(Material::Mica).contains(r#"="mica";"#));
         assert!(CLEAR_SCRIPT.contains(MATERIAL_GLOBAL));
         assert!(CLEAR_SCRIPT.contains(r#"removeAttribute("data-material")"#));
     }
 
-    /// The two pages adopt the flag in their `<head>`, before the
-    /// stylesheet and the first paint; the placeholder page never does.
+    /// The Sessions page adopts the flag in its `<head>`, before the
+    /// stylesheet and the first paint; the placeholder page and the opaque
+    /// project tabs never do.
     #[test]
     fn pages_adopt_the_material_flag() {
         let dist = concat!(env!("CARGO_MANIFEST_DIR"), "/../dist/");
         let adopt = r#"<script>(function(){var m=window.__ITERVOX_MATERIAL__;if(m)document.documentElement.setAttribute("data-material",m);})();</script>"#;
         let link = r#"<link rel="stylesheet" href="theme.css">"#;
-        for page in ["rail.html", "sessions.html"] {
+        let html = std::fs::read_to_string(format!("{dist}sessions.html")).expect("sessions.html");
+        let head = html.split_once("</head>").expect("sessions.html").0;
+        let (a, l) = (head.find(adopt), head.find(link));
+        assert!(a.is_some(), "sessions.html adopts the material flag");
+        assert!(a < l, "sessions.html: flag before the stylesheet");
+        for page in ["index.html", "tabs.html"] {
             let html = std::fs::read_to_string(format!("{dist}{page}")).expect(page);
-            let head = html.split_once("</head>").expect(page).0;
-            let (a, l) = (head.find(adopt), head.find(link));
-            assert!(a.is_some(), "{page} adopts the material flag");
-            assert!(a < l, "{page}: flag before the stylesheet");
+            assert!(!html.contains(MATERIAL_GLOBAL), "{page}");
+            assert!(!html.contains("data-material"), "{page}");
         }
-        let index = std::fs::read_to_string(format!("{dist}index.html")).unwrap();
-        assert!(!index.contains(MATERIAL_GLOBAL));
     }
 
     /// The innermost rule blocks of a stylesheet, as (selector, body); an
