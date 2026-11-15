@@ -3,6 +3,8 @@ title: Review changes — draft a review, send it to the agent, review the PR
 description: Draft line and range comments on an agent's diff, send the whole review to the running agent or to a new run on the issue's branch, review the PR from the issue detail view, and open files in VS Code or Cursor.
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 The **Changes** tab ([Now & Changes](/guides/now-and-changes/)) shows what
 an agent changed. You can act on it there: draft a review of line and range
 comments with an overall note, send it to the agent in one action (the
@@ -48,6 +50,8 @@ files or tabs, or closing the issue panel, keeps it; a reload does not.
 
 A deleted line comments on the base side of the diff, any other line on the
 new side, which is how GitHub anchors review comments.
+
+<GuideShot name="itervox-review-continue" alt="An issue panel's Changes tab: the diff of greeting.go with a line comment and a review draft with Send to agent" caption="A review draft on the Changes tab: line comments and an overall note, sent to the agent in one message." />
 
 ## Send it to the agent
 

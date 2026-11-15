@@ -18,7 +18,8 @@ export default defineConfig({
   // `ui-current-*.spec.ts` and run via `playwright.ui.config.ts`, so we
   // ignore them here — they assume a Vite dev server + mockApi which this
   // config doesn't provide.
-  testIgnore: 'ui-current-*.spec.ts',
+  // Guide screenshots (e2e/guide-shots/) run only via playwright.guides.config.ts.
+  testIgnore: ['ui-current-*.spec.ts', 'guide-shots/**'],
   // Each spec spawns its own daemon — short timeout is sufficient.
   timeout: 30_000,
   expect: {

@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Image } from 'astro:assets';
+import GuideShot from '../../../components/GuideShot.astro';
 
 Automations let Itervox dispatch an agent profile automatically when a trigger fires.
 
@@ -65,13 +65,13 @@ Operationally, use these current-safe patterns:
 
 ## Dashboard
 
-The Automations page's **Configure** tab lets you manage all automation rules without editing YAML. When no automations are configured, Itervox offers starter templates to get you started quickly:
+The Automations page's **Configure** tab lets you manage all automation rules without editing YAML. Starter templates sit under your rules in **Start From A Template**:
 
-<Image src="/screenshots/v0.2.0/automations.png" alt="Automations card with three suggested templates: Input Responder, QA Validation, and PM Backlog Review" width={900} height={540} />
+<GuideShot name="itervox-automations" alt="Automations page, Configure tab: three automations (answer-from-docs on input required, nightly-deps on a cron, review-on-pr on PR opened) with Edit and Delete, and the Start From A Template grid" />
 
 Clicking **Add Automation** or **Use Template** opens the automation editor modal, where you can configure every field — trigger type, cron expression, profile, filters, and instructions:
 
-<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor showing the trigger type dropdown with all ten trigger types" width={900} height={580} />
+<GuideShot name="itervox-automation-editor" alt="Add Automation dialog: automation ID, profile and Cron trigger, the cron preset Weekdays at 09:00 with minute, hour, day, month and weekday fields, the custom expression, timezone and the plain-English reading" />
 
 The cron input offers presets (every 5 minutes, hourly, weekdays at 09:00, …), one field each for minute, hour, day, month and weekday, and the raw expression; all three stay in sync, and a line under them reads the schedule back in plain English ("At 09:00 on Monday through Friday"). It validates with the daemon's own rules: five fields of `*`, numbers, ranges (`1-5`), lists (`1,15`) and steps (`*/15`, `0-30/10`); weekday `0` is Sunday and `7` is invalid; month and day names (`JAN`, `MON`) and `@daily`-style aliases are not accepted. The 6- and 7-field Quartz forms other tools emit are accepted when the seconds field is `0` (and the year field `*`), and a whole-field `?` reads as `*`. An invalid expression names the field and blocks saving. For non-cron triggers, the editor adapts to show trigger-specific fields (e.g. `state` for `issue_entered_state`, `input_context_regex` for `input_required`).
 

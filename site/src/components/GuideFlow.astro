@@ -1,0 +1,36 @@
+---
+// A numbered sequence of <GuideShot> figures: what the reader does, step by
+// step. Each figure's caption gets the next number (1, 2, 3…) unless it sets
+// `step`. Text between figures is allowed.
+//
+//   <GuideFlow title="Reject a pipeline change">
+//     <GuideShot name="guides/lanes/01-needs-attention" alt="…" caption="…" />
+//     <GuideShot name="guides/lanes/02-issue-now-panel" alt="…" caption="…" />
+//   </GuideFlow>
+interface Props {
+  /** Optional heading-like label above the steps (not a heading element). */
+  title?: string;
+}
+const { title } = Astro.props;
+---
+<div class="guide-flow" role="group" aria-label={title}>
+  {title && <p class="guide-flow-title">{title}</p>}
+  <slot />
+</div>
+
+<style is:global>
+  .guide-flow {
+    counter-reset: guide-step;
+    margin: 1.5rem 0;
+    padding-left: 1rem;
+    border-left: 2px solid var(--sl-color-hairline);
+  }
+  .guide-flow-title {
+    margin: 0 0 0.5rem;
+    font-weight: 650;
+    color: var(--sl-color-white);
+  }
+  .guide-flow > .guide-shot:first-of-type {
+    margin-top: 0.75rem;
+  }
+</style>
