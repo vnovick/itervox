@@ -364,7 +364,7 @@ pub struct ServerLine {
     pub uses: Vec<ServerUse>,
 }
 
-/// The rail's "Model servers" panel.
+/// The project tabs' "Model servers" note.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachinePanel {

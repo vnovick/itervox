@@ -1,16 +1,21 @@
-//! The project rail of the dashboard windows (#244): every project the app
-//! knows, in one list beside the dashboard.
+//! The project tabs of the dashboard windows (#244, a strip of tabs across
+//! the top of the window since 0.3.3; it began as a rail beside the
+//! dashboard, hence the module's name): every project the app knows, one
+//! tab each, above the dashboard.
 //!
-//! The rail is built from what the refresh already holds — the local
+//! The tabs are built from what the refresh already holds — the local
 //! projects ([`crate::model::Core`], read from the hub's one projects
 //! request when a hub serves, per daemon otherwise) and the remote daemons
-//! ([`crate::remote_model::RemoteCore`]) — so it adds no reads of its own.
-//! It is shown by an app-local page (`desktop/dist/rail.html`) in its own
-//! webview next to the dashboard's webview: the page has no IPC and no
-//! network access; the app pushes the rail to it with `eval` and the page
-//! asks for actions by navigating to app-internal paths, which the
+//! ([`crate::remote_model::RemoteCore`]) — so they add no reads of their
+//! own. They are shown by an app-local page (`desktop/dist/tabs.html`) in
+//! its own webview above the dashboard's webview: the page has no IPC and
+//! no network access; the app pushes the tabs to it with `eval` and the
+//! page asks for actions by navigating to app-internal paths, which the
 //! webview's navigation handler intercepts ([`rail_action`]) — the same
-//! pattern as the Sessions window (#178). Tokens never reach the rail page.
+//! pattern as the Sessions window (#178). A tab's menu and the overflow
+//! list are native popup menus ([`tab_menu`], [`overflow_menu`]): the strip
+//! is one row high, so a menu drawn by the page would be cut off. Tokens
+//! never reach the tabs page.
 
 use serde::Serialize;
 
@@ -20,18 +25,40 @@ use crate::projects::RailPrefs;
 use crate::remote_model::{ConnectionView, RemoteDaemonView};
 use crate::sessions::percent_decode;
 
-/// Width of the rail, in logical pixels.
-pub const RAIL_WIDTH: f64 = 232.0;
-/// Width of the collapsed rail (icons only).
-pub const RAIL_COLLAPSED_WIDTH: f64 = 56.0;
+/// Height of the tab strip, in logical pixels. The strip sits at the top
+/// of the window's content area, under the native title bar; compact tabs
+/// (initials) keep the same height.
+pub const TAB_STRIP_HEIGHT: f64 = 40.0;
 
-/// The rail's width for a collapsed state.
-pub fn rail_width(collapsed: bool) -> f64 {
-    if collapsed {
-        RAIL_COLLAPSED_WIDTH
-    } else {
-        RAIL_WIDTH
-    }
+/// A webview's place in its window, in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Where the tab strip and the dashboard go in a window whose content area
+/// is `width` × `height`: the strip across the top, the dashboard under it
+/// at the full width.
+pub fn window_layout(width: f64, height: f64) -> (Bounds, Bounds) {
+    let (width, height) = (width.max(0.0), height.max(0.0));
+    let strip = TAB_STRIP_HEIGHT.min(height);
+    (
+        Bounds {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height: strip,
+        },
+        Bounds {
+            x: 0.0,
+            y: strip,
+            width,
+            height: height - strip,
+        },
+    )
 }
 
 /// How many rows have a ⌘1…⌘9 shortcut.
@@ -73,7 +100,7 @@ pub enum RailGroup {
     Remote { host: String },
 }
 
-/// One row of the rail.
+/// One project of the strip (a tab).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RailRow {
@@ -97,7 +124,8 @@ pub struct RailRow {
     pub group: Option<RailGroup>,
 }
 
-/// A titled group of rows.
+/// A titled group of tabs (a thin divider in the strip, a title in the
+/// overflow list).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RailSection {
@@ -107,14 +135,14 @@ pub struct RailSection {
     pub rows: Vec<RailRow>,
 }
 
-/// The whole rail, as pushed to the page.
+/// The whole strip, as pushed to the page.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RailView {
     pub collapsed: bool,
     pub sections: Vec<RailSection>,
-    /// The machine's model servers and GPU (machine_health.rs), shown under
-    /// the projects; absent when no project uses a model server. The app
+    /// The machine's model servers and GPU (machine_health.rs), shown at the
+    /// end of the strip; absent when no project uses a model server. The app
     /// sets it after [`build_rail`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<crate::machine_health::MachinePanel>,
@@ -321,8 +349,8 @@ impl RailView {
     }
 }
 
-/// Moves `key` within its section of `rail`: before `before` (a row of the
-/// same section; `None` = to the end), and records the new arrangement in
+/// Moves `key` within its section of `rail` (a drag of its tab): before
+/// `before` (a tab of the same section; `None` = to the end), and records the new arrangement in
 /// `prefs` (the pinned list for pinned rows, the order otherwise). False
 /// when the move is not possible or changes nothing.
 pub fn move_before(
@@ -381,7 +409,7 @@ pub fn move_before(
     true
 }
 
-/// Moves `key` one row up (`delta` < 0) or down within its section.
+/// Moves `key` one tab left (`delta` < 0) or right within its section.
 pub fn nudge(rail: &RailView, prefs: &mut RailPrefs, key: &str, delta: i32) -> bool {
     let Some(section) = rail.section_of(key) else {
         return false;
@@ -532,7 +560,7 @@ pub fn menu_command(id: &str) -> Option<RailCommand> {
     }
 }
 
-/// The script that hands `view` to the rail page, marking `active` (the
+/// The script that hands `view` to the tabs page, marking `active` (the
 /// project the window shows).
 pub fn push_script(view: &RailView, active: Option<&str>) -> String {
     let json = serde_json::to_string(view)
@@ -543,13 +571,13 @@ pub fn push_script(view: &RailView, active: Option<&str>) -> String {
     format!("window.__itervoxRail&&window.__itervoxRail({json},{active});")
 }
 
-/// The app-internal path prefix the rail page navigates to.
+/// The app-internal path prefix the tabs page navigates to.
 pub const RAIL_PATH: &str = "/__itervox/rail/";
 
-/// What a navigation of the rail page asks for.
+/// What a navigation of the tabs page (or a tab menu item) asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RailAction {
-    /// The page loaded: push the rail.
+    /// The page loaded: push the tabs.
     Ready,
     /// Show `key` in this window.
     Switch(String),
@@ -557,23 +585,36 @@ pub enum RailAction {
     OpenInNewWindow(String),
     Pin(String),
     Unpin(String),
-    /// Drag and drop: `key` before `before` (`None`: end of its group).
+    /// Drag and drop of a tab: `key` before `before` (`None`: end of its
+    /// group).
     Move {
         key: String,
         before: Option<String>,
     },
-    /// Keyboard reorder: one row up (-1) or down (1).
+    /// Keyboard reorder (and the tab menu's Move Left / Move Right): one
+    /// tab left (-1) or right (1).
     Nudge {
         key: String,
         delta: i32,
     },
-    /// Collapse (true) or expand the rail.
+    /// Compact tabs, initials only (true), or tabs with names.
     Collapse(bool),
-    /// The rail's "Add project" button: the tray's "Add Project…".
+    /// The strip's "+" button: the tray's "Add Project…".
     AddProject,
+    /// A tab's context menu, at (`x`, `y`) in the strip (logical pixels).
+    Menu {
+        key: String,
+        x: i32,
+        y: i32,
+    },
+    /// The "⌄" overflow button: every project, at (`x`, `y`).
+    Overflow {
+        x: i32,
+        y: i32,
+    },
 }
 
-/// The action behind a navigation of the rail page, or `None` for an
+/// The action behind a navigation of the tabs page, or `None` for an
 /// ordinary navigation (the page itself loading).
 pub fn rail_action(url: &str) -> Option<RailAction> {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
@@ -589,6 +630,13 @@ pub fn rail_action(url: &str) -> Option<RailAction> {
         })
     };
     let key = || param("key").filter(|k| !k.is_empty());
+    // A menu's anchor in the strip; anything but a plausible pixel position
+    // is no action.
+    let coord = |name: &str| {
+        param(name)
+            .and_then(|v| v.parse::<i32>().ok())
+            .filter(|v| (0..=MAX_COORD).contains(v))
+    };
     match action {
         "ready" => Some(RailAction::Ready),
         "add-project" => Some(RailAction::AddProject),
@@ -613,17 +661,28 @@ pub fn rail_action(url: &str) -> Option<RailAction> {
             Some("0") => Some(RailAction::Collapse(false)),
             _ => None,
         },
+        "menu" => {
+            let (x, y) = (coord("x")?, coord("y")?);
+            key().map(|key| RailAction::Menu { key, x, y })
+        }
+        "overflow" => Some(RailAction::Overflow {
+            x: coord("x")?,
+            y: coord("y")?,
+        }),
         _ => None,
     }
 }
 
-/// The rail page's own file in the app's bundled frontend.
-pub const RAIL_PAGE: &str = "rail.html";
+/// The largest menu anchor coordinate the page may send.
+const MAX_COORD: i32 = 100_000;
 
-/// Whether the rail webview may load `url`: only the app's own rail page
-/// (`tauri://localhost/rail.html` on macOS, `http://tauri.localhost/…`
+/// The tabs page's own file in the app's bundled frontend.
+pub const TABS_PAGE: &str = "tabs.html";
+
+/// Whether the tab strip's webview may load `url`: only the app's own tabs
+/// page (`tauri://localhost/tabs.html` on macOS, `http://tauri.localhost/…`
 /// elsewhere). Anything else the page tried to open is refused, so the
-/// rail never shows a page from a daemon or the network.
+/// strip never shows a page from a daemon or the network.
 pub fn rail_page_allowed(url: &str) -> bool {
     let Some((scheme, rest)) = url.split_once("://") else {
         return false;
@@ -634,7 +693,147 @@ pub fn rail_page_allowed(url: &str) -> bool {
         (scheme, authority),
         ("tauri", "localhost") | ("http" | "https", "tauri.localhost")
     );
-    app_origin && path == format!("/{RAIL_PAGE}")
+    app_origin && path == format!("/{TABS_PAGE}")
+}
+
+/// Prefix of the ids of the tab menu's and the overflow list's items:
+/// `itervox-tabs|<window>|<verb>|<argument>`. Other menus' ids never start
+/// with it (the Projects menu's are `itervox-rail-…`, the Go menu's
+/// `itervox-go-…`).
+pub const TAB_MENU_PREFIX: &str = "itervox-tabs|";
+
+/// One entry of a native popup menu the tab strip opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TabMenuEntry {
+    /// A command; `checked` makes it a check item (the overflow list marks
+    /// the project the window shows).
+    Item {
+        id: String,
+        label: String,
+        enabled: bool,
+        checked: Option<bool>,
+    },
+    /// A disabled title line (a group of the overflow list).
+    Header(String),
+    Separator,
+}
+
+fn menu_id(window: &str, verb: &str, arg: &str) -> String {
+    format!("{TAB_MENU_PREFIX}{window}|{verb}|{arg}")
+}
+
+fn item(id: String, label: &str, enabled: bool) -> TabMenuEntry {
+    TabMenuEntry::Item {
+        id,
+        label: label.to_string(),
+        enabled,
+        checked: None,
+    }
+}
+
+/// The menu of `key`'s tab in window `window` (right-click, the context
+/// menu key or Shift+F10): open in a new window, pin or unpin, move left or
+/// right within its group, and compact tabs on or off. Empty when the
+/// project is not in the strip any more.
+pub fn tab_menu(view: &RailView, window: &str, key: &str) -> Vec<TabMenuEntry> {
+    let Some(section) = view.section_of(key) else {
+        return Vec::new();
+    };
+    let Some(i) = section.rows.iter().position(|r| r.key == key) else {
+        return Vec::new();
+    };
+    let r = &section.rows[i];
+    let (pin_verb, pin_label) = if r.pinned {
+        ("unpin", "Unpin Tab")
+    } else {
+        ("pin", "Pin Tab")
+    };
+    let (compact, compact_label) = if view.collapsed {
+        ("0", "Show Project Names")
+    } else {
+        ("1", "Hide Project Names")
+    };
+    vec![
+        item(
+            menu_id(window, "open-new", key),
+            "Open in New Window",
+            r.openable,
+        ),
+        item(menu_id(window, pin_verb, key), pin_label, true),
+        TabMenuEntry::Separator,
+        item(menu_id(window, "left", key), "Move Left", i > 0),
+        item(
+            menu_id(window, "right", key),
+            "Move Right",
+            i + 1 < section.rows.len(),
+        ),
+        TabMenuEntry::Separator,
+        item(menu_id(window, "compact", compact), compact_label, true),
+    ]
+}
+
+/// A project's line in the overflow list: its name and what waits.
+fn overflow_label(r: &RailRow) -> String {
+    let mut s = r.name.clone();
+    if r.needs_you > 0 {
+        s.push_str(&format!(" — {} waiting", r.needs_you));
+    }
+    if r.running > 0 {
+        s.push_str(&format!(" · {} running", r.running));
+    }
+    if !r.openable {
+        s.push_str(&format!(" ({})", r.health.label()));
+    }
+    s
+}
+
+/// The "⌄" list of window `window`, which shows `active`: every project in
+/// tab order under its group's title, the shown one checked, the ones
+/// without a dashboard disabled. Choosing one shows it in this window.
+pub fn overflow_menu(view: &RailView, window: &str, active: Option<&str>) -> Vec<TabMenuEntry> {
+    let mut out = Vec::new();
+    for (n, s) in view.sections.iter().enumerate() {
+        if n > 0 {
+            out.push(TabMenuEntry::Separator);
+        }
+        out.push(TabMenuEntry::Header(s.title.clone()));
+        for r in &s.rows {
+            out.push(TabMenuEntry::Item {
+                id: menu_id(window, "switch", &r.key),
+                label: overflow_label(r),
+                enabled: r.openable,
+                checked: Some(Some(r.key.as_str()) == active),
+            });
+        }
+    }
+    out
+}
+
+/// The window and action behind a tab menu or overflow list item id;
+/// `None` for any other menu's ids.
+pub fn tab_menu_command(id: &str) -> Option<(String, RailAction)> {
+    let rest = id.strip_prefix(TAB_MENU_PREFIX)?;
+    let mut parts = rest.splitn(3, '|');
+    let (window, verb, arg) = (parts.next()?, parts.next()?, parts.next()?);
+    if window.is_empty() || arg.is_empty() {
+        return None;
+    }
+    let key = arg.to_string();
+    let action = match verb {
+        "switch" => RailAction::Switch(key),
+        "open-new" => RailAction::OpenInNewWindow(key),
+        "pin" => RailAction::Pin(key),
+        "unpin" => RailAction::Unpin(key),
+        "left" => RailAction::Nudge { key, delta: -1 },
+        "right" => RailAction::Nudge { key, delta: 1 },
+        "compact" => match arg {
+            "1" => RailAction::Collapse(true),
+            "0" => RailAction::Collapse(false),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((window.to_string(), action))
 }
 
 /// What a dashboard webview needs to show a project: its URL, and the
@@ -1566,13 +1765,13 @@ mod tests {
             }
         );
 
-        // The rail page never sees a token.
+        // The tabs page never sees a token.
         let core = core_with_projects();
         let script = push_script(&build_rail(core.views(), &[], &RailPrefs::default()), None);
         assert!(!script.contains("tok-"), "{script}");
         assert!(!script.contains("token\":"), "{script}");
 
-        // The rail's navigations become actions; anything else loads.
+        // The strip's navigations become actions; anything else loads.
         assert_eq!(
             rail_action("tauri://localhost/__itervox/rail/switch?key=%2Fp%2Fa%2FWORKFLOW.md"),
             Some(RailAction::Switch("/p/a/WORKFLOW.md".into()))
@@ -1618,47 +1817,330 @@ mod tests {
             rail_action("tauri://localhost/__itervox/rail/switch?key="),
             None
         );
-        assert_eq!(rail_action("tauri://localhost/rail.html"), None);
+        assert_eq!(rail_action("tauri://localhost/tabs.html"), None);
         assert_eq!(rail_action("http://127.0.0.1:8090/"), None);
-        // The rail webview loads its own page and nothing else.
-        assert!(rail_page_allowed("tauri://localhost/rail.html"));
-        assert!(rail_page_allowed("http://tauri.localhost/rail.html"));
-        assert!(!rail_page_allowed("http://127.0.0.1:8090/rail.html"));
+        // The tab strip's webview loads its own page and nothing else.
+        assert!(rail_page_allowed("tauri://localhost/tabs.html"));
+        assert!(rail_page_allowed("http://tauri.localhost/tabs.html"));
+        assert!(rail_page_allowed("https://tauri.localhost/tabs.html?x=1#y"));
+        assert!(!rail_page_allowed("http://127.0.0.1:8090/tabs.html"));
+        assert!(
+            !rail_page_allowed("tauri://localhost/rail.html"),
+            "the old page"
+        );
         assert!(!rail_page_allowed("tauri://localhost/sessions.html"));
+        assert!(!rail_page_allowed("tauri://localhost/tabs.html/../x"));
+        assert!(!rail_page_allowed("tauri://evil.test/tabs.html"));
+        assert!(!rail_page_allowed("file:///tmp/tabs.html"));
         assert!(!rail_page_allowed("https://example.test/"));
+        assert!(!rail_page_allowed("tabs.html"));
+    }
+
+    /// The strip's menu anchors: a tab's menu and the "⌄" list ask for a
+    /// native popup at a pixel of the strip; the "+" asks for Add Project.
+    #[test]
+    fn tab_strip_menu_and_add_actions() {
+        assert_eq!(
+            rail_action(
+                "tauri://localhost/__itervox/rail/menu?key=%2Fp%2Fa%2FWORKFLOW.md&x=120&y=34"
+            ),
+            Some(RailAction::Menu {
+                key: "/p/a/WORKFLOW.md".into(),
+                x: 120,
+                y: 34
+            })
+        );
+        assert_eq!(
+            rail_action("http://tauri.localhost/__itervox/rail/overflow?x=1180&y=36"),
+            Some(RailAction::Overflow { x: 1180, y: 36 })
+        );
+        assert_eq!(
+            rail_action("http://tauri.localhost/__itervox/rail/add-project"),
+            Some(RailAction::AddProject),
+            "the + button"
+        );
+        for bad in [
+            "menu?key=a&x=-1&y=3",
+            "menu?key=a&x=1",
+            "menu?key=a&x=1.5&y=3",
+            "menu?key=&x=1&y=3",
+            "menu?x=1&y=3",
+            "menu?key=a&x=100001&y=3",
+            "overflow?x=1",
+            "overflow?x=a&y=2",
+        ] {
+            assert_eq!(
+                rail_action(&format!("tauri://localhost/__itervox/rail/{bad}")),
+                None,
+                "{bad}"
+            );
+        }
+    }
+
+    /// The window: the strip across the top of the content area (under the
+    /// native title bar), the dashboard under it at the full width.
+    #[test]
+    fn window_layout_puts_the_strip_above_a_full_width_dashboard() {
+        let (strip, dash) = window_layout(1280.0, 860.0);
+        assert_eq!(
+            strip,
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: TAB_STRIP_HEIGHT
+            }
+        );
+        assert_eq!(
+            dash,
+            Bounds {
+                x: 0.0,
+                y: TAB_STRIP_HEIGHT,
+                width: 1280.0,
+                height: 860.0 - TAB_STRIP_HEIGHT
+            }
+        );
+        // The minimum window size still leaves the dashboard most of it.
+        let (_, dash) = window_layout(720.0, 480.0);
+        assert_eq!((dash.width, dash.height), (720.0, 440.0));
+        // A window shorter than the strip: no negative sizes.
+        let (strip, dash) = window_layout(-5.0, 20.0);
+        assert_eq!((strip.width, strip.height), (0.0, 20.0));
+        assert_eq!((dash.y, dash.height), (20.0, 0.0));
+    }
+
+    fn ids(entries: &[TabMenuEntry]) -> Vec<(String, bool, Option<bool>)> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                TabMenuEntry::Item {
+                    id,
+                    enabled,
+                    checked,
+                    ..
+                } => Some((id.clone(), *enabled, *checked)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn labels(entries: &[TabMenuEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|e| match e {
+                TabMenuEntry::Item { label, .. } => label.clone(),
+                TabMenuEntry::Header(t) => format!("[{t}]"),
+                TabMenuEntry::Separator => "-".into(),
+            })
+            .collect()
+    }
+
+    /// A tab's menu and the overflow list carry the rail's actions: their
+    /// items come back as the same [`RailAction`]s the page's navigations
+    /// give, addressed to the window that opened them.
+    #[test]
+    fn tab_menus_carry_the_rail_actions() {
+        let core = core_with_projects();
+        let remotes = vec![remote(
+            "box",
+            &[("remote/box/a", "a", Some(state("a", 1, 3)), true)],
+        )];
+        let mut prefs = RailPrefs::default();
+        prefs.set_pinned("/p/solo/WORKFLOW.md", true);
+        let view = build_rail(core.views(), &remotes, &prefs);
+        let w = "dashboard-3";
+
+        // An unpinned hub tab, first of its group.
+        let m = tab_menu(&view, w, "/p/alpha/WORKFLOW.md");
+        assert_eq!(
+            labels(&m),
+            [
+                "Open in New Window",
+                "Pin Tab",
+                "-",
+                "Move Left",
+                "Move Right",
+                "-",
+                "Hide Project Names"
+            ]
+        );
+        let got: Vec<(Option<(String, RailAction)>, bool)> = ids(&m)
+            .into_iter()
+            .map(|(id, enabled, _)| (tab_menu_command(&id), enabled))
+            .collect();
+        let alpha = || "/p/alpha/WORKFLOW.md".to_string();
+        assert_eq!(
+            got,
+            vec![
+                (Some((w.into(), RailAction::OpenInNewWindow(alpha()))), true),
+                (Some((w.into(), RailAction::Pin(alpha()))), true),
+                (
+                    Some((
+                        w.into(),
+                        RailAction::Nudge {
+                            key: alpha(),
+                            delta: -1
+                        }
+                    )),
+                    false
+                ),
+                (
+                    Some((
+                        w.into(),
+                        RailAction::Nudge {
+                            key: alpha(),
+                            delta: 1
+                        }
+                    )),
+                    true
+                ),
+                (Some((w.into(), RailAction::Collapse(true))), true),
+            ]
+        );
+        // A pinned tab unpins; a stopped one cannot open a window; with
+        // compact tabs the toggle shows the names again.
+        let solo = tab_menu(&view, w, "/p/solo/WORKFLOW.md");
+        assert_eq!(labels(&solo)[1], "Unpin Tab");
+        assert_eq!(
+            tab_menu_command(&ids(&solo)[1].0),
+            Some((w.into(), RailAction::Unpin("/p/solo/WORKFLOW.md".into())))
+        );
+        let stopped = tab_menu(&view, w, "/p/stopped/WORKFLOW.md");
+        assert!(!ids(&stopped)[0].1, "no dashboard to open");
+        assert!(
+            !ids(&stopped)[2].1 && !ids(&stopped)[3].1,
+            "alone in its group"
+        );
+        let mut compact = view.clone();
+        compact.collapsed = true;
+        let c = tab_menu(&compact, w, "/p/alpha/WORKFLOW.md");
+        assert_eq!(labels(&c).last().unwrap(), "Show Project Names");
+        assert_eq!(
+            tab_menu_command(&ids(&c).last().unwrap().0),
+            Some((w.into(), RailAction::Collapse(false)))
+        );
+        assert!(tab_menu(&view, w, "/p/gone/WORKFLOW.md").is_empty());
+
+        // The overflow list: every project in tab order under its group's
+        // title, the shown one checked, closed ones disabled.
+        let o = overflow_menu(&view, w, Some("/p/beta/WORKFLOW.md"));
+        assert_eq!(
+            labels(&o),
+            [
+                "[Pinned]",
+                "solo · 1 running",
+                "-",
+                "[Hub]",
+                "alpha — 1 waiting · 2 running",
+                "beta",
+                "-",
+                "[This Mac]",
+                "stopped (stopped)",
+                "-",
+                "[box]",
+                "a — 3 waiting · 1 running",
+            ]
+        );
+        let items = ids(&o);
+        let order: Vec<String> = items
+            .iter()
+            .map(|(id, _, _)| match tab_menu_command(id) {
+                Some((win, RailAction::Switch(k))) if win == w => k,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let tab_order: Vec<String> = view.rows().map(|r| r.key.clone()).collect();
+        assert_eq!(order, tab_order, "the list follows the tabs");
+        let checked: Vec<bool> = items.iter().map(|(_, _, c)| c.unwrap()).collect();
+        assert_eq!(checked, [false, false, true, false, false]);
+        let enabled: Vec<bool> = items.iter().map(|(_, e, _)| *e).collect();
+        assert_eq!(enabled, [true, true, true, false, true]);
+
+        // Keys with the separator still round-trip (the key is last).
+        assert_eq!(
+            tab_menu_command("itervox-tabs|dashboard-1|switch|/p/a|b/WORKFLOW.md"),
+            Some((
+                "dashboard-1".into(),
+                RailAction::Switch("/p/a|b/WORKFLOW.md".into())
+            ))
+        );
+        // Anything else is no tab command, and the other menus' ids never
+        // parse as one (nor a tab item's id as theirs).
+        for bad in [
+            "itervox-tabs|",
+            "itervox-tabs|w|switch|",
+            "itervox-tabs||switch|k",
+            "itervox-tabs|w|delete|k",
+            "itervox-tabs|w|compact|2",
+            "itervox-tabs|w|switch",
+            "itervox-rail-next",
+        ] {
+            assert_eq!(tab_menu_command(bad), None, "{bad}");
+        }
+        // #302's Projects menu (named items, one per ⌘n project of this
+        // strip, in tab order) and the Go menu share no id with the tabs'.
+        let projects_menu = menu_items(&view);
+        let goto: Vec<(String, String)> = projects_menu
+            .iter()
+            .filter_map(|(id, label, _)| match menu_command(id) {
+                Some(RailCommand::Goto(n)) => Some((format!("{n}"), label.clone())),
+                _ => None,
+            })
+            .collect();
+        let tab_names: Vec<(String, String)> = view
+            .rows()
+            .filter_map(|r| r.shortcut.map(|n| (format!("{n}"), r.name.clone())))
+            .collect();
+        assert_eq!(goto, tab_names, "the Projects menu follows the tab order");
+        assert!(menu_projects(&view).len() == 5 && goto.len() == 5);
+        for (id, _, _) in &projects_menu {
+            assert_eq!(tab_menu_command(id), None, "{id}");
+            assert!(!id.starts_with(TAB_MENU_PREFIX), "{id}");
+        }
+        for (id, _) in crate::go_menu::go_menu_items() {
+            assert_eq!(tab_menu_command(&id), None, "{id}");
+        }
+        for (id, _, _) in items.iter().chain(ids(&m).iter()) {
+            assert_eq!(menu_command(id), None, "{id}");
+            assert_eq!(crate::go_menu::go_menu_path(id), None, "{id}");
+        }
     }
 
     /// Drift guard: the page navigates to the paths the window intercepts,
     /// reads the fields the push script sends, defines the function it
     /// calls, and labels every badge.
     #[test]
-    fn rail_page_uses_the_intercepted_paths() {
+    fn tabs_page_uses_the_intercepted_paths() {
         let html = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../dist/",
-            "rail.html"
+            "tabs.html"
         ))
-        .expect("desktop/dist/rail.html");
+        .expect("desktop/dist/tabs.html");
         assert!(html.contains(&format!("var BASE = '{RAIL_PATH}';")));
         assert!(html.contains("window.__itervoxRail = function (next, current)"));
-        for action in [
-            "switch", "open-new", "pin", "unpin", "move", "nudge", "collapse",
-        ] {
-            let url = format!("tauri://localhost{RAIL_PATH}{action}?key=k&before=&delta=1&value=1");
+        for action in ["switch", "open-new", "move", "nudge", "menu", "overflow"] {
+            let url = format!(
+                "tauri://localhost{RAIL_PATH}{action}?key=k&before=&delta=1&value=1&x=1&y=2"
+            );
             assert!(rail_action(&url).is_some(), "{action}");
         }
         for call in [
             "go('ready')",
             "go('switch', { key: r.key })",
             "go('open-new', { key: r.key })",
-            "go(r.pinned ? 'unpin' : 'pin', { key: r.key })",
             "go('move', { key: key, before: before })",
             "go('nudge', { key: r.key, delta: String(delta) })",
-            "go('collapse', { value: view.collapsed ? '0' : '1' })",
+            "go('menu', { key: r.key, x:",
+            "go('overflow', { x:",
             "go('add-project')",
         ] {
             assert!(html.contains(call), "{call}");
         }
+        // ⌘/Ctrl-click and middle-click open a new window.
+        assert!(html.contains("if (e.metaKey || e.ctrlKey) openNew(r);"));
+        assert!(html.contains("b.addEventListener('auxclick'"));
+        assert!(html.contains("if (e.button !== 1) return;"));
         for field in [
             "r.needsYou",
             "r.running",
@@ -1667,28 +2149,51 @@ mod tests {
             "r.shortcut",
             "r.openable",
             "r.detail",
+            "r.label",
             "view.collapsed",
+            "view.machine",
             "s.rows",
             "s.title",
         ] {
             assert!(html.contains(field), "{field}");
         }
-        // Accessible: badges, dots and counts carry labels; rows announce
-        // the current project and their shortcut; arrow keys move focus.
+        // Accessible: a tab list with one selected tab; badges, dots and
+        // counts carry labels; tabs announce their shortcut; arrow keys
+        // move focus, Alt+arrows reorder, the menu key opens the menu.
+        assert!(html.contains(r#"role="tablist" aria-label="Projects""#));
+        assert!(html.contains("b.setAttribute('role', 'tab');"));
+        assert!(
+            html.contains("b.setAttribute('aria-selected', r.key === active ? 'true' : 'false');")
+        );
         assert!(html.contains("img('badge', r.needsYou + ' waiting for you"));
         assert!(html.contains("img('dot ' + r.health, healthText(r.health))"));
-        assert!(html.contains("b.setAttribute('aria-current', 'page')"));
         assert!(html.contains("'aria-keyshortcuts', 'Meta+' + r.shortcut"));
-        assert!(html.contains("e.key === 'ArrowDown'"));
+        assert!(html.contains("e.key === 'ArrowRight'"));
+        assert!(html.contains("e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')"));
         assert!(html.contains("e.key === 'ContextMenu'"));
-        assert!(html.contains("'Open in New Window'"));
-        // The toggle's hint matches its menu shortcut.
+        assert!(
+            html.contains(r#"id="add-project""#) && html.contains(r#"aria-label="Add project""#)
+        );
+        assert!(html.contains(r#"id="overflow""#) && html.contains(r#"aria-haspopup="menu""#));
+        // One row, never wrapped: the tabs scroll sideways.
+        assert!(html.contains("overflow-x:auto"));
+        assert!(!html.contains("flex-wrap"));
+        // Opaque: no glass, no material, no blur.
+        for forbidden in [
+            "glass",
+            "data-material",
+            "backdrop-filter",
+            "__ITERVOX_MATERIAL__",
+        ] {
+            assert!(!html.contains(forbidden), "tabs.html uses {forbidden}");
+        }
+        assert!(html.contains("background:var(--strip)"));
+        // The compact toggle keeps its menu shortcut (#302's menu items).
         let toggle = menu_items(&RailView::default())
             .into_iter()
             .find(|(id, _, _)| id.ends_with("toggle"))
             .unwrap();
         assert_eq!(toggle.2, "CmdOrCtrl+Alt+S");
-        assert!(html.contains("(⌥⌘S)"));
         // No network access of its own.
         for forbidden in [
             "fetch(",
@@ -1697,8 +2202,13 @@ mod tests {
             "WebSocket",
             "__TAURI",
         ] {
-            assert!(!html.contains(forbidden), "rail.html uses {forbidden}");
+            assert!(!html.contains(forbidden), "tabs.html uses {forbidden}");
         }
+        // The old rail page is gone.
+        assert!(
+            !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../dist/rail.html"))
+                .exists()
+        );
     }
 
     /// The app's pages share one stylesheet (`dist/theme.css`): every
@@ -1710,7 +2220,16 @@ mod tests {
         let theme = std::fs::read_to_string(format!("{dist}theme.css")).expect("dist/theme.css");
         assert!(theme.contains("@media (prefers-color-scheme: dark)"));
         assert!(theme.contains("@media (prefers-reduced-transparency: reduce)"));
-        for page in ["rail.html", "sessions.html", "index.html"] {
+        // The tab strip's opaque tokens, light and dark.
+        for token in [
+            "--strip:",
+            "--tab-active:",
+            "--tab-active-border:",
+            "--shadow-tab:",
+        ] {
+            assert_eq!(theme.matches(token).count(), 2, "{token}");
+        }
+        for page in ["tabs.html", "sessions.html", "index.html"] {
             let html = std::fs::read_to_string(format!("{dist}{page}")).expect(page);
             assert!(
                 html.contains(r#"<link rel="stylesheet" href="theme.css">"#),
@@ -1741,7 +2260,7 @@ mod tests {
         }
     }
 
-    /// The machine panel rides with the rail push, and is left out when no
+    /// The machine panel rides with the tabs push, and is left out when no
     /// project uses a model server.
     #[test]
     fn push_script_carries_the_machine_panel_only_when_there_is_one() {
