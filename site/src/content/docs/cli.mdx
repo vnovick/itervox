@@ -155,6 +155,25 @@ Exit code `0` when the board is running (or already was, or `--no-start` passed 
 
 ---
 
+## `itervox open` — Open the dashboard, logged in
+
+```bash
+itervox open [--print] [--workflow PATH] [--logs-dir DIR] [--url URL]
+```
+
+Opens the running daemon's dashboard in your default browser (`open` on macOS, `xdg-open` on Linux, `rundll32 url.dll,FileProtocolHandler` on Windows), already logged in. It finds the daemon from `.itervox/dashboard_url` (or `--url`), checks that it answers `GET /api/v1/health`, and takes the API token the way [`itervox watch`](#itervox-watch--a-live-terminal-panel) does: `ITERVOX_API_TOKEN`, then `ITERVOX_API_TOKEN` in `.itervox/.env`, then the auto-generated token in `<logs-dir>/api-token` (or the `token_file` the daemon registered, for a daemon started with its own `--logs-dir`). The URL carries the token as `?token=`; the dashboard stores it for the tab and removes it from the address bar.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--print` | `false` | Print the logged-in URL on stdout instead of opening a browser. **The URL contains a credential** (the API token): do not paste it into chats, issues or logs. A note saying so goes to stderr. |
+| `--workflow` | `WORKFLOW.md` | The project whose daemon to open |
+| `--logs-dir` | per-project dir under `~/.itervox/logs` | Where the daemon wrote its auto-generated `api-token` |
+| `--url` | `.itervox/dashboard_url` | The daemon's address |
+
+Without `--print` nothing printed carries the token. It exits `1` when no daemon is running for the project (no `dashboard_url`, or the daemon does not answer) or no browser opener works, and `2` on a usage error. `itervox doctor` prints where the token is on its `API token:` line.
+
+---
+
 ## `itervox init` — Generate WORKFLOW.md
 
 Scans the repository and generates a `WORKFLOW.md` starter file pre-populated with detected project metadata.
@@ -230,7 +249,16 @@ itervox init: scanning .
 itervox init: wrote WORKFLOW.md
 itervox init: wrote .itervox/agents profiles
 itervox init: wrote .itervox/.env
+...
+Next steps:
+  1. Edit .itervox/.env — fill in your API key
+  2. Run: itervox
+  3. Open the dashboard, logged in (from another terminal): itervox open
+     (itervox open --print prints the URL instead; it contains your API token, so keep it to yourself)
+  4. Run "itervox doctor" to validate agent commands, tracker credentials, and config before the first real dispatch
 ```
+
+In a git repository, init also adds `.WORKFLOW.md.lock` (the WORKFLOW.md edit lock next to the workflow), `WORKFLOW.md.bak` and the local settings and rules layers to the root `.gitignore`, creating the file when there is none, so `git add .` never picks up runtime files.
 
 ### Examples
 
@@ -252,7 +280,7 @@ itervox init --tracker github --force
 itervox init --update --workflow WORKFLOW.md
 ```
 
-`itervox init --update` creates `WORKFLOW.md.bak`, extracts each legacy inline `agent.profiles.<name>.prompt` into `.itervox/agents/<name>/INSTRUCTIONS.md`, creates compact `SOUL.md` files, rewrites the profile to `soul_file` and `instructions_file`, and sets `itervox_schema_version: 2` as the first key of the front matter. It also patches broad root `.gitignore` rules so `.itervox/agents/**` remains committable. Comments, key order, quoting and indent width in `WORKFLOW.md` are preserved — only the migrated keys change, so the diff against `WORKFLOW.md.bak` is small enough to review line by line.
+`itervox init --update` creates `WORKFLOW.md.bak`, extracts each legacy inline `agent.profiles.<name>.prompt` into `.itervox/agents/<name>/INSTRUCTIONS.md`, creates compact `SOUL.md` files, rewrites the profile to `soul_file` and `instructions_file`, and sets `itervox_schema_version: 2` as the first key of the front matter. Schema 2 requires a `command` on every profile that is not built in: a profile without one gets `agent.command` (its issues ran on `agent.command` before, since the older daemon ignored a profile with no command), or its own backend's CLI when it names another backend (`backend: codex` → `codex`), and the migration prints each command it set. It also patches broad root `.gitignore` rules so `.itervox/agents/**` remains committable, and adds `.WORKFLOW.md.lock` (the edit lock), `WORKFLOW.md.bak` and the local settings and rules layers to the root `.gitignore` — creating it in a git repository that has none. The runtime files inside `.itervox/` (`daemon.pid`, `dashboard_url`, `HEARTBEAT.md`, `tokens.json.lock`, `runtime/`, `run/`) are ignored by `.itervox/.gitignore`. Run again on a migrated project, it prints `nothing to migrate` and exits `0` without reading or writing `WORKFLOW.md.bak`. Comments, key order, quoting and indent width in `WORKFLOW.md` are preserved — only the migrated keys change, so the diff against `WORKFLOW.md.bak` is small enough to review line by line.
 
 Then (#239) it moves the layered settings out of the front matter — `tracker`, `hooks`, `dependencies`, `automations`, `agent`, `hub`, `polling`, `server` and `workspace` — into `.itervox/settings.jsonc`, keeping the YAML comments as `//` comments and every comment already in that file. `WORKFLOW.md` keeps the prompt (its body), the schema marker, the non-layered sections, `agent.profiles`, `agent.available_models` and the legacy `agent.reviewer_prompt`. A secret moves only as a `$VAR` reference; a key holding an inline secret stays in `WORKFLOW.md` and is named. A key the settings file already sets keeps the file's value (it was already in effect). Nothing in effect changes: the move is refused if the merged config would differ. `WORKFLOW.md.bak` holds the workflow as it was before the run (an existing backup is not overwritten without `--force`), and `--dry-run` prints the result without writing anything. See [Moving settings out of WORKFLOW.md](/guides/settings-migration/).
 
@@ -283,6 +311,12 @@ watched: workflow WORKFLOW.md
 watched: user settings /Users/me/.itervox/settings.jsonc
 watched: project settings .itervox/settings.jsonc
 watched: local settings .itervox/settings.local.jsonc (not present; creating it is picked up)
+```
+
+It says where the dashboard's API token is, never the token itself — the auto-generated token's file, `ITERVOX_API_TOKEN`, or none with `server.allow_unauthenticated` — so a login screen is never a dead end:
+
+```
+API token: auto-generated, in /Users/me/.itervox/logs/github/acme-backend/api-token (mode 0600) — `itervox open` opens the dashboard logged in
 ```
 
 `PATH source: inherited — <reason>` means the PATH it was started with was kept. The `agent CLI` lines cover the default `agent.command` and every enabled profile's command; a missing one is a warning and does not change the exit code (the daemon refuses to start without its default CLI).

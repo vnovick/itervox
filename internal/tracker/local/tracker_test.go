@@ -521,3 +521,37 @@ func TestWatchedTrackerReportsAFailedScan(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 1, "healthy again: served from the watch, no rescan")
 }
+
+// TestCreatedFallsBackToFirstSeenModTime: a hand-written file without
+// `created:` reports the modification time the tracker first saw as its
+// CreatedAt, and keeps it when a later edit (a state change) bumps the
+// mtime; a file's own `created:` still wins.
+func TestCreatedFallsBackToFirstSeenModTime(t *testing.T) {
+	tr, dir := newTestTracker(t)
+	p := filepath.Join(dir, "ITX-1.md")
+	writeRaw(t, p, "---\ntitle: Hand-written\nstate: Backlog\n---\n")
+	written := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(p, written, written))
+	writeRaw(t, filepath.Join(dir, "ITX-2.md"), "---\ntitle: Dated\nstate: Backlog\ncreated: 2026-01-02T03:04:05Z\n---\n")
+
+	is, err := tr.FetchIssueDetail(t.Context(), "ITX-1")
+	require.NoError(t, err)
+	require.NotNil(t, is.CreatedAt)
+	assert.True(t, is.CreatedAt.Equal(written), "got %v", is.CreatedAt)
+
+	writeRaw(t, p, "---\ntitle: Hand-written\nstate: Todo\n---\n")
+	is, err = tr.FetchIssueDetail(t.Context(), "ITX-1")
+	require.NoError(t, err)
+	assert.Equal(t, "Todo", is.State)
+	require.NotNil(t, is.CreatedAt)
+	assert.True(t, is.CreatedAt.Equal(written), "a state edit must not move the fallback; got %v", is.CreatedAt)
+
+	is, err = tr.FetchIssueDetail(t.Context(), "ITX-2")
+	require.NoError(t, err)
+	require.NotNil(t, is.CreatedAt)
+	assert.True(t, is.CreatedAt.Equal(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)))
+
+	data, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "created:", "the fallback is never written to the file")
+}

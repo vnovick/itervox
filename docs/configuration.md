@@ -422,7 +422,7 @@ continue draining until the queue falls below the low-water mark.
 | `filter.body_regex` | string | Only for `tracker_comment_added`. Regex pattern applied to the comment body. AND-combines with `body_contains` when both are set (P0-B) |
 | `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted as a compatibility alias for `policy.auto_switch` |
 | `policy.auto_switch` | bool | Required for `rate_limited` automatic profile/backend switching; allows immediate switching without a human approval step |
-| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run |
+| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. The issue is reassigned to it (over an earlier operator pin) until the switch is reverted |
 | `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs |
 | `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset |
 | `policy.move_to_state` | string | Optional for `blockers_resolved`; allows the helper profile to move matching unblocked issues to this state when the profile includes `move_state` |
@@ -456,7 +456,10 @@ deterministic blocker behavior shipped in v0.2.0.
 Automation rules can opt into a deterministic `blockers_resolved` trigger. Core
 dependency audit detects when a previously blocked issue has no unresolved
 blockers left; tracker mutation still happens only through an enabled automation
-whose selected profile is allowed to use `move_state`.
+whose selected profile is allowed to use `move_state`. Issues outside
+`active_states` (Backlog) are found by an off-loop scan of the rule's
+`filter.states` — or of `tracker.backlog_states` when the rule names none or uses
+`match_mode: any` — once per `agent.dependency_audit_refresh_interval_ms`.
 
 ```yaml
 automations:

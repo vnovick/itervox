@@ -83,6 +83,12 @@ type entry struct {
 	stamp   stamp
 	readAt  time.Time // when the file was last read
 	problem string
+	// firstMod is the file's modification time when this tracker first
+	// listed it, the CreatedAt of an issue whose file has no `created:`
+	// (see issueLocked). The file existed by then, so it is never earlier
+	// than the issue's real creation; later edits (a state change) do not
+	// move it.
+	firstMod time.Time
 }
 
 // racyWindow is how close to its read a file's modification time may be
@@ -187,7 +193,7 @@ func (t *Tracker) refreshLocked() error {
 			continue
 		}
 		if e == nil {
-			e = &entry{path: path}
+			e = &entry{path: path, firstMod: st.mod}
 			t.entries[ident] = e
 		}
 		// A racy re-read of an unchanged stamp is not a change.
@@ -247,6 +253,18 @@ func (t *Tracker) issueLocked(ident string) (domain.Issue, bool) {
 		return domain.Issue{}, false
 	}
 	is := e.file.toIssue(ident)
+	if is.CreatedAt == nil && !e.firstMod.IsZero() {
+		// `created:` is optional in a hand-written file. Without it the
+		// issue had no creation time, and the automation event poll never
+		// counts a move into a polled state from an unpolled one
+		// (enteredFromUnpolledState) for an issue with none. The file's
+		// first-seen modification time stands in: it is not the current
+		// mtime, which the state edit itself bumps (a moved issue would read
+		// as just created), nor the birth time, which an atomic rename-on-save
+		// (editors, Itervox's own writes) resets. Not written to the file.
+		created := e.firstMod.UTC()
+		is.CreatedAt = &created
+	}
 	for _, b := range e.file.BlockedBy {
 		id := b
 		ref := domain.BlockerRef{ID: &id, Identifier: &id}

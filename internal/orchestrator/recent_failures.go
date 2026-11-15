@@ -44,7 +44,11 @@ import (
 //     whatever its text and wherever its entry sits: the entry moves to the
 //     newest slot with the latest message and the running count, so a
 //     sustained outage whose error text varies (rotating address, request
-//     id) is ONE entry, never a ring flush (BH-M2-2).
+//     id) is ONE entry, never a ring flush (BH-M2-2). A guardrail refusal
+//     (FailureKindGuardrail, Source = guardrail kind) coalesces the same
+//     way: an agent that keeps retrying one refused command shape, each
+//     time naming another file, is one entry per (issue, guardrail kind)
+//     with the latest command and a count.
 //   - Session-scoped: not persisted across a process restart. cmd/itervox
 //     carries the ring across WORKFLOW.md reloads (each reload builds a new
 //     Orchestrator) via SeedRecentFailures.
@@ -166,7 +170,7 @@ func appendRecentFailure(state *State, f FailureRecord, now time.Time) {
 // coalescesBySource reports whether kind coalesces by (kind, identifier,
 // source) regardless of message — see the invariants above.
 func coalescesBySource(kind FailureKind) bool {
-	return kind == FailureKindTrackerPoll
+	return kind == FailureKindTrackerPoll || kind == FailureKindGuardrail
 }
 
 // sanitizeFailureField bounds a short label field (identifier, source).

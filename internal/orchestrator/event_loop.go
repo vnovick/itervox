@@ -1019,7 +1019,11 @@ func findReplySince(comments []domain.Comment, since time.Time, question domain.
 // preventing a wasteful fresh dispatch. This path is intentionally best-effort:
 // session/backend/host continuity comes from the locally persisted
 // InputRequiredIssues file, not tracker comment metadata.
-func recoverInputRequired(issue domain.Issue, detailed *domain.Issue) *InputRequiredEntry {
+//
+// dismissed is the question the operator dismissed for this issue (nil when
+// none): that same comment is not rehydrated again, so a dismissal sticks
+// when the issue returns to an active state; a newer question still is.
+func recoverInputRequired(issue domain.Issue, detailed *domain.Issue, dismissed *DismissedInputQuestion) *InputRequiredEntry {
 	if detailed == nil || len(detailed.Comments) == 0 {
 		return nil
 	}
@@ -1039,6 +1043,11 @@ func recoverInputRequired(issue domain.Issue, detailed *domain.Issue) *InputRequ
 	// Strip the trailing instruction line.
 	if idx := strings.LastIndex(questionCtx, "\n---\n"); idx >= 0 {
 		questionCtx = strings.TrimSpace(questionCtx[:idx])
+	}
+	if dismissed != nil && dismissed.matches(questionComment, questionCtx) {
+		slog.Info("orchestrator: unanswered input-required question was dismissed, not rehydrating it",
+			"identifier", issue.Identifier, "question_comment_id", questionComment.ID)
+		return nil
 	}
 	// Rehydration path: local input_required.json state was lost (daemon
 	// restart + missing file, stale cache, or new installation), but the
@@ -1244,7 +1253,8 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		// entry.WorkerHost (never rerouted: a session id cannot cross
 		// backends). While that breaker is closed to it, keep the reply and
 		// spend no tracker request.
-		resumePool := o.profilePool(entry.ProfileName, entry.Backend)
+		profileName := o.resumeProfileName(state, identifier, entry)
+		resumePool := o.profilePool(profileName, entry.Backend)
 		resumeKey := BackendHealthKey(entry.Backend, resumePool, entry.WorkerHost)
 		if blocked, until := backendKeyBlocked(state, resumeKey, identifier, now); blocked {
 			setBackendHold(&state, identifier, BackendHold{Key: resumeKey, Until: until})
@@ -1307,7 +1317,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			WorkerHost:         entry.WorkerHost,
 			Backend:            entry.Backend,
 			Pool:               resumePool,
-			ProfileName:        entry.ProfileName,
+			ProfileName:        profileName,
 			PendingInputResume: true,
 			BranchName:         branchNameValue(resumeIssue.BranchName),
 			StartedAt:          now,
@@ -1316,15 +1326,37 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
 		o.workerCancelsMu.Unlock()
-		runnerCommand := o.resumeRunnerCommand(inputRequiredEntryFromPending(entry))
+		resumeTarget := inputRequiredEntryFromPending(entry)
+		resumeTarget.ProfileName = profileName
+		runnerCommand := o.resumeRunnerCommand(resumeTarget)
 		o.workersWg.Add(resumeIssue.Identifier)
-		go o.runWorker(workerCtx, resumeIssue, 0, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, false, &ResumeContext{
+		go o.runWorker(workerCtx, resumeIssue, 0, entry.WorkerHost, runnerCommand, entry.Backend, profileName, false, &ResumeContext{
 			SessionID:    entry.SessionID,
 			UserMessage:  entry.UserMessage,
 			InputContext: entry.Context,
 		}, nil, nil)
 	}
 	return state
+}
+
+// resumeProfileName is the profile a pending input resume runs. A
+// reviewer's resume keeps its own reviewer profile (#127) and never takes
+// the issue's override. A worker's resume without an agent session (a
+// rehydrated entry, or one whose session was lost) starts a fresh agent,
+// so it runs the issue's effective profile (issueProfileForDispatch: the
+// operator's override, else an automatic switch), else the run's own. A
+// worker's resume that continues a session keeps the run's own profile —
+// the session belongs to it — and falls back to the effective profile only
+// when the entry recorded none. Event loop.
+func (o *Orchestrator) resumeProfileName(state State, identifier string, entry *PendingInputResumeEntry) string {
+	if entry.Reviewer {
+		return entry.ProfileName
+	}
+	effective := o.enabledProfileOrEmpty(o.issueProfileForDispatch(state, cmp.Or(entry.Identifier, identifier)))
+	if entry.SessionID == "" {
+		return cmp.Or(effective, entry.ProfileName)
+	}
+	return cmp.Or(entry.ProfileName, effective)
 }
 
 func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.Issue, attempt int) State {
@@ -1537,20 +1569,24 @@ func resumeBackendMatches(stored, resolved string) bool {
 	return config.IsSupportedBackend(stored) && stored == resolved
 }
 
+// issueProfileForDispatch is the issue's effective profile: the operator's
+// override, unless an automatic switch recorded after it supersedes it
+// (autoSwitchSupersedes), else the automatic switch, else "" (default).
 func (o *Orchestrator) issueProfileForDispatch(state State, identifier string) string {
 	profileName := state.IssueProfiles[identifier]
 	o.issueProfilesMu.RLock()
-	if override, ok := o.issueProfiles[identifier]; ok {
+	if override, ok := o.issueProfiles[identifier]; ok && !autoSwitchSupersedes(state, identifier, o.issueProfileSetAt[identifier]) {
 		profileName = override
 	}
 	o.issueProfilesMu.RUnlock()
 	return profileName
 }
 
+// issueBackendForDispatch is issueProfileForDispatch for the backend pin.
 func (o *Orchestrator) issueBackendForDispatch(state State, identifier string) string {
 	backend := state.IssueBackends[identifier]
 	o.issueBackendsMu.RLock()
-	if override, ok := o.issueBackends[identifier]; ok {
+	if override, ok := o.issueBackends[identifier]; ok && !autoSwitchSupersedes(state, identifier, o.issueBackendSetAt[identifier]) {
 		backend = override
 	}
 	o.issueBackendsMu.RUnlock()
@@ -1949,6 +1985,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
+		recordDismissedInputQuestion(&state, entry, time.Now()) // not rehydrated from this comment again
 		state.PausedIdentifiers[ev.Identifier] = entry.IssueID
 		setPauseReason(&state, ev.Identifier, PauseReasonUserDismissedInput)
 		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: "dismiss", Outcome: "dismissed"}) // #213
@@ -2388,6 +2425,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// leave entries behind for the daemon's lifetime.
 			o.issueBackendsMu.Lock()
 			delete(o.issueBackends, issue.Identifier)
+			delete(o.issueBackendSetAt, issue.Identifier)
 			o.issueBackendsMu.Unlock()
 			var turns, inTok, outTok int
 			if liveEntry != nil {
@@ -2455,7 +2493,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// read a verdict from. advanceReviewChainForIssue ran just above
 			// and deletes ReviewChainIndex when the quorum closes, so a still
 			// present index means another reviewer is genuinely pending.
-			if autoClear && !reviewerWillRun && !reviewChainInFlight(state, issue.Identifier) {
+			if autoClear && !reviewerWillRun && !reviewChainInFlight(state, issue.Identifier) &&
+				!automationRunKeepsWorkspace(finished, issue.State, state) {
 				// Use the actual worktree branch propagated via sendExitWithBranch.
 				// PR-continuation runs use prCtx.Branch, which differs from
 				// issue.BranchName; re-deriving the branch here would delete the
@@ -3151,6 +3190,19 @@ func runStartsAReview(finished RunRecord, known bool) bool {
 		return false
 	}
 	return finished.Kind == "" || finished.Kind == "worker"
+}
+
+// automationRunKeepsWorkspace reports whether a successful automation run
+// leaves its issue's workspace in place although workspace.auto_clear is on.
+// The success-path clear assumes the run finished the issue: a worker moves
+// it to tracker.completion_state. An automation run does not move the issue
+// for itself, so its issue's lifecycle is not over: clearing removed the
+// worktree and its branch, taking the run's committed handoff with it, and
+// the next run of an automation chain (issue_entered_state researcher →
+// implementer) started from a fresh worktree without it. The workspace is
+// cleared as before once the issue is terminal at the run's exit.
+func automationRunKeepsWorkspace(finished RunRecord, issueState string, state State) bool {
+	return finished.Kind == "automation" && !isTerminalState(issueState, state)
 }
 
 // markStalledHandoffPartial renames the in-flight handoff file authored by

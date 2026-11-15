@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,6 +52,10 @@ func initUpdate(workflowPath string, force, dryRun bool, serverPort int, now tim
 		if len(result.Profiles) > 0 {
 			_, _ = fmt.Fprintf(out, "itervox init --update: migrated profiles: %s\n", strings.Join(result.Profiles, ", "))
 		}
+		for _, name := range slices.Sorted(maps.Keys(result.Commands)) {
+			_, _ = fmt.Fprintf(out, "itervox init --update: agent.profiles.%s had no command; set it to %q (schema %d requires one; before it, such a profile was ignored and its issues ran on agent.command) — change it in WORKFLOW.md if this profile should run another agent\n",
+				name, result.Commands[name], config.LatestWorkflowSchemaVersion)
+		}
 	} else {
 		_, _ = fmt.Fprintf(out, "itervox init --update: %s already uses schema %d\n", workflowPath, config.LatestWorkflowSchemaVersion)
 	}
@@ -74,6 +79,12 @@ func initUpdate(workflowPath string, force, dryRun bool, serverPort int, now tim
 		return fmt.Errorf("move settings to %s: %w", config.ProjectSettingsPath(workflowPath), err)
 	}
 	printSettingsMove(out, workflowPath, move, false)
+	if !result.Changed && !result.AddedGuardrails && !move.changed() && serverPort < 0 {
+		// A re-run on a migrated project: nothing was written, and the
+		// backup (if the first run's is still there) was neither needed
+		// nor touched.
+		_, _ = fmt.Fprintf(out, "itervox init --update: nothing to migrate; %s is up to date\n", workflowPath)
+	}
 	if move.changed() && result.BackupPath == "" {
 		_, _ = fmt.Fprintf(out, "itervox init --update: backup written to %s — remove it once the move is confirmed\n", move.BackupPath)
 	}

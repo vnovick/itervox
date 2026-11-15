@@ -24,23 +24,70 @@ First pick what you need:
 | You want | Install | You get |
 |---|---|---|
 | Itervox on a server, over SSH, or only in a terminal | `brew install vnovick/tap/itervox` (or a [release binary](/getting-started/)) | The `itervox` command and daemon |
-| The Mac app | One of the three ways below, for example `brew install --cask vnovick/tap/itervox-app` | `Itervox.app`, with its own `itervox` daemon inside |
+| The Mac app | A release disk image, Homebrew once a signed release has published the cask, or a build from source (below) | `Itervox.app`, with its own `itervox` daemon inside |
 
 The app does not need the command-line formula: it runs the daemon bundled in it. For the `itervox` command as well, use the app's **Install Command-Line Tool…** menu item, which links that bundled daemon onto your PATH and follows the app's updates. If you also install the formula, you have two `itervox` binaries and the one earlier on your PATH wins; keep only one.
 
-There are three ways to install the app. None of them needs an Apple ID or an Apple developer account: only the maintainer's release build is signed and notarized, once, for everyone.
+None of the ways below needs an Apple ID or an Apple developer account.
 
-- **Disk image.** Download `Itervox_<version>_universal.dmg` from the [latest release](https://github.com/vnovick/itervox/releases/latest), open it and drag **Itervox** to **Applications**. The app is signed with a Developer ID and notarized by Apple, so it opens without a Gatekeeper warning, on Apple silicon and Intel Macs (macOS 11 or later).
-- **Homebrew.** `brew install --cask vnovick/tap/itervox-app` installs the same signed, notarized disk image from the release (the cask is updated by the release workflow after notarization succeeds). The cask is named `itervox-app` so that `vnovick/tap/itervox` stays the command-line formula. It is marked `auto_updates`: the app [updates itself](#updates), so a plain `brew upgrade` leaves it alone and `brew upgrade --cask --greedy itervox-app` upgrades it through Homebrew.
+### Signed or unsigned
+
+The release workflow (`.github/workflows/desktop-release.yml`) signs the Mac app with a Developer ID and notarizes it only when the maintainer's Apple signing secrets are configured. A signed build is always notarized as well: the workflow refuses to ship a signed build it cannot notarize. Without those secrets it builds the same app unsigned, with a warning, and names the files `-unsigned`. The file name tells you which you have:
+
+| Release file | Signed | On first open |
+|---|---|---|
+| `Itervox_<version>_universal.dmg` | Developer ID, notarized and stapled | Opens without a Gatekeeper warning |
+| `Itervox_<version>_universal-unsigned.dmg` | Ad hoc only (no developer identity) | Gatekeeper blocks it; see [Opening an unsigned build](#opening-an-unsigned-build) |
+
+An unsigned build is still signed *ad hoc*, with no developer identity, so its bundle is sealed: macOS treats a downloaded copy as coming from an unidentified developer and offers **Open Anyway**, rather than reporting it as damaged.
+
+The standalone command-line zip on the release follows the same rule: `itervox_<version>_darwin_universal.zip` is signed and notarized, `itervox_<version>_darwin_universal-unsigned.zip` is not.
+
+An unsigned release publishes no updater manifest and no Homebrew cask, so an app installed from it [does not update itself](#updates).
+
+### Three ways to install
+
+- **Disk image.** Download the `.dmg` from the release on the [releases page](https://github.com/vnovick/itervox/releases), open it and drag **Itervox** to **Applications**. It is a universal app, for Apple silicon and Intel Macs, macOS 11 or later. An `-unsigned` disk image needs one extra step on first open: [Opening an unsigned build](#opening-an-unsigned-build).
+- **Homebrew.** `brew install --cask vnovick/tap/itervox-app` works only once a signed release has published the cask. The release workflow writes `Casks/itervox-app.rb` in the tap only for a notarized, non-pre-release build, after its disk image is on the release; an unsigned release leaves the tap untouched. Until a signed release has done that, the cask does not exist and the command fails; use the disk image. The cask is named `itervox-app` so that `vnovick/tap/itervox` stays the command-line formula. It is marked `auto_updates`, so a plain `brew upgrade` leaves it alone and `brew upgrade --cask --greedy itervox-app` upgrades it through Homebrew.
 - **From source.** `make desktop` in a checkout of the repository ([Build it from source](#build-it-from-source)). A build made on your own Mac is not quarantined, so Gatekeeper opens it without signing or notarization.
 
 Open the app from **Applications**: an app opened from the disk image or the Downloads folder runs from a read-only copy and cannot update itself or install the command-line tool.
 
 The app has no Dock icon: look for the **I//** mark in the menu bar.
 
+### First launch
+
+The first time the app starts, with no projects added and no remote connections, it opens a **Welcome to Itervox** window as well as its menu-bar icon. The window says where the app lives, has an **Add Project…** button (choose a project's `WORKFLOW.md`; run `itervox init` in the project first if it has none), and lists the projects the app knows with **Start** for a stopped project and **Open** for a running one. **Open** shows the project's dashboard and closes the welcome window. Once you have added a project (or a remote), later launches open only the menu-bar icon, as before.
+
+**Can't see the icon?** On a MacBook with a notch, a full menu bar can put the icon behind the notch, so the app looks as if it never started. Hide some other menu-bar items to make room. Opening Itervox again while it runs (from Finder, Spotlight or the Applications folder) always shows a window: the window you had minimized, else the dashboard of the first project in [tab order](#project-tabs) with a running daemon, else the welcome window with your projects and their **Start** buttons.
+
+The welcome window is an app-local page like the [project tabs](#project-tabs): it has no access to the network or to the app, no token ever reaches it, and its buttons only ask the app to run its own **Add Project…**, **Start** or **Open Dashboard** for a project it listed. The Dock icon shows while it is open, as for any app window.
+
+### Opening an unsigned build
+
+macOS blocks an unsigned app that carries the quarantine flag a download gets: an `-unsigned` release file, or a build from source copied from another Mac. On macOS 15 and later, right-click → **Open** no longer offers a way past this. Use one of these instead:
+
+1. **Open Anyway** (recommended). Open **Itervox** once from **Applications** and dismiss the warning. Then open **System Settings → Privacy & Security**, scroll to **Security**, and choose **Open Anyway** next to the message about Itervox. Confirm with your password or Touch ID, then choose **Open**. After that, it opens normally.
+2. **Remove the quarantine flag** in a terminal:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Itervox.app
+   ```
+
+:::caution
+Both steps tell macOS to run the app without checking who built it. Do this only for a file you downloaded from the project's [releases page](https://github.com/vnovick/itervox/releases) or built yourself. `xattr` acts at once and asks nothing, so name the exact app path.
+:::
+
 ## Updates
 
-The app checks for a new release 10 seconds after it starts and every 6 hours; **Check for Updates…** in the menu checks at once. When one is available the menu shows **Update available — Install and Restart** with the new version; choosing it downloads the update, checks its signature, replaces the app and relaunches it.
+The app updates itself only when **both** of these hold:
+
+- it is a **signed** release, and
+- that release published an **updater manifest** (`latest.json`, with an update archive signed by the release's updater key), and the app was built with the matching public key in `plugins.updater.pubkey` of `desktop/src-tauri/tauri.conf.json`.
+
+The workflow publishes the manifest only for a signed build with an updater key. The app carries the project's updater public key (since 0.3.3), so it checks for updates, but an unsigned release publishes no manifest: until a signed release is published there is nothing to install, and the menu reports the last check as failed. Until then, download new versions by hand: quit the app, install the new disk image over the old one in **Applications** (or run `brew upgrade --cask --greedy itervox-app` once the cask exists), and **Restart** each project to move its daemon to the new version. Running daemons keep running through the reinstall on the version they were started with.
+
+When a release does carry both, the app checks for a new release 10 seconds after it starts and every 6 hours; **Check for Updates…** in the menu checks at once. When one is available the menu shows **Update available — Install and Restart** with the new version; choosing it downloads the update, checks its signature, replaces the app and relaunches it.
 
 - The daemon bundled in the app is updated with it.
 - Daemons that are running keep running through the update — no agent is interrupted — on the version they were started with. **Restart** a project to move its daemon to the new version.
@@ -51,7 +98,7 @@ The app checks for a new release 10 seconds after it starts and every 6 hours; *
 
 **Install Command-Line Tool…** in the menu makes the bundled daemon available as `itervox` in a terminal: it creates a symlink `/usr/local/bin/itervox` (or `~/.local/bin/itervox` when `/usr/local/bin` is not writable) that points into the app. That symlink is the command-line tool the app manages, and because it points into the app, it is updated whenever the app is. The menu then shows where it is installed. An `itervox` the app did not create — from Homebrew, or a binary you copied — is left alone; the app installs into the other location, or tells you both are taken. If you move the app, choose **Repair Command-Line Tool…**.
 
-A standalone, signed and notarized universal `itervox` is also on each release (`itervox_<version>_darwin_universal.zip`) for machines without the app; it does not update itself.
+A standalone universal `itervox` is also on each release for machines without the app; it does not update itself. Like the app, it is signed and notarized (`itervox_<version>_darwin_universal.zip`) only on a release built with the signing secrets, and named `-unsigned` otherwise ([Install](#install)).
 
 ## Build it from source
 
@@ -81,7 +128,7 @@ Each project shows its state and running agents, for example `running · 2 agent
 
 To do as little as possible while idle, the app reads the daemon registry (`~/.itervox/daemons/`) itself instead of running `itervox status --all --json` on every refresh. It still runs that command at start, when you open the menu (at most every 30 seconds) or choose **Refresh Now**, and whenever the registry holds a format it does not know, so daemons started by an itervox older than the registry still show. Each daemon is read over one kept-alive connection: a small `GET /api/v1/summary` with the last `ETag`, and the full state only when the daemon answers that something changed ([`GET /summary`](/api-reference/#get-summary)).
 
-When a profile points its agent at a model server on your computer (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`), the menu adds a **Model servers** section with each server's state and the GPU, the project rail lists them under the projects, and the app notifies you when a server stops answering and when it is back. See [Local models](/guides/local-models/#in-the-desktop-app).
+When a profile points its agent at a model server on your computer (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`), the menu adds a **Model servers** section with each server's state and the GPU, the end of the project tabs shows them (hover for each server), and the app notifies you when a server stops answering and when it is back. See [Local models](/guides/local-models/#in-the-desktop-app).
 
 ### With a hub (v0.2.9)
 
@@ -151,36 +198,38 @@ The first notification may ask for permission; you can change it later in **Syst
 
 **Quit Itervox (daemons keep running)** is the menu's last item, with <kbd>⌘Q</kbd> on macOS and <kbd>Ctrl</kbd>+<kbd>Q</kbd> on Linux and Windows while the menu is open (on Linux, where the panel shows menu shortcuts; see [Platform differences](#platform-differences)). It quits the app only: the daemons it started keep running.
 
-### Project rail
+### Project tabs
 
-Every dashboard window has a project rail on its left: every project the app knows, so you can switch projects without the menu bar.
+Every dashboard window shows its projects as tabs across the top, under the title bar, with the dashboard under them at the full width: every project the app knows, so you can switch projects without the menu bar.
 
-- **Groups.** Pinned projects first, then **Hub** (the members of this Mac's [hub](/guides/hub/)), **This Mac** (daemons outside the hub, and added projects that are stopped), and one group per remote, named after it.
-- **Each row** shows the project's name, a health dot (green running, grey stopped, red unreachable, amber token required, blue starting or stopping), the number of running agents, and a badge counting the questions and guardrail approvals waiting for you. Hover a row for its full status line.
-- **No extra polling.** The rail shows what the menu-bar refresh already read — from the hub's one projects request while a hub serves, per daemon otherwise, and through the tunnels for remotes — and updates after each refresh.
-- **Switching.** Click a row to show that project's dashboard in the same window, with its token handed over exactly as when the window opened (never in a URL). A stopped project, or a remote whose tunnel is down, has no dashboard to show.
-- **Open in New Window.** Right-click a row (or press <kbd>Shift</kbd>+<kbd>F10</kbd>) for **Open in New Window**, **Pin to Top** / **Unpin**, **Move Up** and **Move Down**. **Open Dashboard** in the menu bar and a notification open a project in the window already showing it, else in a new one.
-- **Arranging.** Drag rows to reorder them within their group, or pin the ones you use most. The order, the pins and whether the rail is collapsed are saved with the project list (`projects.json`) and survive a restart.
-- **Collapsing.** The button at the top of the rail (or <kbd>⌥⌘S</kbd>) shrinks it to initials, dots and badges.
+- **Order.** Pinned projects first, then the members of this Mac's [hub](/guides/hub/), the daemons outside the hub (and added projects that are stopped), and one group per remote. A thin line separates the groups; the **⌄** list names them.
+- **Each tab** shows a health dot (green running, grey stopped, red unreachable, amber token required, blue starting or stopping), the project's name, the number of running agents, and a badge counting the questions and guardrail approvals waiting for you. The project the window shows has the raised tab. Hover a tab for its full status line and shortcut.
+- **No extra polling.** The tabs show what the menu-bar refresh already read — from the hub's one projects request while a hub serves, per daemon otherwise, and through the tunnels for remotes — and update after each refresh.
+- **Switching.** Click a tab to show that project's dashboard in the same window, with its token handed over exactly as when the window opened (never in a URL). <kbd>⌘</kbd>-click (<kbd>Ctrl</kbd>-click on Linux and Windows) or a middle-click opens it in a new window. A stopped project, or a remote whose tunnel is down, has no dashboard to show.
+- **Tab menu.** Right-click a tab (or press the menu key or <kbd>Shift</kbd>+<kbd>F10</kbd>) for **Open in New Window**, **Pin Tab** / **Unpin Tab**, **Move Left**, **Move Right** and **Hide Project Names**. **Open Dashboard** in the menu bar and a notification open a project in the window already showing it, else in a new one.
+- **Arranging.** Drag tabs to reorder them within their group, or pin the ones you use most. The order, the pins and the compact setting are saved with the project list (`projects.json`) and survive a restart.
+- **Adding.** **+** after the last tab is **Add Project…**.
+- **Many projects.** The tabs never wrap: they scroll sideways (a mouse wheel scrolls them too), and a **⌄** button at the right lists every project, the one shown checked; choosing one shows it in this window.
+- **Compact tabs.** **Hide Project Names** (<kbd>⌥⌘S</kbd>) shrinks every tab to its dot, initials and badge, so many more fit; the names stay in the tooltips and for screen readers.
 
 | Shortcut | Does |
 |---|---|
-| <kbd>⌘1</kbd> … <kbd>⌘9</kbd> | Show the first nine projects of the rail, top to bottom |
+| <kbd>⌘1</kbd> … <kbd>⌘9</kbd> | Show the first nine projects, in tab order |
 | <kbd>⌘⇧]</kbd> / <kbd>⌘⇧[</kbd> | Next / previous project (skipping ones without a dashboard) |
-| <kbd>⌥⌘S</kbd> | Show or hide project names |
+| <kbd>⌥⌘S</kbd> | Show or hide project names (compact tabs) |
 | <kbd>⇧⌘N</kbd> | **New Task…**: open the [New task](/guides/new-task/) form of the project in front |
 
 The shortcuts are in the **Projects** menu of the menu bar while a window is open, and act on the window in front. On Linux and Windows each dashboard window has its own **Projects** menu with the same items, and the shortcuts use <kbd>Ctrl</kbd> for <kbd>⌘</kbd>: <kbd>Ctrl</kbd>+<kbd>1</kbd> … <kbd>Ctrl</kbd>+<kbd>9</kbd>, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>]</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>[</kbd>, and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd>.
 
-The rail is keyboard and screen-reader accessible: <kbd>Tab</kbd> reaches it, the arrow keys (and <kbd>Home</kbd>/<kbd>End</kbd>) move between projects, <kbd>Return</kbd> switches, <kbd>Option</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> moves a row, and every dot and badge has a spoken label (for example "alpha, running, 2 agents running, 1 waiting for you"). The current project is announced as current.
+The tabs are keyboard and screen-reader accessible: <kbd>Tab</kbd> reaches them, <kbd>←</kbd>/<kbd>→</kbd> (and <kbd>Home</kbd>/<kbd>End</kbd>) move between projects, <kbd>Return</kbd> switches, <kbd>Option</kbd>+<kbd>←</kbd>/<kbd>→</kbd> moves a tab, and every dot, count and badge has a spoken label (for example "alpha, running, 2 agents running, 1 waiting for you"). The project shown is announced as selected.
 
-The rail is a page of the app itself, shown beside the dashboard in the same window but kept apart from it: it has no access to the network or to the app's internals, it never sees a token, and the dashboard gets no new permissions from it.
+The strip is opaque, in the light and dark colours of the system appearance: nothing shows through it. It is a page of the app itself, shown above the dashboard in the same window but kept apart from it: it has no access to the network or to the app's internals, it never sees a token, and the dashboard gets no new permissions from it. The tab menu and the **⌄** list are the system's own menus, drawn by the app.
 
 ### Embedded dashboard
 
-In an app window the dashboard drops its own sidebar, since the rail and the menu bar already do that job. It opens on the [issue view](/guides/now-and-changes/#issue-view): what the issue that needs you most is doing now, and its changes. The top bar reads `project · ISSUE` and has **Board**, **Sessions**, **+ New task**, **Commands** (<kbd>⌘K</kbd>) and **More**, a menu of every page; the status chips show when the window is wide enough. **Board** goes to the full board and stays there; a notification's issue link still opens on the board with the issue's detail panel.
+In an app window the dashboard keeps the sidebar and phone drawer it has in a browser, with one more entry, **Issue view**. It opens on the [issue view](/guides/now-and-changes/#issue-view): what the issue that needs you most is doing now, and its changes. The top bar reads `project · ISSUE` and has the status pills, **Commands** (<kbd>⌘K</kbd>) and **+ New task**. It stays on one row: pills that do not fit fold into one **+N** pill (hover it for what it holds). **Dashboard** in the sidebar goes to the full board and stays there; a notification's issue link still opens on the board with the issue's detail panel.
 
-The window's initialization script, the one that hands over the token, also marks the page as the app's (only on the daemon's own address). The same dashboard in a browser keeps its sidebar.
+The window's initialization script, the one that hands over the token, also marks the page as the app's (only on the daemon's own address). The same dashboard in a browser has no **Issue view** entry and lands on the board.
 
 ### Go menu
 
@@ -200,12 +249,12 @@ The window only reads. It never types into a terminal or drives another app: mes
 
 ### System material
 
-On a Mac and on Windows 11 the project rail and the Sessions window sit on the system's own material instead of the drawn translucent panels: the window is transparent there, the system draws the material behind the page, and the page lets it show through, with its panels lightly tinted. Only those two pages do this; the dashboard beside the rail stays opaque.
+On a Mac and on Windows 11 the Sessions window sits on the system's own material instead of the drawn translucent panels: the window is transparent there, the system draws the material behind the page, and the page lets it show through, with its panels lightly tinted. Only that page does this; the dashboard windows, their project tabs included, are opaque.
 
 | System | Material |
 |---|---|
 | macOS 26 and later | Liquid Glass (`NSGlassEffectView`) |
-| macOS 11 to 15 | Vibrancy (`NSVisualEffectView`): the *sidebar* material behind the rail, *HUD window* behind Sessions |
+| macOS 11 to 15 | Vibrancy (`NSVisualEffectView`): the *HUD window* material |
 | Windows 11 | Mica |
 | Windows 10, Linux | None: the drawn panels, as before |
 
@@ -281,7 +330,7 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 
 | Path | What |
 |---|---|
-| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added, and the project rail's order, pins and collapsed state |
+| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added, and the project tabs' order, pins and compact setting |
 | `~/Library/Logs/dev.itervox.desktop/daemons/` | Output of daemons the app started (the daemons' own logs stay under `~/.itervox/logs/`) |
 | Login Keychain, `dev.itervox.desktop.supervisor-token` | One supervisor token per project |
 | `~/Library/Application Support/dev.itervox.desktop/remotes.json` | The remotes you added: transport, host, their daemons and the local port each last used (no tokens) |
@@ -291,9 +340,13 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 
 ## Troubleshooting
 
+- **The app seems not to start.** Its only sign of life after the first launch is the menu-bar icon, which a full menu bar can hide behind a MacBook's notch. Open Itervox again from Finder or Spotlight to get a window ([First launch](#first-launch)), and hide other menu-bar items to make room for the icon.
 - **See what the app sees.** Quit it and run `ITERVOX_DESKTOP_DEBUG=1 /Applications/Itervox.app/Contents/MacOS/itervox-desktop` in a terminal: every refresh prints each project's state and every notification.
 - **Keychain prompt after a rebuild.** A build from source gets a new code signature on every build, so macOS may ask once whether the new build may read the tokens it stored. Choose **Always Allow**. Signed releases keep their identity across updates.
-- **"Itervox" cannot be opened** (a build from source copied from another Mac, or an `-unsigned` file from CI): that build is unsigned. Right-click it and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/Itervox.app`. Released `.dmg` files are notarized; `spctl --assess --type execute -vv /Applications/Itervox.app` should print `source=Notarized Developer ID`.
+- **"Itervox" cannot be opened**, or macOS says it cannot check it for malicious software. The app is unsigned: an `-unsigned` release file, a CI build, or a build from source copied from another Mac. Right-click → **Open** no longer works on macOS 15 and later; use **System Settings → Privacy & Security → Open Anyway**, or remove the quarantine flag with `xattr -dr com.apple.quarantine /Applications/Itervox.app`, as described (with its caution) in [Opening an unsigned build](#opening-an-unsigned-build). To check whether a copy is a signed release, run `spctl --assess --type execute -vv /Applications/Itervox.app`: a signed, notarized build prints `source=Notarized Developer ID`.
+- **The menu says "Last update check failed" on an unsigned release.** The app checks for an update manifest that only a signed release publishes, so the check finds none. Nothing is wrong with the app; install new versions by hand until a signed release is out ([Updates](#updates)).
+- **The menu says "Updates off: this build has no update key".** The app was built from a `tauri.conf.json` with no updater public key (a fork, or a build before 0.3.3), so it never checks for updates. Install new versions by hand ([Updates](#updates)).
+- **macOS says "Itervox" is damaged and can't be opened.** A build from before 0.3.3 that was not signed at all reads as damaged once downloaded. Remove the quarantine flag with `xattr` as in [Opening an unsigned build](#opening-an-unsigned-build), or install a newer release.
 - **Update failed.** The menu shows the reason and offers **Install and Restart** again. An app outside `/Applications` that you cannot write to (another user's, or a read-only volume) cannot replace itself; move it to `/Applications`. **Last update check failed** usually means the Mac is offline; the next check runs on schedule.
 - **A project says token required.** Its daemon was started outside the app with a pinned `ITERVOX_API_TOKEN`. Stop it and start it from the app.
 - **A remote keeps reconnecting.** The daemon's line in the remote's submenu shows the last error from `ssh` or `gcloud`; the full output is in `~/Library/Logs/dev.itervox.desktop/tunnels/`. Run the transport's command from the table above in a terminal to see the prompt or error it hits — typically an unknown host key, a key that needs a passphrase not in `ssh-agent`, or `gcloud auth login` having expired.
@@ -369,6 +422,7 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Waiting count as the menu-bar title | AppIndicator label, where the panel shows one | In the tooltip (no text beside the icon) |
 | Refresh when the pointer reaches or clicks the icon | Not on this platform: the 3 / 15-second schedule and window focus | As on the Mac |
 | No Dock icon until a window opens (activation policy) | Not on this platform: windows show in the taskbar while open | Not on this platform: as on Linux |
+| Opening the app again while it runs shows a window (minimized window, first running dashboard, else the welcome window) | Not on this platform: the welcome window opens on a first launch only | As on Linux |
 | **Projects** menu in the app menu bar, <kbd>⌘</kbd> shortcuts | **Projects** menu in each dashboard window, <kbd>Ctrl</kbd> shortcuts | As on Linux |
 | Prompts through `osascript` | `zenity` or `kdialog` | PowerShell and Windows Forms |
 | Keychain | Secret Service, or memory without one | Credential Manager |
@@ -378,12 +432,12 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Daemon bundled in the app; **Stop** sends `SIGTERM` | Same | No native daemon yet ([local projects](#windows-local-projects)); with `itervox.exe`, **Stop** runs `itervox stop` |
 | Wake detected from the clocks, network change from `getifaddrs` | Same | Network change from the default routes' source addresses; a wake that keeps the address is caught by the tunnel health checks |
 | `open` for logs and links | `xdg-open` | `explorer` |
-| Liquid Glass (macOS 26) or vibrancy behind the rail and Sessions ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
+| Liquid Glass (macOS 26) or vibrancy behind the Sessions window ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
 | Tray **Quit Itervox** with <kbd>⌘Q</kbd> | <kbd>Ctrl</kbd>+<kbd>Q</kbd>, shown and bound only where the panel's menu supports shortcuts (AppIndicator menus often do not) | <kbd>Ctrl</kbd>+<kbd>Q</kbd> |
 
 ## Development
 
-The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), the project rail of the dashboard windows (`rail.rs`, its page `desktop/dist/rail.html`), which system material goes behind the rail and the Sessions window (`material.rs`, applied by `app_material.rs`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on macOS, Linux and Windows; `app.rs` (with `app_dash.rs` for the dashboard windows) is the Tauri glue. What differs per platform is in `platform.rs` and `autostart.rs`, keyed by the target OS so the tests check every platform's choice from any one. CI runs the tests and builds unsigned bundles on macOS, Linux (x86_64 and arm64) and Windows.
+The app's logic — parsing `status --json`, merging the project list, diffing refreshes, detecting notification events, building start and stop commands, the token store and the project-list file, the remote connections, tunnels, health checks and wake/network detection, reading and grouping every daemon's sessions for the Sessions window (`sessions.rs`), the project tabs of the dashboard windows (`rail.rs`, its page `desktop/dist/tabs.html`), which system material goes behind the Sessions window (`material.rs`, applied by `app_material.rs`), update version checks, the update manifest, schedule and menu state, and the command-line tool link — is plain Rust in `desktop/src-tauri/src/` with unit tests that run on macOS, Linux and Windows; `app.rs` (with `app_dash.rs` for the dashboard windows) is the Tauri glue. What differs per platform is in `platform.rs` and `autostart.rs`, keyed by the target OS so the tests check every platform's choice from any one. CI runs the tests and builds unsigned bundles on macOS, Linux (x86_64 and arm64) and Windows.
 
 ```bash
 make desktop-test   # fmt, clippy -D warnings, unit tests, end-to-end tests against a real daemon, and dry runs of the release scripts, the Homebrew cask's included (needs jq)
