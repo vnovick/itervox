@@ -1,4 +1,4 @@
-//! Tauri glue of the system material behind the rail and the Sessions
+//! Tauri glue of the system material behind the Sessions
 //! window (see [`crate::material`]): reads the system before a window is
 //! built and applies the material once it is. Main thread only (AppKit).
 
@@ -102,7 +102,6 @@ fn apply_native(window: &Window, m: Material) -> Result<(), String> {
         ),
         Material::Vibrancy(v) => {
             let material = match v {
-                VibrancyMaterial::Sidebar => NSVisualEffectMaterial::Sidebar,
                 VibrancyMaterial::HudWindow => NSVisualEffectMaterial::HudWindow,
             };
             // Follows the window's active state, like a Finder sidebar.
