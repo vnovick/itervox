@@ -24,7 +24,7 @@
 │  └──────────┘           └────────────────┘                   │
 │                                                              │
 │  ┌──────────┐                                                │
-│  │  TUI     │  bubbletea, reads Orchestrator.Snapshot()      │
+│  │ CLI      │  itervox watch & quick actions, via the API    │
 │  └──────────┘                                                │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -75,7 +75,7 @@ is the cfgMu list in the project root `CLAUDE.md`.
 ### Snapshot access
 
 `Snapshot()` acquires `snapMu.RLock` and returns a copy of `lastSnap`. HTTP
-handlers and the TUI consume the snapshot; they never read raw `State`. The
+handlers consume the snapshot; they never read raw `State`. The
 snapshot is rebuilt on the event loop after each state transition, then
 broadcast to SSE subscribers via `OnStateChange`.
 
@@ -125,7 +125,7 @@ unchanged for 2 s before acting. When it settles it invokes the supplied
 callback, which `cmd/itervox` wires to a run-context cancel and a full reload
 of the orchestrator generation — which cancels in-flight agent turns.
 
-Settings saves from the dashboard and TUI do **not** reload (CORE-116). They
+Settings saves from the dashboard do **not** reload (CORE-116). They
 apply the new value in memory under `cfgMu` and write `WORKFLOW.md` through
 the locked patchers in `internal/workflow`, which register each write's
 (pre, post) content hashes in a small process-local registry
@@ -473,7 +473,7 @@ Browser POST /api/v1/issues/:id/resume
 
 | Package | Responsibility |
 |---|---|
-| `cmd/itervox` | Entry point; loads WORKFLOW.md, wires orchestrator, server, TUI, and `workflow.Watch` |
+| `cmd/itervox` | Entry point; loads WORKFLOW.md, wires orchestrator, server and `workflow.Watch`; the terminal client commands (`itervox watch`, quick actions) talk to a running daemon over its API |
 | `internal/orchestrator` | Single-goroutine event loop, dispatch, reconcile, state machine, reviewer, retries |
 | `internal/agent` | `Runner` interface, claude and codex subprocess runners, stream parsing, sentinel detection, log tailer, fake runner for tests |
 | `internal/tracker` | `Tracker` interface plus normalize helpers and an in-memory backend |
@@ -489,7 +489,6 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/prdetector` | Detects PR URLs in agent output |
 | `internal/app` | Cross-cutting business logic (e.g. `EnrichIssue`) |
 | `internal/server` | chi-based HTTP API, SSE broadcaster, embedded web assets |
-| `internal/statusui` | Bubbletea terminal UI; reads `Orchestrator.Snapshot()` |
 | `internal/templates` | WORKFLOW.md scaffolding and human-input template |
 | `internal/templates/scaffold` | Registry of `itervox init --template` starter templates (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) and their one-line summaries; `cmd/itervox/init_templates.go` renders each template's profiles, review settings, backend fallback and automations |
 | `internal/logging` | slog setup and shared logging helpers |

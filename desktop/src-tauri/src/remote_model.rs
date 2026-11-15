@@ -2,14 +2,14 @@
 //! refresh loop reads remote daemons: through their tunnels, with the token
 //! stored for the connection and daemon.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::client::FetchError;
 use crate::daemon_state::StateSummary;
 use crate::dashboard::origin_of;
 use crate::events::{Alert, EventDetector};
 use crate::model::{FetchJob, Health};
-use crate::remote::{token_key, Remotes};
+use crate::remote::{hub_key, token_key, Connection, RemoteDaemon, Remotes};
 use crate::sessions::SessionsJob;
 use crate::token::TokenStore;
 use crate::tunnel::{TunnelPhase, TunnelStatus};
@@ -26,6 +26,9 @@ pub struct RemoteDaemonView {
     /// tunnel is not up.
     pub health: Health,
     pub has_token: bool,
+    /// Reached through the host's hub (#232): the member's path on the
+    /// hub's tunnel, `hub/p/{name}/`.
+    pub hub_path: Option<String>,
 }
 
 impl RemoteDaemonView {
@@ -36,12 +39,18 @@ impl RemoteDaemonView {
         }
     }
 
-    /// The dashboard URL through the tunnel, while it is up.
+    /// The dashboard URL through the tunnel, while it is up: the member's
+    /// dashboard on the hub for a daemon reached through the hub.
     pub fn url(&self) -> Option<String> {
-        self.tunnel
+        let base = self
+            .tunnel
             .as_ref()
             .filter(|t| t.is_up())
-            .map(TunnelStatus::base_url)
+            .map(TunnelStatus::base_url)?;
+        Some(match &self.hub_path {
+            Some(p) => format!("{base}{p}"),
+            None => base,
+        })
     }
 
     pub fn status_line(&self) -> String {
@@ -62,6 +71,9 @@ impl RemoteDaemonView {
                 if w > 0 {
                     parts.push(format!("{w} need{} input", if w == 1 { "s" } else { "" }));
                 }
+                if self.hub_path.is_some() {
+                    parts.push("via hub".into());
+                }
                 parts.push(format!("localhost:{}", t.local_port));
                 parts.join(" · ")
             }
@@ -81,6 +93,8 @@ pub struct ConnectionView {
     pub daemons: Vec<RemoteDaemonView>,
     /// The last discovery or token error, shown until the next success.
     pub error: Option<String>,
+    /// The host's hub (#232), e.g. "hub · 3 projects through one tunnel".
+    pub hub: Option<String>,
 }
 
 impl ConnectionView {
@@ -134,17 +148,109 @@ pub struct DashboardTarget {
 }
 
 /// `url` moved to `base` (same path and query): a notification link made
-/// while the tunnel used another local port still opens the issue.
+/// while the tunnel used another local port still opens the issue. A link
+/// made through a host's hub (`hub/p/{name}/...`, #232) keeps only its
+/// dashboard part, so it opens on the daemon's own tunnel or the hub's.
 pub fn rebase_url(url: &str, base: &str) -> String {
-    let rest = url
+    let mut rest = url
         .split_once("://")
         .and_then(|(_, r)| r.find('/').map(|i| &r[i + 1..]))
         .unwrap_or("");
+    if let Some(after) = rest.strip_prefix("hub/p/") {
+        rest = after.find('/').map_or("", |i| &after[i + 1..]);
+    }
     let mut b = base.to_string();
     if !b.ends_with('/') {
         b.push('/');
     }
     format!("{b}{rest}")
+}
+
+/// Whether a connection's hub stopped answering (#232): its tunnel failed
+/// since it was last up. A hub tunnel still starting is not down.
+pub fn hub_down(c: &Connection, tunnels: &[TunnelStatus]) -> bool {
+    let key = hub_key(&c.id);
+    c.hub.is_some()
+        && tunnels
+            .iter()
+            .find(|t| t.id == key)
+            .is_some_and(|t| !t.is_up() && t.last_error.is_some())
+}
+
+/// The connections whose hub is down: their members get their own tunnels
+/// ([`crate::remote_ops::tunnel_specs_with`]).
+pub fn hubs_down(remotes: &Remotes, tunnels: &[TunnelStatus]) -> HashSet<String> {
+    remotes
+        .connections
+        .iter()
+        .filter(|c| hub_down(c, tunnels))
+        .map(|c| c.id.clone())
+        .collect()
+}
+
+/// How the app reaches one remote daemon this refresh.
+struct Route {
+    tunnel: Option<TunnelStatus>,
+    /// The token's key: the hub's for a member read through the hub.
+    token_key: String,
+    hub_path: Option<String>,
+}
+
+/// A hub project name as one URL path segment.
+fn path_segment(name: &str) -> String {
+    name.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// Through the host's hub while it serves and the daemon is a member, else
+/// through the daemon's own tunnel.
+fn route(c: &Connection, d: &RemoteDaemon, tunnels: &[TunnelStatus]) -> Route {
+    if let Some(m) = c.hub.as_ref().and_then(|h| h.member(&d.workflow)) {
+        if !hub_down(c, tunnels) {
+            let key = hub_key(&c.id);
+            return Route {
+                tunnel: tunnels.iter().find(|t| t.id == key).cloned(),
+                token_key: key,
+                hub_path: Some(format!("hub/p/{}/", path_segment(&m.name))),
+            };
+        }
+    }
+    let key = token_key(&c.id, &d.workflow);
+    Route {
+        tunnel: tunnels.iter().find(|t| t.id == key).cloned(),
+        token_key: key,
+        hub_path: None,
+    }
+}
+
+impl Route {
+    fn base(&self) -> Option<String> {
+        let base = self
+            .tunnel
+            .as_ref()
+            .filter(|t| t.is_up())
+            .map(TunnelStatus::base_url)?;
+        Some(format!("{base}{}", self.hub_path.as_deref().unwrap_or("")))
+    }
+}
+
+/// The connection's hub line for the menu.
+fn hub_line(c: &Connection, tunnels: &[TunnelStatus]) -> Option<String> {
+    let h = c.hub.as_ref()?;
+    let n = h.members.len();
+    let projects = format!("{n} project{}", if n == 1 { "" } else { "s" });
+    Some(if hub_down(c, tunnels) {
+        format!("hub not answering — {projects} on their own tunnels")
+    } else {
+        format!("hub · {projects} through one tunnel")
+    })
 }
 
 /// The remote side of the model.
@@ -191,17 +297,17 @@ impl RemoteCore {
         let mut jobs = Vec::new();
         for c in &remotes.connections {
             for d in &c.daemons {
-                let key = token_key(&c.id, &d.workflow);
-                let Some(t) = tunnels.iter().find(|t| t.id == key && t.is_up()) else {
+                let r = route(c, d, tunnels);
+                let Some(url) = r.base() else {
                     continue;
                 };
-                let token = tokens.get(&key).ok().flatten();
-                if d.token_required && token.is_none() {
+                let token = tokens.get(&r.token_key).ok().flatten();
+                if (d.token_required || r.hub_path.is_some()) && token.is_none() {
                     continue;
                 }
                 jobs.push(FetchJob {
-                    key,
-                    url: t.base_url(),
+                    key: token_key(&c.id, &d.workflow),
+                    url,
                     token,
                 });
             }
@@ -246,14 +352,24 @@ impl RemoteCore {
         tokens: &dyn TokenStore,
         deep_link: Option<&str>,
     ) -> Option<DashboardTarget> {
-        let base = self.daemon(key)?.url()?;
+        let d = self.daemon(key)?;
+        let base = d.url()?;
         let origin = origin_of(&base)?;
+        // A member opened through the host's hub gets the hub token.
+        let conn_id = key
+            .strip_prefix(crate::remote::REMOTE_KEY_PREFIX)
+            .and_then(|k| k.split_once('/'))
+            .map(|(id, _)| id);
+        let token_key = match (&d.hub_path, conn_id) {
+            (Some(_), Some(id)) => hub_key(id),
+            _ => key.to_string(),
+        };
         Some(DashboardTarget {
             url: deep_link
                 .map(|u| rebase_url(u, &base))
                 .unwrap_or_else(|| base.clone()),
             origin,
-            token: tokens.get(key).ok().flatten(),
+            token: tokens.get(&token_key).ok().flatten(),
         })
     }
 
@@ -271,9 +387,11 @@ impl RemoteCore {
             let mut daemons = Vec::new();
             for d in &c.daemons {
                 let key = token_key(&c.id, &d.workflow);
-                let tunnel = tunnels.iter().find(|t| t.id == key).cloned();
+                let r = route(c, d, tunnels);
+                let base = r.base();
+                let (tunnel, hub_path) = (r.tunnel, r.hub_path);
                 let has_token = tokens.get(&key).ok().flatten().is_some();
-                let up = tunnel.as_ref().is_some_and(TunnelStatus::is_up);
+                let up = base.is_some();
                 let health = match states.get(&key) {
                     _ if !up => Health::Stopped,
                     Some(Ok(s)) => Health::Ok(s.clone()),
@@ -286,9 +404,9 @@ impl RemoteCore {
                     }
                     _ => d.name(),
                 };
-                if let (Health::Ok(s), Some(t)) = (&health, &tunnel) {
+                if let (Health::Ok(s), Some(base)) = (&health, &base) {
                     let label = format!("{name} ({})", c.name);
-                    alerts.extend(self.detector.observe(&key, &label, &t.base_url(), s));
+                    alerts.extend(self.detector.observe(&key, &label, base, s));
                 }
                 daemons.push(RemoteDaemonView {
                     key,
@@ -297,6 +415,7 @@ impl RemoteCore {
                     tunnel,
                     health,
                     has_token,
+                    hub_path,
                 });
             }
             views.push(ConnectionView {
@@ -305,6 +424,7 @@ impl RemoteCore {
                 transport: c.transport.label(),
                 daemons,
                 error: self.errors.get(&c.id).cloned(),
+                hub: hub_line(c, tunnels),
             });
         }
         self.views = views;
@@ -318,6 +438,205 @@ mod tests {
     use crate::remote::{Connection, RemoteDaemon, Transport};
     use crate::token::MemoryTokenStore;
     use std::time::Duration;
+
+    /// #232 — a remote machine with a hub is reached through ONE tunnel to
+    /// that hub: `itervox hub --json` on the host names the members, the
+    /// tunnel list holds the hub's tunnel (probed on the hub's health
+    /// route) and a tunnel only for the daemon the hub does not cover, every
+    /// member is read through the hub's proxy with the hub token, its
+    /// alerts and dashboard open on the hub, and when the hub stops each
+    /// member gets its own tunnel again.
+    #[test]
+    fn remote_hub_reached_through_one_tunnel() {
+        use crate::client::{fetch_all, ClientPool};
+        use crate::hub_source::tests::{fake_daemon, FakeServer};
+        use crate::remote::HubListing;
+        use crate::remote_ops::{tunnel_specs, tunnel_specs_with};
+        use crate::tunnel::{TunnelPhase, HUB_HEALTH_PATH};
+
+        let daemon = |name: &str, port: u16, token_required: bool| RemoteDaemon {
+            workflow: format!("/srv/{name}/WORKFLOW.md"),
+            remote_host: "127.0.0.1".into(),
+            remote_port: port,
+            token_required,
+            token_source: "generated".into(),
+            token_file: format!("/srv/{name}/.itervox/api-token"),
+            local_port: 0,
+        };
+        let mut c = Connection::new(
+            "prod".into(),
+            "Prod".into(),
+            Transport::Ssh {
+                destination: "me@box".into(),
+            },
+        );
+        c.daemons = vec![
+            daemon("alpha", 8090, true),
+            daemon("beta", 8091, true),
+            daemon("gamma", 8092, true),
+            daemon("solo", 8093, true),
+        ];
+        // `itervox hub --json` on the host: solo runs with --no-hub.
+        let listing: HubListing = serde_json::from_str(
+            r#"{"hub": {"schema_version": 1, "pid": 4, "url": "http://127.0.0.1:8089/hub/",
+                 "host": "127.0.0.1", "port": 8089, "version": "v0.2.9",
+                 "workflow": "/srv/alpha/WORKFLOW.md", "started_at": ""},
+               "members": [
+                 {"name": "alpha", "workflow": "/srv/alpha/WORKFLOW.md", "url": "", "pid": 1, "version": ""},
+                 {"name": "beta", "workflow": "/srv/beta/WORKFLOW.md", "url": "", "pid": 2, "version": ""},
+                 {"name": "gamma", "workflow": "/srv/gamma/WORKFLOW.md", "url": "", "pid": 3, "version": ""}]}"#,
+        )
+        .unwrap();
+        c.hub = listing.hub_for(&c.daemons);
+        let remotes = Remotes {
+            connections: vec![c],
+        };
+
+        // One tunnel covers the three members; solo keeps its own.
+        let specs = tunnel_specs(&remotes);
+        let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["remote/prod/hub", "remote/prod//srv/solo/WORKFLOW.md"]
+        );
+        assert_eq!(
+            (specs[0].remote_port, specs[0].health_path.as_str()),
+            (8089, HUB_HEALTH_PATH)
+        );
+
+        // The hub (the hub tunnel's local end) proxies each member's API.
+        let hub = FakeServer::start(|path| {
+            let name = path
+                .trim_start_matches("/hub/p/")
+                .split('/')
+                .next()
+                .unwrap();
+            if path.ends_with("/api/v1/summary") {
+                return (404, String::new());
+            }
+            let input = if name == "alpha" {
+                r#","inputRequired":[{"identifier":"ENG-1","state":"input_required","queuedAt":"2026-10-22T09:00:00Z"}]"#
+            } else {
+                ""
+            };
+            let running = name.len();
+            (
+                200,
+                format!(r#"{{"projectName":"{name}","counts":{{"running":{running}}}{input}}}"#),
+            )
+        });
+        let solo = fake_daemon(1);
+        let port = |origin: &str| -> u16 { origin.rsplit(':').next().unwrap().parse().unwrap() };
+        let mut tunnels = vec![
+            up("remote/prod/hub", port(&hub.origin)),
+            up("remote/prod//srv/solo/WORKFLOW.md", port(&solo.origin)),
+        ];
+        let tokens = MemoryTokenStore::default();
+        let hub_token = ["hub", "operator", "fixture"].join("-");
+        tokens.set("remote/prod/hub", &hub_token).unwrap();
+        for n in ["alpha", "beta", "gamma", "solo"] {
+            tokens
+                .set(
+                    &format!("remote/prod//srv/{n}/WORKFLOW.md"),
+                    &format!("{n}-fixture"),
+                )
+                .unwrap();
+        }
+
+        let jobs = RemoteCore::fetch_jobs(&remotes, &tunnels, &tokens);
+        let hub_base = format!("{}/", hub.origin);
+        let urls: Vec<(String, Option<String>)> = jobs
+            .iter()
+            .map(|j| (j.url.clone(), j.token.clone()))
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                (format!("{hub_base}hub/p/alpha/"), Some(hub_token.clone())),
+                (format!("{hub_base}hub/p/beta/"), Some(hub_token.clone())),
+                (format!("{hub_base}hub/p/gamma/"), Some(hub_token.clone())),
+                (format!("{}/", solo.origin), Some("solo-fixture".into())),
+            ]
+        );
+        let pool = ClientPool::default();
+        let states = fetch_all(&pool, &jobs);
+        let mut core = RemoteCore::new(0);
+        let alerts = core.apply(&remotes, &tunnels, &tokens, &states);
+        let view = &core.views()[0];
+        assert_eq!(
+            view.hub.as_deref(),
+            Some("hub · 3 projects through one tunnel")
+        );
+        assert_eq!(view.status_line(), "4/4 connected · 1 needs input");
+        let running: Vec<(String, usize)> = view
+            .daemons
+            .iter()
+            .map(|d| match &d.health {
+                Health::Ok(s) => (d.name.clone(), s.running),
+                other => panic!("{}: {other:?}", d.key),
+            })
+            .collect();
+        assert_eq!(
+            running,
+            [
+                ("alpha".to_string(), 5),
+                ("beta".to_string(), 4),
+                ("gamma".to_string(), 5),
+                ("solo".to_string(), 1)
+            ]
+        );
+        assert!(view.daemons[0].status_line().contains("via hub"));
+        // Every member read went to the hub, with the hub token.
+        let seen = hub.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 6, "summary + state per member: {seen:?}");
+        assert!(seen
+            .iter()
+            .all(|(_, a)| *a == format!("Bearer {hub_token}")));
+        // The alert and the dashboard open the member on the hub.
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].url, format!("{hub_base}hub/p/alpha/?issue=ENG-1"));
+        let key = "remote/prod//srv/alpha/WORKFLOW.md";
+        let t = core
+            .dashboard_target(key, &tokens, Some(&alerts[0].url))
+            .unwrap();
+        assert_eq!(t.url, format!("{hub_base}hub/p/alpha/?issue=ENG-1"));
+        assert_eq!(t.origin, hub.origin);
+        assert_eq!(t.token.as_deref(), Some(hub_token.as_str()));
+
+        // The hub stops answering: each member gets its own tunnel again,
+        // read with its own token; the deep link moves onto that tunnel.
+        tunnels[0].phase = TunnelPhase::Retrying {
+            attempt: 1,
+            retry_in: Duration::from_secs(2),
+        };
+        tunnels[0].last_error = Some("health check answered HTTP 502".into());
+        let down = hubs_down(&remotes, &tunnels);
+        assert_eq!(down.iter().collect::<Vec<_>>(), ["prod"]);
+        assert_eq!(tunnel_specs_with(&remotes, &down).len(), 5);
+        let alpha = fake_daemon(9);
+        tunnels.push(up(key, port(&alpha.origin)));
+        let jobs = RemoteCore::fetch_jobs(&remotes, &tunnels, &tokens);
+        assert_eq!(
+            jobs.iter()
+                .map(|j| (j.key.as_str(), j.token.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (key, Some("alpha-fixture")),
+                ("remote/prod//srv/solo/WORKFLOW.md", Some("solo-fixture"))
+            ]
+        );
+        core.apply(&remotes, &tunnels, &tokens, &fetch_all(&pool, &jobs));
+        let view = &core.views()[0];
+        assert_eq!(
+            view.hub.as_deref(),
+            Some("hub not answering — 3 projects on their own tunnels")
+        );
+        let t = core
+            .dashboard_target(key, &tokens, Some(&alerts[0].url))
+            .unwrap();
+        assert_eq!(t.url, format!("{}/?issue=ENG-1", alpha.origin));
+        assert_eq!(t.token.as_deref(), Some("alpha-fixture"));
+    }
 
     fn remotes() -> Remotes {
         let mk = |id: &str| {

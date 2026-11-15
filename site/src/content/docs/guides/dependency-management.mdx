@@ -48,6 +48,8 @@ Unknown blocker state is not treated as resolved. A paused blocker is still unre
 
 Merged PRs do not unblock dependents by themselves. Itervox waits until the blocking issue itself is observed as terminal, closed, or done by the tracker.
 
+With `dependencies.stacked_prs: true` there is one exception: an issue whose only unresolved blocker is in review (`tracker.completion_state`) starts right away on the blocker's branch. See [Stacked pull requests](/guides/stacked-prs/).
+
 ## Dependency audit
 
 Audit rows record:

@@ -13,7 +13,8 @@ import { ClearBreakerButton } from '../Dashboard/components/BackendHealthChips';
 //   - the agent backend breakers (CORE-053) with the operator Clear override
 //     (the same mutation as the dashboard chip);
 //   - agent.backend_fallback, which is load-time config (not runtime-editable,
-//     not in the snapshot), so it is described with a pointer to WORKFLOW.md;
+//     not in the snapshot), so it is described with a pointer to the
+//     project settings file;
 //   - rate_limited automations, linked to their editor on /automations rather
 //     than moved: the rule editor needs the full automation form.
 
@@ -93,8 +94,9 @@ export function RateLimitsFailoverCard(props: RateLimitsFailoverCardProps) {
         <p className="text-theme-text text-sm font-medium">Backend fallback</p>
         <p className="text-theme-muted mt-0.5 text-xs">
           Set <code className="font-mono">agent.backend_fallback</code> in{' '}
-          <code className="font-mono">WORKFLOW.md</code> to name the backend an issue moves to while
-          its own is limited. It is read when the file loads, so edit the file to change it.
+          <code className="font-mono">.itervox/settings.jsonc</code> to name the backend an issue
+          moves to while its own is limited. It is read when the file loads, and the daemon reloads
+          when you save the file.
           {autoSwitches.length > 0 &&
             ` ${String(autoSwitches.length)} issue${autoSwitches.length === 1 ? '' : 's'} currently run${autoSwitches.length === 1 ? 's' : ''} on an automatic override.`}
         </p>

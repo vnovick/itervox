@@ -27,7 +27,9 @@ use std::time::{Duration, Instant};
 use itervox_desktop::client::fetch_state;
 use itervox_desktop::dashboard::token_init_script;
 use itervox_desktop::model::Health;
-use itervox_desktop::remote::{token_key, Connection, IapMode, RemoteDaemon, Remotes, Transport};
+use itervox_desktop::remote::{
+    hub_key, token_key, Connection, IapMode, RemoteDaemon, Remotes, Transport,
+};
 use itervox_desktop::remote_model::RemoteCore;
 use itervox_desktop::remote_ops::{add_connection, tunnel_specs, AddRequest};
 use itervox_desktop::shellpath::{find_in_path, resolve_tools, Tools};
@@ -274,8 +276,15 @@ impl Drop for Daemons {
 
 /// A "remote host": `n` local-tracker projects with daemons started the
 /// way a VM's service would (no supervisor token, so each auto-generates
-/// its token into its `token_file`), all under one HOME.
-fn host_with_daemons(bin: &Path, root: &Path, n: usize) -> (PathBuf, Vec<PathBuf>, Daemons) {
+/// its token into its `token_file`), all under one HOME. With `hub` they
+/// form the host's hub (#228) and this waits until it lists them all;
+/// without it they run with `--no-hub`.
+fn host_with_daemons(
+    bin: &Path,
+    root: &Path,
+    n: usize,
+    hub: bool,
+) -> (PathBuf, Vec<PathBuf>, Daemons) {
     let home = root.join("host-home");
     std::fs::create_dir_all(&home).unwrap();
     let mut workflows = Vec::new();
@@ -314,8 +323,12 @@ fn host_with_daemons(bin: &Path, root: &Path, n: usize) -> (PathBuf, Vec<PathBuf
         );
         let wf = proj.join("WORKFLOW.md");
         let log = std::fs::File::create(root.join(format!("daemon{i}.log"))).unwrap();
+        let mut args = vec!["--workflow".to_string(), wf.to_string_lossy().into_owned()];
+        if !hub {
+            args.push("--no-hub".into());
+        }
         let mut child = Command::new(bin)
-            .args(["--workflow", &wf.to_string_lossy()])
+            .args(&args)
             .current_dir(&proj)
             .env("HOME", &home)
             .env("PATH", &path)
@@ -353,6 +366,26 @@ fn host_with_daemons(bin: &Path, root: &Path, n: usize) -> (PathBuf, Vec<PathBuf
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+    if hub {
+        loop {
+            let out = Command::new(bin)
+                .args(["hub", "--json"])
+                .env("HOME", &home)
+                .output()
+                .unwrap();
+            let listing: serde_json::Value =
+                serde_json::from_slice(&out.stdout).unwrap_or_default();
+            let members = listing["members"].as_array().map_or(0, Vec::len);
+            if !listing["hub"].is_null() && members == n {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline + Duration::from_secs(30),
+                "the hub did not list every daemon: {listing}"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
     (home, workflows, pids)
 }
 
@@ -363,7 +396,7 @@ fn add_and_open(transport: Transport, n: usize) {
     let Some(bin) = daemon_bin() else { return };
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    let (home, workflows, _daemons) = host_with_daemons(&bin, root, n);
+    let (home, workflows, _daemons) = host_with_daemons(&bin, root, n, false);
     let stubs = Stubs::new(root, Some((&bin, &home)));
     let tools = stubs.tools();
     let tokens = MemoryTokenStore::default();
@@ -405,6 +438,7 @@ fn add_and_open(transport: Transport, n: usize) {
     );
     let conn = added.connection;
     assert_eq!(conn.id, "build-box");
+    assert_eq!(conn.hub, None, "--no-hub daemons keep a tunnel each");
     if listed > 0 {
         assert_eq!(listed, n, "the chooser was offered every daemon");
     }
@@ -530,6 +564,115 @@ fn iap_port_tunnel_opens_the_dashboard() {
         },
         1,
     );
+}
+
+/// #232 — a host whose daemons form a hub is reached through ONE tunnel to
+/// that hub: Add Remote finds the hub (`itervox hub --json`), creates the
+/// app's hub token there, and every daemon is read and opened through the
+/// hub's proxy with it — real daemons, real hub.
+#[test]
+fn remote_hub_covers_every_daemon_through_one_tunnel() {
+    if !have_python() {
+        return;
+    }
+    let Some(bin) = daemon_bin() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let n = 2;
+    let (home, workflows, _daemons) = host_with_daemons(&bin, root, n, true);
+    let stubs = Stubs::new(root, Some((&bin, &home)));
+    let tools = stubs.tools();
+    let tokens = MemoryTokenStore::default();
+    let ours: Vec<String> = workflows
+        .iter()
+        .map(|w| w.to_string_lossy().into_owned())
+        .collect();
+    let added = add_connection(
+        &Remotes::default(),
+        AddRequest {
+            name: "Hub box".into(),
+            transport: Transport::Ssh {
+                destination: "me@hub-box".into(),
+            },
+            itervox_command: None,
+        },
+        &tools,
+        &tokens,
+        &mut |recs| {
+            Some(
+                recs.iter()
+                    .enumerate()
+                    .filter(|(_, r)| ours.contains(&r.workflow))
+                    .map(|(i, _)| i)
+                    .collect(),
+            )
+        },
+        &mut |_, why| panic!("the token file should have been read: {why:?}"),
+    )
+    .unwrap();
+    assert!(
+        added.token_problems.is_empty(),
+        "{:?}",
+        added.token_problems
+    );
+    let conn = added.connection;
+    let hub = conn.hub.clone().expect("the host's hub was found");
+    assert_eq!(hub.members.len(), n);
+    let calls = stubs.calls();
+    assert!(calls.contains("hub --json"), "{calls}");
+    assert!(calls.contains("token create --hub"), "{calls}");
+    let hub_token = tokens
+        .get(&hub_key(&conn.id))
+        .unwrap()
+        .expect("a hub token stored");
+
+    // One tunnel, to the hub, for both daemons.
+    let remotes = Remotes {
+        connections: vec![conn.clone()],
+    };
+    let mut mgr = manager(&stubs, root, &remotes, fast_timing());
+    tick_until(&mut mgr, "the hub tunnel up", all_up);
+    let statuses = mgr.statuses(Instant::now());
+    assert_eq!(
+        statuses.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        [hub_key(&conn.id)]
+    );
+    let hub_port = statuses[0].local_port;
+
+    // Every daemon is read through the hub's proxy.
+    let mut core = RemoteCore::new(0);
+    refresh(&mut core, &remotes, &mgr, &tokens);
+    let view = &core.views()[0];
+    for d in &view.daemons {
+        assert!(
+            matches!(d.health, Health::Ok(_)),
+            "{}: {:?}",
+            d.key,
+            d.health
+        );
+    }
+    assert_eq!(view.status_line(), format!("{n}/{n} connected"));
+    assert_eq!(
+        view.hub.as_deref(),
+        Some("hub · 2 projects through one tunnel")
+    );
+
+    // Open Dashboard: the member's dashboard on the hub, with the hub token.
+    for d in &conn.daemons {
+        let key = token_key(&conn.id, &d.workflow);
+        let t = core.dashboard_target(&key, &tokens, None).unwrap();
+        let name = &hub.member(&d.workflow).unwrap().name;
+        assert_eq!(t.url, format!("http://127.0.0.1:{hub_port}/hub/p/{name}/"));
+        assert_eq!(t.token.as_deref(), Some(hub_token.as_str()));
+        let (code, page) = http_get(&t.url, None);
+        assert_eq!(code, 200);
+        assert!(page.contains("id=\"root\""), "{page}");
+        assert_eq!(http_get(&format!("{}api/v1/state", t.url), None).0, 401);
+        assert_eq!(
+            http_get(&format!("{}api/v1/state", t.url), Some(&hub_token)).0,
+            200
+        );
+    }
 }
 
 // ── Fake daemon ─────────────────────────────────────────────────────────

@@ -91,6 +91,29 @@ struct Fixture {
     pool: ClientPool,
 }
 
+/// Sets the value of the one line `"key": …` in a settings.jsonc text
+/// written by `itervox init`, keeping its indentation and trailing comma.
+fn set_settings_value(text: &str, key: &str, json: &str) -> String {
+    let prefix = format!("\"{key}\":");
+    let mut hits = 0;
+    let out: Vec<String> = text
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with(&prefix) {
+                return line.to_string();
+            }
+            hits += 1;
+            let indent = &line[..line.len() - trimmed.len()];
+            let value = trimmed.split(" //").next().unwrap_or(trimmed).trim_end();
+            let comma = if value.ends_with(',') { "," } else { "" };
+            format!("{indent}{prefix} {json}{comma}")
+        })
+        .collect();
+    assert_eq!(hits, 1, "expected one {prefix} line in settings.jsonc");
+    out.join("\n") + "\n"
+}
+
 fn run(cmd: &mut Command) {
     let out = cmd.stdin(Stdio::null()).output().unwrap();
     assert!(
@@ -151,6 +174,24 @@ impl Fixture {
             )
             .replace("base_branch: main", "base_branch: e2e");
         std::fs::write(&workflow, wf).unwrap();
+        // `itervox init` writes the layered sections to the project's
+        // settings file (#239), which wins over WORKFLOW.md front matter.
+        let settings = proj.join(".itervox").join("settings.jsonc");
+        let mut s = std::fs::read_to_string(&settings).unwrap();
+        let command = if bare_command {
+            "claude".to_string()
+        } else {
+            fake.display().to_string()
+        };
+        s = set_settings_value(&s, "command", &serde_json::to_string(&command).unwrap());
+        s = set_settings_value(&s, "interval_ms", "2000");
+        s = set_settings_value(
+            &s,
+            "clone_url",
+            &serde_json::to_string(&proj.display().to_string()).unwrap(),
+        );
+        s = set_settings_value(&s, "base_branch", "\"e2e\"");
+        std::fs::write(&settings, s).unwrap();
         let git = |args: &[&str]| {
             run(Command::new("git")
                 .args(args)
@@ -493,6 +534,91 @@ fn input_required_run_raises_an_alert_that_opens_the_issue() {
 
 /// A stand-in for the user's login shell: its profile puts the agent CLI's
 /// directory on PATH, the way nvm or Homebrew set-up in ~/.zshrc does.
+/// #232 — against a real hub: the started daemon is the machine's hub
+/// (`hub.lock`); the app's viewer token (`itervox token create --hub`)
+/// opens ONE events stream, whose first frame counts the members, and the
+/// refresh reads the member from the hub's projects list instead of
+/// polling the daemon.
+#[test]
+fn local_hub_serves_its_members_to_the_app() {
+    use itervox_desktop::hub_notify::{
+        hub_token_command, parse_created_token, read_hub_lock, stream_events, HubEvent,
+    };
+    use itervox_desktop::hub_source::{read_local, HubReader, HubStatus};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some(bin) = daemon() else {
+        eprintln!("ITERVOX_E2E_DAEMON not set; skipping");
+        return;
+    };
+    let mut f = Fixture::new(bin, false);
+    let pid = f.start();
+    let _guard = Guard(Some(pid));
+    f.refresh_until("the daemon to be listed", |c, k, _| settled_running(c, k));
+    let registry = f.home.join(".itervox").join("daemons");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let lock = loop {
+        if let Some(l) = read_hub_lock(&registry) {
+            break l;
+        }
+        assert!(Instant::now() < deadline, "no hub.lock: {}", f.log());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let out = hub_token_command(&f.bin)
+        .env("HOME", &f.home)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let token = parse_created_token(&out.stdout).expect("one token line");
+    let origin = lock.origin();
+
+    let stop = AtomicBool::new(false);
+    let mut first = None;
+    stream_events(&origin, &token, &mut None, &stop, &mut |ev| {
+        first.get_or_insert(ev);
+        stop.store(true, Ordering::Relaxed);
+    });
+    assert_eq!(first, Some(HubEvent::Projects(1)));
+
+    let reader = HubReader::default();
+    let pool = ClientPool::default();
+    loop {
+        let records = read_registry(&registry).unwrap();
+        assert!(records.iter().all(|r| r.hub_member), "{records:?}");
+        let jobs = f
+            .core
+            .fetch_jobs(&records, &f.tokens, &|p| std::fs::read_to_string(p).ok());
+        let read = read_local(
+            &pool,
+            &reader,
+            Some((&origin, &token)),
+            true,
+            &records,
+            &jobs,
+        );
+        if read.via_hub.contains(&f.key) {
+            assert!(
+                matches!(read.hub, HubStatus::Serving { members: 1, .. }),
+                "{:?}",
+                read.hub
+            );
+            assert!(pool.is_empty(), "the member was not polled");
+            let st = read.states[&f.key].as_ref().unwrap();
+            assert_eq!(st.running, 0);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline + Duration::from_secs(30),
+            "the hub never covered the daemon: {:?}",
+            read.hub
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn fake_login_shell(dir: &std::path::Path, agent_dir: &std::path::Path) -> PathBuf {
     let sh = dir.join("fake-zsh");
     std::fs::write(

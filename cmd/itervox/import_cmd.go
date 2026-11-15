@@ -18,12 +18,14 @@ import (
 
 // `itervox import WORKFLOW.md` (#158) converts a Symphony workflow, or an
 // Itervox v0.x one, into the current layout: the layered settings (agent,
-// polling, server, workspace) move to .itervox/settings.jsonc, written with
-// the generic comment-preserving writer; profile prompts move to prompt files
+// automations, dependencies, hooks, hub, polling, server, tracker, workspace;
+// #239) move to .itervox/settings.jsonc, written with the generic
+// comment-preserving writer; profile prompts move to prompt files
 // (.itervox/agents/<name>/SOUL.md and INSTRUCTIONS.md, as `itervox init
-// --update` does); the tracker, hooks and the worker prompt (the body) stay in
-// WORKFLOW.md, stamped itervox_schema_version 2. The original is kept as
-// WORKFLOW.md.bak, and every key it could not map is printed.
+// --update` does); the worker prompt (the body) stays in WORKFLOW.md, stamped
+// itervox_schema_version 2, with the profiles and an inline secret (a secret
+// moves only as a $VAR reference). The original is kept as WORKFLOW.md.bak,
+// and every key it could not map is printed.
 
 const importUsage = `usage: itervox import [--force] WORKFLOW.md`
 
@@ -126,8 +128,11 @@ func importWorkflow(path string, force bool, now time.Time) (importResult, error
 	var remove []string
 	for _, f := range config.SettingFields {
 		v, ok := lookupSetting(front, f.Key)
-		if !ok || f.Editor != "" || f.Key == "agent.available_models" {
+		if !ok || config.KeptInFrontMatter(f.Key) {
 			continue // profiles and models stay where their editors write them
+		}
+		if f.Key == "tracker.filter" {
+			v = filterAsList(v) // a single group may be written as a map
 		}
 		if err := config.ValidateSettingValue(f.Key, normalizeYAMLValue(v)); err != nil {
 			res.unmapped = append(res.unmapped, fmt.Sprintf("%s: %v (left in WORKFLOW.md)", f.Key, err))

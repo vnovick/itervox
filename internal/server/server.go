@@ -14,6 +14,7 @@ import (
 	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationdef"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
 
@@ -48,7 +49,9 @@ var ErrBackendLimited = errors.New("server: agent backend is limited")
 
 // RunningRow is a single row in the active sessions table.
 type RunningRow struct {
-	Identifier    string    `json:"identifier"`
+	Identifier string `json:"identifier"`
+	// Title is the issue's title (#240: itervox watch lanes).
+	Title         string    `json:"title,omitempty"`
 	State         string    `json:"state"`
 	TurnCount     int       `json:"turnCount"`
 	LastEvent     string    `json:"lastEvent,omitempty"`
@@ -80,6 +83,13 @@ type RunningRow struct {
 	// RulesHash / RuleIDs name the rule set the run was given (#157).
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIds,omitempty"`
+	// Profile is the run's resolved agent profile, empty for the default
+	// (#240).
+	Profile string `json:"profile,omitempty"`
+	// CostUSDEstimated is the run's session-cumulative estimated cost as
+	// its backend reports it (Claude's total_cost_usd, CORE-091); null
+	// until reported, and always null for Codex (#240).
+	CostUSDEstimated *float64 `json:"costUsdEstimated,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -1254,6 +1264,10 @@ type InputRequiredRow struct {
 	// AgeMinutes is the wall-clock age of the entry in whole minutes — handy
 	// for the dashboard tooltip without re-parsing QueuedAt on every render.
 	AgeMinutes int `json:"ageMinutes,omitempty"`
+	// GuardrailApproval marks a guardrail approval request (#204): a reply
+	// whose first word is approve/yes/ok runs the held command once; any
+	// other reply rejects it (#240: itervox watch prints itervox approve).
+	GuardrailApproval bool `json:"guardrailApproval,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -1468,6 +1482,10 @@ type Config struct {
 	// tunnel, MagicDNS, container service name) the Host guard accepts in
 	// server.allow_unauthenticated mode. Ignored in token mode.
 	AllowedHosts []string
+	// AllowedOrigins is server.allowed_origins (#231), normalized: origins
+	// whose pages may call the API cross-origin (internal/cors). Empty:
+	// same-origin only.
+	AllowedOrigins []string
 	// Readiness supplies the /api/v1/ready probe's inputs (CORE-043). It must
 	// be cheap and lock-light — atomics published by the event loop plus the
 	// tracker rate-limit gate — and must never take cfgMu or build a
@@ -1522,6 +1540,13 @@ type Config struct {
 	// Changes backs GET /api/v1/issues/{identifier}/context and /diff
 	// (#215). Nil answers 503.
 	Changes ChangesClient
+	// ChangeReview and GitHubPRs back change review (#238): line comments
+	// to the running agent or the PR, operator PR reviews, and the diff's
+	// PR source. GitHubPRs is the PR-event watcher's GitHub client (the
+	// daemon's existing credentials). Either nil: no PR source, and the
+	// PR routes answer 409 no_pr.
+	ChangeReview ChangeReviewClient
+	GitHubPRs    PRReviewAPI
 	// Playbooks backs the playbook, decision-log and verify-skill-issue
 	// endpoints (#218). Nil answers 503.
 	Playbooks PlaybooksClient
@@ -1594,6 +1619,10 @@ type Server struct {
 	dispatch DispatchClient
 	// changes mirrors Config.Changes (#215).
 	changes ChangesClient
+	// changeReview / github mirror Config.ChangeReview / Config.GitHubPRs
+	// (#238).
+	changeReview ChangeReviewClient
+	github       PRReviewAPI
 	// playbooks / steeringPhrases mirror Config.Playbooks /
 	// Config.SteeringPhrases (#218).
 	playbooks       PlaybooksClient
@@ -1651,6 +1680,8 @@ func New(cfg Config) *Server {
 		version:             cfg.Version,
 		dispatch:            cfg.Dispatch,
 		changes:             cfg.Changes,
+		changeReview:        cfg.ChangeReview,
+		github:              cfg.GitHubPRs,
 		playbooks:           cfg.Playbooks,
 		steeringPhrases:     cfg.SteeringPhrases,
 	}
@@ -1662,6 +1693,9 @@ func New(cfg Config) *Server {
 	// wraps the authenticated sub-router. Must be registered before routes()
 	// per chi's "middleware before routes" rule.
 	s.router.Use(securityHeadersMiddleware)
+	// #231: the CORS allow-list, ahead of auth so a listed origin's
+	// preflight (which carries no token) is answered.
+	s.router.Use(cors.Middleware(cfg.AllowedOrigins))
 	// CORE-162: DNS-rebinding guard, ahead of every route (SPA, static files,
 	// /api, SSE). Unauthenticated mode only — see hostGuard for why token
 	// mode does not need it.
@@ -1693,6 +1727,13 @@ func (s *Server) Notify() {
 	s.bc.notify()
 }
 
+// DashboardHandler serves the embedded dashboard (static files, index.html
+// fallback) behind the daemon's hardening headers, for the hub (#228),
+// which serves the same bundle on its own listener.
+func DashboardHandler() http.Handler {
+	return securityHeadersMiddleware(spaHandler())
+}
+
 func spaHandler() http.Handler {
 	fs := spaFS()
 	fileServer := http.FileServer(fs)
@@ -1701,6 +1742,16 @@ func spaHandler() http.Handler {
 		// and a stale copy would load old bundles after a binary rebuild.
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		// #231: the web app manifest and the service worker are not hashed,
+		// so they must be revalidated too; the manifest's type is not in
+		// every system's MIME table.
+		switch r.URL.Path {
+		case "/manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
+			w.Header().Set("Cache-Control", "no-cache")
+		case "/sw.js":
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		f, err := fs.Open(r.URL.Path)
 		if err != nil {
@@ -1758,6 +1809,7 @@ func (s *Server) routes() {
 			r.Post("/tokens/{id}/rotate", s.handleRotateToken)
 			r.Get("/state", s.handleState)
 			r.Get("/summary", s.handleSummary)                                     // #212: ETag'd poll target for supervisors
+			r.Get("/route-scopes", s.handleRouteScopes)                            // #228: the hub's proxy reads it
 			r.Get("/feed", s.handleFeed)                                           // #213: the event feed, by cursor
 			r.Post("/dispatch/pause", s.handlePauseDispatch)                       // #213
 			r.Post("/dispatch/resume", s.handleResumeDispatch)                     // #213
@@ -1783,10 +1835,12 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
-			r.Get("/issues/{identifier}/context", s.handleIssueContext)       // #215
-			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)             // #215: hunks need operator
-			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
-			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
+			r.Get("/issues/{identifier}/context", s.handleIssueContext)           // #215
+			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
+			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)

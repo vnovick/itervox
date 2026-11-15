@@ -141,7 +141,10 @@ export default function IssueDetailSlide() {
           aria-labelledby="issue-tab-changes"
         >
           <Suspense fallback={<p className="text-theme-muted text-sm">Loading changes…</p>}>
-            <IssueChangesTab identifier={issue.identifier} />
+            <IssueChangesTab
+              identifier={issue.identifier}
+              live={issue.orchestratorState === 'running'}
+            />
           </Suspense>
         </div>
       ) : (

@@ -44,6 +44,11 @@ const (
 	FeedLessonProposed    = "lesson_proposed"
 	FeedDispatchPaused    = "dispatch_paused"
 	FeedDispatchResumed   = "dispatch_resumed"
+	// #238: an operator's line comment from the dashboard's diff, sent to
+	// the running agent (via "agent") or posted on the PR (via "github"),
+	// and an operator's PR review. Never the comment text.
+	FeedReviewCommentPosted         = "review_comment_posted"
+	FeedPRReviewSubmittedByOperator = "pr_review_submitted_by_operator"
 )
 
 // FeedCap and FeedMaxAge bound the feed: the newest FeedCap events, none
@@ -84,7 +89,7 @@ type FeedPayload struct {
 	// Kind is the guardrail kind (guardrail_blocked).
 	Kind string `json:"kind,omitempty"`
 	// Via is how an input or approval was answered ("dashboard",
-	// "tracker", "dismiss").
+	// "slack" (#230), "agent", "tracker", "dismiss").
 	Via string `json:"via,omitempty"`
 	// MemoryID is the proposed lesson's entry (lesson_proposed).
 	MemoryID string `json:"memoryId,omitempty"`
@@ -92,6 +97,9 @@ type FeedPayload struct {
 	Reason string `json:"reason,omitempty"`
 	// Until is when a pause expires (dispatch_paused); zero = until resumed.
 	Until time.Time `json:"until,omitzero"`
+	// Count is how many line comments an operator's PR review carried
+	// (pr_review_submitted_by_operator, #238).
+	Count int `json:"count,omitempty"`
 }
 
 // FeedEvent is one feed entry. Seq increases by one per event and never

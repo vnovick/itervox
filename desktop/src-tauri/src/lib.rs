@@ -8,10 +8,13 @@ pub mod client;
 pub mod daemon_state;
 pub mod dashboard;
 pub mod events;
+pub mod hub_notify;
+pub mod hub_source;
 pub mod menu;
 pub mod model;
 pub mod projects;
 pub mod prompt;
+pub mod rail;
 pub mod registry;
 pub mod remote;
 pub mod remote_model;
@@ -26,6 +29,7 @@ pub mod tunnel;
 pub mod update;
 
 mod app;
+mod app_hub;
 mod app_remote;
 mod app_update;
 

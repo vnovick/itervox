@@ -9,11 +9,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/vnovick/itervox/internal/apitokens"
+	"github.com/vnovick/itervox/internal/hub"
 )
 
 // `itervox token` (#214) manages the stored API tokens in
@@ -27,11 +29,16 @@ import (
 //	itervox token list
 //	itervox token revoke ID
 //	itervox token rotate [ID]   (no ID: the only stored admin token)
+//
+// --hub (#228) points every subcommand at the hub's own store instead,
+// ~/.itervox/hub/tokens.json: hub tokens open the hub URL and cap what the
+// hub may do on every member.
 
-const tokenUsage = `usage: itervox token create --name NAME --scope viewer|operator|admin [--expires 90d|12h|2027-01-31] [--workflow WORKFLOW.md]
-       itervox token list [--workflow WORKFLOW.md] [--json]
-       itervox token revoke ID [--workflow WORKFLOW.md]
-       itervox token rotate [ID] [--workflow WORKFLOW.md]   (no ID: the only stored admin token)`
+const tokenUsage = `usage: itervox token create --name NAME --scope viewer|operator|admin [--expires 90d|12h|2027-01-31] [--workflow WORKFLOW.md | --hub]
+       itervox token list [--workflow WORKFLOW.md | --hub] [--json]
+       itervox token revoke ID [--workflow WORKFLOW.md | --hub]
+       itervox token rotate [ID] [--workflow WORKFLOW.md | --hub]   (no ID: the only stored admin token)
+--hub manages the hub's own token store (~/.itervox/hub/tokens.json), whose tokens open the hub URL.`
 
 // tokenCLIActor names the CLI in the store's audit log lines.
 const tokenCLIActor = "cli"
@@ -54,6 +61,7 @@ func tokenCmd(args []string, out, errOut io.Writer, now time.Time) int {
 	scopeFlag := fs.String("scope", "", "create: viewer, operator or admin")
 	expiresFlag := fs.String("expires", "", "create: expiry, e.g. 90d, 12h, 2027-01-31 (default: never)")
 	asJSON := fs.Bool("json", false, "list: print JSON")
+	hubStore := fs.Bool("hub", false, "manage the hub's token store (~/.itervox/hub/tokens.json, #228) instead of the project's")
 	// Flags may come before or after the positional ID.
 	var positional []string
 	rest := args[1:]
@@ -67,11 +75,22 @@ func tokenCmd(args []string, out, errOut io.Writer, now time.Time) int {
 		positional = append(positional, fs.Arg(0))
 		rest = fs.Args()[1:]
 	}
-	store := apitokens.Open(apitokens.Path(*workflow))
 	fail := func(err error) int {
 		_, _ = fmt.Fprintf(errOut, "itervox token %s: %v\n", sub, err)
 		return 1
 	}
+	storePath := apitokens.Path(*workflow)
+	if *hubStore {
+		dir, err := hubStateDir()
+		if err == nil {
+			err = ensurePrivateDir(dir)
+		}
+		if err != nil {
+			return fail(err)
+		}
+		storePath = filepath.Join(dir, hub.TokenStoreFileName)
+	}
+	store := apitokens.Open(storePath)
 	switch sub {
 	case "create":
 		if len(positional) > 0 {

@@ -4,6 +4,14 @@ import { getToken, useTokenStore } from './tokenStore';
 import { TokenEntryScreen } from './TokenEntryScreen';
 import { ServerDownScreen } from './ServerDownScreen';
 import { AUTH_PROBE_TIMEOUT_MS } from '../utils/timings';
+import { authProbeUrl, getApiContext, healthUrl } from './apiBase';
+import { PairDeviceScreen } from './PairDeviceScreen';
+
+/** #231 — /hub/pair is the phone's pairing page: shown before any token. */
+function isPairingPage(): boolean {
+  const ctx = getApiContext();
+  return ctx.mode === 'hub' && ctx.view === 'pair';
+}
 
 /**
  * Top-level wrapper that gates the app on successful authentication.
@@ -56,11 +64,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
     captureTokenFromUrl();
   }, []);
 
+  const pairing = isPairingPage();
   useEffect(() => {
-    if (status === 'unknown') {
+    if (status === 'unknown' && !pairing) {
       void probe();
     }
-  }, [status, probe]);
+  }, [status, probe, pairing]);
+
+  if (pairing) return <PairDeviceScreen />;
 
   if (status === 'authorized') return <>{children}</>;
   if (status === 'needsToken') return <TokenEntryScreen />;
@@ -105,7 +116,7 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Re
 async function probeOnce(): Promise<void> {
   // Health probe — unauthenticated.
   try {
-    const health = await fetchWithTimeout('/api/v1/health');
+    const health = await fetchWithTimeout(healthUrl());
     if (!health.ok) {
       useAuthStore.getState().setStatus('serverDown');
       return;
@@ -120,7 +131,7 @@ async function probeOnce(): Promise<void> {
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   try {
-    const res = await fetchWithTimeout('/api/v1/state', { headers });
+    const res = await fetchWithTimeout(authProbeUrl(), { headers });
     if (res.status === 401) {
       useTokenStore.getState().clearToken();
       useAuthStore

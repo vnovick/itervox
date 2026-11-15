@@ -109,3 +109,46 @@ func TestProvideInputFromAgentUsesAgentPath(t *testing.T) {
 	assert.Equal(t, []string{"ENG-1:approve"}, human)
 	assert.Len(t, g.agent, 1)
 }
+
+// viaClient records ProvideInputVia calls (#230).
+type viaClient struct {
+	FuncClient
+	via []string
+}
+
+func (c *viaClient) ProvideInputVia(identifier, message, via string) error {
+	c.via = append(c.via, identifier+":"+message+":"+via)
+	return nil
+}
+
+// TestProvideInputViaSlackIsAHumanReply (#230): provide-input's optional
+// via "slack" goes through the human path with the channel recorded; an
+// unknown via, or via together with fromAgent, is refused.
+func TestProvideInputViaSlackIsAHumanReply(t *testing.T) {
+	g := &agentInputGuardrails{}
+	c := &viaClient{}
+	srv := New(Config{
+		Snapshot:    func() StateSnapshot { return StateSnapshot{} },
+		RefreshChan: make(chan struct{}, 1),
+		Client:      c,
+		Guardrails:  g,
+	})
+	post := func(body string) int {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/issues/ENG-1/provide-input", strings.NewReader(body))
+		req.Host = "127.0.0.1:8090"
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	require.Equal(t, http.StatusAccepted, post(`{"message":"approve","via":"slack"}`))
+	assert.Equal(t, []string{"ENG-1:approve:slack"}, c.via)
+	assert.Empty(t, g.agent, "a Slack reply never takes the agent path")
+
+	assert.Equal(t, http.StatusBadRequest, post(`{"message":"approve","via":"sms"}`))
+	assert.Equal(t, http.StatusBadRequest, post(`{"message":"approve","via":"slack","fromAgent":true}`))
+	assert.Len(t, c.via, 1)
+	assert.Empty(t, g.agent)
+}
