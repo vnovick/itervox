@@ -200,13 +200,18 @@ jobs:
       # Entitlements.plist when APPLE_SIGNING_IDENTITY is set (the keychain
       # is the temporary one imported above). Notarization is done below, so
       # no notarization credentials reach this step. The version is stamped
-      # from the tag so the updater compares the right numbers.
+      # from the tag so the updater compares the right numbers. Without the
+      # Apple secrets the app is signed ad hoc (identity "-"): only the
+      # executables would otherwise carry the linker's signature, the bundle's
+      # resources would be unsealed (`codesign --verify --deep --strict`
+      # fails) and a downloaded copy would read as "damaged" rather than
+      # offering Open Anyway.
       - name: Build the app
         env:
           APPLE_SIGNING_IDENTITY: ${{ steps.mode.outputs.sign == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then unset APPLE_SIGNING_IDENTITY; fi
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then export APPLE_SIGNING_IDENTITY=-; fi
           cd "$TAURI_DIR"
           cargo tauri build --target universal-apple-darwin --bundles app \
             --config "{\"version\":\"$VERSION\"}"
