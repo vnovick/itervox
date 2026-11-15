@@ -156,7 +156,7 @@ func TestStatusAllJSONListsEveryRunningDaemon(t *testing.T) {
 		if !ok {
 			t.Fatalf("pid %d missing from status --all --json:\n%s", tc.pid, out)
 		}
-		wantURL := readTrim(t, dashboardURLFilePath(tc.p.Workflow))
+		wantURL := tc.p.dashboardURL(t)
 		switch {
 		case rec.SchemaVersion != daemonRecordSchemaVersion:
 			t.Errorf("pid %d: schema_version = %d", tc.pid, rec.SchemaVersion)
@@ -239,7 +239,7 @@ func fileTreeContains(t *testing.T, root, needle string) string {
 // value ("" sends none).
 func (p *daemonProject) apiStatus(t *testing.T, path, auth string) int {
 	t.Helper()
-	base := strings.TrimSuffix(readTrim(t, dashboardURLFilePath(p.Workflow)), "/")
+	base := strings.TrimSuffix(p.dashboardURL(t), "/")
 	req, err := http.NewRequest(http.MethodGet, base+path, nil)
 	if err != nil {
 		t.Fatal(err)

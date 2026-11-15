@@ -12,7 +12,7 @@ Automations let Itervox dispatch an agent profile automatically when a trigger f
 An automation is made of four parts:
 
 1. **Trigger** — what wakes the automation up.
-2. **Profile** — which agent profile runs.
+2. **Profile** — which agent profile runs. Required: a rule without `profile` (or without `id` or `trigger.type`) is a config error that names the rule, so the daemon, a `WORKFLOW.md` reload and `itervox doctor` refuse it.
 3. **Instructions** — a small prompt overlay added on top of that profile.
 4. **Filters** — optional guards that narrow the issues or trigger contexts the automation should handle.
 
@@ -38,6 +38,11 @@ That means automations inherit the same:
 - tracker integrations
 - workspace behavior
 - logs and history
+
+Two things differ from a worker run, because an automation's task is its own job (answer a question, triage a failure, review a PR), not the issue's implementation:
+
+- **One turn.** An automation run takes a single agent turn, whatever its trigger (`cron`, `input_required`, `issue_entered_state`, `pr_*` and the rest). A worker run keeps taking continuation turns up to `agent.max_turns` while its issue stays in an active state; an automation run does not, so a helper on an active issue does not redo its job up to `max_turns` times. A message you send it from the Sessions panel still gets it one more turn. The `rate_limited` recovery run with `auto_resume` and `switch_to_profile` is the exception: it continues the issue's implementation, so it runs as a worker, with `max_turns`.
+- **Its handoff stays.** An automation run writes and commits its handoff like a worker run (`chore(itervox): record agent handoff`, on the issue branch). With `workspace.auto_clear` on, its success does not clear the worktree while the issue is not in a terminal state, so the next run on the issue (the implementer after a researcher, in an `issue_entered_state` chain) starts in the same worktree and sees that handoff under `## Prior Agent Handoffs`. The worktree is cleared as before once a run ends with the issue terminal.
 
 ## v0.2.0 release boundary
 
@@ -131,6 +136,8 @@ Important behavior:
 - the issue still enters the normal input-required state
 - the helper automation runs against that same issue
 - if the selected profile is allowed to use `provide_input`, it can resume the blocked run through the daemon
+- the helper takes one turn: once it has answered, it ends, and the blocked run resumes once, with the answer, after the helper's exit (a second `provide-input` for the same request finds nothing to answer)
+- the helper's prompt still contains the issue's task from the `WORKFLOW.md` body, so its profile must say that answering is its whole job. The `input-responder` profile `itervox init` scaffolds says so: answer once with `provide-input`, never edit files, commit, push, open a pull request or move the issue. That is guidance in the prompt, not a sandbox; for a hard stop on pushes, give the profile `push: daemon` (see [Patches only](/guides/agent-profiles/#patches-only-the-daemon-pushes)), which needs `guardrails.enabled` and no `agent.ssh_hosts`. An automation run is never pushed by the daemon.
 
 Relevant fields:
 
@@ -169,6 +176,8 @@ Use this when you want state-driven automation such as:
 Required field:
 
 - `trigger.state`
+
+A move into the trigger state from a state the automation poll does not fetch (Backlog, say) still fires; an issue created directly in the trigger state after the previous poll does not. Telling the two apart needs the issue's creation time: Linear and GitHub always report one, and for a [local issue file](/guides/local-issues/) without `created:` Itervox uses the file's modification time when it first read the file.
 
 ### `issue_moved_to_backlog`
 
@@ -272,8 +281,15 @@ Fires when dependency audit observes that an issue which was previously blocked 
 Use this for the release-safe backlog-to-Todo flow:
 
 - keep the source-state filter to `backlog` / `Backlog` by default
-- set `policy.move_to_state` only when the selected profile has `move_state`
+- set `policy.move_to_state` only when the selected profile has `move_state` in its `allowed_actions`; the config is refused otherwise
 - do not include review, PR-open, merged, or closed states in the default filter
+
+How Itervox finds the issue. Issues in `tracker.active_states` are audited on every poll. An issue in any other state (Backlog) is not a candidate, so the dependency refresh scans for it: off the event loop, it lists the issues in the states the rule can fire in and audits each one's blockers. That scan reads:
+
+- the rule's `filter.states` (or `states_any`), when they bound the match;
+- `tracker.backlog_states` as well, when the rule names no states or uses `match_mode: any`. With neither (GitHub's default `backlog_states` is empty) nothing is scanned, and the rule fires only for issues the active-state poll covers.
+
+It runs once per `agent.dependency_audit_refresh_interval_ms` (default 10 minutes), and sooner after another issue's blockers resolve. The issue has to be seen blocked first: a scan records it as blocked, and the first scan or refresh after its last blocker reaches a terminal state fires the rule. Expect up to one interval between the blocker closing and the dispatch; lower the interval for a faster backlog-to-Todo move, at the cost of one more tracker list read per interval. An issue whose blockers were already terminal the first time Itervox saw it does not fire.
 
 ```yaml
 automations:
@@ -631,7 +647,7 @@ The `policy` block controls behavior beyond the trigger and filter:
 
 - `auto_resume` — for `input_required` triggers: if the helper agent uses `provide_input`, resume the blocked run automatically.
 - `auto_switch` — for `rate_limited` triggers: required for automatic profile/backend switching. `auto_resume: true` is accepted as a compatibility alias.
-- `switch_to_profile` — for `rate_limited` triggers: reassign the issue to this profile when rate-limited.
+- `switch_to_profile` — for `rate_limited` triggers: reassign the issue to this profile when rate-limited. The issue's `agentProfile` shows the new profile and its next runs use it, even when an operator had pinned a profile on the issue before the switch. The switch is reverted after a successful run or after `agent.switch_revert_hours`, and the operator's pin then applies again; a pin set after the switch wins over it. `agent.max_switches_per_issue_per_window` caps how often an issue is switched.
 - `switch_to_backend` — for `rate_limited` triggers: override the backend when switching.
 - `cooldown_minutes` — for `rate_limited` triggers: minimum minutes before the automation can fire again on the same issue.
 - `move_to_state` — for `blockers_resolved` triggers: opt into moving matching unblocked issues to a target state. The selected profile must allow `move_state`.

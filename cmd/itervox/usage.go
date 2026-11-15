@@ -73,6 +73,15 @@ Commands:
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --all      also list daemons from other projects
 
+  open    Open the running daemon's dashboard in your browser, logged in
+          (the URL carries the API token as ?token=; the dashboard keeps it
+          and removes it from the address bar)
+             --print    print that URL instead (it contains a credential)
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --logs-dir the daemon's logs dir, where an auto-generated
+                        token is (default: ~/.itervox/logs/...)
+             --url      the daemon's address (default: .itervox/dashboard_url)
+
   attest  Check signed check records (agent.profiles.<name>.verify)
              verify FILE  the .jsonl records of one run: signatures and the
                           run's final tree

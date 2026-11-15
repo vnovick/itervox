@@ -70,7 +70,7 @@ func startConfigWatchDebounce(t *testing.T, path string, debounce time.Duration)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = watchConfigFiles(ctx, path, cfg, func() { w.reloads.Add(1) }, configWatchOptions{
+		_ = watchConfigFiles(ctx, path, cfg, func([]string) { w.reloads.Add(1) }, configWatchOptions{
 			Poll:     5 * time.Millisecond,
 			Debounce: debounce,
 			Settled: func(judged []string) {

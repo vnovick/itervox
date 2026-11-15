@@ -146,11 +146,13 @@ func shutdownDrain(sig os.Signal, dc *drainControl, grace time.Duration, sigCh <
 	}
 }
 
-// reloadDrain drains before applying an operator edit to WORKFLOW.md. It
-// returns the generation's exit error and shutdown=true when the daemon must
-// exit instead of reloading (a signal arrived, or the top-level ctx ended).
-func reloadDrain(ctx context.Context, dc *drainControl, grace time.Duration, sigCh <-chan os.Signal, runDone <-chan error, runCancel, cancel context.CancelFunc) (runErr error, shutdown bool) {
-	slog.Info("reload: WORKFLOW.md changed — draining in-flight turns before applying it (no new work is admitted meanwhile)",
+// reloadDrain drains before applying an operator edit to WORKFLOW.md or a
+// settings file; changed names the edited file(s) for the log lines
+// (changedConfigFilesLabel). It returns the generation's exit error and
+// shutdown=true when the daemon must exit instead of reloading (a signal
+// arrived, or the top-level ctx ended).
+func reloadDrain(ctx context.Context, dc *drainControl, changed string, grace time.Duration, sigCh <-chan os.Signal, runDone <-chan error, runCancel, cancel context.CancelFunc) (runErr error, shutdown bool) {
+	slog.Info("reload: "+changed+" changed — draining in-flight turns before applying it (no new work is admitted meanwhile)",
 		"grace", grace.String())
 	end, sig, err := awaitDrain(dc, grace, sigCh, runDone)
 	switch end {
@@ -161,9 +163,9 @@ func reloadDrain(ctx context.Context, dc *drainControl, grace time.Duration, sig
 		shutdownDrain(sig, dc, grace, sigCh, runDone, cancel)
 		return nil, true
 	case drainEndDrained:
-		slog.Info("reload: drain complete, applying WORKFLOW.md")
+		slog.Info("reload: drain complete, applying " + changed)
 	case drainEndGrace:
-		slog.Warn("reload: drain grace expired, cancelling in-flight turns to apply WORKFLOW.md", "grace", grace.String())
+		slog.Warn("reload: drain grace expired, cancelling in-flight turns to apply "+changed, "grace", grace.String())
 	}
 	runErr, ok := stopGeneration(runCancel, runDone, 0, sigCh)
 	if !ok { // a signal while waiting for the generation: exit
