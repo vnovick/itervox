@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "itervox": {
+      "command": "itervox",
+      "args": ["mcp", "--project", "${CLAUDE_PROJECT_DIR}", "--token-scope", "${user_config.token_scope}"]
+    }
+  }
+}
