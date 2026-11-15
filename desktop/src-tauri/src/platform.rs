@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(accelerator(Os::Linux, "CmdOrCtrl+Shift+]"), "Ctrl+Shift+]");
         assert_eq!(accelerator(Os::Windows, "CmdOrCtrl+Alt+S"), "Ctrl+Alt+S");
         // Every rail shortcut becomes a Ctrl shortcut off the Mac.
-        for (_, _, accel) in crate::rail::menu_items() {
+        for (_, _, accel) in crate::rail::menu_items(&crate::rail::test_rail(&["a", "b"])) {
             for os in [Os::Linux, Os::Windows] {
                 let a = accelerator(os, &accel);
                 assert!(a.starts_with("Ctrl+"), "{os:?}: {a}");

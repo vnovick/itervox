@@ -277,7 +277,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // each dashboard window its own menu bar (app_dash.rs `create`), with
     // Ctrl accelerators (#260).
     #[cfg(target_os = "macos")]
-    dash::install_app_menu(app)?;
+    dash::install_app_menu(app, &shared)?;
     let rail_shared = Arc::clone(&shared);
     app.on_menu_event(move |app, event| {
         // The Go menu: a page of the focused dashboard, in place.
