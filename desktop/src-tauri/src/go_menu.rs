@@ -1,17 +1,17 @@
 //! The Go menu of the dashboard windows: every page of the dashboard, opened
 //! in place in the focused window's dashboard webview. The embedded
-//! dashboard (see [`crate::dashboard::SHELL_GLOBAL`]) has no sidebar of its
-//! own; this menu and its top bar's "More" menu are how its pages are
-//! reached. Plain data, so the ids, labels and paths are testable without a
+//! dashboard (see [`crate::dashboard::SHELL_GLOBAL`]) shows its own sidebar
+//! too; this menu reaches the same pages from the keyboard and the menu
+//! bar. Plain data, so the ids, labels and paths are testable without a
 //! window system; `app_dash.rs` builds the native menu and evaluates
 //! [`crate::dashboard::navigate_script`] for the chosen path.
 
 /// Prefix of the Go menu's item ids.
 pub const GO_MENU_ID_PREFIX: &str = "itervox-go-";
 
-/// The Go menu: (id suffix, label, in-app path). Same pages, same order as
-/// the dashboard's "More" menu (web/src/layout/embeddedPages.ts), plus New
-/// Task…, which opens the board's New task form (`?newTask=1`, #251).
+/// The Go menu: (id suffix, label, in-app path). The pages of the embedded
+/// dashboard's sidebar (web/src/App.tsx `NAV_ITEMS`, plus Issue View), plus
+/// New Task…, which opens the board's New task form (`?newTask=1`, #251).
 const ITEMS: &[(&str, &str, &str)] = &[
     ("board", "Board", "/"),
     ("issue-view", "Issue View", "/focus"),
@@ -106,10 +106,11 @@ mod tests {
         assert_eq!(at, [2, items.len() - 1]);
     }
 
-    /// Drift guard: every Go menu page is a route of the dashboard, and the
-    /// dashboard's "More" menu lists the same pages in the same order.
+    /// Drift guard: every Go menu page is a route of the dashboard and an
+    /// entry of the embedded dashboard's sidebar, and every sidebar entry
+    /// is in the Go menu.
     #[test]
-    fn go_menu_matches_the_dashboard_routes_and_more_menu() {
+    fn go_menu_matches_the_dashboard_routes_and_sidebar() {
         let read = |rel: &str| {
             std::fs::read_to_string(format!(
                 "{}/../../web/src/{rel}",
@@ -118,8 +119,14 @@ mod tests {
             .unwrap_or_else(|e| panic!("{rel}: {e}"))
         };
         let app = read("App.tsx");
-        let pages = read("layout/embeddedPages.ts");
-        let mut last = 0;
+        assert!(
+            !std::path::Path::new(&format!(
+                "{}/../../web/src/layout/embeddedPages.ts",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .exists(),
+            "the top bar's More menu is gone"
+        );
         for (suffix, _, path) in ITEMS {
             if *suffix == "new-task" {
                 assert!(read("hooks/useUrlState.ts").contains("newTask"));
@@ -132,15 +139,20 @@ mod tests {
                 p => assert!(app.contains(&format!(r#"path="{p}""#)), "route {p}"),
             }
             let entry = if *path == "/focus" {
-                "path: FOCUS_PATH".to_string()
+                "{ to: FOCUS_PATH, icon: <FocusIcon />, label: 'Issue view' }".to_string()
             } else {
-                format!("path: '{path}'")
+                format!("{{ to: '{path}', icon:")
             };
-            let at = pages
-                .find(&entry)
-                .unwrap_or_else(|| panic!("More menu lacks {path}"));
-            assert!(at >= last, "More menu order differs at {path}");
-            last = at;
+            assert!(app.contains(&entry), "the sidebar lacks {path}");
+        }
+        // Every sidebar entry has a Go menu item.
+        for (i, _) in app.match_indices("{ to: '") {
+            let rest = &app[i + "{ to: '".len()..];
+            let path = &rest[..rest.find('\'').unwrap()];
+            assert!(
+                ITEMS.iter().any(|(_, _, p)| *p == path),
+                "the Go menu lacks the sidebar's {path}"
+            );
         }
     }
 }

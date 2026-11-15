@@ -1,7 +1,7 @@
 //! Tauri glue: the tray icon and menu, the refresh thread, start/stop
 //! threads, notifications and dashboard windows. The decisions live in the
 //! plain modules; this file only wires them to the window system. The
-//! dashboard windows and their project rail (#244) are in `app_dash.rs`.
+//! dashboard windows and their project tabs (#244) are in `app_dash.rs`.
 
 #[path = "app_dash.rs"]
 mod dash;
@@ -55,7 +55,7 @@ struct Shared {
     output_dir: PathBuf,
     menu_actions: Mutex<HashMap<String, MenuAction>>,
     targets: Mutex<NotificationTargets>,
-    /// The dashboard windows and their rails (#244).
+    /// The dashboard windows and their project tabs (#244).
     dash: dash::Dash,
     /// The hub window: its label and the token and origin it was created
     /// with.
@@ -273,7 +273,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     app_update::refresh_cli_copy(app, shared.sidecar.as_deref().ok());
 
     // #244: the Projects menu's shortcuts act on the focused dashboard
-    // window's rail. The Mac has one app menu bar; Linux and Windows give
+    // window (its tab strip). The Mac has one app menu bar; Linux and Windows give
     // each dashboard window its own menu bar (app_dash.rs `create`), with
     // Ctrl accelerators (#260).
     #[cfg(target_os = "macos")]
@@ -286,6 +286,15 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             let _ = std::thread::Builder::new()
                 .name("itervox-go".into())
                 .spawn(move || dash::go(&app, &shared, path));
+            return;
+        }
+        // A tab's menu or the overflow list (native popups of a window's
+        // tab strip): the item id names its window.
+        if let Some((label, action)) = crate::rail::tab_menu_command(event.id().as_ref()) {
+            let (app, shared) = (app.clone(), Arc::clone(&rail_shared));
+            let _ = std::thread::Builder::new()
+                .name("itervox-tabs".into())
+                .spawn(move || dash::handle_action(&app, &shared, &label, action));
             return;
         }
         if let Some(cmd) = crate::rail::menu_command(event.id().as_ref()) {
@@ -462,7 +471,7 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
         update_menu(app, shared);
     }
     push_sessions(app, shared);
-    // #244: the rails show this refresh; they read nothing themselves.
+    // #244: the project tabs show this refresh; they read nothing themselves.
     dash::push_all(app, shared, false);
     for alert in &outcome.alerts {
         let id = lock(&shared.targets).register(&alert.project, &alert.url);
@@ -477,7 +486,7 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
 }
 
 /// A machine-health round changed what the tray shows: rebuild the menu,
-/// push the rails and show the model-server notifications (a server that
+/// push the project tabs and show the model-server notifications (a server that
 /// was answering went down, or came back).
 fn machine_changed(app: &AppHandle, shared: &Arc<Shared>, alerts: Vec<HealthAlert>) {
     if debug_enabled() {
@@ -907,7 +916,7 @@ fn stop_daemon(shared: &Shared, key: &str) -> Result<(), String> {
 }
 
 /// Opens (or focuses and navigates) the dashboard window of a project:
-/// the window already showing it, else a new window with the project rail
+/// the window already showing it, else a new window with the project tabs
 /// (#244).
 fn open_dashboard(app: &AppHandle, shared: &Arc<Shared>, key: &str, url: Option<String>) {
     dash::open(app, shared, key, url, dash::Mode::Reuse);
@@ -951,7 +960,7 @@ fn open_hub_page(app: &AppHandle, shared: &Arc<Shared>, page: HubPage) {
 
 /// Shows the hub window at `parsed`, handing it `token` on `origin`
 /// through the initialization script. The hub is its own project switcher,
-/// so its window has no rail.
+/// so its window has no project tabs.
 fn open_hub_window(
     app: &AppHandle,
     shared: &Arc<Shared>,

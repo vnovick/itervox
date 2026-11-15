@@ -1,12 +1,15 @@
-//! Tauri glue of the dashboard windows and their project rail (#244).
+//! Tauri glue of the dashboard windows and their project tabs (#244).
 //!
-//! A dashboard window holds two webviews side by side: the rail (the app's
-//! own `rail.html`, see [`crate::rail`]) and the dashboard of the project
-//! it shows (served by that project's daemon, with the token handed over by
-//! the initialization script of [`crate::dashboard`]). Neither webview has
-//! any IPC permission. Switching projects navigates the dashboard webview
-//! in place when the origin and token stay the same, and otherwise replaces
-//! only that webview — the window and its rail stay.
+//! A dashboard window holds two webviews, one above the other: the tab
+//! strip across the top (the app's own `tabs.html`, see [`crate::rail`])
+//! and, under it at the full width, the dashboard of the project it shows
+//! (served by that project's daemon, with the token handed over by the
+//! initialization script of [`crate::dashboard`]). Neither webview has any
+//! IPC permission. Switching projects navigates the dashboard webview in
+//! place when the origin and token stay the same, and otherwise replaces
+//! only that webview — the window and its tabs stay. A tab's menu and the
+//! overflow list are native popup menus, whose items come back through the
+//! app's menu events ([`crate::rail::tab_menu_command`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -19,12 +22,11 @@ use tauri::{
 
 use super::{error_dialog, lock, read_token_file, Shared};
 use crate::dashboard::origin_of;
-use crate::material::{self, Surface};
 use crate::model::token_for;
 use crate::rail::{
-    build_rail, move_before, nudge, page_plan, page_url, push_script, rail_action,
-    rail_page_allowed, rail_width, switch_plan, DashTarget, PagePlan, RailAction, RailCommand,
-    RailView, SwitchPlan, RAIL_PAGE,
+    build_rail, move_before, nudge, overflow_menu, page_plan, page_url, push_script, rail_action,
+    rail_page_allowed, switch_plan, tab_menu, window_layout, Bounds, DashTarget, PagePlan,
+    RailAction, RailCommand, RailView, SwitchPlan, TabMenuEntry, TABS_PAGE,
 };
 use crate::remote::is_remote_key;
 
@@ -44,8 +46,12 @@ pub(super) struct Dash {
     /// The dashboard window focused last: where the shortcuts act.
     focused: Mutex<Option<String>>,
     generation: AtomicU32,
-    /// The rail last pushed to every window, to skip unchanged pushes.
+    /// The tabs last pushed to every window, to skip unchanged pushes.
     last_push: Mutex<Option<RailView>>,
+    /// The tab menu or overflow list shown last, kept alive until the next
+    /// one: on Linux a popup returns at once, and its items must outlive
+    /// the call to be chosen.
+    popup: Mutex<Option<tauri::menu::Menu<tauri::Wry>>>,
 }
 
 impl Dash {
@@ -71,14 +77,14 @@ pub(super) enum Mode {
     /// The window already showing the project, else a new window (tray,
     /// notifications, the Sessions window).
     Reuse,
-    /// A new window (the rail's "Open in New Window").
+    /// A new window (a tab's "Open in New Window", ⌘-click or middle-click).
     NewWindow,
-    /// In place, in this window (a rail click or shortcut).
+    /// In place, in this window (a tab click or shortcut).
     In(String),
 }
 
-fn rail_label(window: &str) -> String {
-    format!("{window}-rail")
+fn tabs_label(window: &str) -> String {
+    format!("{window}-tabs")
 }
 
 /// The project's dashboard: URL (or `url`, a deep link), origin, token and
@@ -209,11 +215,11 @@ fn switch(
         SwitchPlan::Replace { init_script, .. } => {
             let n = shared.dash.generation.fetch_add(1, Ordering::Relaxed);
             let view = format!("{label}-view-{n}");
-            let (x, w, h) = bounds(window, collapsed(shared));
+            let (_, d) = bounds(window);
             match window.add_child(
                 dash_webview(&view, parsed, init_script),
-                LogicalPosition::new(x, 0.0),
-                LogicalSize::new(w, h),
+                LogicalPosition::new(d.x, d.y),
+                LogicalSize::new(d.width, d.height),
             ) {
                 Ok(v) => {
                     if let Some(old) = current {
@@ -239,30 +245,25 @@ fn switch(
     push_to(app, shared, &label);
 }
 
-fn collapsed(shared: &Shared) -> bool {
-    lock(&shared.core).saved.rail.collapsed
-}
-
-/// The rail's width and the dashboard's x, width and height, in logical
-/// pixels, for the window's current size.
-fn bounds(window: &Window, collapsed: bool) -> (f64, f64, f64) {
+/// The tab strip's and the dashboard's bounds for the window's current
+/// content size (under the native title bar).
+fn bounds(window: &Window) -> (Bounds, Bounds) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window
         .inner_size()
         .map(|s| s.to_logical::<f64>(scale))
         .unwrap_or(LogicalSize::new(1280.0, 860.0));
-    let rail = rail_width(collapsed).min(size.width);
-    (rail, (size.width - rail).max(0.0), size.height)
+    window_layout(size.width, size.height)
 }
 
-fn rect(x: f64, w: f64, h: f64) -> Rect {
+fn rect(b: Bounds) -> Rect {
     Rect {
-        position: LogicalPosition::new(x, 0.0).into(),
-        size: LogicalSize::new(w, h).into(),
+        position: LogicalPosition::new(b.x, b.y).into(),
+        size: LogicalSize::new(b.width, b.height).into(),
     }
 }
 
-/// Lays out a window's rail and dashboard (main thread).
+/// Lays out a window's tab strip and dashboard (main thread).
 fn layout(app: &AppHandle, shared: &Shared, label: &str) {
     let Some(window) = app.get_window(label) else {
         return;
@@ -270,16 +271,16 @@ fn layout(app: &AppHandle, shared: &Shared, label: &str) {
     let view = lock(&shared.dash.windows)
         .get(label)
         .map(|w| w.view.clone());
-    let (x, w, h) = bounds(&window, collapsed(shared));
-    if let Some(r) = app.get_webview(&rail_label(label)) {
-        let _ = r.set_bounds(rect(0.0, x, h));
+    let (strip, dash) = bounds(&window);
+    if let Some(t) = app.get_webview(&tabs_label(label)) {
+        let _ = t.set_bounds(rect(strip));
     }
     if let Some(v) = view.and_then(|v| app.get_webview(&v)) {
-        let _ = v.set_bounds(rect(x, w, h));
+        let _ = v.set_bounds(rect(dash));
     }
 }
 
-/// A new dashboard window with its rail (main thread).
+/// A new dashboard window with its tab strip (main thread).
 fn create(
     app: &AppHandle,
     shared: &Arc<Shared>,
@@ -292,60 +293,44 @@ fn create(
     let label = format!("dashboard-{n}");
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    // A system material behind the rail (material.rs) needs a transparent
-    // window; the dashboard's webview stays opaque over it.
-    let material = crate::app_material::material_for(Surface::Rail);
+    // An opaque window: the tab strip draws its own solid theme colours
+    // (no system material behind it, so nothing shows through).
     let builder = tauri::window::WindowBuilder::new(app, &label)
         .title(title)
         .inner_size(1280.0, 860.0)
-        .min_inner_size(720.0, 480.0)
-        .transparent(material.is_some());
+        .min_inner_size(720.0, 480.0);
     // Linux and Windows have no app menu bar: the window carries the
     // Projects menu, with Ctrl accelerators (#260).
     #[cfg(not(target_os = "macos"))]
     let builder = builder.menu(window_menu(app)?);
     let window = builder.build()?;
-    // Applied before the rail exists: when it fails, the rail is built
-    // without the flag and draws its CSS look.
-    let material = material.filter(|m| match crate::app_material::apply(&window, *m) {
-        Ok(()) => true,
-        Err(e) => {
-            eprintln!(
-                "itervox desktop: no {} material behind the rail: {e}",
-                m.attr()
-            );
-            false
-        }
-    });
-    let (x, w, h) = bounds(&window, collapsed(shared));
+    let (strip, d) = bounds(&window);
 
     let (nav_app, nav_shared, nav_label) = (app.clone(), Arc::clone(shared), label.clone());
-    let rail = WebviewBuilder::new(rail_label(&label), WebviewUrl::App(RAIL_PAGE.into()))
+    let tabs = WebviewBuilder::new(tabs_label(&label), WebviewUrl::App(TABS_PAGE.into()))
         .on_navigation(move |url| match rail_action(url.as_str()) {
             Some(action) => {
                 let (app, shared, label) =
                     (nav_app.clone(), Arc::clone(&nav_shared), nav_label.clone());
                 // Off the navigation callback: switching builds webviews.
                 let _ = std::thread::Builder::new()
-                    .name("itervox-rail".into())
+                    .name("itervox-tabs".into())
                     .spawn(move || handle_action(&app, &shared, &label, action));
                 false
             }
             None => rail_page_allowed(url.as_str()),
         });
-    let rail = match material {
-        Some(m) => rail
-            .transparent(true)
-            .initialization_script(material::init_script(m)),
-        None => rail,
-    };
-    window.add_child(rail, LogicalPosition::new(0.0, 0.0), LogicalSize::new(x, h))?;
+    window.add_child(
+        tabs,
+        LogicalPosition::new(strip.x, strip.y),
+        LogicalSize::new(strip.width, strip.height),
+    )?;
 
     let view = format!("{label}-view-{n}");
     let dash = window.add_child(
         dash_webview(&view, parsed, crate::rail::init_script_for(t)),
-        LogicalPosition::new(x, 0.0),
-        LogicalSize::new(w, h),
+        LogicalPosition::new(d.x, d.y),
+        LogicalSize::new(d.width, d.height),
     )?;
     lock(&shared.dash.windows).insert(
         label.clone(),
@@ -370,7 +355,7 @@ fn create(
     Ok(())
 }
 
-/// The rail as the last refresh left it.
+/// The tabs as the last refresh left them.
 fn current_rail(shared: &Shared) -> RailView {
     let remotes = shared.remote.views();
     let machine = shared.machine.panel();
@@ -381,14 +366,14 @@ fn current_rail(shared: &Shared) -> RailView {
 }
 
 fn eval_rail(app: &AppHandle, label: &str, view: &RailView, active: &str) {
-    if let Some(r) = app.get_webview(&rail_label(label)) {
-        let _ = r.eval(push_script(view, Some(active)));
+    if let Some(t) = app.get_webview(&tabs_label(label)) {
+        let _ = t.eval(push_script(view, Some(active)));
     }
 }
 
-/// Pushes the rail to every dashboard window when it changed since the
+/// Pushes the tabs to every dashboard window when they changed since the
 /// last push (or always, with `force`). Called after each refresh: the
-/// rail shows what the refresh read and reads nothing itself.
+/// tabs show what the refresh read and read nothing themselves.
 pub(super) fn push_all(app: &AppHandle, shared: &Shared, force: bool) {
     let view = current_rail(shared);
     {
@@ -407,7 +392,7 @@ pub(super) fn push_all(app: &AppHandle, shared: &Shared, force: bool) {
     }
 }
 
-/// Pushes the rail to one window (its page loaded, or it switched).
+/// Pushes the tabs to one window (its page loaded, or it switched).
 fn push_to(app: &AppHandle, shared: &Shared, label: &str) {
     let project = lock(&shared.dash.windows)
         .get(label)
@@ -417,7 +402,8 @@ fn push_to(app: &AppHandle, shared: &Shared, label: &str) {
     }
 }
 
-/// Saves a rail change with the project list and shows it everywhere.
+/// Saves a tab arrangement change with the project list and shows it
+/// everywhere.
 fn save_prefs(
     app: &AppHandle,
     shared: &Shared,
@@ -437,23 +423,93 @@ fn save_prefs(
     push_all(app, shared, true);
 }
 
-fn set_collapsed(app: &AppHandle, shared: &Arc<Shared>, value: bool) {
+/// Compact tabs (initials) on or off, in every window. The strip keeps its
+/// height, so nothing is laid out again.
+fn set_collapsed(app: &AppHandle, shared: &Shared, value: bool) {
     save_prefs(app, shared, |_, p| {
         let changed = p.collapsed != value;
         p.collapsed = value;
         changed
     });
-    let labels: Vec<String> = lock(&shared.dash.windows).keys().cloned().collect();
-    let (app2, shared2) = (app.clone(), Arc::clone(shared));
+}
+
+/// Shows `entries` as a native popup menu at (`x`, `y`) of window `label`'s
+/// tab strip (which starts at the window's content origin).
+fn popup(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    label: &str,
+    x: i32,
+    y: i32,
+    entries: Vec<TabMenuEntry>,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    let (app2, shared2, label) = (app.clone(), Arc::clone(shared), label.to_string());
     let _ = app.run_on_main_thread(move || {
-        for l in labels {
-            layout(&app2, &shared2, &l);
+        let Some(window) = app2.get_window(&label) else {
+            return;
+        };
+        let menu = match popup_menu(&app2, &entries) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("itervox desktop: could not build the tab menu: {e}");
+                return;
+            }
+        };
+        *lock(&shared2.dash.popup) = Some(menu.clone());
+        let at = LogicalPosition::new(f64::from(x), f64::from(y));
+        if let Err(e) = window.popup_menu_at(&menu, at) {
+            eprintln!("itervox desktop: could not show the tab menu: {e}");
         }
     });
 }
 
-/// A rail page's request from window `label` (off the main thread).
-fn handle_action(app: &AppHandle, shared: &Arc<Shared>, label: &str, action: RailAction) {
+fn popup_menu(
+    app: &AppHandle,
+    entries: &[TabMenuEntry],
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+    let menu = Menu::new(app)?;
+    for e in entries {
+        match e {
+            TabMenuEntry::Item {
+                id,
+                label,
+                enabled,
+                checked: None,
+            } => menu.append(&MenuItem::with_id(app, id, label, *enabled, None::<&str>)?)?,
+            TabMenuEntry::Item {
+                id,
+                label,
+                enabled,
+                checked: Some(c),
+            } => menu.append(&CheckMenuItem::with_id(
+                app,
+                id,
+                label,
+                *enabled,
+                *c,
+                None::<&str>,
+            )?)?,
+            TabMenuEntry::Header(title) => {
+                menu.append(&MenuItem::new(app, title, false, None::<&str>)?)?
+            }
+            TabMenuEntry::Separator => menu.append(&PredefinedMenuItem::separator(app)?)?,
+        }
+    }
+    Ok(menu)
+}
+
+/// A tab strip's request (its page's navigation, or an item of a tab menu
+/// or the overflow list) from window `label` (off the main thread).
+pub(super) fn handle_action(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    label: &str,
+    action: RailAction,
+) {
     match action {
         RailAction::Ready => push_to(app, shared, label),
         RailAction::Switch(key) => open(app, shared, &key, None, Mode::In(label.to_string())),
@@ -468,6 +524,17 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, label: &str, action: Rai
         }
         RailAction::Collapse(v) => set_collapsed(app, shared, v),
         RailAction::AddProject => super::add_project(app, shared),
+        RailAction::Menu { key, x, y } => {
+            let entries = tab_menu(&current_rail(shared), label, &key);
+            popup(app, shared, label, x, y, entries);
+        }
+        RailAction::Overflow { x, y } => {
+            let project = lock(&shared.dash.windows)
+                .get(label)
+                .map(|w| w.project.clone());
+            let entries = overflow_menu(&current_rail(shared), label, project.as_deref());
+            popup(app, shared, label, x, y, entries);
+        }
     }
 }
 
@@ -475,7 +542,8 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, label: &str, action: Rai
 /// the dashboard window focused last.
 pub(super) fn command(app: &AppHandle, shared: &Arc<Shared>, cmd: RailCommand) {
     if cmd == RailCommand::ToggleCollapsed {
-        set_collapsed(app, shared, !collapsed(shared));
+        let compact = lock(&shared.core).saved.rail.collapsed;
+        set_collapsed(app, shared, !compact);
         return;
     }
     let (label, project) = {

@@ -21,7 +21,8 @@ pub struct SavedProject {
     pub workflow: String,
 }
 
-/// How the user arranged the project rail of the dashboard windows (#244).
+/// How the user arranged the project tabs of the dashboard windows (#244;
+/// a rail beside the dashboard before 0.3.3, hence the names).
 /// Keys are project keys: a WORKFLOW.md path, or a remote daemon's key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,9 +30,9 @@ pub struct RailPrefs {
     /// The rows' order inside their groups, as the user dragged them; a
     /// project not listed keeps its default place after the listed ones.
     pub order: Vec<String>,
-    /// Pinned projects, top of the rail, in this order.
+    /// Pinned projects, the first tabs, in this order.
     pub pinned: Vec<String>,
-    /// The rail shows icons only.
+    /// Compact tabs: initials only (the rail of #244 showed icons only).
     pub collapsed: bool,
 }
 
