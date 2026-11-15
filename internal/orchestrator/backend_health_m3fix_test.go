@@ -34,7 +34,7 @@ func TestBackendHealth_LimitedUntilIsCapped(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			o, _ := breakerOrchestrator(t, config.BackendFallbackConfig{})
 			state := NewState(o.cfg)
-			require.True(t, o.recordBackendLimit(&state, "claude", "", "ENG-1", tc.sig, now))
+			require.True(t, o.recordBackendLimit(&state, "claude", "", "", "ENG-1", tc.sig, now))
 			e := state.BackendHealth["claude"]
 			assert.False(t, e.LimitedUntil.After(now.Add(tc.max)), "until %v exceeds the %v cap", e.LimitedUntil, tc.max)
 			assert.True(t, e.LimitedUntil.After(now), "still limited")
@@ -45,7 +45,7 @@ func TestBackendHealth_LimitedUntilIsCapped(t *testing.T) {
 		o, _ := breakerOrchestrator(t, config.BackendFallbackConfig{})
 		state := NewState(o.cfg)
 		reset := now.Add(5 * 24 * time.Hour)
-		o.recordBackendLimit(&state, "claude", "", "ENG-1", &agent.LimitSignal{Kind: agent.LimitKindQuota, Source: agent.LimitSourceRateLimitEvent, LimitType: "seven_day", ResetsAt: reset}, now)
+		o.recordBackendLimit(&state, "claude", "", "", "ENG-1", &agent.LimitSignal{Kind: agent.LimitKindQuota, Source: agent.LimitSourceRateLimitEvent, LimitType: "seven_day", ResetsAt: reset}, now)
 		assert.True(t, state.BackendHealth["claude"].LimitedUntil.Equal(reset))
 		assert.True(t, state.BackendHealth["claude"].ResetKnown)
 	})
@@ -55,7 +55,7 @@ func TestBackendHealth_LimitedUntilIsCapped(t *testing.T) {
 		state := NewState(o.cfg)
 		sig := &agent.LimitSignal{Kind: agent.LimitKindThrottle, Source: agent.LimitSourceAPIRetry, ErrorCategory: "rate_limit", RetryAfter: time.Duration(1e12) * time.Millisecond}
 		for range 3 {
-			o.recordBackendThrottle(&state, "claude", "", "ENG-1", sig, now)
+			o.recordBackendThrottle(&state, "claude", "", "", "ENG-1", sig, now)
 		}
 		e := state.BackendHealth["claude"]
 		require.Equal(t, BackendStatusLimited, e.Status)
@@ -90,8 +90,8 @@ func TestClearBackendBreaker_EventMediated(t *testing.T) {
 	o.events = make(chan OrchestratorEvent, 4)
 	state := NewState(o.cfg)
 	now := time.Now()
-	o.recordBackendLimit(&state, "claude", "h1", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
-	o.recordBackendLimit(&state, "codex", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "claude", "", "h1", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "codex", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
 	setBackendHold(&state, "ENG-1", BackendHold{Key: "claude@h1", Until: now.Add(time.Hour)})
 
 	require.True(t, o.ClearBackendBreaker("claude", "h1"), "queued on the event loop")

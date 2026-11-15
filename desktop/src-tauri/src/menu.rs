@@ -487,6 +487,36 @@ pub fn append_hub_section(spec: &mut MenuSpec, hub: &HubStatus) {
     }
 }
 
+/// The "Model servers" section title.
+pub const MODEL_SERVERS_TITLE: &str = "Model servers";
+
+/// Inserts the "Model servers" section (machine_health.rs: one line per
+/// model server the projects' profiles point at, then the GPU) right above
+/// the Quit item, as labels. Nothing when no project uses a model server.
+pub fn append_model_servers_section(spec: &mut MenuSpec, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    let at = spec
+        .entries
+        .iter()
+        .rposition(|e| matches!(e, MenuEntry::Separator))
+        .unwrap_or(spec.entries.len());
+    let mut section = vec![MenuEntry::Separator];
+    for (n, label) in std::iter::once(MODEL_SERVERS_TITLE)
+        .chain(lines.iter().map(String::as_str))
+        .enumerate()
+    {
+        section.push(MenuEntry::Item {
+            id: format!("itervox-machine-{n}"),
+            label: label.to_string(),
+            enabled: false,
+            accelerator: None,
+        });
+    }
+    spec.entries.splice(at..at, section);
+}
+
 /// Inserts the app section (updates, the command-line tool) right above
 /// the Quit item, which stays last. Items are `(label, enabled, action)`;
 /// `None` makes a label.
@@ -1286,5 +1316,61 @@ mod tests {
         ids(&spec.entries, &mut all);
         let unique: std::collections::HashSet<_> = all.iter().collect();
         assert_eq!(unique.len(), all.len());
+    }
+
+    /// The "Model servers" section: a title, one label per server and the
+    /// GPU, above the app section and Quit; disabled labels with no action;
+    /// absent when no project uses a model server.
+    #[test]
+    fn model_servers_section_sits_above_the_app_section() {
+        let mut spec = build_menu(&[view("/up", true)], &[], [].iter(), None);
+        let before = spec.clone();
+        append_model_servers_section(&mut spec, &[]);
+        assert_eq!(spec, before, "no model server: no section");
+
+        let lines = vec![
+            "colibri 127.0.0.1:8000 — answering · used by 2 projects".to_string(),
+            "GPU: NVIDIA GeForce RTX 4090 · 37% · 10.2/24.0 GB".to_string(),
+        ];
+        append_model_servers_section(&mut spec, &lines);
+        append_app_section(
+            &mut spec,
+            vec![(
+                "Install Command-Line Tool…".into(),
+                true,
+                Some(MenuAction::InstallCli),
+            )],
+        );
+        let labels: Vec<_> = spec
+            .entries
+            .iter()
+            .map(|e| match e {
+                MenuEntry::Item { label, .. } => label.as_str(),
+                MenuEntry::Separator => "-",
+                MenuEntry::Submenu { .. } => "submenu",
+            })
+            .collect();
+        let n = labels.len();
+        assert_eq!(
+            labels[n - 8..],
+            [
+                "-",
+                MODEL_SERVERS_TITLE,
+                "colibri 127.0.0.1:8000 — answering · used by 2 projects",
+                "GPU: NVIDIA GeForce RTX 4090 · 37% · 10.2/24.0 GB",
+                "-",
+                "Install Command-Line Tool…",
+                "-",
+                QUIT_LABEL
+            ]
+        );
+        for e in &spec.entries {
+            if let MenuEntry::Item { id, enabled, .. } = e {
+                if id.starts_with("itervox-machine-") {
+                    assert!(!enabled, "{id} is a label");
+                    assert!(!spec.actions.contains_key(id), "{id} has no action");
+                }
+            }
+        }
     }
 }

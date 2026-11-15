@@ -306,6 +306,8 @@ After it, an `Isolation` section (#258) lists each sandbox mechanism this machin
 
 Then a `Permissions` section lists `agent.command` as `(default)` and every enabled profile, each with its backend, its permission mode and its isolation. A run is *full permissions* when no operating-system sandbox wraps it and its permission mode does not confine its backend: `bypass`, or any mode on Cursor or a custom backend. When any run has full permissions, doctor prints a `WARNING:` naming them, with what that lets an agent do (on this machine, or on the SSH worker hosts) and how to confine it. The warning does not change the exit code. See [Safety](/guides/safety/).
 
+When a profile's command sets `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` or `OPENAI_API_BASE` before the program (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`), a `Model servers` section probes each server with a 3-second request. Any HTTP answer counts. The section lists which profiles use each server, and prints a `WARNING:` for one that does not answer; the warning does not change the exit code. A URL taken from a variable is listed but not checked. See [Local models](/guides/local-models/).
+
 ```
 Isolation
   bubblewrap: unavailable — bwrap is not installed

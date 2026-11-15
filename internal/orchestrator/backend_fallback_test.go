@@ -124,7 +124,7 @@ func TestBackendFallback_OperatorPinBlocksFallback(t *testing.T) {
 	state := NewState(o.cfg)
 	state.IssueProfiles[a.Identifier] = "coder"
 	now := time.Now()
-	o.recordBackendLimit(&state, "claude", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "claude", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
 	o.SetIssueBackend(a.Identifier, "claude")
 
 	state = o.dispatch(ctx, state, a, 0)
@@ -160,7 +160,7 @@ func TestBackendFallback_ReviewerUsesOwnMapping(t *testing.T) {
 	o, _ := breakerOrchestrator(t, fallbackOn(), a)
 	state := NewState(o.cfg)
 	now := time.Now()
-	o.recordBackendLimit(&state, "claude", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "claude", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
 
 	o.dispatchReviewerForIssue(ctx, &state, a, "reviewer", now)
 	require.Contains(t, state.Running, a.ID)
@@ -178,7 +178,7 @@ func TestBackendFallback_ReviewerHeldIsRetriedNotLost(t *testing.T) {
 	o, _ := breakerOrchestrator(t, config.BackendFallbackConfig{}, a)
 	state := NewState(o.cfg)
 	now := time.Now()
-	o.recordBackendLimit(&state, "claude", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "claude", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
 
 	o.dispatchReviewerForIssue(ctx, &state, a, "reviewer", now)
 	assert.NotContains(t, state.Running, a.ID)
@@ -215,7 +215,7 @@ func TestHeldReviewerReDispatchStaysAReviewer(t *testing.T) {
 	o.SetIssueProfile(a.Identifier, "coder")
 	state := NewState(o.cfg)
 	now := time.Now()
-	o.recordBackendLimit(&state, "codex", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
+	o.recordBackendLimit(&state, "codex", "", "", "ENG-9", quotaLimit(now.Add(time.Hour)), now)
 	o.dispatchReviewerForIssue(ctx, &state, a, "reviewer", now)
 	run := state.Running[a.ID]
 	require.NotNil(t, run)

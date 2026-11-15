@@ -30,7 +30,16 @@ type dispatchTarget struct {
 	Command       string // the command as configured (no backend hint)
 	RunnerCommand string // the command MultiRunner receives (may carry a hint)
 	Backend       string // the backend MultiRunner will select
-	Reason        string // non-empty when a requested backend was refused
+	// Pool is the profile's quota pool when the run stays on the profile's
+	// backend, else "". Never part of Backend: the runner is chosen by
+	// Backend; Lane() is the breaker identity.
+	Pool   string
+	Reason string // non-empty when a requested backend was refused
+}
+
+// Lane is the target's backend lane, "claude" or "claude/local".
+func (t dispatchTarget) Lane() string {
+	return config.BackendLane(t.Backend, t.Pool)
 }
 
 // commandBinaryBackend returns the backend whose CLI the command's first
@@ -112,9 +121,16 @@ func resolveDispatchTarget(in dispatchTargetInput) dispatchTarget {
 			t.Reason = "" // an earlier refusal concerned the replaced command
 		}
 		request(in.Profile.Backend, "profile backend")
+		t.Pool = in.Profile.Pool
 	}
+	poolBackend := t.Backend
 	request(in.IssueBackend, "per-issue backend")
 	request(in.RecoveryBackend, "rate_limited switch_to_backend")
+	if t.Backend != poolBackend {
+		// A per-issue or recovery request moved the run to another backend;
+		// the profile's pool names a quota of the backend it left.
+		t.Pool = ""
+	}
 	return t
 }
 

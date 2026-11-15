@@ -434,6 +434,15 @@ type AgentProfile struct {
 	// Backend optionally overrides runner selection when it cannot be inferred
 	// from the command binary alone (for example, a wrapper script around codex).
 	Backend string
+	// Pool names a separate quota pool for the profile's backend, for a
+	// profile that points a known agent CLI at another model server (for
+	// example `ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`, pool
+	// "local"). The run's circuit breaker key is then the lane
+	// "claude/local", so a limit on plain claude does not hold it, and
+	// agent.backend_fallback can name the lane as its own step. Empty (the
+	// default) shares the backend's breaker. Matches [a-z0-9-]+. YAML key:
+	// pool. Load-time only: the dashboard profile editor carries it over.
+	Pool string
 	// Enabled controls whether the profile is selectable and dispatchable.
 	// Nil means true for backward compatibility with older tests/config literals.
 	Enabled *bool
@@ -1545,6 +1554,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			pool, err := profilePoolField(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
 				Command:             cmd,
 				SoulFile:            soulFile,
@@ -1552,6 +1565,7 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				Soul:                soul,
 				Instructions:        instructions,
 				Backend:             backend,
+				Pool:                pool,
 				Enabled:             boolPtr(boolField(m, "enabled", true)),
 				AllowedActions:      allowed,
 				CreateIssueState:    strField(m, "create_issue_state", ""),
@@ -1576,10 +1590,15 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 		if err != nil {
 			return nil, err
 		}
+		pool, err := profilePoolField(m, name)
+		if err != nil {
+			return nil, err
+		}
 		profiles[name] = AgentProfile{
 			Command:             cmd,
 			Prompt:              strField(m, "prompt", ""),
 			Backend:             strField(m, "backend", ""),
+			Pool:                pool,
 			Enabled:             boolPtr(boolField(m, "enabled", true)),
 			AllowedActions:      NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState:    strField(m, "create_issue_state", ""),

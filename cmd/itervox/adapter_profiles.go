@@ -91,7 +91,9 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
 		// Not edited by the dashboard: carried over from the saved profile
 		// so a dashboard save does not strip them from WORKFLOW.md.
-		PermissionMode:    existingProfile.PermissionMode,
+		PermissionMode: existingProfile.PermissionMode,
+		// The quota pool (backend_fallback lanes) is load-time only.
+		Pool:              existingProfile.Pool,
 		RequireEvidence:   existingProfile.RequireEvidence,
 		CreateIssueLabels: existingProfile.CreateIssueLabels,
 		// #258: likewise the sandbox settings.
