@@ -36,6 +36,7 @@ pub mod sysevents;
 pub mod token;
 pub mod tunnel;
 pub mod update;
+pub mod welcome;
 
 mod app;
 mod app_hub;

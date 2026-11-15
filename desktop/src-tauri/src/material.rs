@@ -293,8 +293,8 @@ mod tests {
     }
 
     /// The Sessions page adopts the flag in its `<head>`, before the
-    /// stylesheet and the first paint; the placeholder page and the opaque
-    /// project tabs never do.
+    /// stylesheet and the first paint; the placeholder page, the opaque
+    /// project tabs and the welcome window never do.
     #[test]
     fn pages_adopt_the_material_flag() {
         let dist = concat!(env!("CARGO_MANIFEST_DIR"), "/../dist/");
@@ -305,7 +305,7 @@ mod tests {
         let (a, l) = (head.find(adopt), head.find(link));
         assert!(a.is_some(), "sessions.html adopts the material flag");
         assert!(a < l, "sessions.html: flag before the stylesheet");
-        for page in ["index.html", "tabs.html"] {
+        for page in ["index.html", "tabs.html", "welcome.html"] {
             let html = std::fs::read_to_string(format!("{dist}{page}")).expect(page);
             assert!(!html.contains(MATERIAL_GLOBAL), "{page}");
             assert!(!html.contains("data-material"), "{page}");
