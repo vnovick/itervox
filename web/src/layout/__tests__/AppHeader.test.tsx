@@ -194,4 +194,50 @@ describe('AppHeader', () => {
       '/?view=list&q=eng#retry-queue',
     );
   });
+
+  // The top bar stays one row: pills that wrap below the first row (here
+  // the last two, by their measured offsetTop) fold into one "+N" pill that
+  // names them, and the hidden pills leave the tab order.
+  it('folds the pills that do not fit into one "+N" pill', () => {
+    setupStore({
+      running: [{ identifier: 'ENG-1' }],
+      paused: ['ENG-2'],
+      retrying: [{ identifier: 'ENG-4' }],
+      inputRequired: [
+        { identifier: 'ENG-3', sessionId: 's', state: 'input_required', queuedAt: '' },
+        { identifier: 'ENG-5', sessionId: 't', state: 'pending_input_resume', queuedAt: '' },
+      ],
+    });
+    const wrapped = new Set(['pending_input_resume', 'retrying']);
+    const spy = vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return wrapped.has(this.dataset.statusKey ?? '') ? 30 : 0;
+    });
+    try {
+      renderWithRouter(<AppHeader />);
+      const more = screen.getByTestId('header-more-pills');
+      expect(more).toHaveTextContent('+2');
+      expect(more).toHaveTextContent('2 more: 1 resuming, 1 retrying');
+      expect(more).toHaveAttribute('title', '1 resuming\n1 retrying');
+      const row = screen.getByTestId('header-status-pills');
+      expect(row.className).toContain('overflow-hidden');
+      expect(row.className).toContain('h-6');
+      for (const key of wrapped) {
+        expect(row.querySelector(`[data-status-key="${key}"]`)).toHaveAttribute('inert');
+      }
+      expect(row.querySelector('[data-status-key="paused"]')).not.toHaveAttribute('inert');
+      // The header itself never wraps from md up.
+      expect(screen.getByRole('banner').className).toContain('md:flex-nowrap');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('shows no "+N" pill when every pill fits', () => {
+    setupStore({ paused: ['ENG-2'], retrying: [{ identifier: 'ENG-4' }] });
+    renderWithRouter(<AppHeader />);
+    expect(screen.queryByTestId('header-more-pills')).toBeNull();
+    expect(screen.getByRole('link', { name: /retrying/ })).not.toHaveAttribute('inert');
+  });
 });

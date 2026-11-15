@@ -11,6 +11,7 @@ import {
   activeRunScenario,
   emptyScenario,
   inputRequiredScenario,
+  retryAndPausedScenario,
   type Scenario,
 } from './fixtures/scenarios';
 
@@ -20,6 +21,18 @@ const withRunContext = (scenario: Scenario): Scenario => ({
     ...scenario.snapshot,
     projectName: 'web-app',
     capabilities: [...(scenario.snapshot.capabilities ?? []), 'run_context'],
+  },
+});
+
+// Running agents plus four count pills: paused, needs input, resuming and
+// retrying.
+const busyScenario: Scenario = withRunContext({
+  ...activeRunScenario,
+  snapshot: {
+    ...activeRunScenario.snapshot,
+    inputRequired: inputRequiredScenario.snapshot.inputRequired,
+    retrying: retryAndPausedScenario.snapshot.retrying,
+    paused: retryAndPausedScenario.snapshot.paused,
   },
 });
 
@@ -37,7 +50,7 @@ async function embed(page: Page) {
 const path = (page: Page) => new URL(page.url()).pathname;
 
 test.describe('embedded shell', () => {
-  test('lands on the issue view, without the sidebar', async ({ page }) => {
+  test('lands on the issue view, with the web sidebar', async ({ page }) => {
     await embed(page);
     await bootApp(page, {
       scenario: withRunContext(activeRunScenario),
@@ -47,72 +60,60 @@ test.describe('embedded shell', () => {
     await expect(page).toHaveURL(/\/focus$/);
     await expect(page.getByTestId('focus-page')).toBeVisible();
     await expect(page.getByTestId('embedded-title')).toHaveText(/web-app · DEMO-RUN-\d/);
-    // No sidebar, no drawer, no menu button.
-    await expect(page.getByRole('link', { name: 'Dashboard' })).toHaveCount(0);
-    await expect(page.getByRole('dialog', { name: 'Navigation' })).toHaveCount(0);
-    await expect(page.getByTestId('mobile-menu-button')).toHaveCount(0);
+    // The web sidebar, with Issue view; no top bar page menu.
+    const sidebar = page.locator('aside').first();
+    await expect(sidebar.getByRole('link', { name: /^Dashboard/ })).toBeVisible();
+    await expect(sidebar.getByRole('link', { name: 'Issue view' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await expect(page.getByRole('navigation', { name: 'Pages' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'More' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Commands/ })).toBeVisible();
   });
 
-  test('Board, Sessions and New task from the top bar', async ({ page }) => {
+  test('the sidebar reaches every page, and New task stays in the top bar', async ({ page }) => {
     await embed(page);
     await bootApp(page, { scenario: withRunContext(activeRunScenario), beforeNavigate: runData });
     await expect(page).toHaveURL(/\/focus$/);
-    const nav = page.getByRole('navigation', { name: 'Pages' });
-    await nav.getByRole('link', { name: 'Board' }).click();
-    await expect(page.getByRole('heading', { name: 'Autonomous agentic harness' })).toBeVisible();
-    expect(path(page)).toBe('/');
-    await nav.getByRole('link', { name: 'Sessions' }).click();
-    await expect(page).toHaveURL(/\/sessions$/);
+    const sidebar = page.locator('aside').first();
+    const expected: [RegExp, RegExp][] = [
+      [/^Dashboard/, /^\/$/],
+      [/^Issue view$/, /^\/focus$/],
+      [/^Timeline$/, /^\/timeline$/],
+      [/^Sessions/, /^\/sessions$/],
+      [/^Logs$/, /^\/logs/],
+      [/^Agents$/, /^\/agents$/],
+      [/^Automations$/, /^\/automations$/],
+      [/^Rules$/, /^\/rules$/],
+      [/^Repo Analysis$/, /^\/repo$/],
+      [/^Memory/, /^\/memory$/],
+      [/^Settings$/, /^\/settings$/],
+    ];
+    for (const [name, where] of expected) {
+      await sidebar.getByRole('link', { name }).click();
+      await expect.poll(() => path(page), { message: String(name) }).toMatch(where);
+    }
     await page.getByRole('button', { name: '+ New task' }).click();
     await expect(page.getByRole('dialog', { name: /New task/ })).toBeVisible();
-    expect(path(page)).toBe('/');
   });
 
-  test('the More menu reaches every page', async ({ page }) => {
+  test('1200px wide with four status pills: the top bar stays one row', async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 800 });
     await embed(page);
-    await bootApp(page, { scenario: withRunContext(activeRunScenario), beforeNavigate: runData });
-    await expect(page).toHaveURL(/\/focus$/);
-    const more = page.getByRole('button', { name: 'More' });
-    await more.click();
-    const labels = await page
-      .getByRole('menu', { name: 'All pages' })
-      .getByRole('menuitem')
-      .allTextContents();
-    expect(labels).toEqual([
-      'Board',
-      'Issue view',
-      'Sessions',
-      'Timeline',
-      'Logs',
-      'Agents',
-      'Automations',
-      'Rules',
-      'Repo Analysis',
-      'Memory',
-      'Settings',
-    ]);
-    await page.keyboard.press('Escape');
-    const expected: Record<string, RegExp> = {
-      Board: /^\/$/,
-      'Issue view': /^\/focus$/,
-      Sessions: /^\/sessions$/,
-      Timeline: /^\/timeline$/,
-      Logs: /^\/logs/,
-      Agents: /^\/agents$/,
-      Automations: /^\/automations$/,
-      Rules: /^\/rules$/,
-      'Repo Analysis': /^\/repo$/,
-      Memory: /^\/memory$/,
-      Settings: /^\/settings$/,
-    };
-    for (const label of labels) {
-      await more.click();
-      await page.getByRole('menuitem', { name: label }).click();
-      await expect(page.getByRole('menu')).toHaveCount(0);
-      await expect.poll(() => path(page), { message: label }).toMatch(expected[label]);
-      await expect(page.getByRole('link', { name: 'Dashboard' })).toHaveCount(0);
-    }
+    await bootApp(page, { scenario: busyScenario, beforeNavigate: runData });
+    // Inside <main>, so not the banner landmark: find it by its element.
+    const header = page.locator('header');
+    await expect(header.locator('[data-status-key="retrying"]')).toHaveCount(1);
+    // Six pills do not fit at 1200px: the last ones fold into "+N".
+    await expect(page.getByTestId('header-more-pills')).toBeVisible();
+    const box = await header.boundingBox();
+    // One row: the bar is no taller than its tallest control (36px) plus
+    // padding, and New task (the last control) sits on the first row.
+    expect(box && box.height).toBeLessThan(64);
+    const newTask = await page.getByRole('button', { name: '+ New task' }).boundingBox();
+    const commands = await page.getByRole('button', { name: /Commands/ }).boundingBox();
+    expect(newTask && commands && Math.abs(newTask.y - commands.y)).toBeLessThan(2);
   });
 
   test("the desktop app's Go menu navigates through window.__itervoxNavigate", async ({ page }) => {
@@ -136,14 +137,14 @@ test.describe('embedded shell', () => {
       beforeNavigate: runData,
     });
     await expect(page.getByTestId('focus-page')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'More' })).toBeVisible();
+    await expect(page.getByTestId('embedded-title')).toBeVisible();
   });
 
   test('not embedded: unchanged sidebar and board, and no navigate hook', async ({ page }) => {
     await bootApp(page, { scenario: withRunContext(activeRunScenario), beforeNavigate: runData });
     await expect(page.getByRole('heading', { name: 'Autonomous agentic harness' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Dashboard' }).first()).toBeVisible();
-    await expect(page.getByRole('button', { name: 'More' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Issue view' })).toHaveCount(0);
     expect(await page.evaluate(() => typeof window.__itervoxNavigate)).toBe('undefined');
   });
 });
