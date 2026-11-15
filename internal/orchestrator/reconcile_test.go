@@ -215,3 +215,54 @@ func TestReconcileNeverStopsAFinishingRun(t *testing.T) {
 		assert.Equal(t, finishing, len(events) == 0, "no reconcile exit for a finishing run")
 	}
 }
+
+// TestTrackerPollDoesNotResetStallClock: a tracker poll that finds a running
+// issue still where it should be keeps the run, but it is not agent
+// activity, so it must not restart the stall clock. Every keep path of the
+// reconcile read (an active worker, an automation run, a reviewer on the
+// completion state, an in-place review continuation) used to stamp
+// LastEventAt with the poll time, so a silent agent never stalled while the
+// tracker kept polling.
+func TestTrackerPollDoesNotResetStallClock(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, trackerState string
+		noTrackerMove            bool
+	}{
+		{"worker in an active state", "", "In Progress", false},
+		{"automation run", "automation", "Backlog", false},
+		{"reviewer on the completion state", "reviewer", "Done", false},
+		{"in-place review continuation", "", "Backlog", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := cfgWithStall(60_000) // 1 minute
+			cfg.Tracker.CompletionState = "Done"
+			cfg.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+			state := orchestrator.NewState(cfg)
+			lastAgentEvent := time.Now().Add(-2 * time.Minute) // silent for 2m
+			entry := runningEntry("id1", "In Progress", &lastAgentEvent)
+			entry.Kind = tc.kind
+			entry.NoTrackerMove = tc.noTrackerMove
+			state.Running["id1"] = entry
+			mt := tracker.NewMemoryTracker([]domain.Issue{makeIssue("id1", "ENG-1", tc.trackerState, nil, nil)},
+				cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+			events := make(chan orchestrator.OrchestratorEvent, 10)
+
+			// Several polls arrive while the agent stays silent.
+			for range 3 {
+				state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
+			}
+			kept, ok := state.Running["id1"]
+			if !assert.True(t, ok, "the poll keeps the run") {
+				return
+			}
+			assert.Equal(t, tc.trackerState, kept.Issue.State, "the poll still refreshes the issue state")
+			if assert.NotNil(t, kept.LastEventAt) {
+				assert.True(t, kept.LastEventAt.Equal(lastAgentEvent), "the poll must not move the stall clock")
+			}
+
+			state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
+			_, still := state.Running["id1"]
+			assert.False(t, still, "a run silent past stall_timeout_ms is stalled despite tracker polls")
+		})
+	}
+}

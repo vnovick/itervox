@@ -169,7 +169,10 @@ func applyTrackerStates(state State, fetched map[string]string, refreshed []doma
 		byID[issue.ID] = issue.State
 	}
 
-	now := time.Now()
+	// A kept run's issue state is refreshed, but its LastEventAt is not: a
+	// tracker poll is not agent activity, and LastEventAt is the clock
+	// ReconcileStalls measures silence against. Stamping it here reset the
+	// stall clock on every poll, so a silent agent never stalled.
 	for id, runID := range fetched {
 		entry := state.Running[id]
 		if entry == nil || entry.RunID != runID {
@@ -216,7 +219,6 @@ func applyTrackerStates(state State, fetched map[string]string, refreshed []doma
 		// stranding the AutomationID/TriggerType from history (F-1).
 		if entry.Kind == "automation" {
 			entry.Issue.State = refreshedState
-			entry.LastEventAt = &now
 			continue
 		}
 		// A run started to continue from an operator review without a
@@ -224,7 +226,6 @@ func applyTrackerStates(state State, fetched map[string]string, refreshed []doma
 		// terminal state other than completion_state stops it.
 		if entry.NoTrackerMove && inPlaceReviewRunContinues(refreshedState, state) {
 			entry.Issue.State = refreshedState
-			entry.LastEventAt = &now
 			continue
 		}
 		// A reviewer runs, by design, on an issue the implementer just moved to
@@ -233,7 +234,6 @@ func applyTrackerStates(state State, fetched map[string]string, refreshed []doma
 		// reconcile tick killed the review before it finished.
 		if entry.Kind == "reviewer" && isReviewState(refreshedState, state) {
 			entry.Issue.State = refreshedState
-			entry.LastEventAt = &now
 			continue
 		}
 		if isTerminalState(refreshedState, state) {
@@ -269,7 +269,6 @@ func applyTrackerStates(state State, fetched map[string]string, refreshed []doma
 			}
 		} else if isActiveState(refreshedState, state) {
 			entry.Issue.State = refreshedState
-			entry.LastEventAt = &now
 		} else {
 			slog.Info("reconciliation: non-active state, stopping worker without cleanup",
 				"issue_id", id, "issue_identifier", entry.Issue.Identifier, "state", refreshedState)

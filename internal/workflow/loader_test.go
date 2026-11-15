@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,6 +210,12 @@ func TestPatchIntFieldConcurrent(t *testing.T) {
 // guarantees it). Per-writer, one-write-per-key lost-update coverage is
 // TestPatchWritersDoNotLoseAnUpdateUnderInterleavedReadModifyWrite.
 func TestConcurrentPatchAndProfileSaveNoLostUpdate(t *testing.T) {
+	// 300 writers queue on one lock, so the last one waits for all the
+	// others. That queue is the point of the test, not a stuck holder:
+	// give it room beyond the 10s production bound (it ran past it on a
+	// loaded Windows runner).
+	prev := workflow.SetEditLockTimeout(2 * time.Minute)
+	t.Cleanup(func() { workflow.SetEditLockTimeout(prev) })
 	f := writeTmp(t, "---\nagent:\n  command: claude\nworkspace:\n  root: /tmp/ws\n---\n\nBody.\n")
 
 	const rounds = 60
