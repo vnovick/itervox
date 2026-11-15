@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-import { Image } from 'astro:assets';
+import GuideShot from '../../components/GuideShot.astro';
 
 Itervox is configured entirely through a single `WORKFLOW.md` file in your project directory. The file has two parts: a YAML front matter block (between `---` delimiters) that controls all runtime behaviour, and a Liquid template body that becomes the prompt sent to the agent for each issue.
 
@@ -434,9 +434,9 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | `budget.tokens` | int | `0` | The most tokens (input + output) one issue may use, across every run, retry, review and automation run. When an issue reaches it, its running agent is stopped and the issue is paused with reason `budget_exceeded`; nothing starts for it while it is over budget. `0` means no limit. See [Per-issue budgets](#per-issue-budgets). |
 | `budget.cost_usd` | number | `0` | The most estimated cost (USD) one issue may use, as `budget.tokens`. Only Claude runs report a cost, so an issue run only by Codex never reaches it. `0` means no limit. |
 
-These retry and rate-limit settings are also editable from the Settings dashboard:
+The retry settings are also editable on the Settings page (the rate-limit switch cap is under **Rate limits & failover**):
 
-<Image src="/screenshots/v0.2.0/retries settings.png" alt="Retries settings showing max retries per issue, on-exhausted-retries behavior, and rate-limit switch cap" width={900} height={380} />
+<GuideShot name="guides/configuration/01-retries" alt="Settings, Retries: Max retries per issue set to 5, and On exhausted retries set to Pause (do not move)" />
 
 ### Per-issue budgets
 

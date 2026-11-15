@@ -5,6 +5,8 @@ sidebar:
   order: 3
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 The Itervox desktop app lives in the menu bar on a Mac and in the system tray on Linux and Windows. It lists every project with a running daemon on your computer, starts, stops and restarts daemons, raises a notification when an agent needs your input or a run fails, and opens a project's dashboard in a window. It needs no terminal: the daemon ships inside the app.
 
 This guide describes the Mac app; the tray menu, the dashboard windows, the Sessions window and remote daemons work the same on [Linux](#linux) and [Windows](#windows), and those sections list what differs (install, the command-line tool, Start at Login, updates). [Platform differences](#platform-differences) lists every macOS-only integration with its Linux and Windows counterpart. This page used to be the *Mac app* guide; its old address still leads here.
@@ -12,6 +14,8 @@ This guide describes the Mac app; the tray menu, the dashboard windows, the Sess
 It also reaches daemons on other machines — a cloud VM, a build box — through GCP IAP or SSH tunnels it runs and keeps up for you ([Remote daemons](#remote-daemons)).
 
 It is a thin [Tauri](https://tauri.app/) shell: the app bundle contains the same `itervox` binary you run from a terminal, and each dashboard window shows the dashboard that project's daemon serves. Nothing about a project's configuration lives in the app.
+
+<GuideShot name="itervox-desktop-app" alt="The desktop app window: the Now panel of a running issue on the left and its Changes, with a diff and a review box, on the right" caption="The desktop app shows the same dashboard in its own window." />
 
 ## Install
 

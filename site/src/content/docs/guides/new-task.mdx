@@ -5,6 +5,8 @@ sidebar:
   order: 6
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 Work usually starts from a tracker issue. A quick, one-off task ("upgrade lodash", "add tests for the parser") should not need an issue first and a wait for the next poll, and some instructions apply to one task only. **New task** creates the task, keeps its own instructions with it, and starts it through the same path as every other issue.
 
 ## Where to start one
@@ -29,6 +31,8 @@ itervox task "Upgrade lodash" --instructions @notes.md --start
 | Base branch | Optional. The branch the task's worktree starts from and its pull request targets, instead of `workspace.base_branch`. The prompt tells the agent (`gh pr create --base <branch>`). A branch that does not exist falls back to `workspace.base_branch`. |
 
 **Create** creates the task in the first of `tracker.active_states`; the next poll picks it up. **Create and start** (`--start`) also asks the daemon for a dispatch pass at once. Either way the task is started by the normal dispatch path, never around it: it waits for a free slot and is held by paused dispatch, guardrails, budgets, dependencies and backend limits like any other issue.
+
+<GuideShot name="itervox-new-task" alt="The New task dialog: title, custom instructions, Create as local issue or tracker issue, profile, backend, playbook and base branch, with Create and Create and start" caption="The New task dialog." />
 
 ## Local or tracker
 

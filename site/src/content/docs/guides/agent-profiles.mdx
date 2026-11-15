@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-import { Image } from 'astro:assets';
+import GuideShot from '../../../components/GuideShot.astro';
 
 Itervox supports named agent profiles with per-profile commands, file-backed SOUL/INSTRUCTIONS guidance, and daemon-backed actions, plus SSH-based remote execution and a reviewer-profile flow. This guide covers all of these.
 
@@ -13,7 +13,7 @@ Itervox supports named agent profiles with per-profile commands, file-backed SOU
 
 The Agents page provides a visual overview of all configured profiles, their backends, models, estimated context cost, and quick actions:
 
-<Image src="/screenshots/v0.2.0/agents.png" alt="Agents page showing a pm profile card with Claude backend and Sonnet 4.6 model, plus three profile templates" width={900} height={560} />
+<GuideShot name="itervox-agent-profiles" alt="Agents page: four profile cards (default, implementer, merge-bot, reviewer) with backend, model and daemon-action chips, a grid of profile templates, the Code Review Agent card and Available Models" />
 
 Each profile card shows:
 
@@ -306,7 +306,7 @@ CLI subcommand.
 
 Profiles can opt into a small set of daemon-backed actions. The profile editor exposes these as checkboxes with clear descriptions of what each action allows:
 
-<Image src="/screenshots/v0.2.0/v0.2agent-permissions.png" alt="Profile editor showing daemon actions: Comment, Post structured review, Create follow-up issue, Move issue state, and Provide input to blocked run" width={900} height={560} />
+<GuideShot name="guides/agent-profiles/01-daemon-actions" alt="Profile editor, Daemon Actions: Comment on current issue (checked), Post structured review, Create follow-up issue, Merge PR, Move current issue state and Provide input to blocked run, each with a description" />
 
 Available actions:
 

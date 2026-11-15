@@ -5,6 +5,9 @@ sidebar:
   order: 12
 ---
 
+import GuideFlow from '../../../components/GuideFlow.astro';
+import GuideShot from '../../../components/GuideShot.astro';
+
 An agent saying "done" is a claim. With
 [`require_evidence`](/configuration/#done-needs-evidence), the agent that
 wrote the fix also writes the proof. With **signed checks**, the daemon runs
@@ -72,6 +75,12 @@ Reply to resume the agent, for example "fix the bug in cart.go, leave the
 test as it is". The checks run again when that run ends. Every check exiting
 `0` lets the run succeed.
 
+<GuideFlow title="A failing check, a reply, a passing run">
+  <GuideShot name="guides/signed-checks/01-run-held" alt="The issue panel's Agent needs your input card: Signed checks failed (verify), test exited with code 1 (make test), the failing test output, and a reply asking the agent to fix the bug in cart.go and leave CI alone" caption="The run is held with the check's name, exit code, command and output. Your reply resumes the agent." />
+  <GuideShot name="guides/signed-checks/02-failing-run" alt="The Signed checks section with one run by the implementer profile: test failed, exit 1, 4s, its tree, verified; the run is sealed and verified" caption="The issue panel's Signed checks section records the failure, signed and sealed." />
+  <GuideShot name="guides/signed-checks/03-failing-then-passing" alt="The Signed checks section with two runs: the first with test failed exit 1, the second with test and lint ok exit 0, each record verified and each run sealed on its own tree" caption="The next run's checks pass on a new tree, and the run succeeds." />
+</GuideFlow>
+
 ## The evidence gate
 
 `verify` and `require_evidence` share one gate:
@@ -121,7 +130,13 @@ signed nor stored, and the daemon logs a warning.
 
 The dashboard API lists an issue's records with `verified` and a reason
 ([`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations),
-viewer scope). Offline, anyone with the public key can check a file:
+viewer scope), and the issue panel's **Signed checks** section shows the
+same result. A record that does not verify is marked **not verified** with
+the reason:
+
+<GuideShot name="guides/signed-checks/04-not-verified" alt="The Signed checks section: the test record is marked not verified with the reason attest: signature does not verify, while lint and the seal are verified" caption="A record edited after it was signed." />
+
+Offline, anyone with the public key can check a file:
 
 ```bash
 itervox attest verify .itervox/attestations/ENG-1/2026-11-14T10-00-00.000Z_implementer.jsonl --tree ../worktree

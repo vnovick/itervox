@@ -9,6 +9,7 @@ The two Playwright configs (`web/playwright.config.ts`,
 |---|---|---|---|---|
 | **Lane 2** — route-mocked browser | `ui-current-*.spec.ts` | `playwright.ui.config.ts` (`make qa-current-ui`) | Vite dev server + `e2e/fixtures/mockApi.ts` | Fast UI smoke; no Go dependency. Most coverage of dashboard, settings, automations editor lives here. |
 | **Lane 3** — real daemon | `daemon-*.spec.ts`, `auth-*.spec.ts`, `automation-crud.spec.ts` | `playwright.config.ts` (`make qa-daemon` / `make e2e`) | Compiled `./itervox` binary spawned per spec via `helpers/daemon.ts` | End-to-end: real Go server, real auth gate, real memory tracker. Slower, narrower. |
+| **Guide screenshots** (docs, not tests) | `guide-shots/*.spec.ts` | `playwright.guides.config.ts` (`make guide-shots`) | Vite dev server + `e2e/fixtures/mockApi.ts` | Regenerates the docs guides' dark/light screenshots; see `guide-shots/README.md`. |
 | **Manual smoke** (none right now) | n/a | n/a | n/a | Reserved for future cross-browser screenshots if needed. |
 
 ## Naming convention (gap §7.3)

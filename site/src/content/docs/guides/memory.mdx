@@ -5,6 +5,8 @@ sidebar:
   order: 10
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 Itervox forgets everything between runs except the handoff files. **Memory** fixes the most common case: you correct an agent once ("this repo uses pnpm, not npm") and every later run is told, without you repeating it.
 
 An entry is a short piece of text with a type:
@@ -42,6 +44,8 @@ Open **Memory** in the sidebar (after Repo Analysis), with `g m`, from the comma
 - **Open in editor**: the dashboard cannot launch your editor, so it shows the file's path with a copy button; open it in your editor, where the `$schema` gives completion. The daemon rewrites the files to record usage, so comments are not kept.
 
 The **Lessons** tab is the review queue for the lessons Itervox proposes (below), with a count on the tab and on the Memory item in the sidebar.
+
+<GuideShot name="itervox-memory" alt="The Memory page: Entries and Lessons tabs, Add memory, filters by type, scope, profile, tag and usage, and two entries" caption="The Memory page lists the entries a run can use, with filters and the Lessons tab." />
 
 ## Lessons
 

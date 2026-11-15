@@ -5,7 +5,11 @@ sidebar:
   order: 8
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 The Dashboard **Deps** tab visualizes blocker relationships from dependency audit data. It uses React Flow as a read-only graph surface. The graph code is downloaded the first time you open the tab (you see "Loading dependency graph…" for a moment), so the board, list and other views do not load it.
+
+<GuideShot name="itervox-dependency-graph" alt="The Deps tab: a dependency graph of six issues with blocking, inferred and resolved edges and each issue's state and gating badges" caption="The Deps tab draws blockers and blocked issues as a graph." />
 
 ## Edge direction
 
