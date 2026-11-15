@@ -35,6 +35,12 @@ describe('uiStore', () => {
       'expandedRunningId',
       'logsAutomationOnly',
       'logsIssueSearch',
+      // #202 — Memory page.
+      'memoryFilters',
+      'memoryLessonsView', // #203
+      'memorySelectedId',
+      'memoryTab',
+      'memoryUndo',
       'rulesLayer',
       'rulesPreviewIssue',
       'rulesPreviewProfile',

@@ -39,6 +39,12 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 	tracksClosed := slices.ContainsFunc(c.terminalStates(), func(st string) bool {
 		return strings.EqualFold(st, "closed")
 	})
+	// #198: an issue the filter no longer matches is reported gone.
+	f := c.Filter()
+	if err := c.ResolveFilter(ctx, f); err != nil {
+		return nil, nil, err
+	}
+	env := c.matchEnv()
 	var changed []domain.Issue
 	var gone []string
 	for nextURL != "" {
@@ -63,15 +69,22 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 					derived = firstLabelIn(extractLabels(raw), extra)
 				}
 			}
-			if derived == "" {
+			var issue *domain.Issue
+			if derived != "" {
+				if issue = normalizeIssue(raw, derived); issue == nil {
+					continue
+				}
+				if in, _ := f.Match(*issue, env); !in {
+					issue = nil
+				}
+			}
+			if issue == nil {
 				if n, ok := tracker.ToIntVal(raw["number"]); ok {
 					gone = append(gone, strconv.Itoa(n))
 				}
 				continue
 			}
-			if issue := normalizeIssue(raw, derived); issue != nil {
-				changed = append(changed, *issue)
-			}
+			changed = append(changed, *issue)
 		}
 		next, err := ParseNextLink(linkHeader)
 		if err != nil {

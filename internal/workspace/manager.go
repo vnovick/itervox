@@ -44,6 +44,11 @@ type Workspace struct {
 	// workspace.base_branch lacks. Empty otherwise, in directory mode, and
 	// for EnsureWorkspace.
 	StackedOn string
+	// BareFetchFailure is set when creating this worktree's fetch of the
+	// shared bare clone failed and that failure was not yet reported since
+	// the last successful fetch (#195). The caller records it once in recent
+	// failures; the worktree itself was created from the last fetched base.
+	BareFetchFailure string
 }
 
 // Manager handles creation, reuse, and removal of per-issue workspace directories.

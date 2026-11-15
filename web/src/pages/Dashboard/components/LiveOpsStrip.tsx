@@ -11,6 +11,8 @@ import { OpsChip } from './OpsChip';
 import { DispatchPressureChip } from './DispatchPressureChip';
 import { BackendHealthChips } from './BackendHealthChips';
 import { SyncStatusChip } from './SyncStatusChip';
+import { TrackerPollChip } from './TrackerPollChip';
+import { DispatchPauseToggle } from './DispatchPauseToggle';
 import { useDashboardHref } from '../../../hooks/useDashboardHref';
 import {
   ACTIVITY_LABEL,
@@ -329,6 +331,7 @@ export function LiveOpsStrip() {
         backendHealth: s?.backendHealth,
         autoSwitches: s?.autoSwitches,
         syncStatus: s?.syncStatus,
+        trackerPoll: s?.trackerPoll,
       };
     }),
   );
@@ -429,6 +432,8 @@ export function LiveOpsStrip() {
         <span className="text-theme-text inline-flex min-h-9 items-center rounded-[var(--radius-sm)] px-2 text-[12px] font-semibold">
           <LiveIndicator status={indicatorStatus} size="sm" label={statusLabel} />
         </span>
+        {/* #213 — pause/resume all dispatch, with a confirm. */}
+        <DispatchPauseToggle />
         <OpsChip
           label={`Capacity ${model.capacityLabel}`}
           title={`${String(model.runningCount)} ${STATUS_META.running.noun}`}
@@ -499,6 +504,10 @@ export function LiveOpsStrip() {
             pending writes; warning past the daemon's lag threshold or while
             pulls fail, danger when both. Hidden on daemons without it. */}
         <SyncStatusChip row={branches.syncStatus} now={now} />
+        {/* #187 — the off-loop tracker poll: warning while a poll runs past
+            the daemon's slow threshold, danger while the tracker breaker
+            has reads paused. Hidden while the poll is healthy. */}
+        <TrackerPollChip row={branches.trackerPoll} now={now} />
         {/* outbox Task 4 — pending/degraded write-ahead-outbox tile, hidden
             at zero (same "compact when healthy" convention as the two
             chips above). Danger once anything is degraded; otherwise a

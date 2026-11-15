@@ -2,7 +2,7 @@
 
 The Skills Inventory surfaces every Claude Code / Codex capability your project carries — skills, plugins, MCP servers, hooks, and instruction docs — alongside an analyzer that flags duplicates, bloat, runtime drift, and unused config. In v0.2.0 this is a direct inventory and recommendations surface; normalized capability graph fields are reserved for a later phase. Runtime evidence (session logs) tells you which capabilities are *actually loaded* at runtime vs. just configured.
 
-The feature lives at **Settings → Skills Inventory**. No external dependencies; everything is read from the local filesystem and `~/.itervox/logs/`.
+The feature lives at **Repo Analysis → Capabilities** (`/repo#capabilities`; it moved there from Settings in #200), with the runtime analytics under **Repo Analysis → Runtime usage and cost** (`/repo#usage`). No external dependencies; everything is read from the local filesystem and `~/.itervox/logs/`.
 
 ---
 
@@ -92,11 +92,11 @@ Operationally: leave the daemon running, accumulate evidence, then come back and
 
 All routes require the standard bearer-token authentication (`Authorization: Bearer <token>`).
 
-Scanner failures are best-effort. If one scanner fails but another source succeeds, the daemon stores and returns the partial inventory with `Partial: true` and `ScanError: "<joined scanner errors>"`. The Settings UI renders this as a warning while still showing successfully collected data. A later successful scan replaces the warning state.
+Scanner failures are best-effort. If one scanner fails but another source succeeds, the daemon stores and returns the partial inventory with `Partial: true` and `ScanError: "<joined scanner errors>"`. Repo Analysis → Capabilities renders this as a warning while still showing successfully collected data. A later successful scan replaces the warning state.
 
 ### Scan freshness
 
-The Settings UI shows the last scan timestamp plus a status badge next to the **Re-scan** button. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since `ScanTime`, or a watched file that was missing then has appeared (a file missing then and now does not count); click **Re-scan** to refresh the inventory and recommendations.
+Repo Analysis → Capabilities shows the last scan timestamp plus a status badge next to the **Re-scan** button. `Tracked files current` means the core config files and discovered inventory files watched during the previous scan have not changed. `Stale` means at least one tracked capability file changed or disappeared since `ScanTime`, or a watched file that was missing then has appeared (a file missing then and now does not count); click **Re-scan** to refresh the inventory and recommendations.
 
 Automatic stale detection is intentionally limited to the files the scanner tracks from known roots. Subagents are the exception: every `.claude/agents` directory (and each subfolder in it) is watched, so adding an agent file marks the inventory stale. Newly-created skill files in previously-untracked directories can still require a manual **Re-scan**. Full directory-mtime tracking and periodic background rescans are deferred so v0.2.0 does not add a noisy filesystem watcher.
 

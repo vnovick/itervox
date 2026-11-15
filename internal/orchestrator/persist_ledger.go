@@ -63,6 +63,9 @@ const (
 	ledgerSpend
 	ledgerPREvents
 	ledgerDeferredStateMoves
+	ledgerFeed
+	ledgerDispatchPause
+	ledgerPlaybookOverrides
 	numLedgers
 )
 
@@ -79,6 +82,9 @@ var ledgerNames = [numLedgers]string{
 	ledgerSpend:              "issue_spend",
 	ledgerPREvents:           "pr_events",
 	ledgerDeferredStateMoves: "deferred_state_moves",
+	ledgerFeed:               "feed",
+	ledgerDispatchPause:      "dispatch_paused",
+	ledgerPlaybookOverrides:  "playbook_overrides",
 }
 
 // ledgerOp is one full version of a ledger: write data to path, or remove it.

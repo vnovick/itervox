@@ -28,7 +28,7 @@ func (o *Orchestrator) DispatchPRMergedAutomations(ctx context.Context, issue do
 		if sendCtx.Err() != nil {
 			return
 		}
-		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.Groups, rule.IdentifierRegex, nil, "") {
 			continue
 		}
 		dispatch := AutomationDispatch{
@@ -95,7 +95,7 @@ func (o *Orchestrator) dispatchMatchingPRMergedAutomations(
 		return
 	}
 	for _, automation := range automations {
-		if !MatchesAutomationFilter(issue, automation.MatchMode, automation.States, automation.LabelsAny, automation.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, automation.MatchMode, automation.States, automation.LabelsAny, automation.Groups, automation.IdentifierRegex, nil, "") {
 			continue
 		}
 		key := prMergedDedupKey(issue.Identifier, event.PRURL, automation.ID)

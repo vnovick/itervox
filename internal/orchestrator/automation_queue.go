@@ -55,6 +55,9 @@ const (
 	// claim check (#116) could not read the issue from the tracker; the
 	// queue tries again on its next drain.
 	AutomationQueueReasonTrackerUnavailable AutomationQueueReason = "tracker_unavailable"
+	// AutomationQueueReasonDispatchPaused holds an automation while all
+	// dispatch is paused (#213).
+	AutomationQueueReasonDispatchPaused AutomationQueueReason = IneligibleDispatchPaused
 )
 
 // AutomationQueueEntry preserves one automation trigger attempt until it can dispatch.
@@ -415,7 +418,8 @@ func automationQueueableReason(reason string) (bool, AutomationQueueReason, stri
 		AutomationQueueReasonBlockedBy,
 		AutomationQueueReasonInferredBlockedBy,
 		AutomationQueueReasonBackendLimited,     // CORE-053: held, never dropped
-		AutomationQueueReasonTrackerUnavailable: // #116: held, never dropped
+		AutomationQueueReasonTrackerUnavailable, // #116: held, never dropped
+		AutomationQueueReasonDispatchPaused:     // #213: held until the resume
 		return true, queueReason, detail
 	default:
 		return false, "", ""
@@ -738,11 +742,13 @@ func (o *Orchestrator) refreshQueuedAutomationIssue(
 		issue *domain.Issue
 		err   error
 	)
+	rctx, cancel := loopReadCtx(ctx) // #187: bounded by the loop iteration
+	defer cancel()
 	switch {
 	case entry.Issue.ID != "":
-		issue, err = o.tracker.FetchIssueDetail(ctx, entry.Issue.ID)
+		issue, err = o.tracker.FetchIssueDetail(rctx, entry.Issue.ID)
 	case entry.Issue.Identifier != "":
-		issue, err = o.tracker.FetchIssueByIdentifier(ctx, entry.Issue.Identifier)
+		issue, err = o.tracker.FetchIssueByIdentifier(rctx, entry.Issue.Identifier)
 	default:
 		return entry.Issue, true
 	}

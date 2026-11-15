@@ -205,6 +205,9 @@ func renderHeartbeat(snap server.StateSnapshot, opts heartbeatOptions, now time.
 	b.WriteString("\n## Tracker\n")
 	fmt.Fprintf(&b, "- Kind: %s\n", fallbackText(snap.TrackerKind, "unknown"))
 	fmt.Fprintf(&b, "- Project: %s\n", fallbackText(snap.ProjectName, "unknown"))
+	if line := heartbeatTrackerPollLine(snap.TrackerPoll); line != "" { // #187
+		b.WriteString(line + "\n")
+	}
 	writeHeartbeatSync(&b, snap.SyncStatus) // #117
 
 	queueLength, queueMax, saturated, paused := heartbeatQueueStats(snap)
@@ -407,4 +410,30 @@ func fallbackText(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// heartbeatTrackerPollLine renders the "## Tracker" section's poll line
+// (#187): degraded (breaker open), running long, slow, or ok. Empty when the
+// snapshot carries no poll row.
+func heartbeatTrackerPollLine(p *server.TrackerPollRow) string {
+	if p == nil {
+		return ""
+	}
+	switch {
+	case p.Degraded:
+		line := fmt.Sprintf("- Poll: degraded (%d consecutive transport failures; tracker reads paused", p.ConsecutiveTransportFailures)
+		if p.BreakerOpenUntil != nil {
+			line += " until " + p.BreakerOpenUntil.UTC().Format(time.RFC3339)
+		}
+		return line + ")"
+	case p.InFlight && p.Slow:
+		return fmt.Sprintf("- Poll: slow, running for %s", (time.Duration(p.RunningForMs) * time.Millisecond).Round(time.Second))
+	case p.InFlight:
+		return fmt.Sprintf("- Poll: running for %s", (time.Duration(p.RunningForMs) * time.Millisecond).Round(time.Second))
+	case p.Slow:
+		return fmt.Sprintf("- Poll: slow, last took %s", (time.Duration(p.LastDurationMs) * time.Millisecond).Round(time.Millisecond))
+	case p.LastFinishedAt != nil:
+		return fmt.Sprintf("- Poll: ok, last took %s", (time.Duration(p.LastDurationMs) * time.Millisecond).Round(time.Millisecond))
+	}
+	return "- Poll: not run yet"
 }

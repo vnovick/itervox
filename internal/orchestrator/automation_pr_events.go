@@ -10,6 +10,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/metrics"
 )
 
@@ -54,6 +55,7 @@ type PREventAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 	// CheckNames / Conclusions filter pr_check_completed; ReviewStates /
 	// ReviewAuthors filter pr_review_submitted; MergeableStates filters
@@ -142,7 +144,7 @@ func (o *Orchestrator) DispatchPREventAutomations(ctx context.Context, issue dom
 		if rule.TriggerType != ev.TriggerType || !prEventFilterMatches(rule, ev) {
 			continue
 		}
-		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.Groups, rule.IdentifierRegex, nil, "") {
 			continue
 		}
 		dispatch := AutomationDispatch{
@@ -350,10 +352,10 @@ func evictOldestPREvents(m map[string]time.Time, limit int) {
 // is the run's Running entry (nil when reconcile already removed it). A run
 // that a pr_synchronized rule dispatched advances that rule's baseline to the
 // head it left on the remote, so its own push does not fire it again. Event
-// loop only.
-func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) {
+// loop only. Reports whether the PR was not managed before (#213 pr_opened).
+func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) (isNew bool) {
 	if exit == nil || exit.PRURL == "" {
-		return
+		return false
 	}
 	if state.ManagedPRs == nil {
 		state.ManagedPRs = make(map[string]ManagedPR)
@@ -363,6 +365,7 @@ func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) {
 		since = live.StartedAt
 	}
 	pr, known := state.ManagedPRs[exit.PRURL]
+	isNew = !known
 	if !known || since.Before(pr.Since) {
 		pr.Since = since
 	}
@@ -392,6 +395,7 @@ func recordManagedPR(state *State, live, exit *RunEntry, now time.Time) {
 			}
 		}
 	}
+	return isNew
 }
 
 // pruneManagedPRs drops the managed PRs of issues keep rejects, with their

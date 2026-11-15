@@ -1,0 +1,165 @@
+<!doctype html>
+<!-- The Sessions window (#178): every daemon's agent sessions, grouped by
+     daemon, sessions waiting for input first and sessions started by hand
+     (outside itervox, read-only) last. The app pushes the data
+     (src-tauri/src/sessions.rs push_script); choosing a session navigates to
+     /__itervox/open-session, which the window intercepts and opens in that
+     daemon's dashboard at /sessions?id=… ; "New session…" navigates to
+     /__itervox/new-session and opens /sessions?new=1. Sessions in tmux carry
+     a "tmux" badge; a daemon without tmux shows the install warning. No
+     network access of its own. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions — Itervox</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fbfaf8; --panel:#fff; --line:#e4e1dc; --text:#1d1b19;
+    --muted:#77716a; --accent:#d9480f; --warn-bg:#fff1e6; --warn:#c2410c; --err:#b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151412; --panel:#1d1b19; --line:#33302c; --text:#eeeae4; --muted:#9a938a;
+      --accent:#fb923c; --warn-bg:#3a2214; --warn:#fdba74; --err:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:var(--bg); color:var(--text); }
+  header { position:sticky; top:0; padding:12px 16px; background:var(--bg); border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:15px; }
+  #summary { color:var(--muted); margin-top:2px; }
+  main { padding:8px 16px 24px; }
+  section { margin-top:14px; }
+  h2 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  h2 .where { text-transform:none; letter-spacing:0; font-weight:normal; }
+  .error { color:var(--err); margin:4px 0; }
+  .empty { color:var(--muted); margin:4px 0; }
+  button.session { display:flex; width:100%; gap:10px; align-items:center; text-align:left; cursor:pointer;
+    background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px;
+    padding:8px 10px; margin:4px 0; font:inherit; }
+  button.session:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  .id { font-family:ui-monospace, Menlo, monospace; font-weight:600; min-width:72px; }
+  .meta { color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { border-radius:999px; padding:1px 8px; font-size:11px; font-weight:600; background:var(--warn-bg); color:var(--warn); }
+  .status { color:var(--muted); font-size:11px; }
+  button.session.external { border-style:dashed; opacity:.75; }
+  button.session.external .id { font-weight:500; color:var(--muted); }
+  .origin { color:var(--muted); font-size:11px; font-style:italic; white-space:nowrap; }
+  .tmux { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:10px;
+    font-family:ui-monospace, Menlo, monospace; color:var(--muted); white-space:nowrap; }
+  .tmux.controllable { border-color:var(--accent); color:var(--accent); }
+  .tmux-warning { background:var(--warn-bg); color:var(--warn); border-radius:6px; padding:6px 8px; margin:4px 0; }
+  .tmux-warning code { font-family:ui-monospace, Menlo, monospace; }
+  button.new-session { font:inherit; font-size:12px; cursor:pointer; background:none; color:var(--accent);
+    border:1px solid var(--line); border-radius:6px; padding:3px 8px; margin:2px 0 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sessions</h1>
+  <div id="summary">Reading the daemons…</div>
+</header>
+<main id="groups" aria-label="Agent sessions by daemon"></main>
+<script>
+(function () {
+  var OPEN_PATH = '/__itervox/open-session';
+  var READY_PATH = '/__itervox/ready';
+  var NEW_SESSION_PATH = '/__itervox/new-session';
+  var groupsEl = document.getElementById('groups');
+  var summaryEl = document.getElementById('summary');
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function buttons() {
+    return Array.prototype.slice.call(document.querySelectorAll('button.session'));
+  }
+
+  function open(daemon, key) {
+    window.location.href = OPEN_PATH + '?daemon=' + encodeURIComponent(daemon) +
+      '&id=' + encodeURIComponent(key);
+  }
+
+  function newSession(daemon) {
+    window.location.href = NEW_SESSION_PATH + '?daemon=' + encodeURIComponent(daemon);
+  }
+
+  function render(view) {
+    var focused = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.ref : null;
+    summaryEl.textContent = view.total === 0
+      ? 'No agent sessions are running.'
+      : view.total + ' session' + (view.total === 1 ? '' : 's') +
+        (view.waiting > 0 ? ' · ' + view.waiting + ' waiting for input' : '') +
+        (view.external > 0 ? ' · ' + view.external + ' started outside itervox' : '');
+    groupsEl.textContent = '';
+    view.groups.forEach(function (g) {
+      var sec = el('section');
+      var h = el('h2', null, g.name + ' ');
+      h.appendChild(el('span', 'where', '— ' + g.location));
+      sec.appendChild(h);
+      if (g.tmuxWarning) sec.appendChild(el('p', 'tmux-warning', g.tmuxWarning));
+      if (g.newSession) {
+        var ns = el('button', 'new-session', 'New session…');
+        ns.type = 'button';
+        ns.title = 'Start an agent in a new tmux session on this daemon';
+        ns.addEventListener('click', function () { newSession(g.daemon); });
+        sec.appendChild(ns);
+      }
+      if (g.error) sec.appendChild(el('p', 'error', g.error));
+      else if (g.sessions.length === 0) sec.appendChild(el('p', 'empty', 'No sessions.'));
+      g.sessions.forEach(function (s) {
+        var external = s.owner === 'external';
+        var b = el('button', external ? 'session external' : 'session');
+        b.type = 'button';
+        b.dataset.ref = g.daemon + '\n' + s.key;
+        b.appendChild(el('span', 'id', s.label));
+        var meta = external || s.kind === 'tmux'
+          ? [s.cwd, s.backend].filter(Boolean).join(' · ')
+          : [s.title, s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ');
+        b.appendChild(el('span', 'meta', meta || s.key));
+        if (external) b.appendChild(el('span', 'origin', 'started outside itervox'));
+        if (s.tmux) {
+          var t = el('span', s.controllable ? 'tmux controllable' : 'tmux', 'tmux');
+          t.title = (s.tmuxLabel ? 'tmux pane ' + s.tmuxLabel : 'tmux') +
+            (s.controllable ? ' · controllable from the dashboard' : ' · read-only');
+          b.appendChild(t);
+        }
+        if (s.status === 'input_required') b.appendChild(el('span', 'badge', 'needs input'));
+        else b.appendChild(el('span', 'status', s.status.replace(/_/g, ' ')));
+        b.title = s.status === 'input_required' && s.inputContext ? s.inputContext
+          : external && s.inUseReason ? 'Still running outside itervox: ' + s.inUseReason
+          : 'Open ' + s.label;
+        b.addEventListener('click', function () { open(g.daemon, s.key); });
+        sec.appendChild(b);
+      });
+      groupsEl.appendChild(sec);
+    });
+    var again = buttons().filter(function (b) { return b.dataset.ref === focused; })[0];
+    if (again) again.focus();
+  }
+
+  // Arrow keys move between sessions across groups; Enter opens (native).
+  document.addEventListener('keydown', function (e) {
+    var list = buttons();
+    if (list.length === 0) return;
+    var i = list.indexOf(document.activeElement);
+    var next = -1;
+    if (e.key === 'ArrowDown') next = i < 0 ? 0 : Math.min(i + 1, list.length - 1);
+    else if (e.key === 'ArrowUp') next = i < 0 ? 0 : Math.max(i - 1, 0);
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = list.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    list[next].focus();
+  });
+
+  window.__itervoxSessions = render;
+  // Ask the app for the current view (the navigation is intercepted).
+  window.location.href = READY_PATH;
+})();
+</script>
+</body>
+</html>

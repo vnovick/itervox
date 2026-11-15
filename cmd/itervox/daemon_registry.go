@@ -66,6 +66,10 @@ type daemonRecord struct {
 	Heartbeat     string `json:"heartbeat"`
 	Executable    string `json:"executable"`
 	PathSource    string `json:"path_source"`
+	// HubMember is true when the daemon takes part in the hub (#228): the
+	// hub lists and proxies only these. False for --no-hub and
+	// hub.enabled: false, and absent (false) from older daemons.
+	HubMember bool `json:"hub_member"`
 	// Source is how `status` found the daemon: "registry", or "process_scan"
 	// for a daemon started by a binary older than the registry. Not stored.
 	Source string `json:"source"`
@@ -134,6 +138,7 @@ func newDaemonRecord(workflowPath, addr, logsDir, token string, generated, super
 		LogsDir:       logsDir,
 		Heartbeat:     heartbeatPath(wf),
 		Executable:    exe,
+		HubMember:     hubMembership.Load(),
 	}
 	if rec.TokenSource == tokenSourceGenerated {
 		rec.TokenFile = filepath.Join(logsDir, apiTokenFileName)

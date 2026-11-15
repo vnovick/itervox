@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/rules"
 )
 
@@ -15,12 +16,22 @@ import (
 // cfg.Tracker.ProjectSlug are read-only after startup (not in the cfgMu
 // list), so no lock is taken.
 func (o *Orchestrator) resolveRunRules(profile, backend string) rules.Set {
-	if o == nil || o.cfg == nil {
+	if o == nil {
 		return rules.Set{}
 	}
-	wf := o.cfg.WorkflowPath
+	return resolveRulesFor(o.cfg, profile, backend)
+}
+
+// resolveRulesFor is resolveRunRules over an explicit config; the eval
+// prompt composer (ComposeEvalPrompt) shares it so an eval resolves the same
+// layers a dispatch would.
+func resolveRulesFor(cfg *config.Config, profile, backend string) rules.Set {
+	if cfg == nil {
+		return rules.Set{}
+	}
+	wf := cfg.WorkflowPath
 	return rules.Resolve(wf, rules.Target{
-		Projects: rules.ProjectNames(wf, o.cfg.Tracker.ProjectSlug),
+		Projects: rules.ProjectNames(wf, cfg.Tracker.ProjectSlug),
 		Profile:  profile,
 		Backend:  cmp.Or(backend, "claude"), // "" runs claude (see runWorker)
 	})

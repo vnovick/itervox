@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import Settings from '../index';
+import { useItervoxStore } from '../../../store/itervoxStore';
+import { makeSnapshot } from '../../../test/fixtures/snapshots';
+
+vi.mock('../AccessCard', () => ({
+  AccessCard: () => <div data-testid="access-card" />,
+}));
 
 const workspaceCardMock = vi.fn(() => <div data-testid="workspace-card" />);
 const dependenciesCardMock = vi.fn(() => <div data-testid="dependencies-card" />);
@@ -20,10 +27,6 @@ vi.mock('../ProjectFilterCard', () => ({
 
 vi.mock('../SSHHostsCard', () => ({
   SSHHostsCard: () => <div data-testid="ssh-hosts-card" />,
-}));
-
-vi.mock('../SkillsCard', () => ({
-  SkillsCard: () => <div data-testid="skills-card" />,
 }));
 
 vi.mock('../GeneralCard', () => ({
@@ -70,6 +73,7 @@ vi.mock('../useSettingsPageData', () => ({
     inlineInput: false,
     trackerKind: 'linear',
     activeProjectFilter: [],
+    filterSupported: false,
     maxRetries: 5,
     failedState: '',
     maxSwitchesPerIssuePerWindow: 2,
@@ -97,10 +101,11 @@ describe('Settings page', () => {
   beforeEach(() => {
     workspaceCardMock.mockClear();
     dependenciesCardMock.mockClear();
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'admin' }) });
   });
 
   it('passes the live autoReview flag through to WorkspaceCard', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
 
     expect(workspaceCardMock).toHaveBeenCalled();
     expect(workspaceCardMock.mock.calls[0][0]).toEqual(
@@ -111,7 +116,7 @@ describe('Settings page', () => {
   });
 
   it('renders the Dependencies section with the live mode', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
 
     expect(dependenciesCardMock).toHaveBeenCalled();
     expect(dependenciesCardMock.mock.calls[0][0]).toEqual(
@@ -123,7 +128,7 @@ describe('Settings page', () => {
 
   // CORE-093
   it('renders Rate limits & failover section', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
     const section = screen.getByRole('region', { name: 'Rate limits & failover' });
     expect(section).not.toBeNull();
     expect(section).toContainElement(screen.getByTestId('rate-limits-card'));
@@ -133,7 +138,7 @@ describe('Settings page', () => {
   });
 
   it('Capacity card renders adjacent to Retries', () => {
-    const { container } = render(<Settings />);
+    const { container } = render(<Settings />, { wrapper: MemoryRouter });
     const retries = container.querySelector('#section-retries')?.closest('section');
     const next = retries?.nextElementSibling;
     expect(next?.querySelector('h2')).toHaveTextContent('Capacity');
@@ -141,15 +146,57 @@ describe('Settings page', () => {
   });
 
   it('renders the schema-driven All settings section (#158)', () => {
-    const { container } = render(<Settings />);
+    const { container } = render(<Settings />, { wrapper: MemoryRouter });
     const section = container.querySelector('#section-all-settings')?.closest('section');
     expect(section).toContainElement(screen.getByTestId('schema-settings-card'));
   });
 
   it('page description names what Settings holds (no stale "profiles")', () => {
-    render(<Settings />);
+    render(<Settings />, { wrapper: MemoryRouter });
     expect(pageMetaMock.mock.calls[0][0]).toEqual(
       expect.objectContaining({ description: expect.not.stringContaining('profiles') }),
     );
+  });
+
+  it('links the Skills Inventory to Repo Analysis instead of rendering it (#200)', () => {
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.queryByText('Skills Inventory')).not.toBeInTheDocument();
+    expect(screen.queryByText(/loading skills inventory/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/skills inventory moved to/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Repo Analysis' })).toHaveAttribute(
+      'href',
+      '/repo#capabilities',
+    );
+  });
+
+  // #214 — scope-aware hiding.
+  it('shows Access and every settings card to an admin', () => {
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.getByRole('region', { name: 'Access' })).toContainElement(
+      screen.getByTestId('access-card'),
+    );
+    expect(screen.getByTestId('general-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-scope-notice')).not.toBeInTheDocument();
+    expect(screen.getByText('Reset all workspaces')).toBeInTheDocument();
+  });
+
+  it('hides settings, Access and workspace reset from an operator but keeps Clear all logs', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'operator' }) });
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.getByTestId('settings-scope-notice')).toHaveTextContent('operator scope');
+    expect(screen.queryByTestId('access-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('general-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('schema-settings-card')).not.toBeInTheDocument();
+    expect(screen.getByText('Clear all logs')).toBeInTheDocument();
+    expect(screen.queryByText('Reset all workspaces')).not.toBeInTheDocument();
+  });
+
+  it('shows a viewer no controls at all', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'viewer' }) });
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.getByTestId('settings-scope-notice')).toHaveTextContent('viewer scope');
+    expect(screen.queryByTestId('access-card')).not.toBeInTheDocument();
+    expect(screen.queryByText('Clear all logs')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });

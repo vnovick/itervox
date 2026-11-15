@@ -48,6 +48,7 @@ func (s State) Clone() State {
 	c.BackendLimitedHolds = maps.Clone(s.BackendLimitedHolds)
 	c.ForceReanalyze = maps.Clone(s.ForceReanalyze)
 	c.PendingRestacks = maps.Clone(s.PendingRestacks)
+	c.OutOfScope = maps.Clone(s.OutOfScope)
 	c.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
 	c.PrevIssueStates = maps.Clone(s.PrevIssueStates)
 	c.IssueStatusHistory = copyIssueStatusHistoryMap(s.IssueStatusHistory)
@@ -68,16 +69,28 @@ func (s State) Clone() State {
 	c.CronCursors = maps.Clone(s.CronCursors)
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)
+	c.PlaybookOverrides = maps.Clone(s.PlaybookOverrides) // #218
 	c.StackUnavailable = maps.Clone(s.StackUnavailable)
+	c.BranchInUseHolds = maps.Clone(s.BranchInUseHolds)     // value type, no reference fields
 	c.PendingReviews = maps.Clone(s.PendingReviews)         // value type, no reference fields
 	c.DeferredStateMoves = maps.Clone(s.DeferredStateMoves) // value type, no reference fields
 	c.DependencyCycles = copyDependencyCycles(s.DependencyCycles)
 	c.DependencyAttention = copyDependencyAttention(s.DependencyAttention)
 	c.CandidateSeen = append([]CandidateSeenRow(nil), s.CandidateSeen...)
 	c.OutboxSyncing = maps.Clone(s.OutboxSyncing)
+	c.ClaimChecks = maps.Clone(s.ClaimChecks) // value type, no reference fields
+	c.RunContexts = maps.Clone(s.RunContexts) // value type, no reference fields (#215)
+	c.TrackerPoll.EndedDuringPoll = maps.Clone(s.TrackerPoll.EndedDuringPoll)
 	c.RecentFailures = cloneSlice(s.RecentFailures)
 	c.Totals.SessionCost = maps.Clone(s.Totals.SessionCost)
 	c.FailureAcks = maps.Clone(s.FailureAcks)
+	c.SessionMessages = copySessionMessages(s.SessionMessages)
+	c.ExternalSessions = cloneSlice(s.ExternalSessions)
+	c.TmuxSessions = copyPtrValueMap(s.TmuxSessions)
+	c.LessonCorrections = copySliceMap(s.LessonCorrections) // #203
+	c.LessonProposals = copySliceMap(s.LessonProposals)     // #203
+	c.ReviewerAsks = cloneSlice(s.ReviewerAsks)             // #217
+	c.LessonRevertsSeen = maps.Clone(s.LessonRevertsSeen)   // #217
 	return c
 }
 
@@ -87,6 +100,19 @@ func cloneSlice[T any](s []T) []T {
 		return nil
 	}
 	return append([]T(nil), s...)
+}
+
+// copySliceMap copies a map of slices whose elements hold no reference
+// fields, giving each key its own slice (maps.Clone would share them).
+func copySliceMap[K comparable, V any](m map[K][]V) map[K][]V {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[K][]V, len(m))
+	for k, v := range m {
+		cp[k] = cloneSlice(v)
+	}
+	return cp
 }
 
 // copyPtrValueMap copies a map of pointers to structs that hold no reference
@@ -135,6 +161,19 @@ func copySwitchHistory(m map[string][]time.Time) map[string][]time.Time {
 		return nil
 	}
 	cp := make(map[string][]time.Time, len(m))
+	for k, v := range m {
+		cp[k] = cloneSlice(v)
+	}
+	return cp
+}
+
+// copySessionMessages deep-copies the per-issue operator messages (#178):
+// the slices are updated in place by applySessionDelivery.
+func copySessionMessages(m map[string][]SessionMessage) map[string][]SessionMessage {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string][]SessionMessage, len(m))
 	for k, v := range m {
 		cp[k] = cloneSlice(v)
 	}

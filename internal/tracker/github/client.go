@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -42,6 +43,12 @@ type ClientConfig struct {
 	// one for stacked PRs (#103). Snapshotted when the client is built.
 	CompletionState string
 	Endpoint        string
+	// Filter is tracker.filter (#198): groups of label, assignee, state and
+	// milestone conditions, one issue search each (see filter.go).
+	Filter issuefilter.Filter
+	// WorkingState is tracker.working_state, which a filter's states
+	// condition always admits.
+	WorkingState string
 }
 
 // rateLimitSnapshot holds the most recent X-RateLimit-* values observed.
@@ -111,6 +118,12 @@ type Client struct {
 	blockerCacheMu sync.RWMutex
 	blockerCache   map[string]blockerCacheEntry
 
+	// filterMu guards filterOverride (the runtime filter, #198; nil means
+	// cfg.Filter) and me (the login "me" resolved to).
+	filterMu       sync.RWMutex
+	filterOverride *issuefilter.Filter
+	me             string
+
 	// now returns the current time. Defaults to time.Now; overridable in
 	// tests (see export_test.go) to exercise blockerStateCacheTTL expiry
 	// without sleeping.
@@ -158,6 +171,15 @@ func (c *Client) storeBlockerState(id, state, url string) {
 // GitHub's label filter is AND-semantics (issues must have ALL listed labels), so we
 // issue one request per active state and deduplicate by issue ID.
 func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
+	if f := c.Filter(); len(f) > 0 {
+		return c.fetchFiltered(ctx, f, c.activeStates()) // #198
+	}
+	return c.fetchUnfiltered(ctx)
+}
+
+// fetchUnfiltered is the candidate read without a filter: one listing per
+// active-state label.
+func (c *Client) fetchUnfiltered(ctx context.Context) ([]domain.Issue, error) {
 	seen := make(map[string]struct{})
 	var all []domain.Issue
 	for _, activeState := range c.activeStates() {
@@ -187,6 +209,9 @@ func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, erro
 func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]domain.Issue, error) {
 	if len(stateNames) == 0 {
 		return []domain.Issue{}, nil
+	}
+	if f := c.Filter(); len(f) > 0 {
+		return c.fetchFiltered(ctx, f, stateNames) // #198
 	}
 
 	var closedStates, labelStates []string
@@ -414,11 +439,23 @@ func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]d
 		issue *domain.Issue
 		err   error
 	}
+	// #198: with a filter, an issue that no longer matches it is out of
+	// scope (the same predicate the searches compile).
+	f := c.Filter()
+	if err := c.ResolveFilter(ctx, f); err != nil {
+		return nil, err
+	}
+	env := c.matchEnv()
 	results := make([]result, len(issueIDs))
 	boundedDo(ctx, issueIDs, func(ctx context.Context, idx int, issueID string) {
 		issue, raw, err := c.fetchSingleIssueRaw(ctx, issueID)
 		if err == nil && issue != nil && !c.isOwnIssue(raw, issueID) {
 			issue = nil
+		}
+		if issue != nil {
+			if in, _ := f.Match(*issue, env); !in {
+				issue = nil
+			}
 		}
 		results[idx] = result{issue, err}
 	})

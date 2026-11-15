@@ -102,8 +102,7 @@ func joinKey(base, key string) string {
 
 // Explain loads the workflow with its settings layers and returns the
 // settings: every value the configuration reads, plus every key a settings
-// layer or the agent, polling, server and workspace sections of WORKFLOW.md
-// set, each with the layer it came from (LayerDefault when none did, or
+// layer or the layered sections of WORKFLOW.md (LayeredSections) set, each with the layer it came from (LayerDefault when none did, or
 // LayerEnvironment for a server bind override). Secrets are hidden.
 func Explain(workflowPath string) ([]Setting, error) {
 	wf, err := workflow.Load(workflowPath)
@@ -187,6 +186,7 @@ var effectiveValues = map[string]func(*Config) any{
 	},
 	"server.allow_unauthenticated":              func(c *Config) any { return c.Server.AllowUnauthenticatedLAN },
 	"server.allowed_hosts":                      func(c *Config) any { return c.Server.AllowedHosts },
+	"server.allowed_origins":                    func(c *Config) any { return c.Server.AllowedOrigins },
 	"dependencies.confidence_threshold":         func(c *Config) any { return c.Dependencies.ConfidenceThreshold },
 	"dependencies.ordering":                     func(c *Config) any { return c.Dependencies.Ordering },
 	"dependencies.escalate_blocked_after_hours": func(c *Config) any { return c.Dependencies.EscalateBlockedAfterHours },
@@ -199,6 +199,9 @@ var effectiveValues = map[string]func(*Config) any{
 // listed as the layer set it: a structured setting, and deprecated aliases.
 var readByHand = []string{
 	"agent.backend_fallback",
+	"automations",
+	"tracker.filter",
+	"tracker.sync",
 	"server.allow_unauthenticated_lan",
 	"dependencies.auto_analyze",
 }

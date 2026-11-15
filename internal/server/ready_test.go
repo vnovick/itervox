@@ -97,7 +97,7 @@ func TestReadyStaysFreshDuringLongOnTick(t *testing.T) {
 		// but the loop is inside a tick (a slow tracker call) well within
 		// the tick budget: that is not a wedge.
 		sig.LastLoopIdle = now.Add(-5 * time.Minute)
-		sig.TickStarted = now.Add(-4 * time.Minute)
+		sig.TickStarted = now.Add(-server.ReadyTickBudget / 2)
 		return sig
 	}), "")
 	assert.Equal(t, http.StatusOK, code)
@@ -253,4 +253,18 @@ func TestReadyReadSheddingIsDegradedNotUnready(t *testing.T) {
 	assert.Equal(t, http.StatusOK, code)
 	assert.True(t, *body.Degraded)
 	assert.False(t, *body.LastPollOK)
+}
+
+// #187: an open tracker breaker reports degraded, never unready on its own:
+// the loop is alive and the dashboard is what the operator needs.
+func TestReadyTrackerBreakerIsDegradedNotUnready(t *testing.T) {
+	code, body, _ := getReady(t, readyCfg(func() server.ReadinessSignals {
+		sig := healthySignals(time.Now())
+		sig.LastPollOK = false
+		sig.PollDegraded = true
+		return sig
+	}), "")
+	assert.Equal(t, http.StatusOK, code)
+	assert.True(t, *body.Degraded)
+	assert.True(t, *body.Ready)
 }

@@ -21,6 +21,7 @@ const baseValues: AutomationFormValues = {
   matchMode: 'all',
   states: [],
   labelsAny: [],
+  groups: [],
   identifierRegex: '',
   limit: '',
   inputContextRegex: '',
@@ -320,5 +321,51 @@ describe('automationFormSchema', () => {
       limit: '5',
       autoResume: true,
     });
+  });
+});
+
+describe('automation filter groups (#198)', () => {
+  it('keeps tracker-filter groups through the editor round-trip', () => {
+    const groups = [{ labels_any: ['agent'], labels_none: ['blocked'] }, { priority: [1] }];
+    const values = automationValuesFromDef({
+      id: 'triage',
+      enabled: true,
+      profile: 'qa',
+      trigger: { type: 'cron', cron: '0 * * * *' },
+      filter: { labelsAny: ['bug'], groups },
+    });
+    expect(values.groups).toEqual(groups);
+    const def = automationDefFromValues(values);
+    expect(def.filter?.groups).toEqual(groups);
+    expect(def.filter?.labelsAny).toEqual(['bug']);
+    expect(automationDefFromValues({ ...values, groups: [] }).filter?.groups).toBeUndefined();
+  });
+});
+
+describe('cron validation (#211)', () => {
+  const valid = emptyAutomationValues('default', []);
+
+  it('accepts an expression the daemon parser accepts', () => {
+    expect(automationFormSchema.safeParse({ ...valid, cron: '*/15 9-17 * * 1-5' }).success).toBe(
+      true,
+    );
+  });
+
+  it('blocks saving an expression the daemon parser rejects, naming the field', () => {
+    const result = automationFormSchema.safeParse({ ...valid, cron: '0 9 * * MON' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toEqual([
+      expect.objectContaining({
+        path: ['cron'],
+        message: 'Invalid cron: day-of-week: invalid integer "MON"',
+      }),
+    ]);
+  });
+
+  it('does not validate the cron field of a non-cron trigger', () => {
+    expect(
+      automationFormSchema.safeParse({ ...valid, triggerType: 'input_required', cron: 'nonsense' })
+        .success,
+    ).toBe(true);
   });
 });

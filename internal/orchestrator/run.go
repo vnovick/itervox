@@ -6,6 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/memory"
+	"github.com/vnovick/itervox/internal/playbook"
 	"github.com/vnovick/itervox/internal/rules"
 )
 
@@ -40,11 +43,23 @@ type runHandle struct {
 	// startRun from the rules files on disk. Set before the worker starts and
 	// never changed, so the worker reads it without a lock.
 	rules rules.Set
+	// memory is the memory the run was dispatched with (#202), selected by
+	// startRun from the memory files on disk. Set before the worker starts
+	// and never changed.
+	memory memory.Selection
+	// playbook is the task-type playbook the run was dispatched with
+	// (#218), chosen by startRun. Set before the worker starts and never
+	// changed.
+	playbook playbook.Choice
 	// usage is the run's latest cumulative usage, recorded by its worker
 	// after every turn whatever the turn's outcome (#136). The worker's exit
 	// carries it, so the event loop settles a run's final usage even when
 	// the turn failed or its last progress update was dropped.
 	usage atomic.Pointer[runUsage]
+	// steer carries operator messages from the event loop to the worker
+	// (#178). The loop only sends (non-blocking); the worker, or its runner
+	// during a live turn, receives.
+	steer chan agent.SteerMessage
 	// stateMoveDeferred is set by the event loop when it deferred a move of
 	// this run's issue until the run exits (#177); the worker's turn loop
 	// then ends as it would on a landed move.
@@ -128,12 +143,20 @@ func (r RunRecord) IsReviewer() bool { return r.Kind == "reviewer" }
 // issue's latest run, and returns the worker context that carries it. Event
 // loop only.
 func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEntry) context.Context {
-	h := &runHandle{id: generateRunID(), kind: entry.Kind}
+	h := &runHandle{id: generateRunID(), kind: entry.Kind, steer: make(chan agent.SteerMessage, steerInboxSize)}
 	// #157: the rules files are read again for every run, so an edit applies
 	// to the next dispatch without a restart.
 	h.rules = o.resolveRunRules(entry.ProfileName, entry.Backend)
 	used := h.rules.Record()
 	entry.RulesHash, entry.RuleIDs = used.Hash, used.IDs
+	// #202: so are the memory files; the selection depends on the issue.
+	h.memory = o.resolveRunMemory(entry, h.rules)
+	entry.MemoryIDs = h.memory.IDs()
+	// #218: the task-type playbook, chosen before the digest it is part of.
+	h.playbook = o.resolveRunPlaybook(state, entry)
+	entry.Playbook, entry.PlaybookSource = h.playbook.Name(), playbookSource(h.playbook)
+	// #186: the prompt version this run is dispatched with.
+	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules, h.memory, h.playbook.Playbook.Block()).digest()
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}
@@ -147,6 +170,9 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	entry.SessionID = h.id
 	entry.Phase = RunDispatched
 	entry.run = h
+	if state != nil { // #213
+		o.emitFeed(state, FeedRunStarted, entry.Issue.Identifier, feedRunPayload(entry))
+	}
 	return context.WithValue(ctx, runHandleKey{}, h)
 }
 

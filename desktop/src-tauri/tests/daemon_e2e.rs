@@ -1,6 +1,8 @@
 //! End-to-end checks against a real `itervox` binary, driving the same code
-//! the app's refresh loop runs (`Core::fetch_jobs` → `fetch_state` →
-//! `Core::apply`) with the same start/stop commands the menu uses:
+//! the app's refresh loop runs (`read_registry` → `Core::fetch_jobs` →
+//! `fetch_all` (summary, then state) → `Core::apply`) with the same
+//! start/stop commands the menu uses; every refresh also checks that the
+//! in-process registry read equals `status --all --json` (#212):
 //!
 //! - start a daemon detached with a supervisor token, see it listed by
 //!   `status --all --json` and its state read with the token; restart it
@@ -17,15 +19,16 @@
 //! still appear through the process scan; the tests ignore them). The agent
 //! is a shell script standing in for the `claude` CLI.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use itervox_desktop::client::{fetch_state, FetchError};
+use itervox_desktop::client::{fetch_all, fetch_sessions, fetch_state, ClientPool, FetchError};
 use itervox_desktop::events::AlertKind;
 use itervox_desktop::model::{Core, Health, PendingOp, RefreshOutcome};
 use itervox_desktop::projects::SavedProjects;
+use itervox_desktop::registry::read_registry;
+use itervox_desktop::sessions::{read_all, session_link};
 use itervox_desktop::status::{parse_status, DaemonRecord};
 use itervox_desktop::supervisor::{
     process_alive, record_for, send_sigterm, start_spec, status_command, wait_for_exit,
@@ -85,6 +88,30 @@ struct Fixture {
     key: String,
     tokens: MemoryTokenStore,
     core: Core,
+    pool: ClientPool,
+}
+
+/// Sets the value of the one line `"key": …` in a settings.jsonc text
+/// written by `itervox init`, keeping its indentation and trailing comma.
+fn set_settings_value(text: &str, key: &str, json: &str) -> String {
+    let prefix = format!("\"{key}\":");
+    let mut hits = 0;
+    let out: Vec<String> = text
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with(&prefix) {
+                return line.to_string();
+            }
+            hits += 1;
+            let indent = &line[..line.len() - trimmed.len()];
+            let value = trimmed.split(" //").next().unwrap_or(trimmed).trim_end();
+            let comma = if value.ends_with(',') { "," } else { "" };
+            format!("{indent}{prefix} {json}{comma}")
+        })
+        .collect();
+    assert_eq!(hits, 1, "expected one {prefix} line in settings.jsonc");
+    out.join("\n") + "\n"
 }
 
 fn run(cmd: &mut Command) {
@@ -147,6 +174,24 @@ impl Fixture {
             )
             .replace("base_branch: main", "base_branch: e2e");
         std::fs::write(&workflow, wf).unwrap();
+        // `itervox init` writes the layered sections to the project's
+        // settings file (#239), which wins over WORKFLOW.md front matter.
+        let settings = proj.join(".itervox").join("settings.jsonc");
+        let mut s = std::fs::read_to_string(&settings).unwrap();
+        let command = if bare_command {
+            "claude".to_string()
+        } else {
+            fake.display().to_string()
+        };
+        s = set_settings_value(&s, "command", &serde_json::to_string(&command).unwrap());
+        s = set_settings_value(&s, "interval_ms", "2000");
+        s = set_settings_value(
+            &s,
+            "clone_url",
+            &serde_json::to_string(&proj.display().to_string()).unwrap(),
+        );
+        s = set_settings_value(&s, "base_branch", "\"e2e\"");
+        std::fs::write(&settings, s).unwrap();
         let git = |args: &[&str]| {
             run(Command::new("git")
                 .args(args)
@@ -171,6 +216,7 @@ impl Fixture {
             key,
             tokens: MemoryTokenStore::default(),
             core: Core::new(saved),
+            pool: ClientPool::default(),
             _tmp: tmp,
         }
     }
@@ -188,16 +234,29 @@ impl Fixture {
         parse_status(&out.stdout).expect("parse status")
     }
 
-    /// One refresh, as the app's refresh loop does it.
+    /// One refresh, as the app's refresh loop does it: the registry read
+    /// in-process (checked against `status --all --json`, #212), then each
+    /// daemon through its pooled client (summary first).
     fn refresh(&mut self) -> RefreshOutcome {
-        let records = self.status();
+        let registry = self.home.join(".itervox").join("daemons");
+        let mut records = Vec::new();
+        for attempt in 0..3 {
+            records = read_registry(&registry).expect("read the registry");
+            // The process scan (left to the sidecar) also finds the other
+            // tests' daemons, which this HOME's registry does not list.
+            let mut status = self.status();
+            status.retain(|r| r.source == "registry");
+            if records == status {
+                break;
+            }
+            // A daemon starting or stopping between the two reads.
+            assert!(attempt < 2, "in-process {records:?} != status {status:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let jobs = self
             .core
             .fetch_jobs(&records, &self.tokens, &|p| std::fs::read_to_string(p).ok());
-        let states: HashMap<String, Result<_, FetchError>> = jobs
-            .iter()
-            .map(|j| (j.key.clone(), fetch_state(&j.url, j.token.as_deref())))
-            .collect();
+        let states = fetch_all(&self.pool, &jobs);
         self.core.apply(Ok(records), states, Instant::now())
     }
 
@@ -319,6 +378,28 @@ fn start_stop_restart_are_reflected_within_one_refresh() {
         !f.log().contains(&token),
         "token leaked into the daemon output"
     );
+    // #212: the summary answers a request naming its ETag with 304.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .proxy(None)
+        .build()
+        .into();
+    let summary = format!("{}api/v1/summary", rec.base_url());
+    let bearer = format!("Bearer {token}");
+    let first = agent
+        .get(&summary)
+        .header("Authorization", &bearer)
+        .call()
+        .unwrap();
+    assert_eq!(first.status().as_u16(), 200);
+    let tag = first.headers()["etag"].to_str().unwrap().to_string();
+    let again = agent
+        .get(&summary)
+        .header("Authorization", &bearer)
+        .header("If-None-Match", &tag)
+        .call()
+        .unwrap();
+    assert_eq!(again.status().as_u16(), 304);
 
     // Restart: stop, start again; the next refresh shows the new pid.
     f.core.begin(&f.key, PendingOp::Restarting, Instant::now());
@@ -413,12 +494,131 @@ fn input_required_run_raises_an_alert_that_opens_the_issue() {
         .read_to_string()
         .unwrap();
     assert!(page.contains("id=\"root\""), "{page}");
+
+    // #178: the Sessions window lists the waiting session from the real
+    // daemon's /api/v1/sessions (read with the supervisor token), badged
+    // as waiting, and its dashboard route is served.
+    let records = f.status();
+    let jobs = f
+        .core
+        .session_jobs(&records, &f.tokens, &|p| std::fs::read_to_string(p).ok());
+    let view = read_all(&jobs, fetch_sessions);
+    let group = view
+        .groups
+        .iter()
+        .find(|g| g.daemon == f.key)
+        .expect("the daemon's group");
+    assert_eq!(group.location, "local");
+    let waiting = group
+        .sessions
+        .iter()
+        .find(|s| s.identifier == "ITX-7")
+        .unwrap_or_else(|| panic!("ITX-7 listed: {group:?}"));
+    assert!(waiting.waiting(), "{waiting:?}");
+    assert_eq!(waiting.key, "sess-e2e", "keyed by the CLI's session id");
+    assert_eq!(waiting.owner, "itervox");
+    assert!(view.waiting >= 1);
+    let link = session_link(&base, &waiting.key);
+    assert_eq!(link, format!("{base}sessions?id=sess-e2e"));
+    let page = agent
+        .get(&link)
+        .call()
+        .unwrap()
+        .body_mut()
+        .read_to_string()
+        .unwrap();
+    assert!(page.contains("id=\"root\""), "{page}");
     f.stop();
     guard.0 = None;
 }
 
 /// A stand-in for the user's login shell: its profile puts the agent CLI's
 /// directory on PATH, the way nvm or Homebrew set-up in ~/.zshrc does.
+/// #232 — against a real hub: the started daemon is the machine's hub
+/// (`hub.lock`); the app's viewer token (`itervox token create --hub`)
+/// opens ONE events stream, whose first frame counts the members, and the
+/// refresh reads the member from the hub's projects list instead of
+/// polling the daemon.
+#[test]
+fn local_hub_serves_its_members_to_the_app() {
+    use itervox_desktop::hub_notify::{
+        hub_token_command, parse_created_token, read_hub_lock, stream_events, HubEvent,
+    };
+    use itervox_desktop::hub_source::{read_local, HubReader, HubStatus};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some(bin) = daemon() else {
+        eprintln!("ITERVOX_E2E_DAEMON not set; skipping");
+        return;
+    };
+    let mut f = Fixture::new(bin, false);
+    let pid = f.start();
+    let _guard = Guard(Some(pid));
+    f.refresh_until("the daemon to be listed", |c, k, _| settled_running(c, k));
+    let registry = f.home.join(".itervox").join("daemons");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let lock = loop {
+        if let Some(l) = read_hub_lock(&registry) {
+            break l;
+        }
+        assert!(Instant::now() < deadline, "no hub.lock: {}", f.log());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let out = hub_token_command(&f.bin)
+        .env("HOME", &f.home)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let token = parse_created_token(&out.stdout).expect("one token line");
+    let origin = lock.origin();
+
+    let stop = AtomicBool::new(false);
+    let mut first = None;
+    stream_events(&origin, &token, &mut None, &stop, &mut |ev| {
+        first.get_or_insert(ev);
+        stop.store(true, Ordering::Relaxed);
+    });
+    assert_eq!(first, Some(HubEvent::Projects(1)));
+
+    let reader = HubReader::default();
+    let pool = ClientPool::default();
+    loop {
+        let records = read_registry(&registry).unwrap();
+        assert!(records.iter().all(|r| r.hub_member), "{records:?}");
+        let jobs = f
+            .core
+            .fetch_jobs(&records, &f.tokens, &|p| std::fs::read_to_string(p).ok());
+        let read = read_local(
+            &pool,
+            &reader,
+            Some((&origin, &token)),
+            true,
+            &records,
+            &jobs,
+        );
+        if read.via_hub.contains(&f.key) {
+            assert!(
+                matches!(read.hub, HubStatus::Serving { members: 1, .. }),
+                "{:?}",
+                read.hub
+            );
+            assert!(pool.is_empty(), "the member was not polled");
+            let st = read.states[&f.key].as_ref().unwrap();
+            assert_eq!(st.running, 0);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline + Duration::from_secs(30),
+            "the hub never covered the daemon: {:?}",
+            read.hub
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn fake_login_shell(dir: &std::path::Path, agent_dir: &std::path::Path) -> PathBuf {
     let sh = dir.join("fake-zsh");
     std::fs::write(
