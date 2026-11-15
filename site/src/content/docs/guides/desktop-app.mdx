@@ -88,7 +88,7 @@ When a release does carry both, the app checks for a new release 10 seconds afte
 
 **Install Command-Line Tool…** in the menu makes the bundled daemon available as `itervox` in a terminal: it creates a symlink `/usr/local/bin/itervox` (or `~/.local/bin/itervox` when `/usr/local/bin` is not writable) that points into the app. That symlink is the command-line tool the app manages, and because it points into the app, it is updated whenever the app is. The menu then shows where it is installed. An `itervox` the app did not create — from Homebrew, or a binary you copied — is left alone; the app installs into the other location, or tells you both are taken. If you move the app, choose **Repair Command-Line Tool…**.
 
-A standalone, signed and notarized universal `itervox` is also on each release (`itervox_<version>_darwin_universal.zip`) for machines without the app; it does not update itself.
+A standalone universal `itervox` is also on each release for machines without the app; it does not update itself. Like the app, it is signed and notarized (`itervox_<version>_darwin_universal.zip`) only on a release built with the signing secrets, and named `-unsigned` otherwise ([Install](#install)).
 
 ## Build it from source
 
