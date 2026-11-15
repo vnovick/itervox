@@ -409,6 +409,35 @@ record from an earlier version of the code fails. It prints one line per
 record (`ok` or `FAIL` with the reason) and exits `0` when all verify, `1`
 when one does not, `2` for a usage or read error.
 
+## `itervox evals` — Profile evals
+
+Checks that agent profiles keep their contract: which actions a run calls or
+must never call, and which phrases its comments must or must never carry.
+Each judged report is saved to `.itervox/evals/<ISO8601>.json` next to
+`WORKFLOW.md` (gitignored, newest 20 kept), where the dashboard's
+**Repo Analysis → Evals** section reads it.
+
+```bash
+itervox evals recorded                              # judge the recorded transcripts: free, no agent
+ITERVOX_EVALS_LIVE=1 itervox evals live             # run a real agent per scenario (spends tokens)
+ITERVOX_EVALS_LIVE=1 itervox evals record -fixtures DIR   # same, writing recording.candidate.jsonl
+itervox evals promote -fixtures DIR <profile>/<scenario>  # or -all; -force keeps a failing one
+```
+
+Scenarios come from `-fixtures DIR`, else `.itervox/evals/fixtures` next to
+`WORKFLOW.md` when it exists, else the built-in scenarios shipped in the
+binary (the `merge-bot` and `reviewer` profiles). `record` and `promote`
+write next to the fixtures, so they refuse the built-in set and ask for
+`-fixtures`. `live` and `record` refuse to start without
+`ITERVOX_EVALS_LIVE=1` and run against the profiles in `--workflow`
+(default `WORKFLOW.md`); a scenario whose profile that file does not define
+fails with a clear error. Budget flags: `-max-turns`, `-max-tokens`
+(per scenario), `-max-cost-usd` (suite), `-timeout`. `.itervox/.env` is
+loaded first, so the agent CLI sees the project's API keys. Exit `0` when
+every scenario passes, `1` when one fails, `2` for a usage or setup error.
+`itervox evals <command> -h` lists the flags; the fixture format is in
+[docs/evals.md](https://github.com/vnovick/itervox/blob/main/docs/evals.md).
+
 ## `itervox referee` — The CI referee
 
 An agent may change what CI checks, never how CI checks. `itervox referee`

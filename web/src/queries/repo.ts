@@ -30,7 +30,7 @@ export const REPO_HOTSPOTS_KEY = ['repo', 'hotspots'] as const;
 const PROMPT_VERSIONS_STALE_MS = 30_000;
 // Readiness probes the tracker; do not re-run it on every focus.
 const READINESS_STALE_MS = 5 * 60 * 1000;
-// Eval reports change only when someone runs `make evals`.
+// Eval reports change only when someone runs `itervox evals`.
 const EVALS_STALE_MS = 60_000;
 // The server refreshes hotspots at most every 10 minutes; while its
 // background job runs, poll until the result lands.

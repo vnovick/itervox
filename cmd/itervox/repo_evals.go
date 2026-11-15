@@ -8,8 +8,8 @@ import (
 	"github.com/vnovick/itervox/internal/server"
 )
 
-// Repo evals (#201): GET /api/v1/repo/evals reads the eval reports `make
-// evals`, `make evals-live`, `make evals-record` and cmd/itervox-evals saved
+// Repo evals (#201): GET /api/v1/repo/evals reads the eval reports `itervox
+// evals recorded|live|record` (or `make evals*` / cmd/itervox-evals) saved
 // under <project>/.itervox/evals (the project is the directory holding
 // WORKFLOW.md). It only reads files, on the request goroutine — never the
 // orchestrator event loop — and never starts an eval run.

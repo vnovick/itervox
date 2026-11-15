@@ -107,6 +107,26 @@ promotes it anyway (for a deliberate contract change you still update
 The same commands are `go run ./cmd/itervox-evals recorded|live|record|promote`; run
 `go run ./cmd/itervox-evals live -h` for the flags.
 
+## From the released binary: `itervox evals`
+
+The Makefile targets are the contributor route and need this repository.
+Every release ships the same commands (the code lives in
+`internal/evals/cli`, which both front ends call) as
+`itervox evals recorded|live|record|promote`, run in a project directory:
+
+- Scenarios come from `-fixtures DIR`, else `.itervox/evals/fixtures` next
+  to `WORKFLOW.md` when it exists (the project's own scenarios, in the
+  format above), else the built-in scenarios embedded in the binary
+  (`internal/evals/fixtures`, via `//go:embed`). `record` and `promote` write
+  next to the fixtures, so they refuse the built-in set and ask for
+  `-fixtures`. `.itervox/evals/` is gitignored by default; to commit your own
+  scenarios, keep them elsewhere and pass `-fixtures`.
+- Reports go to `.itervox/evals/` next to `--workflow` (default
+  `WORKFLOW.md`), the directory the dashboard reads.
+- `live` and `record` run against the profiles in `--workflow`, and still
+  refuse to start without `ITERVOX_EVALS_LIVE=1`. `.itervox/.env` is loaded
+  before the command runs, so the agent CLI sees the project's keys.
+
 ## Saved reports and the dashboard
 
 `make evals` judges the committed recordings like `make evals-fast`, through

@@ -351,6 +351,9 @@ func main() {
 		case "token": // #214
 			runToken(os.Args[2:])
 			return
+		case "evals": // profile evals: recorded (free) / live / record / promote
+			runEvals(os.Args[2:])
+			return
 		case "attest": // signed checks
 			runAttest(os.Args[2:])
 			return

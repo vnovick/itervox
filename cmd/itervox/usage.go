@@ -81,6 +81,18 @@ Commands:
              --pubkey     public key (default: .itervox/attest.pub)
              --workflow   path to WORKFLOW.md (default: WORKFLOW.md)
 
+  evals   Profile evals; reports go to .itervox/evals for Repo Analysis
+             recorded  judge the recorded transcripts (free, no agent)
+             live      run a real agent per scenario (ITERVOX_EVALS_LIVE=1;
+                       spends tokens, capped by --max-cost-usd)
+             record    same, writing recording.candidate.jsonl per fixture
+             promote   replace recording.jsonl with a reviewed candidate
+             --fixtures  scenarios (default: .itervox/evals/fixtures if
+                         present, else the built-in ones; record and
+                         promote need a writable directory)
+             --workflow  path to WORKFLOW.md (default: WORKFLOW.md)
+          "itervox evals <command> -h" for flags.
+
   referee The CI referee: an agent may change what CI checks, never how
           CI checks. Works with any agent and any CI; needs only git.
              lanes    sort the diff into auto / second_opinion / human

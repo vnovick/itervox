@@ -1,7 +1,8 @@
 // Repo Analysis → Evals (#201): the latest persisted eval result per
 // profile and scenario, from GET /api/v1/repo/evals. Reports are written by
-// `make evals`, `make evals-live`, `make evals-record` and itervox-evals;
-// this section only reads them — it never starts an eval run.
+// `itervox evals recorded|live|record` (the contributor route `make evals*`
+// runs the same code); this section only reads them — it never starts an
+// eval run.
 
 import { useRepoEvals } from '../../../queries/repo';
 import type { RepoEvalCase } from '../../../types/schemas';
@@ -45,10 +46,10 @@ export function EvalsSection() {
       {data?.error && <p className="text-theme-danger-text text-xs">{data.error}</p>}
       {data && !data.error && cases.length === 0 && (
         <p className="text-theme-muted text-xs">
-          No eval reports yet. Run <code className="font-mono">make evals</code> (recorded, free) or{' '}
-          <code className="font-mono">ITERVOX_EVALS_LIVE=1 make evals-live</code>; reports are saved
-          to <code className="font-mono">.itervox/evals/</code>. Evals are never started from the
-          dashboard.
+          No eval reports yet. Run <code className="font-mono">itervox evals recorded</code> (free)
+          or <code className="font-mono">ITERVOX_EVALS_LIVE=1 itervox evals live</code> in the
+          project directory. Reports are saved to <code className="font-mono">.itervox/evals/</code>
+          ; evals are never started from the dashboard.
         </p>
       )}
       {byProfile(cases).map(([profile, list]) => (
