@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -464,33 +465,35 @@ func runInit(args []string) {
 		}
 	}
 
-	fmt.Printf("Next steps:\n")
-	if *trackerKind == "local" {
-		fmt.Printf("  1. Write issues in %s (copy %s.md), and set state: Todo to start one\n",
+	printInitNextSteps(os.Stdout, *trackerKind, envDir, envPath, *output)
+}
+
+// printInitNextSteps prints init's closing "Next steps". The dashboard step
+// is `itervox open`: the daemon may bind an OS-assigned port (server.port:
+// 0, CORE-022), and the bare URL in .itervox/dashboard_url lands on the
+// login screen, since the API token is auto-generated.
+func printInitNextSteps(w io.Writer, trackerKind, envDir, envPath, output string) {
+	_, _ = fmt.Fprintf(w, "Next steps:\n")
+	if trackerKind == "local" {
+		_, _ = fmt.Fprintf(w, "  1. Write issues in %s (copy %s.md), and set state: Todo to start one\n",
 			filepath.Join(envDir, "issues"), localSeedIdentifier)
 	} else {
-		fmt.Printf("  1. Edit %s — fill in your API key\n", envPath)
+		_, _ = fmt.Fprintf(w, "  1. Edit %s — fill in your API key\n", envPath)
 	}
-	runCmd := "itervox"
-	if *output != "WORKFLOW.md" {
-		runCmd = "itervox -workflow " + *output
+	runCmd, openCmd := "itervox", "itervox open"
+	if output != "WORKFLOW.md" {
+		runCmd = "itervox -workflow " + output
+		openCmd = "itervox open --workflow " + output
 	}
-	nextStep := 2
-	if *trackerKind == "linear" {
-		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
-		nextStep++
-		fmt.Printf("  %d. Select a project in the web dashboard\n", nextStep)
-		nextStep++
-	} else {
-		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
+	_, _ = fmt.Fprintf(w, "  2. Run: %s\n", runCmd)
+	_, _ = fmt.Fprintf(w, "  3. Open the dashboard, logged in (from another terminal): %s\n", openCmd)
+	_, _ = fmt.Fprintf(w, "     (%s --print prints the URL instead; it contains your API token, so keep it to yourself)\n", openCmd)
+	nextStep := 4
+	if trackerKind == "linear" {
+		_, _ = fmt.Fprintf(w, "  %d. Select a project in the web dashboard\n", nextStep)
 		nextStep++
 	}
-	// server.port: 0 above means the daemon binds an OS-assigned port, not
-	// the 8090 default — find the actual URL with one of these instead of
-	// guessing a port (CORE-022).
-	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url or run \"itervox doctor\"\n", nextStep)
-	nextStep++
-	fmt.Printf("  %d. Run \"itervox doctor\" to validate agent commands, tracker credentials, and config before the first real dispatch\n", nextStep)
+	_, _ = fmt.Fprintf(w, "  %d. Run \"itervox doctor\" to validate agent commands, tracker credentials, and config before the first real dispatch\n", nextStep)
 }
 
 func existingWorkflowInitMessage(output string) string {

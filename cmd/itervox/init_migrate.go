@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,9 @@ type workflowMigrationResult struct {
 	// AddedGuardrails: the workflow had no guardrails: block and one was
 	// written with the defaults (#204).
 	AddedGuardrails bool
+	// Commands names each profile that had no command and the one it was
+	// given ("name": "command"), so the migration can say so.
+	Commands map[string]string
 }
 
 // migrateWorkflowToSchema2 runs the whole read-modify-write of WORKFLOW.md
@@ -48,11 +52,11 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	var result workflowMigrationResult
 	original, err := os.ReadFile(workflowPath)
 	if err != nil {
-		return result, fmt.Errorf("itervox init --update: read %s: %w", workflowPath, err)
+		return result, fmt.Errorf("read %s: %w", workflowPath, err)
 	}
 	front, body, ok := splitWorkflowFrontMatter(string(original))
 	if !ok {
-		return result, fmt.Errorf("itervox init --update: %s has no YAML front matter", workflowPath)
+		return result, fmt.Errorf("%s has no YAML front matter", workflowPath)
 	}
 	// #71 — parse the front matter once into a yaml.v3 Node tree. The
 	// analysis below reads a decoded map (cheap and already proven), but
@@ -60,18 +64,18 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	// comments, key order and scalar styles survive the rewrite.
 	docNode, rootNode, err := parseFrontMatterNode(front)
 	if err != nil {
-		return result, fmt.Errorf("itervox init --update: parse %s: %w", workflowPath, err)
+		return result, fmt.Errorf("parse %s: %w", workflowPath, err)
 	}
 	var doc map[string]any
 	if err := rootNode.Decode(&doc); err != nil {
-		return result, fmt.Errorf("itervox init --update: parse %s: %w", workflowPath, err)
+		return result, fmt.Errorf("parse %s: %w", workflowPath, err)
 	}
 	if doc == nil {
 		doc = make(map[string]any)
 	}
 	version := yamlInt(doc["itervox_schema_version"])
 	if version > config.LatestWorkflowSchemaVersion {
-		return result, fmt.Errorf("itervox init --update: unsupported itervox_schema_version %d", version)
+		return result, fmt.Errorf("unsupported itervox_schema_version %d", version)
 	}
 
 	if workspace := yamlMap(doc["workspace"]); workspace != nil {
@@ -109,9 +113,21 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	// the deps-analyzer profile + agent.deps_analyzer_profile field landed
 	// need both written. Setting the field alone (without the profile) would
 	// fail validation, so we always pair the two.
-	depsAnalyzerFieldUnset := strings.TrimSpace(yamlString(agent["deps_analyzer_profile"])) == ""
+	// agent.deps_analyzer_profile and agent.command are layered keys (#239):
+	// after a first migration they live in .itervox/settings.jsonc, not the
+	// front matter, so they are read from the merged layers. Reading the
+	// front matter alone made every re-run see the deps-analyzer field as
+	// unset and rewrite the workflow (and refuse over the first run's .bak).
+	effectiveAgent := agent
+	if merged, _, mergeErr := config.MergedFrontMatter(workflowPath); mergeErr == nil {
+		effectiveAgent = yamlMap(merged["agent"])
+	}
+	depsAnalyzerFieldUnset := strings.TrimSpace(yamlString(effectiveAgent["deps_analyzer_profile"])) == ""
 	depsAnalyzerProfileMissing := yamlMap(profiles[initDepsAnalyzerProfileName]) == nil
 	needsDepsAnalyzerScaffold := depsAnalyzerFieldUnset || depsAnalyzerProfileMissing
+	// Schema 2 requires a command on every profile that is not built in; a
+	// legacy profile with only a prompt has none (see legacyProfileCommand).
+	missingCommands := profilesMissingCommand(profiles, names)
 
 	// We only rewrite WORKFLOW.md when there is migratable content:
 	//   - inline `prompt:` inside any profile (always migratable), or
@@ -123,7 +139,7 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	// #204: workflows from before guardrails get the block written out with
 	// its defaults, so the operator sees (and can edit) what applies.
 	_, hasGuardrails := doc["guardrails"]
-	needsRewrite := inlinePromptSeen || (legacyReviewerPromptSeen && force) || needsDepsAnalyzerScaffold
+	needsRewrite := inlinePromptSeen || (legacyReviewerPromptSeen && force) || needsDepsAnalyzerScaffold || len(missingCommands) > 0
 	if version == config.LatestWorkflowSchemaVersion && !needsRewrite {
 		if legacyReviewerPromptSeen {
 			result.Warnings = append(result.Warnings,
@@ -154,7 +170,7 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 			}
 			for _, path := range migratedAgentFilePaths(workflowPath, name) {
 				if !fileMissing(path) {
-					return result, fmt.Errorf("itervox init --update: %s already exists; rerun with --force to overwrite generated agent files or move the file before migrating", path)
+					return result, fmt.Errorf("%s already exists; rerun with --force to overwrite generated agent files or move the file before migrating", path)
 				}
 			}
 		}
@@ -163,10 +179,10 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	backupPath := workflowPath + ".bak"
 	// todolist4 A.3: refuse to silently overwrite a stale .bak without --force.
 	if !force && !fileMissing(backupPath) {
-		return result, fmt.Errorf("itervox init --update: %s already exists; rerun with --force to overwrite or move/delete the existing backup first", backupPath)
+		return result, fmt.Errorf("%s already exists; rerun with --force to overwrite or move/delete the existing backup first", backupPath)
 	}
 	if err := atomicfs.WriteFile(backupPath, original, 0o644); err != nil {
-		return result, fmt.Errorf("itervox init --update: write %s: %w", backupPath, err)
+		return result, fmt.Errorf("write %s: %w", backupPath, err)
 	}
 	result.BackupPath = backupPath
 
@@ -185,13 +201,22 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 			if profile == nil {
 				continue
 			}
+			profileNode := yamlNodeEnsureMap(profilesNode, name)
+			if slices.Contains(missingCommands, name) {
+				command := legacyProfileCommand(effectiveAgent, profile)
+				profile["command"] = command
+				yamlNodeSet(profileNode, "command", yamlStringNode(command))
+				if result.Commands == nil {
+					result.Commands = make(map[string]string)
+				}
+				result.Commands[name] = command
+			}
 			promptText := yamlString(profile["prompt"])
 			delete(profile, "prompt")
 			soulRel := filepath.ToSlash(filepath.Join(".itervox", "agents", name, "SOUL.md"))
 			instructionsRel := filepath.ToSlash(filepath.Join(".itervox", "agents", name, "INSTRUCTIONS.md"))
 			profile["soul_file"] = soulRel
 			profile["instructions_file"] = instructionsRel
-			profileNode := yamlNodeEnsureMap(profilesNode, name)
 			yamlNodeDelete(profileNode, "prompt")
 			yamlNodeSet(profileNode, "soul_file", yamlStringNode(soulRel))
 			yamlNodeSet(profileNode, "instructions_file", yamlStringNode(instructionsRel))
@@ -281,14 +306,14 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 
 	encoded, err := encodeFrontMatterNode(docNode, detectFrontMatterIndent(front))
 	if err != nil {
-		return result, fmt.Errorf("itervox init --update: marshal %s: %w", workflowPath, err)
+		return result, fmt.Errorf("marshal %s: %w", workflowPath, err)
 	}
 	// The edits went to two copies, the node tree (written) and the decoded
 	// map (what the migration meant). Refuse to replace the workflow when
 	// the written profiles would not read back as meant, rather than leave a
 	// workflow that no longer loads.
 	if err := checkMigratedProfiles(encoded, profiles, result.Profiles); err != nil {
-		return result, fmt.Errorf("itervox init --update: %s left unchanged: %w", workflowPath, err)
+		return result, fmt.Errorf("%s left unchanged: %w", workflowPath, err)
 	}
 	var out bytes.Buffer
 	out.WriteString("---\n")
@@ -299,10 +324,50 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 		out.WriteByte('\n')
 	}
 	if err := atomicfs.WriteFile(workflowPath, out.Bytes(), 0o644); err != nil {
-		return result, fmt.Errorf("itervox init --update: write %s: %w", workflowPath, err)
+		return result, fmt.Errorf("write %s: %w", workflowPath, err)
 	}
 	result.Changed = true
 	return result, nil
+}
+
+// profilesMissingCommand lists the profiles (in names order) that have no
+// command and are not built in. Schema 2 refuses to load them
+// ("agent.profiles.<name>.command is required"); a built-in profile falls
+// back to its own default command.
+func profilesMissingCommand(profiles map[string]any, names []string) []string {
+	var out []string
+	for _, name := range names {
+		profile := yamlMap(profiles[name])
+		if profile == nil || builtinprofiles.IsBuiltin(name) {
+			continue
+		}
+		if strings.TrimSpace(yamlString(profile["command"])) == "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// legacyProfileCommand is the command a profile without one gets. A daemon
+// before schema 2 dropped such a profile (parseAgentProfiles skipped every
+// entry without a command), so its issues ran on agent.command; that is the
+// command it gets, defaulting as the loader does (agent.backend's CLI, else
+// claude). A profile whose own backend is not the one agent.command runs
+// gets its backend's CLI instead ("codex" for backend: codex), since
+// agent.command would start the wrong agent. agent is the effective agent
+// section (front matter merged with the settings layers).
+func legacyProfileCommand(agent, profile map[string]any) string {
+	command := strings.TrimSpace(yamlString(agent["command"]))
+	if command == "" {
+		command = cmp.Or(config.BackendBinary(strings.TrimSpace(yamlString(agent["backend"]))), "claude")
+	}
+	backend := strings.TrimSpace(yamlString(profile["backend"]))
+	if backend != "" && config.BackendFromCommand(command) != backend {
+		if bin := config.BackendBinary(backend); bin != "" {
+			return bin
+		}
+	}
+	return command
 }
 
 // checkMigratedProfiles decodes the migrated front matter and checks that
@@ -391,7 +456,7 @@ func migratedAgentFilePaths(workflowPath, name string) []string {
 func writeMigratedAgentFiles(workflowPath, name string, profile map[string]any, promptText string, force bool, now time.Time) error {
 	dir := filepath.Join(filepath.Dir(workflowPath), ".itervox", "agents", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("itervox init --update: create %s: %w", dir, err)
+		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	soulPath := filepath.Join(dir, "SOUL.md")
 	instructionsPath := filepath.Join(dir, "INSTRUCTIONS.md")
@@ -402,12 +467,12 @@ func writeMigratedAgentFiles(workflowPath, name string, profile map[string]any, 
 	hasInlinePrompt := strings.TrimSpace(promptText) != ""
 	if shouldWriteAgentFile(soulPath, hasInlinePrompt, force) {
 		if err := atomicfs.WriteFile(soulPath, []byte(migratedSoulContent(name, profile, promptText, now)), 0o644); err != nil {
-			return fmt.Errorf("itervox init --update: write %s: %w", soulPath, err)
+			return fmt.Errorf("write %s: %w", soulPath, err)
 		}
 	}
 	if shouldWriteAgentFile(instructionsPath, hasInlinePrompt, force) {
 		if err := atomicfs.WriteFile(instructionsPath, []byte(migratedInstructionsContent(name, promptText, now)), 0o644); err != nil {
-			return fmt.Errorf("itervox init --update: write %s: %w", instructionsPath, err)
+			return fmt.Errorf("write %s: %w", instructionsPath, err)
 		}
 	}
 	return nil
@@ -488,12 +553,12 @@ func appendLegacyReviewerPrompt(workflowPath, reviewerProfile, prompt string, no
 	}
 	dir := filepath.Join(filepath.Dir(workflowPath), ".itervox", "agents", reviewerProfile)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("itervox init --update: create %s: %w", dir, err)
+		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	path := filepath.Join(dir, "INSTRUCTIONS.md")
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("itervox init --update: read %s: %w", path, err)
+		return fmt.Errorf("read %s: %w", path, err)
 	}
 	var b strings.Builder
 	if len(existing) > 0 {
@@ -511,7 +576,7 @@ func appendLegacyReviewerPrompt(workflowPath, reviewerProfile, prompt string, no
 	b.WriteString(strings.TrimSpace(prompt))
 	b.WriteString("\n")
 	if err := atomicfs.WriteFile(path, []byte(b.String()), 0o644); err != nil {
-		return fmt.Errorf("itervox init --update: write %s: %w", path, err)
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
 }
@@ -545,13 +610,24 @@ func patchRootGitignoreForAgents(projectDir string) error {
 	path := filepath.Join(projectDir, ".gitignore")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return nil
+		// No root .gitignore: the entries below still matter, since the
+		// edit lock (.WORKFLOW.md.lock) and the .bak sit next to
+		// WORKFLOW.md, outside .itervox/ and its own .gitignore, where `git
+		// add .` would pick them up. Create one — but only in a git work
+		// tree, where it means something.
+		if !insideGitWorkTree(projectDir) {
+			return nil
+		}
+		data, err = nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("itervox init --update: read %s: %w", path, err)
+		return fmt.Errorf("read %s: %w", path, err)
 	}
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	var lines []string
+	if trimmed := strings.TrimRight(text, "\n"); trimmed != "" {
+		lines = strings.Split(trimmed, "\n")
+	}
 	changed := false
 	if rootGitignoreHidesAgents(text) {
 		// The agents/handoff carve-outs are shared with the #200 readiness
@@ -599,9 +675,28 @@ func patchRootGitignoreForAgents(projectDir string) error {
 		return nil
 	}
 	if err := atomicfs.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		return fmt.Errorf("itervox init --update: write %s: %w", path, err)
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// insideGitWorkTree reports whether dir or one of its parents holds a .git
+// entry (a directory, or the file a worktree or submodule has). No git run.
+func insideGitWorkTree(dir string) bool {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(abs, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return false
+		}
+		abs = parent
+	}
 }
 
 func rootGitignoreHidesAgents(text string) bool {
