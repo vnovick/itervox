@@ -28,7 +28,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVBNThDOUQxMTNFNUQ4MUMKUldRYzJPVVQwY2xZNm9vNzR5aU82b1R4WWIzTnVkbjVmb0IxMk85R1czTGx4ckswY01oSlhwL20K",
       "endpoints": [
         "https://github.com/vnovick/itervox/releases/latest/download/latest.json"
       ]
