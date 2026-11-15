@@ -59,6 +59,9 @@ func discoverDaemonsByCwd(projectDir string) []int {
 		if convErr != nil || pid <= 1 || pid == self {
 			continue
 		}
+		if !isDaemonCommandLine(processArgs(pid)) {
+			continue // a guardrail shim, a tmux session, a client command, ...
+		}
 		cwd := processCwd(pid)
 		if cwd == "" {
 			continue
@@ -128,10 +131,66 @@ func discoverAllDaemons() []int {
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
 		pid, convErr := strconv.Atoi(strings.TrimSpace(scanner.Text()))
-		if convErr != nil || pid <= 1 || pid == self {
+		if convErr != nil || pid <= 1 || pid == self || !isDaemonCommandLine(processArgs(pid)) {
 			continue
 		}
 		pids = append(pids, pid)
 	}
 	return pids
+}
+
+// isDaemonCommandLine reports whether argv is an itervox daemon: the itervox
+// binary started with no subcommand (only flags), or as `itervox demo`,
+// which runs the daemon on a scratch workflow. `pgrep -f itervox` also
+// matches every process whose command line merely mentions itervox, and a
+// tmux session started from Sessions → New session has several in the
+// project directory: tmux itself (`-s itervox-…`), the session's shell
+// (its PATH names the .itervox/ guardrail shims), and the guardrail shims
+// and pre-push hook, which ARE the itervox binary, run as `itervox
+// guardrail-shim … git`. None of them is a daemon, nor is a client command
+// such as `itervox watch`. argv[0] may be a path, a symlink or a renamed
+// binary whose basename starts with "itervox".
+func isDaemonCommandLine(argv []string) bool {
+	if len(argv) == 0 || !strings.HasPrefix(filepath.Base(argv[0]), "itervox") {
+		return false
+	}
+	if len(argv) == 1 {
+		return true
+	}
+	switch arg := argv[1]; arg {
+	case "demo":
+		return true
+	case "-h", "-help", "--help", "-version", "--version":
+		return false
+	default:
+		// main() runs the daemon when argv[1] is a flag; any other first
+		// argument is a subcommand or a re-exec entrypoint.
+		return strings.HasPrefix(arg, "-")
+	}
+}
+
+// processArgs returns pid's argv, or nil when it cannot be read. Linux reads
+// /proc/<pid>/cmdline (NUL-separated, exact). Elsewhere (macOS) `ps` prints
+// the executable path (comm) and the space-joined argv (args); the path is
+// split off the front so a path with spaces stays one element.
+func processArgs(pid int) []string {
+	if runtime.GOOS == "linux" {
+		raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+		if err != nil || len(raw) == 0 {
+			return nil
+		}
+		return strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	}
+	p := strconv.Itoa(pid)
+	argsOut, err := exec.Command("ps", "-ww", "-o", "args=", "-p", p).Output()
+	if err != nil {
+		return nil
+	}
+	args := strings.TrimSpace(string(argsOut))
+	if commOut, err := exec.Command("ps", "-ww", "-o", "comm=", "-p", p).Output(); err == nil {
+		if comm := strings.TrimSpace(string(commOut)); comm != "" && strings.HasPrefix(args, comm) {
+			return append([]string{comm}, strings.Fields(args[len(comm):])...)
+		}
+	}
+	return strings.Fields(args)
 }
