@@ -51,6 +51,13 @@ const (
 	// backend is limited by the backend circuit breaker (CORE-053) instead
 	// of dropping it.
 	AutomationQueueReasonBackendLimited AutomationQueueReason = IneligibleBackendLimited
+	// AutomationQueueReasonTrackerUnavailable holds an automation whose
+	// claim check (#116) could not read the issue from the tracker; the
+	// queue tries again on its next drain.
+	AutomationQueueReasonTrackerUnavailable AutomationQueueReason = "tracker_unavailable"
+	// AutomationQueueReasonDispatchPaused holds an automation while all
+	// dispatch is paused (#213).
+	AutomationQueueReasonDispatchPaused AutomationQueueReason = IneligibleDispatchPaused
 )
 
 // AutomationQueueEntry preserves one automation trigger attempt until it can dispatch.
@@ -159,6 +166,11 @@ func automationQueueKey(issue domain.Issue, dispatch AutomationDispatch) string 
 	switch dispatch.Trigger.Type {
 	case config.AutomationTriggerPROpened:
 		parts = append(parts, dispatch.Trigger.PRURL)
+	case config.AutomationTriggerPRCheckCompleted, config.AutomationTriggerPRSynchronized,
+		config.AutomationTriggerPRReviewSubmitted, config.AutomationTriggerPRMergeableChanged:
+		// #173: one queue entry per PR event, so a second failing check is
+		// not folded into the first.
+		parts = append(parts, prEventKey(dispatch.AutomationID, dispatch.Trigger))
 	case config.AutomationTriggerRateLimited:
 		parts = append(parts, dispatch.Trigger.FailedProfile, dispatch.Trigger.FailedBackend)
 	case config.AutomationTriggerInputRequired:
@@ -405,7 +417,9 @@ func automationQueueableReason(reason string) (bool, AutomationQueueReason, stri
 		AutomationQueueReasonPendingInputResume,
 		AutomationQueueReasonBlockedBy,
 		AutomationQueueReasonInferredBlockedBy,
-		AutomationQueueReasonBackendLimited: // CORE-053: held, never dropped
+		AutomationQueueReasonBackendLimited,     // CORE-053: held, never dropped
+		AutomationQueueReasonTrackerUnavailable, // #116: held, never dropped
+		AutomationQueueReasonDispatchPaused:     // #213: held until the resume
 		return true, queueReason, detail
 	default:
 		return false, "", ""
@@ -500,6 +514,12 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 	if !claimPROpenedDedup(state, issue, dispatch) {
 		return false
 	}
+	// #173: PR-event triggers dispatch only for managed PRs, only on a
+	// change, and once per event key.
+	dispatch, claimed := o.claimPREventDedup(state, issue, dispatch, now)
+	if !claimed {
+		return false
+	}
 	if reason := o.automationProfileUnavailableReason(dispatch); reason != "" {
 		slog.Warn("orchestrator: dropping automation dispatch with invalid profile",
 			"identifier", issue.Identifier,
@@ -540,10 +560,11 @@ func (o *Orchestrator) dispatchOrQueueAutomation(
 			"reason", reason)
 		return false
 	}
-	started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
-	if held {
-		// CORE-053: the target backend is limited — hold, never drop.
-		return enqueueAutomation(state, issue, dispatch, string(AutomationQueueReasonBackendLimited), now)
+	started, hold := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+	if hold != "" {
+		// CORE-053 / #116: the backend is limited or the tracker could not
+		// be read — hold, never drop.
+		return enqueueAutomation(state, issue, dispatch, string(hold), now)
 	}
 	return started
 }
@@ -619,14 +640,14 @@ func (o *Orchestrator) drainAutomationQueueWithCandidates(
 		entry.Status = AutomationQueueDispatching
 		entry.LastAttemptAt = now
 		entry.AttemptCount++
-		started, held := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
+		started, hold := o.startAutomationRunOrHold(ctx, state, issue, now, dispatch)
 		if started {
 			removeAutomationQueueEntry(state, entry.ID)
 			continue
 		}
-		if held {
-			// CORE-053: still backend_limited — keep it queued.
-			_ = updateAutomationQueueEntryReason(entry, string(AutomationQueueReasonBackendLimited), now)
+		if hold != "" {
+			// CORE-053 / #116: still held — keep it queued.
+			_ = updateAutomationQueueEntryReason(entry, string(hold), now)
 			continue
 		}
 		if AvailableSlots(*state) <= 0 {
@@ -721,11 +742,13 @@ func (o *Orchestrator) refreshQueuedAutomationIssue(
 		issue *domain.Issue
 		err   error
 	)
+	rctx, cancel := loopReadCtx(ctx) // #187: bounded by the loop iteration
+	defer cancel()
 	switch {
 	case entry.Issue.ID != "":
-		issue, err = o.tracker.FetchIssueDetail(ctx, entry.Issue.ID)
+		issue, err = o.tracker.FetchIssueDetail(rctx, entry.Issue.ID)
 	case entry.Issue.Identifier != "":
-		issue, err = o.tracker.FetchIssueByIdentifier(ctx, entry.Issue.Identifier)
+		issue, err = o.tracker.FetchIssueByIdentifier(rctx, entry.Issue.Identifier)
 	default:
 		return entry.Issue, true
 	}

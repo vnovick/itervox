@@ -8,7 +8,9 @@ import {
   commandToBackend,
   draftFromProfileDef,
   isSimpleBackendCommand,
+  modelsForBackend,
   normalizeAllowedActions,
+  normalizeBackend,
   normalizeCommandForSave,
 } from '../profileCommands';
 
@@ -42,6 +44,29 @@ describe('profileCommands', () => {
         'gpt-5.3-codex',
       ),
     ).toBe('run-codex-wrapper --danger --model gpt-5.3-codex --json');
+  });
+
+  it('maps OpenCode, Cursor and custom commands and selections', () => {
+    expect(commandToBackend('opencode --model anthropic/claude-sonnet-4-5')).toBe('opencode');
+    expect(commandToBackend('/usr/local/bin/cursor-agent')).toBe('cursor');
+    expect(commandToBackend('./wrapper.sh', 'custom')).toBe('custom');
+    expect(normalizeBackend('cursor')).toBe('cursor');
+    expect(normalizeBackend('gemini')).toBe('claude');
+    expect(applyBackendSelection('claude', 'claude', 'cursor')).toEqual({
+      command: 'cursor-agent',
+      model: '',
+    });
+    expect(applyModelSelection('opencode', 'opencode', 'openai/gpt-5')).toBe(
+      'opencode --model openai/gpt-5',
+    );
+    // Custom has no CLI of its own: the command is the operator's.
+    expect(applyBackendSelection('codex', 'codex', 'custom')).toEqual({ command: '', model: '' });
+    expect(normalizeCommandForSave('', 'custom')).toBe('');
+    expect(isSimpleBackendCommand('cursor-agent --model gpt-5', 'cursor')).toBe(true);
+    expect(modelsForBackend('opencode')).toEqual([]);
+    expect(modelsForBackend('opencode', { opencode: [{ id: 'a/b', label: 'a/b' }] })).toEqual([
+      { id: 'a/b', label: 'a/b' },
+    ]);
   });
 
   it('normalizes blank commands back to the backend default', () => {

@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
+	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/skills"
 	"github.com/vnovick/itervox/internal/tracker/local"
 )
@@ -62,6 +64,9 @@ func runDoctor(args []string) {
 	if clearStartupError {
 		clearStartupErrorMarker(workflowPath)
 	}
+	// #119: check agent CLIs against the PATH the daemon would resolve
+	// (login shell when not started from one); the report names the source.
+	applyLoginShellPATH(workflowPath)
 	if upgrade {
 		// #82: only the v0.2.1 upgrade notes that apply, judged against the
 		// environment the daemon would have (.itervox/.env loaded, never
@@ -135,6 +140,15 @@ type DoctorReport struct {
 	// drift is informational, not actionable.
 	ItervoxBinEnv    string
 	StartupErrorPath string
+	// FrontMatter is what WORKFLOW.md's front matter still sets of the
+	// layered sections (#239): each key deprecated there, naming where it
+	// moves, and each key a settings file also sets (the file wins).
+	// Notices only: they never fail doctor.
+	FrontMatter config.FrontMatterReport
+	// WatchedFiles are the files a running daemon watches for its config
+	// (#245): WORKFLOW.md and the settings files that are not off, present
+	// or not (creating one is picked up).
+	WatchedFiles []watchedConfigFile
 	// PortInUseWarning is the operator-facing diagnostic when WORKFLOW.md's
 	// configured server.port is currently held by another process. Empty when
 	// the port is free OR when no `lsof`-style probe could be performed.
@@ -162,6 +176,12 @@ type DoctorReport struct {
 	// Labels is the GitHub state-label check (#75). Zero value when the
 	// tracker is not GitHub.
 	Labels LabelCheck
+	// Assignee is the Linear assignee-scope check (#182). Zero value when
+	// the tracker has no assignee scope.
+	Assignee AssigneeCheck
+	// Filter is the tracker.filter check (#198): validated with the
+	// workflow, then its match count. Zero value without tracker.filter.
+	Filter FilterCheck
 	// LabelFixError is why `doctor --fix` did not finish repairing the
 	// labels (a failed create or re-check). Non-empty means exit 1.
 	LabelFixError string
@@ -171,6 +191,32 @@ type DoctorReport struct {
 	// LocalIssueProblems are local tracker issue files that do not parse
 	// (#85). Warnings only: the daemon serves their last good version.
 	LocalIssueProblems []string
+	// Sync is the running daemon's tracker sync status (#117), read from a
+	// live HEARTBEAT.md; nil when no live daemon wrote one. SyncLagWarning
+	// is set when the lag is past the daemon's threshold. A warning only:
+	// a lagging sync is an outage to look at, not a broken configuration.
+	Sync           *doctorSync
+	SyncLagWarning string
+	// PATHSource is where PATH came from (#119): "inherited — <why>" or
+	// "login shell (<shell>, <elapsed>, +N dirs) — <why>". Empty when no
+	// resolution ran in this process.
+	PATHSource string
+	// AgentCLIs are the workflow's agent CLIs found on that PATH, as
+	// "name: /abs/path"; MissingAgentCLIs those that were not. Informational:
+	// the daemon's own startup validation decides whether a missing default
+	// CLI is fatal.
+	AgentCLIs        []string
+	MissingAgentCLIs []string
+	// BareFetch is the shared bare clone's fetch check (#195): a failing
+	// fetch fails doctor; a stale one or the pre-#195 refspec warns.
+	BareFetch BareFetchCheck
+	// Readiness is the repo readiness summary (#200), the same rows as
+	// GET /api/v1/repo/readiness. Its failures repeat checks above; it does
+	// not change the exit code on its own.
+	Readiness []server.RepoReadinessCheck
+	// Isolation is the process-isolation section (#258): a profile asking
+	// for a sandbox on a machine with none fails doctor.
+	Isolation IsolationCheck
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -211,16 +257,23 @@ func runDoctorFix(workflowPath string, assumeYes bool, in io.Reader, out io.Writ
 // collectDoctorReport runs every check and returns the report with the
 // loaded config (nil when the workflow did not load).
 func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
-	report := DoctorReport{Workflow: workflowPath}
+	report := DoctorReport{Workflow: workflowPath, WatchedFiles: configWatchFiles(workflowPath)}
 
 	cfg, err := config.Load(workflowPath)
+	loadErr := err
 	if err == nil {
+		report.FrontMatter = cfg.FrontMatter
 		err = config.ValidateDispatch(cfg)
 	}
 	report.SchemaPassed = err == nil
 	if err != nil {
 		report.WorkflowError = err.Error()
 	}
+
+	if r := currentPATHResolution(); r != nil {
+		report.PATHSource = r.String()
+	}
+	report.AgentCLIs, report.MissingAgentCLIs = agentCLIReport(cfg)
 
 	report.RunningBinary, _ = os.Executable()
 	report.PathBinary = whichItervox()
@@ -297,6 +350,8 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 				report.HeartbeatStaleWarning = fmt.Sprintf(
 					"%s exists but no live daemon owns it (pid in daemon.pid = %d, alive = %v) — delete the stale file or `itervox` to start fresh",
 					hbPath, pid, pidErr == nil && processAlive(pid))
+			} else {
+				report.Sync, report.SyncLagWarning = collectDoctorSync(hbPath, time.Now())
 			}
 		}
 	}
@@ -347,6 +402,38 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// Shared bare clone fetch (#195): local git only, no network.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		report.BareFetch = checkBareFetch(ctx, cfg, time.Now())
+		cancel()
+	}
+
+	// Linear assignee scope (#182): the user resolves, and its issues are
+	// readable. An unresolvable user or unknown team fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), assigneeCheckTimeout)
+		report.Assignee = checkLinearAssignee(ctx, cfg)
+		cancel()
+	}
+
+	// tracker.filter (#198): its assignees resolve, and how many issues it
+	// matches. An unresolvable assignee fails doctor.
+	if cfg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), filterCheckTimeout)
+		report.Filter = checkTrackerFilter(ctx, cfg, report.SchemaPassed)
+		cancel()
+	}
+
+	// Process isolation (#258): local probes only.
+	report.Isolation = checkIsolation(cfg)
+
+	// Repo readiness (#200): the rows GET /api/v1/repo/readiness serves,
+	// built from the checks above.
+	report.Readiness = buildRepoReadiness(context.Background(), workflowPath, repoReadinessInputs{
+		cfg: cfg, loadErr: loadErr, bareFetch: report.BareFetch, refIssues: report.ProfileRefIssues,
+	}, doctorReadinessEnv())
+
 	return report, cfg
 }
 
@@ -379,6 +466,18 @@ func doctorExitCode(report DoctorReport) int {
 		// dispatched or moved, with no error anywhere else.
 		exitCode = 1
 	case report.LabelFixError != "":
+		exitCode = 1
+	case report.BareFetch.Failing:
+		// #195: every new worktree starts from a base that no longer moves.
+		exitCode = 1
+	case assigneeCheckFailed(report.Assignee):
+		// #182: the daemon's polls fail until the assignee resolves.
+		exitCode = 1
+	case filterCheckFailed(report.Filter):
+		// #198: likewise for a tracker.filter assignee.
+		exitCode = 1
+	case report.Isolation.Failing():
+		// #258: every run of those profiles is refused.
 		exitCode = 1
 	}
 	return exitCode
@@ -418,6 +517,15 @@ func renderDoctorReport(r DoctorReport) string {
 	}
 	fmt.Fprintf(&b, "running binary: %s\n", r.RunningBinary)
 	fmt.Fprintf(&b, "PATH itervox:   %s\n", or(r.PathBinary, "(none on system PATH)"))
+	if r.PATHSource != "" {
+		fmt.Fprintf(&b, "PATH source: %s\n", r.PATHSource)
+	}
+	for _, cli := range r.AgentCLIs {
+		fmt.Fprintf(&b, "agent CLI %s\n", cli)
+	}
+	for _, name := range r.MissingAgentCLIs {
+		fmt.Fprintf(&b, "WARNING: agent CLI %s not found on PATH — install it, set the command to an absolute path, or check %s\n", name, loginShellPATHEnv)
+	}
 	// P0-A — surface the built-in profiles so operators know what `profile:
 	// merge-bot {}` expands to.
 	if names := profiles.Names(); len(names) > 0 {
@@ -430,6 +538,8 @@ func renderDoctorReport(r DoctorReport) string {
 			fmt.Fprintf(&b, "info: %s\n", r.DriftWarning)
 		}
 	}
+	renderFrontMatterReport(&b, r.FrontMatter)
+	renderWatchedFiles(&b, r.WatchedFiles)
 	if r.StartupErrorPath != "" {
 		fmt.Fprintf(&b, "last startup error: %s — investigate the file, then `itervox doctor --clear-startup-error` once resolved\n", r.StartupErrorPath)
 	}
@@ -449,7 +559,11 @@ func renderDoctorReport(r DoctorReport) string {
 			fmt.Fprintf(&b, "dashboard URL: %s (NOT reachable — daemon may have died after writing this file)\n", r.DashboardURL)
 		}
 	}
+	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
+	renderBareFetchCheck(&b, r.BareFetch)
 	renderLabelCheck(&b, r.Labels)
+	renderAssigneeCheck(&b, r.Assignee)
+	renderFilterCheck(&b, r.Filter)
 	if r.LabelFixError != "" {
 		fmt.Fprintf(&b, "ERROR: label repair incomplete — %s\n", r.LabelFixError)
 	}
@@ -457,11 +571,42 @@ func renderDoctorReport(r DoctorReport) string {
 	for _, p := range r.LocalIssueProblems {
 		fmt.Fprintf(&b, "WARNING: issue file does not parse (Itervox keeps using its last good version and will not write to it until it is fixed): %s\n", p)
 	}
+	renderRepoReadiness(&b, r.Readiness)
+	renderIsolationCheck(&b, r.Isolation)
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)
 	}
 	return b.String()
+}
+
+// renderFrontMatterReport lists the deprecated front-matter keys, each with
+// where it moves, and the keys a settings file overrides (#239).
+func renderFrontMatterReport(b *strings.Builder, r config.FrontMatterReport) {
+	for _, key := range r.Deprecated {
+		fmt.Fprintf(b, "deprecated: %s\n", config.DeprecationMessage(key))
+	}
+	for _, c := range r.Conflicts {
+		fmt.Fprintf(b, "WARNING: %s\n", c.Message())
+	}
+}
+
+// renderWatchedFiles lists the files a running daemon reloads on (#245).
+func renderWatchedFiles(b *strings.Builder, files []watchedConfigFile) {
+	for _, f := range files {
+		label := f.Layer + " settings"
+		if f.Layer == config.LayerWorkflow {
+			label = "workflow"
+		}
+		state := ""
+		if !f.Exists {
+			state = " (not present; creating it is picked up)"
+		}
+		fmt.Fprintf(b, "watched: %s %s%s\n", label, f.Path, state)
+	}
+	if !slices.ContainsFunc(files, func(f watchedConfigFile) bool { return f.Layer == config.LayerUser }) {
+		fmt.Fprintf(b, "watched: user settings off (%s=off, or no home directory)\n", config.UserSettingsEnv)
+	}
 }
 
 func or(s, fallback string) string {

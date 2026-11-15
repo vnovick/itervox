@@ -25,15 +25,15 @@ export function OutboxList({
   return (
     <section
       id="outbox"
-      className="border-theme-line bg-theme-bg-elevated scroll-mt-20 overflow-hidden rounded-[var(--radius-lg)] border"
+      className="glass-panel scroll-mt-20 overflow-hidden"
       data-testid="outbox-list"
     >
       <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold">
+            <h2 className="section-title flex items-center gap-2">
               Outbox
-              <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+              <span className="count-pill">
                 {search.trim()
                   ? `${String(rows.length)}/${String(entries.length)}`
                   : entries.length}
@@ -59,7 +59,7 @@ export function OutboxList({
         </div>
       ) : (
         <div>
-          <div className="border-theme-line text-theme-muted hidden grid-cols-[1fr_0.8fr_0.9fr_0.6fr_1.2fr_0.8fr_0.9fr] gap-3 border-b px-4 py-2 text-[10px] font-semibold tracking-[0.06em] uppercase lg:grid">
+          <div className="border-theme-line table-head hidden grid-cols-[1fr_0.8fr_0.9fr_0.6fr_1.2fr_0.8fr_0.9fr] gap-3 border-b px-4 py-2 lg:grid">
             <span>Issue</span>
             <span>Kind</span>
             <span>Target</span>
@@ -155,7 +155,7 @@ function OutboxItem({
           onClick={() => {
             retryMutation.mutate(row.id);
           }}
-          className="border-theme-line text-theme-accent-text min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+          className="glass-chip text-theme-text hover:bg-theme-panel-strong min-h-9 px-3 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
         >
           Retry
         </button>
@@ -165,7 +165,7 @@ function OutboxItem({
           onClick={() => {
             discardMutation.mutate(row.id);
           }}
-          className="border-theme-line text-theme-danger-text min-h-9 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+          className="bg-theme-danger-soft text-theme-danger-text min-h-9 rounded-full px-3 py-1 text-xs font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Discard
         </button>

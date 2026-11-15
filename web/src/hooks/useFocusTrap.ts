@@ -32,10 +32,13 @@ interface FocusTrapOptions {
  * Traps keyboard focus within a container while `isOpen` is true.
  *
  * On open:  saves `document.activeElement`.
- * While open and active: focuses the first focusable child unless focus is
- *   already inside; Tab at the last element wraps to the first, Shift+Tab at
- *   the first wraps to the last, and Tab from anywhere outside the container
- *   is pulled back in.
+ * While open and active: moves focus to the container itself (tabindex -1)
+ *   unless focus is already inside (an `autoFocus` field keeps it). Focusing
+ *   the dialog, not its first control, announces the dialog by name and does
+ *   not light a focus ring on a control the operator has not reached yet;
+ *   the first Tab goes to the first control. Tab at the last element wraps to
+ *   the first, Shift+Tab at the first wraps to the last, and Tab from the
+ *   container or from anywhere outside it is pulled back in.
  * On close: restores focus to the previously focused element.
  */
 export function useFocusTrap(
@@ -73,17 +76,11 @@ export function useFocusTrap(
     const container = containerRef.current;
     if (!container) return;
 
-    // Small delay so the DOM has rendered focusable children.
+    // Small delay so the DOM has rendered the dialog's content.
     const rafId = requestAnimationFrame(() => {
       if (container.contains(document.activeElement)) return;
-      const focusable = container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
-      if (focusable.length > 0) {
-        focusable[0].focus();
-      } else {
-        // If no focusable child exists, make the container itself focusable.
-        container.setAttribute('tabindex', '-1');
-        container.focus();
-      }
+      if (!container.hasAttribute('tabindex')) container.setAttribute('tabindex', '-1');
+      container.focus({ preventScroll: true });
     });
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -97,7 +94,7 @@ export function useFocusTrap(
       const last = focusable[focusable.length - 1];
       const current = document.activeElement;
 
-      if (!container.contains(current)) {
+      if (!container.contains(current) || current === container) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();
         return;

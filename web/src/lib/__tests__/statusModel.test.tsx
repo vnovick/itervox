@@ -7,7 +7,7 @@ import AppHeader from '../../layout/AppHeader';
 import { LiveOpsStrip } from '../../pages/Dashboard/components/LiveOpsStrip';
 import { HeroStats } from '../../pages/Dashboard/components/HeroStats';
 import { buildOperatorQueueItems } from '../operatorQueue';
-import { STATUS_META, summarizeStatus, toneColor, type StatusKey } from '../statusModel';
+import { STATUS_META, summarizeStatus, toneTextClass, type StatusKey } from '../statusModel';
 import { PENDING_RESUME_CONTEXT_PREFIX } from '../../utils/inputRequired';
 import { render } from '../../test/render';
 import { makeRetryRow, makeRunningRow, makeSnapshot } from '../../test/fixtures/snapshots';
@@ -201,11 +201,11 @@ describe('statusModel', () => {
     expect(within(strip).queryByText('Live')).not.toBeInTheDocument();
   });
 
-  it('toneColor maps every tone to a theme token (neutral stays default)', () => {
-    expect(toneColor('success')).toBe('var(--success)');
-    expect(toneColor('warning')).toBe('var(--warning)');
-    expect(toneColor('danger')).toBe('var(--danger)');
-    expect(toneColor('info')).toBe('var(--accent)');
-    expect(toneColor('neutral')).toBeUndefined();
+  it('toneTextClass colours only the alerting tones', () => {
+    expect(toneTextClass('warning')).toBe('text-theme-warning-text');
+    expect(toneTextClass('danger')).toBe('text-theme-danger-text');
+    expect(toneTextClass('success')).toBeUndefined();
+    expect(toneTextClass('info')).toBeUndefined();
+    expect(toneTextClass('neutral')).toBeUndefined();
   });
 });

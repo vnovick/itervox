@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { EMPTY_STATES as EMPTY_PROJECT_FILTER } from '../../utils/constants';
@@ -43,50 +44,59 @@ function TrackerIcon({ kind }: { kind: string }) {
 }
 
 export function ProjectSelector() {
-  const { trackerKind, activeProjectFilter } = useItervoxStore(
+  const { trackerKind, activeProjectFilter, trackerScope } = useItervoxStore(
     useShallow((s) => ({
       trackerKind: s.snapshot?.trackerKind,
       activeProjectFilter: s.snapshot?.activeProjectFilter ?? EMPTY_PROJECT_FILTER,
+      trackerScope: s.snapshot?.trackerScope,
     })),
   );
 
   if (!trackerKind) return null;
 
-  const showGitHubNotice = trackerKind === 'github' && activeProjectFilter.length === 0;
+  const showGitHubNotice =
+    trackerKind === 'github' && !trackerScope && activeProjectFilter.length === 0;
 
   return (
     <div className="flex flex-col gap-2">
       <div
         data-testid="project-selector"
-        className="bg-theme-panel border-theme-line flex items-center gap-3 rounded-[var(--radius-md)] border px-4 py-2.5"
+        className="glass-chip flex w-fit max-w-full flex-wrap items-center gap-2.5 px-3.5 py-1.5"
       >
         {/* SOURCE label */}
-        <span className="flex-shrink-0 text-[10px] font-semibold tracking-widest uppercase">
-          Source
-        </span>
+        <span className="eyebrow flex-shrink-0">Source</span>
 
         {/* Active tracker — read-only badge, not a switcher */}
         <span
           data-testid="tracker-badge"
-          className="inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 text-[12px] font-medium"
-          style={{
-            background: 'var(--bg-elevated)',
-            color: 'var(--text)',
-            border: '1px solid var(--line)',
-          }}
+          className="text-theme-text inline-flex items-center gap-1.5 text-[13px] font-medium"
         >
           <TrackerIcon kind={trackerKind} />
           {TRACKER_LABEL[trackerKind] ?? trackerKind}
         </span>
 
+        {/* #182 — the adapter names its scope (assigned to …, project …);
+            #198 — a tracker filter's groups, one chip each, joined by OR. */}
+        {trackerScope && (
+          <span data-testid="tracker-scope" className="flex flex-wrap items-center gap-1.5">
+            {trackerScope.split('  OR  ').map((group, i) => (
+              <Fragment key={group}>
+                {i > 0 && (
+                  <span className="text-theme-muted text-[10px] font-semibold tracking-widest">
+                    OR
+                  </span>
+                )}
+                <span className="pill pill-accent py-0.5 text-xs">{group}</span>
+              </Fragment>
+            ))}
+          </span>
+        )}
+
         {/* Active project filter chips — only shown when a filter is configured */}
-        {activeProjectFilter.length > 0 && (
+        {!trackerScope && activeProjectFilter.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {activeProjectFilter.map((project) => (
-              <span
-                key={project}
-                className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2.5 py-0.5 text-xs font-medium"
-              >
+              <span key={project} className="pill pill-accent py-0.5 text-xs">
                 {project}
               </span>
             ))}
@@ -96,14 +106,7 @@ export function ProjectSelector() {
 
       {/* GitHub notice — no repositories selected means all repos are tracked */}
       {showGitHubNotice && (
-        <div
-          className="flex items-start gap-2.5 rounded-[var(--radius-md)] px-4 py-3 text-xs"
-          style={{
-            background: 'rgba(245,158,11,0.08)',
-            border: '1px solid rgba(245,158,11,0.2)',
-            color: 'var(--warning-text)',
-          }}
-        >
+        <div className="banner-warn flex items-start gap-2.5 px-4 py-3 text-xs">
           <span className="mt-px flex-shrink-0">⚠</span>
           <span>
             No GitHub projects are selected — all repositories will be tracked. To filter to

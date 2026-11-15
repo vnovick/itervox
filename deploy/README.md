@@ -61,7 +61,7 @@ and `make deploy-smoke` builds the image and requires `/api/v1/health` and
 2. SSH in and run the bootstrap:
 
    ```bash
-   sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.2 \
+   sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.3.1 \
      --data-disk <stable device path printed by provision.sh>
    ```
 
@@ -378,14 +378,12 @@ spec:
 
 ---
 
-## Terminal UI under systemd
+## Logs under systemd
 
-`itervox` starts a Bubbletea TUI when run interactively. Headless it is fine: a TTY
-ownership guard detects the absence of a controlling terminal, logs
-`statusui: refusing to start TUI`, and the daemon continues. No flag needed, no retry
-delay when stdin is not a terminal.
+`itervox` always runs headless (the terminal UI was removed in v0.3; watch the
+daemon from a shell with `itervox watch`). No flag needed.
 
-**Where the logs go.** With no controlling terminal the daemon fans logs out to
+**Where the logs go.** The daemon fans logs out to
 **both stderr and the rotating file**, so `journalctl -u itervox` keeps working for the
 whole run rather than going quiet after the startup banner (the tokenised dashboard URL
 is withheld from it — see "Authentication" above). Pass `--log-format=json`

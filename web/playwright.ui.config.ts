@@ -45,8 +45,9 @@ export default defineConfig({
     {
       name: 'chromium-mobile',
       // iPhone 14 viewport — current shell must remain usable at this width.
-      // Only the explicitly mobile-shaped smoke spec runs on this project.
-      testMatch: 'ui-current-mobile-smoke.spec.ts',
+      // Only the explicitly mobile-shaped specs run on this project: the
+      // smoke spec and the visual tour (phone-width screenshots).
+      testMatch: ['ui-current-mobile-smoke.spec.ts', 'ui-current-visual-tour.spec.ts'],
       use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } },
     },
   ],

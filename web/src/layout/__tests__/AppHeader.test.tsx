@@ -105,6 +105,24 @@ describe('AppHeader', () => {
     expect(banner).toHaveTextContent('retry attempt 3');
   });
 
+  it('names the settings file whose edit did not load, without a retry (#245)', () => {
+    setupStore({
+      configInvalid: {
+        path: '/repo/.itervox/settings.jsonc',
+        error: 'hujson: line 3, column 16: invalid character',
+        retryAttempt: 0,
+      },
+    });
+
+    renderWithRouter(<AppHeader />);
+
+    const banner = screen.getByTestId('config-invalid-banner');
+    expect(banner).toHaveTextContent('.itervox/settings.jsonc is invalid:');
+    expect(banner).toHaveTextContent('line 3, column 16');
+    expect(banner).toHaveTextContent('fix the file to apply it');
+    expect(banner).not.toHaveTextContent('retry attempt');
+  });
+
   it('hides the config-invalid banner when snapshot.configInvalid is null', () => {
     setupStore({
       configInvalid: null,

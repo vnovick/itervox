@@ -179,8 +179,8 @@ describe('RunningSessionsTable', () => {
   it('shows running session summary fields when rows are present', () => {
     withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
-    // Turn count and elapsed time are rendered in the row grid
-    expect(screen.getByText('5')).toBeInTheDocument();
+    // Turn count and elapsed time are rendered in the row card
+    expect(screen.getByText('turn 5')).toBeInTheDocument();
     expect(screen.getByText('1m 00s')).toBeInTheDocument();
   });
 
@@ -405,14 +405,16 @@ describe('RunningSessionsTable', () => {
   });
 
   // CORE-087 — jsdom does not evaluate breakpoints, so this pins the class
-  // branch: a wrapping flex card by default (phones), the fixed grid from sm up.
-  it('running row uses the card-layout branch below sm', () => {
+  // branch: one wrapping flex card at every width, with the last event and
+  // its meta line on their own full-width row (never a fixed grid).
+  it('running row uses the wrapping card layout at every width', () => {
     withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     const row = screen.getAllByTestId(/^running-row-/)[0];
     expect(row.className).toMatch(/(^|\s)flex-wrap(\s|$)/);
-    expect(row.className).toContain('sm:grid');
-    expect(row.className).toMatch(/sm:grid-cols-\[/);
+    expect(row.className).not.toMatch(/grid-cols-/);
+    const meta = screen.getByTestId(`running-row-meta-${baseRow.identifier}`);
+    expect(meta.parentElement?.className).toContain('basis-full');
     // No inline grid template: it would apply at every width.
     expect(row.style.gridTemplateColumns).toBe('');
   });

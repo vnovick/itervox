@@ -40,8 +40,11 @@ test.describe('T-69 settings matrix smoke', () => {
 
     const active = settingsMatrixScenario.snapshot.activeStates ?? [];
     expect(active.length).toBeGreaterThan(0);
+    // Scoped to the Tracker States section: the Retries "on exhausted
+    // retries" select lists the same state names as options.
+    const tracker = page.getByRole('region', { name: 'Tracker States' });
     for (const s of active) {
-      await expect(page.getByText(s).first()).toBeVisible();
+      await expect(tracker.getByText(s).first()).toBeVisible();
     }
   });
 });

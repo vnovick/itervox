@@ -94,6 +94,7 @@ func TestSendExitWithBranchThenPROpenedAutomations_QueuesExitBeforeAutomation(t 
 		"https://github.com/x/y/pull/42",
 		"https://github.com/x/y/pull/42",
 		"feature/eng-7",
+		"",
 	)
 
 	first := <-o.events
@@ -132,6 +133,7 @@ func TestSendExitWithBranchThenPROpenedAutomations_FiresOnResumeWithoutOpenedPRU
 		"https://github.com/x/y/pull/42", // detectedPRURL
 		"",                               // openedPRURL — empty (resumed run, comment already posted)
 		"",                               // openedPRBranch
+		"",                               // headSHA
 	)
 	first := <-o.events
 	require.Equal(t, EventWorkerExited, first.Type)
@@ -216,4 +218,42 @@ func TestDispatchPROpenedAutomations_BoundedWaitOnFullChannel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("DispatchPROpenedAutomations did not respect the bounded context")
 	}
+}
+
+// TestPROpenedDispatchSurvivesWorkerContextCancelAtExit (#177 CI): the event
+// loop cancels a worker's context while it handles that worker's exit
+// (cancelAndCleanupWorker). The pr_opened dispatch is sent right after the
+// exit, so when the loop wins that race the dispatch must still be queued,
+// not silently dropped on the cancelled context.
+func TestPROpenedDispatchSurvivesWorkerContextCancelAtExit(t *testing.T) {
+	o := &Orchestrator{
+		cfg:    &config.Config{Agent: config.AgentConfig{BaseBranch: "origin/main"}},
+		events: make(chan OrchestratorEvent), // unbuffered: each send meets the "loop"
+	}
+	o.SetPROpenedAutomations([]PROpenedAutomation{{ID: "pr-reviewer", ProfileName: "reviewer"}})
+	workerCtx, cancelWorker := context.WithCancel(t.Context())
+	defer cancelWorker()
+
+	got := make(chan OrchestratorEvent, 2)
+	go func() {
+		exit := <-o.events
+		cancelWorker() // what the exit handler does before reading the next event
+		got <- exit
+		select {
+		case ev := <-o.events:
+			got <- ev
+		case <-time.After(5 * time.Second):
+			close(got)
+		}
+	}()
+	issue := domain.Issue{ID: "id1", Identifier: "ENG-7", Title: "T", State: "In Progress"}
+	o.sendExitWithBranchThenPROpenedAutomations(workerCtx, issue, 0, TerminalSucceeded, nil,
+		"feature/eng-7", "https://github.com/x/y/pull/42", "https://github.com/x/y/pull/42", "feature/eng-7", "")
+
+	first := <-got
+	require.Equal(t, EventWorkerExited, first.Type)
+	second, ok := <-got
+	require.True(t, ok, "the pr_opened dispatch was dropped after the exit cancelled the worker context")
+	require.Equal(t, EventDispatchAutomation, second.Type)
+	assert.Equal(t, "pr-reviewer", second.Automation.AutomationID)
 }

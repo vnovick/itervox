@@ -81,6 +81,10 @@ var (
 	clientErrors    = newCounterVec("kind", "outcome")
 	workerExits     = newCounterVec("reason")
 	trackerRequests = newCounterVec("adapter", "outcome")
+	webhooks        = newCounterVec("tracker", "result")
+	storePulls      = newCounterVec("trigger")
+	tmuxSends       = newCounterVec("kind")
+	guardrailBlocks = newCounterVec("kind")
 	goroutinePanics atomic.Uint64
 	eventsDropped   atomic.Uint64
 )
@@ -99,6 +103,91 @@ func WorkerExit(reason string) {
 func TrackerRequest(adapter, outcome string) {
 	trackerRequests.get(adapter, outcome).Add(1)
 }
+
+// Tracker webhook delivery results for Webhook (#131).
+const (
+	// WebhookAccepted — signed, parsed, and its issues queued for a refresh.
+	WebhookAccepted = "accepted"
+	// WebhookIgnored — signed but about nothing the store tracks (another
+	// repository, a pull request, an event type it does not use).
+	WebhookIgnored = "ignored"
+	// WebhookBadSignature — missing or wrong signature; dropped.
+	WebhookBadSignature = "bad_signature"
+	// WebhookStale — Linear delivery outside the replay window; dropped.
+	WebhookStale = "stale"
+	// WebhookMalformed — signed but not a payload it can read; dropped.
+	WebhookMalformed = "malformed"
+)
+
+// Tracker store pull triggers for StorePull (#131).
+const (
+	// StorePullCold — the first pull of a store with no data.
+	StorePullCold = "cold"
+	// StorePullInterval — the periodic pull (the safety net with webhooks).
+	StorePullInterval = "interval"
+	// StorePullWebhook — a pull a webhook asked for (an issue it could not
+	// place by ID, or a refresh that failed).
+	StorePullWebhook = "webhook"
+	// StorePullView — one list read for a state set the store had no view
+	// for yet.
+	StorePullView = "view"
+)
+
+// Webhook counts one tracker webhook delivery by tracker ("linear",
+// "github") and result (Webhook*).
+func Webhook(tracker, result string) {
+	webhooks.get(tracker, result).Add(1)
+}
+
+// StorePull counts one full list pull of the tracker store by trigger
+// (StorePull*).
+func StorePull(trigger string) {
+	storePulls.get(trigger).Add(1)
+}
+
+// PreinitWebhooks exports tracker's delivery series at 0 for every result,
+// and the store pull series.
+func PreinitWebhooks(tracker string) {
+	for _, r := range []string{WebhookAccepted, WebhookIgnored, WebhookBadSignature, WebhookStale, WebhookMalformed} {
+		webhooks.get(tracker, r)
+	}
+	for _, t := range []string{StorePullCold, StorePullInterval, StorePullWebhook, StorePullView} {
+		storePulls.get(t)
+	}
+}
+
+// WebhookCount reads one webhook counter. A cross-package test reader;
+// kept in production code (deadcode allowlist).
+func WebhookCount(tracker, result string) uint64 { return webhooks.get(tracker, result).Load() }
+
+// StorePullCount reads one store pull counter. A cross-package test reader;
+// kept in production code (deadcode allowlist).
+func StorePullCount(trigger string) uint64 { return storePulls.get(trigger).Load() }
+
+// TmuxSend counts one write the Sessions panel made into a tmux pane (#178)
+// by kind: "text" (a paste, with or without Enter) or "key".
+func TmuxSend(kind string) {
+	tmuxSends.get(kind).Add(1)
+}
+
+// GuardrailBlock counts one agent operation a guardrail refused (#204) by
+// kind (internal/guardrails Kinds: branch, force_push, delete, tag,
+// hook_bypass, self_merge, approval_rejected, approval_unavailable). The
+// caller passes only known kinds.
+func GuardrailBlock(kind string) {
+	guardrailBlocks.get(kind).Add(1)
+}
+
+// PreinitGuardrailBlocks exports kinds at 0.
+func PreinitGuardrailBlocks(kinds ...string) {
+	for _, k := range kinds {
+		guardrailBlocks.get(k)
+	}
+}
+
+// GuardrailBlockCount reads one guardrail block counter. A cross-package
+// test reader; kept in production code (deadcode allowlist).
+func GuardrailBlockCount(kind string) uint64 { return guardrailBlocks.get(kind).Load() }
 
 // GoroutinePanic counts one panic recovered on a daemon goroutine. The site
 // is in the panic's own log line; the counter is unlabelled so an alert can

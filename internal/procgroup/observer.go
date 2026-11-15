@@ -63,3 +63,38 @@ func Track(ctx context.Context, cmd *exec.Cmd) (done func()) {
 	box.obs.GroupStarted(pgid, cmd.Process.Pid, label)
 	return func() { box.obs.GroupExited(pgid) }
 }
+
+// Observers fans each call out to every non-nil observer, in order.
+type Observers []Observer
+
+// GroupStarted implements Observer.
+func (all Observers) GroupStarted(pgid, pid int, label string) {
+	for _, o := range all {
+		if o != nil {
+			o.GroupStarted(pgid, pid, label)
+		}
+	}
+}
+
+// GroupExited implements Observer.
+func (all Observers) GroupExited(pgid int) {
+	for _, o := range all {
+		if o != nil {
+			o.GroupExited(pgid)
+		}
+	}
+}
+
+// AddObserver installs obs NEXT to the observer already installed (the
+// CORE-042 ledger, set once per process) and returns a function that puts
+// the previous one back. cmd/itervox adds the run monitor (internal/sysmon)
+// this way once per WORKFLOW.md generation.
+func AddObserver(obs Observer) (remove func()) {
+	prev := observer.Load()
+	next := Observers{obs}
+	if prev != nil {
+		next = Observers{prev.obs, obs}
+	}
+	observer.Store(&observerBox{obs: next})
+	return func() { observer.Store(prev) }
+}

@@ -1,0 +1,361 @@
+---
+title: Running in CI (GitHub Actions)
+description: Run one issue per CI job with `itervox run` and the itervox GitHub Action — label to start, `/itervox` comments to answer and approve, a nightly sweep, API-key auth and least-privilege permissions.
+sidebar:
+  order: 12
+---
+
+Itervox normally runs as a daemon on a machine you keep running. In CI there is
+no machine to keep: a job starts, does one thing and ends. `itervox run --issue
+<id>` is that one thing. It loads the same `WORKFLOW.md` and settings files as
+the daemon and runs the daemon's own orchestrator on exactly one issue, then
+exits:
+
+1. the agent's turns, with the same prompt assembly, profiles, playbooks, rules,
+   project memory, [guardrails](/guides/guardrails/) and
+   [budgets](/configuration/#per-issue-budgets);
+2. the [reviewer quorum](/guides/agent-profiles/), when `agent.auto_review` is on;
+3. the normal completion path: push the issue branch, open the pull request,
+   comment its link on the issue and move the issue to
+   `tracker.completion_state`.
+
+There is no HTTP server, hub, dashboard, terminal panel, automation or polling
+of other issues — the process opens no listening socket at all.
+
+## How a run works
+
+- **Workspace.** The job's checkout is the workspace. The run creates the issue
+  branch (`itervox/<issue>`, or the branch the tracker records for the issue) in
+  the checkout itself; `--worktree` puts it in a git worktree under
+  `.itervox/run/worktrees/` instead. A branch that already exists on `origin` —
+  pushed by an earlier run — is checked out as it is, so a run continues where
+  the last one stopped. `hooks.after_create` does not run for the checkout
+  (itervox did not create it; with `--worktree` it runs for the new worktree);
+  `hooks.before_run` and `hooks.after_run` do.
+- **Pull request.** When the run succeeds and the branch has commits beyond the
+  branch the checkout was on, itervox pushes the branch and opens the PR with
+  `gh pr create` (the agent may also open it itself; an open PR is reused). The
+  PR body says `Closes #<n>` on GitHub.
+- **One run per issue.** A lock file in the checkout
+  (`.itervox/run/issue-<id>.lock`, excluded from git through
+  `.git/info/exclude`) refuses a second run of the same issue; across jobs, use
+  `concurrency: itervox-<issue>` (below).
+- **Timeouts.** `--timeout` caps the whole run; the agent's turn timeout is
+  lowered to stay below it. Give the job's `timeout-minutes` a few minutes more.
+- **Retries.** A run dispatches the issue once. A failed turn ends the run with
+  exit 2 instead of waiting for the retry; re-run the job to try again.
+
+### Exit codes and output
+
+| Code | Meaning |
+|---|---|
+| `0` | PR opened, or nothing to do (the issue is not in `tracker.active_states`, or is not eligible) |
+| `2` | Failed (the agent failed, the run timed out, the issue was not found) |
+| `3` | Needs input: the agent asked a question, or a guardrail approval is needed |
+| `4` | Budget exceeded (`agent.budget`): the issue is paused |
+| `5` | Configuration error (`WORKFLOW.md`, settings, flags, the agent CLI) |
+
+The run prints a Markdown summary — the issue, branch, PR link, turns, tokens,
+cost and reviewer verdicts — and appends it to `$GITHUB_STEP_SUMMARY` when that
+is set, so it shows on the workflow run's page. `--json` prints one JSON object
+instead (`status`, `exit_code`, `pr_url`, `branch`, `turns`, `input_tokens`,
+`output_tokens`, `cost_usd`, `reviewers`, `review_outcome`, `question`,
+`approval_commands`, `summary`, …). Logs go to stderr, and with `--log-dir` to
+`itervox.log` and `issues/` there; every line is redacted, so the directory can
+be uploaded as an artifact. Agent CLI session logs are not written.
+
+### Questions and approvals
+
+When the agent needs input, the run posts the question as an issue comment,
+commits it as a handoff (`.itervox/handoff/<time>_question.md`) on the issue
+branch, pushes the branch and exits `3`. The answer starts a new run:
+
+```bash
+itervox run --issue 12 --answer "Use Postgres"     # or --answer @answer.txt
+```
+
+That run checks the branch out from `origin`, so the agent sees every handoff
+committed on it — the previous agents' and the question — and is told the
+question and your answer. On GitHub, comment `/itervox <your answer>` and the
+[comment workflow](#answer-and-approve-from-a-comment) runs it for you.
+
+[Guardrail](/guides/guardrails/) approvals **fail closed** in CI: there is no
+one to ask while the job runs. A command in `guardrails.approval_commands` is
+refused, nothing runs, and the run exits `3` naming the command (in the
+summary, the question comment and the handoff). To allow it:
+
+```bash
+itervox run --issue 12 --approve "vercel --prod"
+```
+
+`--approve` allows exactly that command, for that run only; every other
+approval command is still refused. On GitHub, comment
+`/itervox approve vercel --prod`.
+
+## The GitHub Action
+
+`vnovick/itervox/action` installs the `itervox` release binary (its SHA-256
+checked against the release's `checksums.txt`) and the agent CLI, checks that
+the trigger is trusted, and runs `itervox run`.
+
+| Input | Default | |
+|---|---|---|
+| `issue` | (required) | `12` or `#12` on GitHub, `ENG-12` on Linear |
+| `agent` | `claude` | `claude`, `codex` or `none` (already installed) |
+| `version` | `latest` | the itervox release, e.g. `0.3.1` — pin it |
+| `answer` | | answer to a question (an issue comment body may be passed as is) |
+| `approve` | | the approval command to allow for this run (`/itervox approve …` bodies too) |
+| `timeout` | `60m` | cap on the whole run |
+| `workflow` | `WORKFLOW.md` | path to `WORKFLOW.md` |
+| `log-dir` | | redacted logs, to upload as an artifact |
+| `fail-on-needs-input` | `false` | make exit 3 fail the step |
+| `github-token` | `github.token` | trust check, release download, `gh pr create` and the GitHub tracker |
+| `dry-run` | `false` | install and check only |
+
+Outputs: `status`, `exit-code`, `pr-url` and `summary` (the Markdown). The step
+fails on exit 2, 4 and 5; exit 3 succeeds with `status: needs_input` unless
+`fail-on-needs-input` is set.
+
+**The trust check.** An agent run gets the repository's secrets and a token
+that can push, so the action refuses to run unless:
+
+- a **label** was added by a user with write access (admin, maintain or write);
+- a **comment** was written by an `OWNER`, `MEMBER` or `COLLABORATOR`;
+- or the run is a `schedule` or `workflow_dispatch` (both need write access to
+  start);
+
+and it never runs for a **pull request from a fork**, whatever the trigger.
+Everything else — other events, failed permission lookups — is refused. The
+check is [`action/trust-check.sh`](https://github.com/vnovick/itervox/blob/main/action/trust-check.sh).
+
+## Authentication
+
+Give the agent an **API key** as a repository secret:
+
+- Claude Code: `ANTHROPIC_API_KEY`
+- Codex: `OPENAI_API_KEY`
+
+Pass it as `env:` on the action step only, never on the whole job. A Claude
+Code token from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`) also works in
+place of the key.
+
+The tracker reads its key from `WORKFLOW.md` as usual. For GitHub Issues,
+`api_key: $GITHUB_TOKEN` uses the job's own token, which the action exports; for
+Linear, add `LINEAR_API_KEY` as a secret.
+
+### Least-privilege permissions
+
+Set `permissions:` on every workflow (the default token can do more than a run
+needs):
+
+| Permission | Why |
+|---|---|
+| `contents: write` | push the issue branch |
+| `pull-requests: write` | open the pull request |
+| `issues: write` | comment on the issue, move its state labels |
+
+Nothing else. The checkout keeps its credentials (`persist-credentials`
+defaults to true) because the run pushes with them; use `fetch-depth: 0` so the
+branch can be compared with its base.
+
+The repository's `WORKFLOW.md` decides what the agent may do; review it like
+code. Keep `guardrails` on: they stop the agent pushing anywhere but its issue
+branch and merging its own PR.
+
+## Example workflows
+
+The issue must be in one of `tracker.active_states` (with the default GitHub
+states, labelled `todo`); otherwise the run reports nothing to do.
+
+### Run when the `itervox` label is added
+
+```yaml
+# .github/workflows/itervox.yml
+name: itervox
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  run:
+    if: github.event.label.name == 'itervox'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    concurrency:
+      group: itervox-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: itervox
+        uses: vnovick/itervox/action@v0.3.1
+        with:
+          issue: ${{ github.event.issue.number }}
+          version: 0.3.1
+          timeout: 60m
+          log-dir: ${{ runner.temp }}/itervox-logs
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: itervox-logs-${{ github.event.issue.number }}
+          path: ${{ runner.temp }}/itervox-logs
+          if-no-files-found: ignore
+```
+
+### Answer and approve from a comment
+
+`/itervox <answer>` continues a run that asked a question; `/itervox approve
+<command>` re-runs it with that command allowed. Comment bodies go to the action
+as inputs, never into a `run:` script, so a comment cannot inject shell.
+
+```yaml
+# .github/workflows/itervox-comments.yml
+name: itervox comments
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  answer:
+    if: >-
+      !github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/itervox ') &&
+      !startsWith(github.event.comment.body, '/itervox approve')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    concurrency:
+      group: itervox-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: vnovick/itervox/action@v0.3.1
+        with:
+          issue: ${{ github.event.issue.number }}
+          version: 0.3.1
+          answer: ${{ github.event.comment.body }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  approve:
+    if: >-
+      !github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/itervox approve ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    concurrency:
+      group: itervox-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: vnovick/itervox/action@v0.3.1
+        with:
+          issue: ${{ github.event.issue.number }}
+          version: 0.3.1
+          approve: ${{ github.event.comment.body }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+The action's trust check refuses comments from anyone who is not an owner,
+member or collaborator, so a drive-by `/itervox approve` does nothing.
+
+### Nightly sweep of labelled issues
+
+A matrix job per open issue labelled `itervox`, at most three at a time; the
+per-issue `concurrency` group is the one the other workflows use, so a sweep and
+a label run never work on the same issue at once.
+
+```yaml
+# .github/workflows/itervox-nightly.yml
+name: itervox nightly
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    outputs:
+      issues: ${{ steps.list.outputs.issues }}
+    steps:
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          issues=$(gh issue list --repo "$REPO" --label itervox --state open --limit 20 --json number --jq '[.[].number]')
+          echo "issues=$issues" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: list
+    if: needs.list.outputs.issues != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        issue: ${{ fromJSON(needs.list.outputs.issues) }}
+    concurrency:
+      group: itervox-${{ matrix.issue }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: vnovick/itervox/action@v0.3.1
+        with:
+          issue: ${{ matrix.issue }}
+          version: 0.3.1
+          timeout: 60m
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Issues that are done, waiting for an answer or over their budget report
+`nothing_to_do`, `needs_input` or `budget_exceeded` and cost nothing more.
+
+## Without the action
+
+Any CI system works the same way: install the binary and the agent CLI, export
+the API key, run `itervox run --issue <id>` from the checkout, and branch on
+the exit code. For example in a shell step:
+
+```bash
+set +e
+itervox run --issue "$ISSUE" --timeout 45m --log-dir logs
+code=$?
+set -e
+case $code in
+  0) echo "done" ;;
+  3) echo "waiting for an answer: see the issue" ;;
+  *) exit "$code" ;;
+esac
+```

@@ -18,12 +18,14 @@ describe('FilterPills', () => {
 
   it('highlights the active pill', () => {
     render(<FilterPills pills={pills} activeId="active" onChange={vi.fn()} />);
-    const activeButton = screen.getByText('Active');
-    expect(activeButton.className).toContain('bg-theme-accent');
-    expect(activeButton.className).toContain('text-white');
+    // The selected pill is marked with aria-pressed, which the shared
+    // .segmented-plain recipe styles as the raised chip.
+    const activeButton = screen.getByRole('button', { name: 'Active' });
+    expect(activeButton).toHaveAttribute('aria-pressed', 'true');
+    expect(activeButton.parentElement).toHaveClass('segmented', 'segmented-plain');
 
-    const inactiveButton = screen.getByText('All Issues');
-    expect(inactiveButton.className).toContain('bg-theme-bg-soft');
+    const inactiveButton = screen.getByRole('button', { name: 'All Issues' });
+    expect(inactiveButton).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('calls onChange when a pill is clicked', () => {
@@ -44,9 +46,9 @@ describe('FilterPills', () => {
     expect(buttons).toHaveLength(3);
   });
 
-  it('does not highlight non-active pills with accent class', () => {
+  it('does not mark non-active pills as selected', () => {
     render(<FilterPills pills={pills} activeId="all" onChange={vi.fn()} />);
-    const doneButton = screen.getByText('Done');
-    expect(doneButton.className).not.toContain('bg-theme-accent');
+    const doneButton = screen.getByRole('button', { name: 'Done' });
+    expect(doneButton).toHaveAttribute('aria-pressed', 'false');
   });
 });

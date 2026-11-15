@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -42,6 +44,12 @@ type ClientConfig struct {
 	// one for stacked PRs (#103). Snapshotted when the client is built.
 	CompletionState string
 	Endpoint        string
+	// Filter is tracker.filter (#198): groups of label, assignee, state and
+	// milestone conditions, one issue search each (see filter.go).
+	Filter issuefilter.Filter
+	// WorkingState is tracker.working_state, which a filter's states
+	// condition always admits.
+	WorkingState string
 }
 
 // rateLimitSnapshot holds the most recent X-RateLimit-* values observed.
@@ -111,6 +119,12 @@ type Client struct {
 	blockerCacheMu sync.RWMutex
 	blockerCache   map[string]blockerCacheEntry
 
+	// filterMu guards filterOverride (the runtime filter, #198; nil means
+	// cfg.Filter) and me (the login "me" resolved to).
+	filterMu       sync.RWMutex
+	filterOverride *issuefilter.Filter
+	me             string
+
 	// now returns the current time. Defaults to time.Now; overridable in
 	// tests (see export_test.go) to exercise blockerStateCacheTTL expiry
 	// without sleeping.
@@ -158,6 +172,15 @@ func (c *Client) storeBlockerState(id, state, url string) {
 // GitHub's label filter is AND-semantics (issues must have ALL listed labels), so we
 // issue one request per active state and deduplicate by issue ID.
 func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
+	if f := c.Filter(); len(f) > 0 {
+		return c.fetchFiltered(ctx, f, c.activeStates()) // #198
+	}
+	return c.fetchUnfiltered(ctx)
+}
+
+// fetchUnfiltered is the candidate read without a filter: one listing per
+// active-state label.
+func (c *Client) fetchUnfiltered(ctx context.Context) ([]domain.Issue, error) {
 	seen := make(map[string]struct{})
 	var all []domain.Issue
 	for _, activeState := range c.activeStates() {
@@ -187,6 +210,9 @@ func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, erro
 func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]domain.Issue, error) {
 	if len(stateNames) == 0 {
 		return []domain.Issue{}, nil
+	}
+	if f := c.Filter(); len(f) > 0 {
+		return c.fetchFiltered(ctx, f, stateNames) // #198
 	}
 
 	var closedStates, labelStates []string
@@ -403,24 +429,93 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 }
 
 // fetchSingleIssue fetches one GitHub issue by its number (as string ID).
+// FetchIssuesInScope implements tracker.ScopedFetcher (#131). The repository
+// is the scope, so every issue that still exists in it is in scope: one read
+// per issue, no list request, deleted issues left out. A transferred issue
+// answers with a redirect to its new repository, where it may well have the
+// same number: an issue is in scope only when the answer names this
+// repository (repository_url, else html_url) and the number asked for.
+func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	type result struct {
+		issue *domain.Issue
+		err   error
+	}
+	// #198: with a filter, an issue that no longer matches it is out of
+	// scope (the same predicate the searches compile).
+	f := c.Filter()
+	if err := c.ResolveFilter(ctx, f); err != nil {
+		return nil, err
+	}
+	env := c.matchEnv()
+	results := make([]result, len(issueIDs))
+	boundedDo(ctx, issueIDs, func(ctx context.Context, idx int, issueID string) {
+		issue, raw, err := c.fetchSingleIssueRaw(ctx, issueID)
+		if err == nil && issue != nil && !c.isOwnIssue(raw, issueID) {
+			issue = nil
+		}
+		if issue != nil {
+			if in, _ := f.Match(*issue, env); !in {
+				issue = nil
+			}
+		}
+		results[idx] = result{issue, err}
+	})
+	var out []domain.Issue
+	for _, r := range results {
+		switch {
+		case errors.Is(r.err, tracker.ErrNotFound):
+			// deleted, or not visible here
+		case r.err != nil:
+			return nil, r.err
+		case r.issue != nil:
+			out = append(out, *r.issue)
+		}
+	}
+	return out, nil
+}
+
+// isOwnIssue reports whether raw, an issue answer, is issue number of this
+// client's repository: a redirect after a transfer answers with the issue
+// in its new repository.
+func (c *Client) isOwnIssue(raw map[string]any, number string) bool {
+	if n, ok := tracker.ToIntVal(raw["number"]); !ok || strconv.Itoa(n) != number {
+		return false
+	}
+	repoPath := "/repos/" + strings.ToLower(c.owner+"/"+c.repo)
+	if u, _ := raw["repository_url"].(string); u != "" {
+		return strings.HasSuffix(strings.ToLower(strings.TrimSuffix(u, "/")), repoPath)
+	}
+	if u, _ := raw["html_url"].(string); u != "" {
+		return strings.Contains(strings.ToLower(u), "/"+strings.ToLower(c.owner+"/"+c.repo)+"/issues/"+number)
+	}
+	return true // an answer with no URLs (not GitHub's own) is judged by its number
+}
+
+var _ tracker.ScopedFetcher = (*Client)(nil)
+
 func (c *Client) fetchSingleIssue(ctx context.Context, issueNumber string) (*domain.Issue, error) {
+	issue, _, err := c.fetchSingleIssueRaw(ctx, issueNumber)
+	return issue, err
+}
+
+// fetchSingleIssueRaw is fetchSingleIssue that also returns the answer.
+func (c *Client) fetchSingleIssueRaw(ctx context.Context, issueNumber string) (*domain.Issue, map[string]any, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/issues/%s", c.cfg.Endpoint, c.owner, c.repo, issueNumber)
 	body, _, err := c.get(ctx, url)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	raw, ok := body.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("github_unknown_payload: unexpected issue shape")
+		return nil, nil, fmt.Errorf("github_unknown_payload: unexpected issue shape")
 	}
 
 	derived := deriveState(raw, c.activeStates(), c.terminalStates())
 	if derived == "" {
 		derived = matchStateLabel(raw, c.otherStateLabels())
 	}
-	issue := normalizeIssue(raw, derived)
-	return issue, nil
+	return normalizeIssue(raw, derived), raw, nil
 }
 
 // otherStateLabels are the configured state labels that are neither active
@@ -693,16 +788,33 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	return comment, nil
 }
 
-// CreateIssue creates a new GitHub issue in the configured repository. The
-// sourceIssueID is accepted for tracker interface parity but not otherwise used.
-func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
+// CreateIssue creates a new GitHub issue in the configured repository, with
+// the state label first and in.Labels after it. in.BlockedBySource appends
+// the managed "Blocked by #<source>" body line the body parser reads as a
+// blocker (the same line the local issue sync writes), so the source issue
+// gates the new one; otherwise sourceIssueID is not used.
+func (c *Client) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
 	u := fmt.Sprintf("%s/repos/%s/%s/issues", c.cfg.Endpoint, c.owner, c.repo)
+	body := in.Body
+	if in.BlockedBySource && strings.TrimSpace(sourceIssueID) != "" {
+		body = tracker.JoinSyncBlockersLine(body, tracker.SyncBlockersLine(issueRefs([]string{sourceIssueID})))
+	}
 	payloadBody := map[string]any{
-		"title": title,
+		"title": in.Title,
 		"body":  body,
 	}
-	if stateName = strings.TrimSpace(stateName); stateName != "" {
-		payloadBody["labels"] = []string{stateName}
+	stateName := strings.TrimSpace(in.State)
+	var labels []string
+	if stateName != "" {
+		labels = append(labels, stateName)
+	}
+	for _, l := range in.Labels {
+		if l = strings.TrimSpace(l); l != "" && !slices.ContainsFunc(labels, func(have string) bool { return strings.EqualFold(have, l) }) {
+			labels = append(labels, l)
+		}
+	}
+	if len(labels) > 0 {
+		payloadBody["labels"] = labels
 	}
 	payload, err := json.Marshal(payloadBody)
 	if err != nil {

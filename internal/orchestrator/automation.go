@@ -12,6 +12,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/metrics"
 )
 
@@ -79,6 +80,30 @@ type AutomationTriggerContext struct {
 	// MergedAt is set on pr_merged only. Zero value means "not a merge event".
 	MergedAt time.Time
 
+	// ─── PR-event trigger fields (#173) ───────────────────────────────
+	// pr_check_completed / pr_synchronized / pr_review_submitted /
+	// pr_mergeable_changed also set PRURL, PRNumber and PRBranch.
+	// HeadSHA is the PR head commit the event is about.
+	HeadSHA string
+	// CheckName / CheckConclusion / CheckCompletedAt: pr_check_completed.
+	// CheckName is the check run name or the commit status context.
+	CheckName        string
+	CheckConclusion  string
+	CheckCompletedAt time.Time
+	// MergeableState is GitHub's mergeable_state when known (every PR-event
+	// trigger); PreviousMergeableState is set on pr_mergeable_changed.
+	MergeableState         string
+	PreviousMergeableState string
+	// ReviewID / ReviewAuthor / ReviewState / ReviewSubmittedAt:
+	// pr_review_submitted. ReviewState is lower case (approved,
+	// changes_requested, commented, dismissed).
+	ReviewID          string
+	ReviewAuthor      string
+	ReviewState       string
+	ReviewSubmittedAt time.Time
+	// EventSource is "webhook" or "poll".
+	EventSource string
+
 	// ─── rate_limited trigger fields (gap E) ──────────────────────────
 	FailedProfile         string
 	FailedBackend         string
@@ -128,6 +153,7 @@ type InputRequiredAutomation struct {
 	MatchMode         string
 	States            []string
 	LabelsAny         []string
+	Groups            issuefilter.Filter // #198
 	IdentifierRegex   *regexp.Regexp
 	InputContextRegex *regexp.Regexp
 	AutoResume        bool
@@ -149,6 +175,7 @@ type RunFailedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 }
 
@@ -164,6 +191,7 @@ type PROpenedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 }
 
@@ -180,6 +208,7 @@ type RateLimitedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 	AutoResume      bool
 	SwitchToProfile string
@@ -197,6 +226,7 @@ type BlockersResolvedAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 	MoveToState     string
 }
@@ -271,10 +301,13 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 	defer cancel()
 	now := time.Now()
 	for _, rule := range rules {
-		if sendCtx.Err() != nil {
+		if err := sendCtx.Err(); err != nil {
+			metrics.EventDropped() // CORE-045
+			slog.Warn("orchestrator: pr_opened dispatch skipped: context done before send",
+				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL, "error", err)
 			return
 		}
-		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.IdentifierRegex, nil, "") {
+		if !MatchesAutomationFilter(issue, rule.MatchMode, rule.States, rule.LabelsAny, rule.Groups, rule.IdentifierRegex, nil, "") {
 			continue
 		}
 		dispatch := AutomationDispatch{
@@ -300,6 +333,10 @@ func (o *Orchestrator) DispatchPROpenedAutomations(ctx context.Context, issue do
 			Issue:      &issue,
 			Automation: &dispatch,
 		}:
+		case <-o.loopExitedCh(): // nil before Run: never ready
+			slog.Warn("orchestrator: pr_opened dispatch event dropped (orchestrator exited)",
+				"identifier", issue.Identifier, "automation", rule.ID, "pr_url", prURL)
+			return
 		case <-sendCtx.Done():
 			metrics.EventDropped() // CORE-045
 			slog.Warn("orchestrator: pr_opened dispatch event not accepted before context done",
@@ -539,6 +576,8 @@ func (o *Orchestrator) fetchInputRequiredIssue(ctx context.Context, entry *Input
 	if entry == nil {
 		return nil
 	}
+	ctx, cancel := loopReadCtx(ctx) // #187: bounded by the loop iteration
+	defer cancel()
 	if entry.IssueID != "" {
 		issue, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
 		if err != nil {
@@ -580,6 +619,7 @@ func matchesInputRequiredAutomation(issue domain.Issue, automation InputRequired
 		automation.MatchMode,
 		automation.States,
 		automation.LabelsAny,
+		automation.Groups,
 		automation.IdentifierRegex,
 		automation.InputContextRegex,
 		inputContext,
@@ -604,6 +644,7 @@ func (o *Orchestrator) dispatchMatchingRunFailedAutomations(
 			automation.MatchMode,
 			automation.States,
 			automation.LabelsAny,
+			automation.Groups,
 			automation.IdentifierRegex,
 			nil,
 			"",
@@ -644,6 +685,7 @@ func (o *Orchestrator) dispatchMatchingBlockersResolvedAutomations(
 			automation.MatchMode,
 			automation.States,
 			automation.LabelsAny,
+			automation.Groups,
 			automation.IdentifierRegex,
 			nil,
 			"",
@@ -674,14 +716,15 @@ func (o *Orchestrator) dispatchMatchingBlockersResolvedAutomations(
 // MatchesAutomationFilter is the single automation filter matcher (CORE-111),
 // shared by the orchestrator's trigger dispatchers and cmd/itervox's cron /
 // input-required watcher. Each configured criterion — identifier regex,
-// states (case-insensitive), labels_any (case-insensitive), input-context
-// regex — is one check; match mode "any" needs one to pass, anything else
+// states (case-insensitive), labels_any (case-insensitive), the #198
+// filter groups (any group matching), input-context regex — is one check; match mode "any" needs one to pass, anything else
 // needs all. No criteria matches everything.
 func MatchesAutomationFilter(
 	issue domain.Issue,
 	matchMode string,
 	states []string,
 	labelsAny []string,
+	groups issuefilter.Filter,
 	identifierRegex *regexp.Regexp,
 	inputContextRegex *regexp.Regexp,
 	inputContext string,
@@ -702,6 +745,11 @@ func MatchesAutomationFilter(
 			})
 		})
 		checks = append(checks, labelMatch)
+	}
+	if len(groups) > 0 {
+		// #198: the tracker-filter groups, by the shared matcher.
+		m, _ := groups.Match(issue, issuefilter.Env{})
+		checks = append(checks, m)
 	}
 	if inputContextRegex != nil {
 		checks = append(checks, inputContextRegex.MatchString(inputContext))
@@ -725,29 +773,33 @@ func MatchesAutomationFilter(
 	return true
 }
 
-// startAutomationRunOrHold is startAutomationRun that also reports a
-// backend hold (CORE-053): held is true when the run was not started only
-// because the backend gate refused its target, so the caller queues it with
-// the backend_limited reason instead of dropping it.
+// startAutomationRunOrHold is startAutomationRun that also reports a hold:
+// hold is the queue reason when the run was not started only because it
+// must wait, so the caller queues it with that reason instead of dropping
+// it — backend_limited when the backend gate refused its target (CORE-053),
+// tracker_unavailable when the claim check could not read the issue (#116).
 func (o *Orchestrator) startAutomationRunOrHold(
 	ctx context.Context,
 	state *State,
 	issue domain.Issue,
 	now time.Time,
 	automation AutomationDispatch,
-) (started, held bool) {
+) (started bool, hold AutomationQueueReason) {
 	if automation.ProfileName == "" {
-		return false, false
+		return false, ""
 	}
 	if _, running := state.Running[issue.ID]; running {
-		return false, false
+		return false, ""
 	}
 	if _, claimed := state.Claimed[issue.ID]; claimed {
-		return false, false
+		return false, ""
 	}
 	o.syncDrainRequest(state)        // M4-close D2
 	if AvailableSlots(*state) <= 0 { // 0 while draining (CORE-057)
-		return false, false
+		return false, ""
+	}
+	if o.refuseOverBudget(state, issue.ID, issue.Identifier) { // #136: paused, run dropped
+		return false, ""
 	}
 
 	o.cfgMu.RLock()
@@ -760,12 +812,22 @@ func (o *Orchestrator) startAutomationRunOrHold(
 
 	if !ok {
 		slog.Warn("orchestrator: automation profile not found", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return false, false
+		return false, ""
 	}
 	if !config.ProfileEnabled(profile) {
 		slog.Warn("orchestrator: automation profile disabled", "identifier", issue.Identifier, "profile", automation.ProfileName, "automation", automation.AutomationID)
-		return false, false
+		return false, ""
 	}
+	// #116 claim check: an automation may run on any state but a terminal
+	// one, so it is refused only when the tracker has closed or lost it.
+	claimed, verdict := o.claimCheck(ctx, state, issue, nil, admitAutomation, o.claimNotTerminal(state, false), now)
+	switch verdict {
+	case claimUnreachable:
+		return false, AutomationQueueReasonTrackerUnavailable // queued, never dropped
+	case claimRefuse:
+		return false, ""
+	}
+	issue = claimed
 
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
 
@@ -801,7 +863,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 		o.logger().Info("orchestrator: automation held, backend limited",
 			"identifier", issue.Identifier, "automation", automation.AutomationID,
 			"hold", describeHold(gate.hold))
-		return false, true
+		return false, AutomationQueueReasonBackendLimited
 	}
 	o.saveBackendHealthToDisk(state)
 	target := gate.target
@@ -827,7 +889,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 			"worker_host", workerHost,
 			"backend", backend)
 		state.Claimed[issue.ID] = struct{}{}
-		return true, false
+		return true, ""
 	}
 
 	state.Claimed[issue.ID] = struct{}{}
@@ -848,6 +910,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
 	}
+	workerCtx = o.startRun(workerCtx, state, state.Running[issue.ID])
 
 	o.workerCancelsMu.Lock()
 	o.workerCancels[issue.Identifier] = workerCancel
@@ -865,7 +928,7 @@ func (o *Orchestrator) startAutomationRunOrHold(
 	o.workersWg.Add(issue.Identifier)
 	switchNotice := o.backendSwitchNotice(state, issue.Identifier, backend, profileName, &automation) // CORE-101
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, &automation, switchNotice)
-	return true, false
+	return true, ""
 }
 
 // AutomationFiredLogPrefix is the canonical leading token of the synthetic

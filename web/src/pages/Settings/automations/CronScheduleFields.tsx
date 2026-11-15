@@ -17,39 +17,45 @@ export function CronScheduleFields({
   onTimezoneChange: (value: string) => void;
 }) {
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      <div>
-        <p id="automation-cron-label" className={fieldLabelCls}>
+    <CronPicker
+      value={cron}
+      onChange={onCronChange}
+      labelledBy="automation-cron-label"
+      title={
+        <p id="automation-cron-label" className={`${fieldLabelCls} mb-0`}>
           Cron
         </p>
-        <CronPicker value={cron} onChange={onCronChange} labelledBy="automation-cron-label" />
-      </div>
-
-      <div>
-        <label htmlFor="automation-timezone-input" className={fieldLabelCls}>
-          Timezone
-        </label>
-        <input
-          id="automation-timezone-input"
-          list="automation-timezone-zones"
-          value={timezone}
-          onChange={(event) => {
-            onTimezoneChange(event.target.value);
-          }}
-          placeholder="UTC or Asia/Jerusalem"
-          className={inputCls}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        <datalist id="automation-timezone-zones">
-          {getIANATimezones().map((zone) => (
-            <option key={zone} value={zone} />
-          ))}
-        </datalist>
-        <p className={helperTextCls}>
-          IANA zone name. Start typing to filter; leave blank to use the daemon timezone.
-        </p>
-      </div>
-    </div>
+      }
+      aside={
+        <div>
+          <label
+            htmlFor="automation-timezone-input"
+            className="text-theme-text-secondary mb-1 block text-xs"
+          >
+            Timezone
+          </label>
+          <input
+            id="automation-timezone-input"
+            list="automation-timezone-zones"
+            value={timezone}
+            onChange={(event) => {
+              onTimezoneChange(event.target.value);
+            }}
+            placeholder="UTC or Asia/Jerusalem"
+            className={inputCls}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <datalist id="automation-timezone-zones">
+            {getIANATimezones().map((zone) => (
+              <option key={zone} value={zone} />
+            ))}
+          </datalist>
+          <p className={helperTextCls}>
+            IANA zone name. Start typing to filter; leave blank to use the daemon timezone.
+          </p>
+        </div>
+      }
+    />
   );
 }

@@ -11,7 +11,7 @@ export function WhyIdleChip({ reason }: { reason: string | undefined }) {
     <span
       data-testid="why-idle-chip"
       title={title}
-      className="bg-theme-warning-soft text-theme-warning-text max-w-[16rem] flex-shrink-0 truncate rounded px-1.5 py-0.5 text-[10px] font-medium"
+      className="tag pill-warn block max-w-[16rem] flex-shrink-0 truncate"
     >
       <span className="sr-only">Not dispatching: </span>
       {label}

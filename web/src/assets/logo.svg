@@ -1,15 +1,12 @@
-<svg width="140" height="28" viewBox="0 0 140 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="140" height="32" viewBox="0 0 140 32" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="iter-grad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#6366f1"/>
-      <stop offset="100%" stop-color="#14b8a6"/>
-    </linearGradient>
-    <linearGradient id="slash-grad" x1="0" y1="0" x2="0.5" y2="1">
-      <stop offset="0%" stop-color="#9678e3"/>
-      <stop offset="100%" stop-color="#b8a5eb"/>
-    </linearGradient>
+    <linearGradient id="vh-hex" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b9cbff"/><stop offset="1" stop-color="#3b6cf0"/></linearGradient>
+    <linearGradient id="vh-visor" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#7ff0de"/></linearGradient>
   </defs>
-  <text x="0" y="21" font-family="'JetBrains Mono', 'Fira Code', monospace" font-size="20" font-weight="800" letter-spacing="-0.5">
-    <tspan fill="url(#iter-grad)">ITER</tspan><tspan fill="url(#slash-grad)">//</tspan><tspan fill="#c9cde0">VOX</tspan>
-  </text>
+  <g transform="scale(0.5)">
+    <path d="M32 6 L54.5 19 L54.5 45 L32 58 L9.5 45 L9.5 19 Z" fill="none" stroke="url(#vh-hex)" stroke-width="6.5" stroke-linejoin="round"/>
+    <rect x="17" y="26.5" width="30" height="11" rx="5.5" fill="url(#vh-visor)"/>
+    <circle cx="39.5" cy="32" r="2.6" fill="#ffffff"/>
+  </g>
+  <text x="40" y="23" font-family="Inter, system-ui, sans-serif" font-size="21" font-weight="650" letter-spacing="-0.7" fill="#c9cde0">itervox</text>
 </svg>

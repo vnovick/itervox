@@ -40,6 +40,12 @@ const healthPath = "/api/v1/health"
 // removed. A request with no Host at all (HTTP/1.0) is not a browser and
 // passes.
 //
+// POST /api/v1/webhooks/<tracker> (#131) is exempt too: deliveries arrive
+// through a tunnel or relay under a name nobody allowlists, and each one must
+// carry an HMAC signature made with the webhook secret, which a rebound page
+// does not have. Without it the delivery is dropped; with it, the only effect
+// is a by-ID refresh of an issue the store already tracks.
+//
 // /api/v1/health is exempt because it answers a constant {"status":"ok"} —
 // no state, no side effect — and load balancers commonly probe it by a
 // hostname nobody thought to allowlist. GET /api/v1/ready (CORE-043) is
@@ -74,7 +80,8 @@ func hostGuard(bindHost string, allowed []string) func(http.Handler) http.Handle
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if hostAllowed(r.Host, names) ||
-				(r.Method == http.MethodGet && (r.URL.Path == healthPath || r.URL.Path == readyPath)) {
+				(r.Method == http.MethodGet && (r.URL.Path == healthPath || r.URL.Path == readyPath)) ||
+				(r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, webhooksPathPrefix)) {
 				next.ServeHTTP(w, r)
 				return
 			}

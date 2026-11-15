@@ -28,10 +28,16 @@ func ConfigsFromDefinitions(defs []automationdef.Definition) []config.Automation
 				MatchMode:         def.Filter.MatchMode,
 				States:            append([]string{}, def.Filter.States...),
 				LabelsAny:         append([]string{}, def.Filter.LabelsAny...),
+				Groups:            def.Filter.Groups,
 				IdentifierRegex:   def.Filter.IdentifierRegex,
 				Limit:             def.Filter.Limit,
 				InputContextRegex: def.Filter.InputContextRegex,
 				MaxAgeMinutes:     def.Filter.MaxAgeMinutes,
+				CheckNames:        cloneOrNil(def.Filter.CheckNames),
+				Conclusions:       cloneOrNil(def.Filter.Conclusions),
+				ReviewStates:      cloneOrNil(def.Filter.ReviewStates),
+				ReviewAuthors:     cloneOrNil(def.Filter.ReviewAuthors),
+				MergeableStates:   cloneOrNil(def.Filter.MergeableStates),
 			},
 			Policy: config.AutomationPolicyConfig{
 				AutoResume:      def.Policy.AutoResume,
@@ -68,10 +74,16 @@ func DefinitionsFromConfigs(automations []config.AutomationConfig) []automationd
 				MatchMode:         automation.Filter.MatchMode,
 				States:            append([]string{}, automation.Filter.States...),
 				LabelsAny:         append([]string{}, automation.Filter.LabelsAny...),
+				Groups:            automation.Filter.Groups,
 				IdentifierRegex:   automation.Filter.IdentifierRegex,
 				Limit:             automation.Filter.Limit,
 				InputContextRegex: automation.Filter.InputContextRegex,
 				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
+				CheckNames:        cloneOrNil(automation.Filter.CheckNames),
+				Conclusions:       cloneOrNil(automation.Filter.Conclusions),
+				ReviewStates:      cloneOrNil(automation.Filter.ReviewStates),
+				ReviewAuthors:     cloneOrNil(automation.Filter.ReviewAuthors),
+				MergeableStates:   cloneOrNil(automation.Filter.MergeableStates),
 			},
 			Policy: automationdef.Policy{
 				AutoResume:      automation.Policy.AutoResume,
@@ -83,4 +95,13 @@ func DefinitionsFromConfigs(automations []config.AutomationConfig) []automationd
 		})
 	}
 	return defs
+}
+
+// cloneOrNil copies values, keeping nil (and empty) as nil so an unset
+// filter round-trips as unset.
+func cloneOrNil(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]string(nil), values...)
 }

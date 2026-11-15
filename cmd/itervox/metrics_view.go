@@ -7,6 +7,7 @@ import (
 	"github.com/vnovick/itervox/internal/metrics"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/outbox"
+	"github.com/vnovick/itervox/internal/sysmon"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -76,9 +77,14 @@ func buildMetricsView(s orchestrator.State, r orchestrator.Readiness, entries []
 
 // newMetricsHandler is the GET /metrics handler cmd/itervox mounts when
 // server.metrics.enabled is true.
-func newMetricsHandler(orch *orchestrator.Orchestrator, ob *outbox.Outbox, adapter string) http.Handler {
+func newMetricsHandler(orch *orchestrator.Orchestrator, ob *outbox.Outbox, adapter string, mon *sysmon.Monitor) http.Handler {
 	preinitMetrics(adapter)
-	return metrics.Handler(metricsViewFunc(orch, ob, adapter))
+	view := metricsViewFunc(orch, ob, adapter)
+	return metrics.Handler(func() metrics.View {
+		v := view()
+		addSystemMetrics(&v, mon) // the monitor's own lock; no cfgMu
+		return v
+	})
 }
 
 // preinitMetrics exports the bounded label sets at 0 so rate() works from

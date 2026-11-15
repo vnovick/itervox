@@ -43,14 +43,14 @@ func TestLocalTrackerCRUD(t *testing.T) {
 	ctx := context.Background()
 	tr, dir := newTestTracker(t)
 
-	created, err := tr.CreateIssue(ctx, "", "Add a --json flag", "Print the report as JSON.", "Todo")
+	created, err := tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "Add a --json flag", Body: "Print the report as JSON.", State: "Todo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ITX-1", created.Identifier)
 	assert.Equal(t, "ITX-1", created.ID)
-	second, err := tr.CreateIssue(ctx, "", "Second", "", "Backlog")
+	second, err := tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "Second", State: "Backlog"})
 	require.NoError(t, err)
 	assert.Equal(t, "ITX-2", second.Identifier)
-	_, err = tr.CreateIssue(ctx, "", "  ", "", "Todo")
+	_, err = tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "  ", State: "Todo"})
 	require.Error(t, err, "a title is required")
 
 	require.NoError(t, tr.UpdateIssueState(ctx, "ITX-1", "In Progress"))
@@ -106,7 +106,7 @@ func TestLocalTrackerCRUD(t *testing.T) {
 	assert.Equal(t, "ITX-1-c2", got.ID)
 
 	// Numbering continues after a restart.
-	third, err := again.CreateIssue(ctx, "", "Third", "", "Todo")
+	third, err := again.CreateIssue(ctx, "", tracker.NewIssue{Title: "Third", State: "Todo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ITX-3", third.Identifier)
 }
@@ -307,7 +307,7 @@ func TestLocalIssueCommentsCannotChangeTheFileStructure(t *testing.T) {
 
 	// A new issue whose body looks like a comment section keeps it as the
 	// description.
-	created, err := restarted.CreateIssue(ctx, "", "Spec", "Intro\n\n## Comments\n\n### 2026-01-01T00:00:00Z — x\n\ny", "Todo")
+	created, err := restarted.CreateIssue(ctx, "", tracker.NewIssue{Title: "Spec", Body: "Intro\n\n## Comments\n\n### 2026-01-01T00:00:00Z — x\n\ny", State: "Todo"})
 	require.NoError(t, err)
 	got, err := New(Config{Dir: dir}).FetchIssueDetail(ctx, created.Identifier)
 	require.NoError(t, err)
@@ -329,7 +329,7 @@ func TestLocalIssueCodeFencesNeverHideComments(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			tr, dir := newTestTracker(t)
-			is, err := tr.CreateIssue(ctx, "", "T", desc, "Todo")
+			is, err := tr.CreateIssue(ctx, "", tracker.NewIssue{Title: "T", Body: desc, State: "Todo"})
 			require.NoError(t, err)
 			_, err = tr.CreateComment(ctx, is.ID, "```unbalanced")
 			require.NoError(t, err)
@@ -480,4 +480,44 @@ func TestLocalTrackerDirectoryReadErrorIsNotDeletion(t *testing.T) {
 	got, err = tr.FetchIssueStatesByIDs(ctx, []string{"ITX-1"})
 	require.NoError(t, err)
 	assert.Len(t, got, 1, "the issue is still there once the directory is readable")
+}
+
+// TestWatchedTrackerReportsAFailedScan (#133 review): while a watch holds,
+// reads are served from the entries only after a good scan; once a scan
+// fails, a read rescans and returns the error, and Problems names the
+// directory.
+func TestWatchedTrackerReportsAFailedScan(t *testing.T) {
+	ctx := context.Background()
+	tr, dir := newTestTracker(t)
+	writeRaw(t, filepath.Join(dir, "ITX-1.md"), "---\ntitle: One\nstate: Todo\n---\n")
+	tr.mu.Lock()
+	require.NoError(t, tr.refreshLocked())
+	tr.watched = true
+	tr.mu.Unlock()
+
+	moved := dir + ".moved"
+	require.NoError(t, os.Rename(dir, moved))
+	writeRaw(t, dir, "not a directory")
+	got, err := tr.FetchCandidateIssues(ctx)
+	require.NoError(t, err, "a healthy watch serves the entries without a scan")
+	require.Len(t, got, 1)
+
+	tr.mu.Lock()
+	require.Error(t, tr.refreshLocked(), "the watch's rescan fails")
+	tr.mu.Unlock()
+	_, err = tr.FetchCandidateIssues(ctx)
+	assert.Error(t, err, "after a failed scan the cache is not served as current")
+	_, err = tr.FetchIssueDetail(ctx, "ITX-1")
+	assert.Error(t, err)
+	require.NotEmpty(t, tr.Problems())
+
+	require.NoError(t, os.Remove(dir))
+	require.NoError(t, os.Rename(moved, dir))
+	got, err = tr.FetchCandidateIssues(ctx)
+	require.NoError(t, err, "a good scan makes the watch healthy again")
+	assert.Len(t, got, 1)
+	require.NoError(t, os.Remove(filepath.Join(dir, "ITX-1.md")))
+	got, err = tr.FetchCandidateIssues(ctx)
+	require.NoError(t, err)
+	assert.Len(t, got, 1, "healthy again: served from the watch, no rescan")
 }

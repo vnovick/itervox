@@ -1,0 +1,24 @@
+[
+  {
+    "id": "1791752521957672809-9069dd8df0c4",
+    "kind": "update_state",
+    "issue_id": "8",
+    "identifier": "#8",
+    "target_state": "in-review",
+    "from_state": "in-progress",
+    "enqueued_at": "2026-10-11T21:02:01.957672809Z",
+    "attempts": 0,
+    "next_attempt_at": "2026-10-11T21:02:01.957672809Z"
+  },
+  {
+    "id": "1791752521958587321-72e812480ba9",
+    "kind": "create_comment",
+    "issue_id": "8",
+    "identifier": "#8",
+    "body": "Opened a pull request.",
+    "comment_key": "4b1d2c3e-5f60-4718-8a9b-0c1d2e3f4a5b",
+    "enqueued_at": "2026-10-11T21:02:01.958587321Z",
+    "attempts": 0,
+    "next_attempt_at": "2026-10-11T21:02:01.958587321Z"
+  }
+]

@@ -1,9 +1,9 @@
 import type { InputHTMLAttributes, Ref } from 'react';
 import { cn } from '../cn';
+import { FIELD_CLASS } from './fieldClass';
 
-/** Shared field styling for Input, Select and Textarea. */
-export const FIELD_CLASS =
-  'w-full rounded-[var(--radius-sm)] border border-theme-line bg-theme-bg-elevated px-2.5 text-sm text-theme-text placeholder:text-theme-muted focus:border-theme-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-theme-accent disabled:opacity-50 aria-[invalid=true]:border-theme-danger';
+// The shared field well lives in fieldClass.ts (no class-merge dependency).
+export { FIELD_CLASS } from './fieldClass';
 
 export interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   /** Marks the field invalid (aria-invalid) and draws the danger border. */

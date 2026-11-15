@@ -4,10 +4,8 @@
 // fundamental choices about agent input handling before they hit
 // state-machine config.
 //
-// Toggle visuals + a11y wiring mirror WorkspaceCard exactly so the two
-// cards feel like a pair (label-wraps-checkbox, sr-only input, animated
-// track + thumb). Anything that diverges between them should be moved into
-// a shared primitive.
+// The toggle is the shared `.switch` (a native checkbox drawn as a switch),
+// wrapped by its label, exactly like WorkspaceCard.
 
 import { useState } from 'react';
 
@@ -30,35 +28,19 @@ export function GeneralCard({ inlineInput, onSetInlineInput }: GeneralCardProps)
   };
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">General</h2>
-      </div>
-      <div className="px-5 py-5">
-        <label className="flex cursor-pointer items-start gap-4">
-          <div className="relative mt-0.5 flex-shrink-0">
-            <input
-              type="checkbox"
-              className="sr-only"
-              checked={inlineInput}
-              disabled={saving}
-              onChange={(e) => {
-                void handleChange(e.target.checked);
-              }}
-            />
-            <div
-              aria-hidden="true"
-              className="h-5 w-9 rounded-full transition-colors"
-              style={{ background: inlineInput ? 'var(--accent)' : 'var(--bg-soft)' }}
-            />
-            <div
-              aria-hidden="true"
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                inlineInput ? 'translate-x-4' : 'translate-x-0.5'
-              }`}
-            />
-          </div>
-          <div>
+    <div>
+      <div>
+        <label className="flex cursor-pointer items-start justify-between gap-4">
+          <input
+            type="checkbox"
+            className="switch order-last mt-0.5"
+            checked={inlineInput}
+            disabled={saving}
+            onChange={(e) => {
+              void handleChange(e.target.checked);
+            }}
+          />
+          <div className="min-w-0 flex-1">
             <span className="text-theme-text block text-sm font-medium">
               Inline input via tracker comments
             </span>

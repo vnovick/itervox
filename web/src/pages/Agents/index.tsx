@@ -1,5 +1,6 @@
 import PageMeta from '../../components/common/PageMeta';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
+import { useHashScroll } from '../../hooks/useHashScroll';
 import { ModelsCard } from '../Settings/ModelsCard';
 import { ProfilesCard } from '../Settings/ProfilesCard';
 import { ReviewerCard } from '../Settings/ReviewerCard';
@@ -19,6 +20,11 @@ export default function Agents() {
     deleteProfile,
     setReviewerConfig,
   } = useSettingsPageData();
+  // The command palette links here: #profile-<name> scrolls to a profile's
+  // row, ?editProfile=<name> opens its editor.
+  const [searchParams] = useSearchParams();
+  const editProfile = searchParams.get('editProfile') ?? undefined;
+  useHashScroll(Object.keys(profileDefs).length);
 
   return (
     <>
@@ -26,54 +32,41 @@ export default function Agents() {
         title="Itervox | Agents"
         description="Itervox agent management — profiles, reviewer behavior, and execution capacity"
       />
-      <div className="w-full max-w-none space-y-8">
-        <div>
-          <h1 className="text-theme-text text-2xl font-bold tracking-tight">Agents</h1>
-          <p className="text-theme-muted mt-1 text-sm">
+      <div className="page-container">
+        <div className="page-header">
+          <h1 className="page-title">Agents</h1>
+          <p className="text-theme-text-secondary text-sm">
             Manage agent profiles, reviewer behavior, and execution capacity. Profiles remain synced
-            with{' '}
-            <code className="bg-theme-bg-soft text-theme-accent-text mx-1 rounded px-1.5 py-0.5 font-mono text-xs">
-              WORKFLOW.md
-            </code>
-            .
+            with <code className="font-mono text-[13px]">WORKFLOW.md</code>.
           </p>
         </div>
 
-        <div className="grid gap-8 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.9fr)]">
-          <section aria-labelledby="section-profiles" className="min-w-0">
-            <h2
-              id="section-profiles"
-              className="mb-3 text-xs font-semibold tracking-widest uppercase"
-            >
-              Profiles
+        <ProfilesCard
+          headingId="section-profiles"
+          profileDefs={profileDefs}
+          onUpsert={upsertProfile}
+          onDelete={deleteProfile}
+          availableModels={availableModels}
+          supportedAgentActions={supportedAgentActions}
+          trackerStates={trackerStateOptions}
+          focusProfileName={editProfile}
+        />
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <section
+            aria-labelledby="section-reviewer"
+            className="glass-panel flex min-w-0 flex-col gap-3 rounded-[26px] px-5 py-[18px]"
+          >
+            <h2 id="section-reviewer" className="text-theme-text text-base font-semibold">
+              Code Review Agent
             </h2>
-            <ProfilesCard
-              profileDefs={profileDefs}
-              onUpsert={upsertProfile}
-              onDelete={deleteProfile}
-              availableModels={availableModels}
-              supportedAgentActions={supportedAgentActions}
-              trackerStates={trackerStateOptions}
+            <ReviewerCard
+              reviewerProfile={reviewerProfile}
+              autoReview={autoReview}
+              autoClearWorkspace={autoClearWorkspace}
+              availableProfiles={reviewerProfileOptions}
+              onSave={setReviewerConfig}
             />
-          </section>
-
-          <div className="min-w-0 space-y-8">
-            <section aria-labelledby="section-reviewer">
-              <h2
-                id="section-reviewer"
-                className="mb-3 text-xs font-semibold tracking-widest uppercase"
-              >
-                Code Review Agent
-              </h2>
-              <ReviewerCard
-                reviewerProfile={reviewerProfile}
-                autoReview={autoReview}
-                autoClearWorkspace={autoClearWorkspace}
-                availableProfiles={reviewerProfileOptions}
-                onSave={setReviewerConfig}
-              />
-            </section>
-
             {/* CORE-093 — Capacity moved to Settings, next to Retries. */}
             <p className="text-theme-muted text-xs">
               Max concurrent agents is set under{' '}
@@ -85,16 +78,10 @@ export default function Agents() {
               </Link>
               .
             </p>
+          </section>
 
-            <section aria-labelledby="section-models">
-              <h2
-                id="section-models"
-                className="mb-3 text-xs font-semibold tracking-widest uppercase"
-              >
-                Models
-              </h2>
-              <ModelsCard availableModels={availableModels || {}} />
-            </section>
+          <div className="min-w-0">
+            <ModelsCard headingId="section-models" availableModels={availableModels || {}} />
           </div>
         </div>
       </div>

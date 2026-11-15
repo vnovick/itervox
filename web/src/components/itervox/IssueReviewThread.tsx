@@ -57,7 +57,7 @@ export function IssueReviewThread({
               data-testid={isAgent ? 'review-comment-agent' : 'review-comment-human'}
               className={`rounded-lg border p-3 ${
                 isAgent
-                  ? 'border-emerald-500/40 bg-emerald-500/5'
+                  ? 'border-theme-success/40 bg-theme-success-soft'
                   : 'border-theme-line bg-theme-bg-soft'
               }`}
             >

@@ -1,9 +1,4 @@
-/** The agent backends the daemon accepts (server config.IsSupportedBackend). */
-const KNOWN_BACKENDS = ['claude', 'codex'] as const;
-const BACKEND_LABELS: Record<(typeof KNOWN_BACKENDS)[number], string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-};
+import { AGENT_BACKENDS, BACKEND_LABELS } from '../../../lib/backends';
 
 interface BackendSelectorProps {
   value: string;
@@ -12,7 +7,8 @@ interface BackendSelectorProps {
   readOnly?: boolean;
   /** Show "Backend:" label. Default true. */
   showLabel?: boolean;
-  size?: 'sm' | 'md';
+  /** `field`: a full-width form select (glass chip, 40px). */
+  size?: 'sm' | 'md' | 'field';
   /**
    * When set, adds a first option with value "" (clear the override) and
    * this label, e.g. "Default (claude)". CORE-056.
@@ -28,6 +24,15 @@ interface BackendSelectorProps {
 const SIZE_CLS = {
   sm: 'px-1.5 py-0.5 text-[10px]',
   md: 'px-2.5 py-1.5 text-xs',
+  field: 'min-h-10 w-full min-w-0 px-3 text-[13px]',
+} as const;
+
+// `field` matches the other full-width selects of a form row (the issue
+// detail's profile / playbook / backend row): the glass chip surface.
+const SURFACE_CLS = {
+  sm: 'border-theme-line bg-theme-panel-strong border font-medium',
+  md: 'border-theme-line bg-theme-panel-strong border font-medium',
+  field: 'glass-chip',
 } as const;
 
 export function BackendSelector({
@@ -63,10 +68,10 @@ export function BackendSelector({
       onClick={(e) => {
         e.stopPropagation();
       }}
-      className={`border-theme-line bg-theme-panel-strong text-theme-text cursor-pointer rounded-[var(--radius-sm)] border font-medium focus:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${SIZE_CLS[size]}`}
+      className={`${SURFACE_CLS[size]} text-theme-text focus-visible:ring-theme-accent cursor-pointer rounded-[var(--radius-sm)] focus:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${SIZE_CLS[size]}`}
     >
       {defaultOptionLabel !== undefined && <option value="">{defaultOptionLabel}</option>}
-      {KNOWN_BACKENDS.map((b) => (
+      {AGENT_BACKENDS.map((b) => (
         <option key={b} value={b}>
           {BACKEND_LABELS[b]}
         </option>

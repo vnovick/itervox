@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -29,6 +31,20 @@ type ClientConfig struct {
 	ActiveStates   []string
 	TerminalStates []string
 	Endpoint       string
+	// Assignee is the assignee scope (#182): "me", a user id or an email.
+	// ANDed with the project filter and Labels: the client reads the
+	// issues assigned to that user (in ProjectSlug's project when set).
+	Assignee string
+	// Team narrows the assignee scope to one team, by key or id.
+	Team string
+	// Labels narrows the scope to issues carrying any of them (#182).
+	Labels []string
+	// Filter is tracker.filter (#198): when set it replaces the legacy
+	// project/assignee/team/labels scope (config validation refuses both).
+	Filter issuefilter.Filter
+	// WorkingState is tracker.working_state: a filter's states condition
+	// always admits it, so a dispatched issue stays in scope (#198).
+	WorkingState string
 }
 
 // linearProject is the internal representation of a Linear project.
@@ -64,6 +80,20 @@ type Client struct {
 	// non-nil with slugs = filter to those projects.
 	projectFilterMu sync.RWMutex
 	projectFilter   *[]string
+
+	// assigneeOverride and labelsOverride are the runtime assignee and
+	// label filters (#182), guarded by projectFilterMu like projectFilter;
+	// nil means WORKFLOW.md's.
+	assigneeOverride *string
+	labelsOverride   *[]string
+	// filterOverride is the runtime tracker filter (#198), guarded by
+	// projectFilterMu: nil means WORKFLOW.md's (tracker.filter, else the
+	// legacy keys); empty means the legacy scope.
+	filterOverride *issuefilter.Filter
+
+	// assigneeMu guards users, the assignee specs resolved so far (#182).
+	assigneeMu sync.Mutex
+	users      map[string]tracker.AssigneeUser
 
 	// stateCacheMu guards teamOfIssue and statesOfTeam, the workflow-state
 	// resolution cache used by UpdateIssueState.
@@ -135,6 +165,7 @@ func NewClient(cfg ClientConfig) *Client {
 		httpClient:   &http.Client{Timeout: httpTimeout},
 		teamOfIssue:  make(map[string]string),
 		statesOfTeam: make(map[string]map[string]string),
+		users:        make(map[string]tracker.AssigneeUser),
 	}
 }
 
@@ -291,41 +322,42 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 // the merge semantics live in exactly one place instead of two near-identical
 // copies that could silently drift apart.
 func (c *Client) fetchWithProjectFilter(ctx context.Context, states []string) ([]domain.Issue, error) {
-	filter := c.GetProjectFilter()
-
-	// nil = runtime filter not set; fall back to WORKFLOW.md project_slug.
-	if filter == nil {
-		if c.cfg.ProjectSlug != "" {
-			return c.fetchByProjectSlug(ctx, states, c.cfg.ProjectSlug, nil, nil)
+	sc := c.Scope()
+	base := map[string]any{
+		"stateNames":    states,
+		"relationFirst": pageSize,
+	}
+	// #182/#198: a filter (or a legacy scope narrowed by an assignee or
+	// labels) is one request over the compiled IssueFilter.
+	groups, compiled, err := c.compiledScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if compiled {
+		return c.fetchByStatesPage(ctx, filteredPollQuery("ItervoxLinearPollScoped"),
+			map[string]any{"filter": pollFilter(states, groups), "relationFirst": pageSize}, nil, nil)
+	}
+	var buckets []func() ([]domain.Issue, error)
+	switch {
+	case len(sc.Projects) == 0:
+		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, base, nil, nil)
+	default:
+		for _, slug := range sc.Projects {
+			if slug == noProjectSentinel {
+				buckets = append(buckets, func() ([]domain.Issue, error) {
+					return c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, base, nil, nil)
+				})
+				continue
+			}
+			buckets = append(buckets, func() ([]domain.Issue, error) { return c.fetchByProjectSlug(ctx, states, slug, nil, nil) })
 		}
-		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    states,
-			"relationFirst": pageSize,
-		}, nil, nil)
 	}
 
-	// Empty filter = all issues regardless of project.
-	if len(filter) == 0 {
-		return c.fetchByStatesPage(ctx, QueryCandidateIssuesAll, map[string]any{
-			"stateNames":    states,
-			"relationFirst": pageSize,
-		}, nil, nil)
-	}
-
-	// Specific project/no-project filter: fetch each and merge.
+	// Fetch each bucket and merge, deduplicating by issue ID.
 	seen := make(map[string]struct{})
 	var all []domain.Issue
-	for _, slug := range filter {
-		var issues []domain.Issue
-		var err error
-		if slug == noProjectSentinel {
-			issues, err = c.fetchByStatesPage(ctx, QueryCandidateIssuesNoProject, map[string]any{
-				"stateNames":    states,
-				"relationFirst": pageSize,
-			}, nil, nil)
-		} else {
-			issues, err = c.fetchByProjectSlug(ctx, states, slug, nil, nil)
-		}
+	for _, fetch := range buckets {
+		issues, err := fetch()
 		if err != nil {
 			return nil, err
 		}
@@ -733,8 +765,14 @@ func parseCommentInto(comment *domain.Comment, raw map[string]any) {
 }
 
 // CreateIssue creates a follow-up issue in the same team/project context as
-// sourceIssueID and assigns it to the configured state/column.
-func (c *Client) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
+// sourceIssueID and assigns it to the configured state/column. in.Labels are
+// resolved among the source team's labels and the workspace labels; a name
+// that matches neither fails the create before anything is written, so a
+// routing label is never silently dropped. in.BlockedBySource adds a
+// "blocks" relation from the source issue, which normalizeIssue reads back
+// from the new issue's inverseRelations.
+func (c *Client) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	stateName := in.State
 	contextResp, err := c.graphql(ctx, QueryCreateIssueContext, map[string]any{"id": sourceIssueID})
 	if err != nil {
 		return nil, fmt.Errorf("linear_create_issue: resolve context: %w", err)
@@ -774,14 +812,30 @@ func (c *Client) CreateIssue(ctx context.Context, sourceIssueID, title, body, st
 
 	input := map[string]any{
 		"teamId":      teamID,
-		"title":       title,
-		"description": body,
+		"title":       in.Title,
+		"description": in.Body,
 		"stateId":     stateID,
 	}
 	if project, ok := sourceIssue["project"].(map[string]any); ok {
 		if projectID, _ := project["id"].(string); projectID != "" {
 			input["projectId"] = projectID
 		}
+	}
+	if len(in.Labels) > 0 {
+		teamLabels, _ := nodesOf(team, "labels")
+		wsLabels, _ := nodesOf(data, "issueLabels")
+		known := slices.Concat(teamLabels, wsLabels)
+		ids := make([]string, 0, len(in.Labels))
+		for _, name := range in.Labels {
+			id := findByName(known, name)
+			if id == "" {
+				return nil, fmt.Errorf("linear_create_issue: label %q not found in the source issue's team or workspace", name)
+			}
+			if !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+		input["labelIds"] = ids
 	}
 
 	const mutation = `
@@ -820,6 +874,9 @@ mutation ItervoxCreateIssue($input: IssueCreateInput!) {
 				if issueNode, ok := created["issue"].(map[string]any); ok {
 					issue := normalizeIssue(issueNode)
 					if issue != nil {
+						if in.BlockedBySource {
+							return c.addSourceBlocker(ctx, issue, sourceIssueID, sourceIssue)
+						}
 						return issue, nil
 					}
 				}
@@ -827,6 +884,23 @@ mutation ItervoxCreateIssue($input: IssueCreateInput!) {
 		}
 	}
 	return nil, fmt.Errorf("linear_create_issue: unexpected response: %v", resp)
+}
+
+// addSourceBlocker records the source issue as a blocker of the created
+// issue and adds it to the returned issue's BlockedBy, as the next read of
+// the issue reports it. A failure returns the created issue with the error,
+// so the caller can say which issue exists without its blocker.
+func (c *Client) addSourceBlocker(ctx context.Context, issue *domain.Issue, sourceIssueID string, source map[string]any) (*domain.Issue, error) {
+	if err := c.createBlocksRelation(ctx, sourceIssueID, issue.ID); err != nil {
+		return issue, fmt.Errorf("linear_create_issue: %s was created but its blocked_by_source relation failed: %w", issue.Identifier, err)
+	}
+	ref := blockerRefFromNode(source)
+	if ref.ID == nil || *ref.ID == "" {
+		id := sourceIssueID
+		ref.ID = &id
+	}
+	issue.BlockedBy = append(issue.BlockedBy, ref)
+	return issue, nil
 }
 
 // SetIssueBranch updates the branchName field on the Linear issue so retried
@@ -1357,3 +1431,53 @@ var _ tracker.DetailBatcher = (*Client)(nil)
 // or FindCommentByKey would silently demote the outbox flusher to
 // non-idempotent posting, with no test failing.
 var _ tracker.IdempotentCommenter = (*Client)(nil)
+
+// FetchIssuesInScope implements tracker.ScopedFetcher (#131): it reads the
+// issues by ID in batches (no list request) and keeps the ones the current
+// scope covers, with the same rules as FetchCandidateIssues: no runtime
+// filter means project_slug (or every project when it is empty), an empty filter means every project, the no-project sentinel
+// covers issues without one, and the assignee and labels (#182) narrow it.
+func (c *Client) FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	valid, _ := partitionValidIssueRefs(issueIDs)
+	// #198: the effective filter, evaluated in memory on each issue read
+	// with its filter fields — the same predicate the list reads compile.
+	if err := c.ResolveFilter(ctx, c.Filter()); err != nil {
+		return nil, fmt.Errorf("linear_fetch_in_scope: %w", err)
+	}
+	var out []domain.Issue
+	for len(valid) > 0 {
+		batch := valid[:min(len(valid), pageSize)]
+		valid = valid[len(batch):]
+		body, err := c.graphql(ctx, QueryIssuesInScopeByIDs, map[string]any{
+			"ids":           batch,
+			"first":         len(batch),
+			"relationFirst": pageSize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("linear_fetch_in_scope: %w", err)
+		}
+		data, ok := body["data"].(map[string]any)
+		if !ok {
+			return nil, decodeError(body)
+		}
+		block, _ := data["issues"].(map[string]any)
+		nodes, ok := block["nodes"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("linear_unknown_payload: missing nodes")
+		}
+		for _, n := range nodes {
+			node, ok := n.(map[string]any)
+			if !ok {
+				continue
+			}
+			if iss := normalizeIssue(node); iss != nil {
+				if in, _ := c.MatchesFilter(*iss); in {
+					out = append(out, *iss)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+var _ tracker.ScopedFetcher = (*Client)(nil)

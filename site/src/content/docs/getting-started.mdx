@@ -15,6 +15,18 @@ brew tap vnovick/tap && brew install itervox
 
 Or download the latest release from [GitHub Releases](https://github.com/vnovick/itervox/releases).
 
+On Windows, download `itervox_windows_amd64.zip` (or `_arm64`) from the release, put `itervox.exe` on your PATH and install Git for Windows: see [Running on Windows](/guides/windows/).
+
+On a Mac, the [menu bar app](/guides/desktop-app/#install) is the other option: `brew install --cask vnovick/tap/itervox-app`. It carries its own `itervox` daemon, so install one or the other, not both.
+
+The [desktop app](/guides/desktop-app/) also runs on Linux and Windows, from the same release page:
+
+| Platform | Download | Guide |
+|---|---|---|
+| macOS (Apple silicon and Intel) | `Itervox_<version>_universal.dmg`, or `brew install --cask vnovick/tap/itervox-app` | [Install](/guides/desktop-app/#install) |
+| Linux x86_64 / arm64 | `Itervox_<version>_amd64.AppImage` / `_aarch64.AppImage`, or `Itervox_<version>_amd64.deb` / `_arm64.deb` | [Install on Linux](/guides/desktop-app/#install-on-linux) |
+| Windows x86_64 | `Itervox_<version>_x64_en-US.msi` or `Itervox_<version>_x64-setup.exe` | [Windows](/guides/desktop-app/#windows) — local projects need WSL or a remote daemon for now |
+
 
 ## Prerequisites
 
@@ -86,6 +98,43 @@ GITHUB_TOKEN=ghp_xxxxx
 
 Reference them in WORKFLOW.md as `$LINEAR_API_KEY` or `$GITHUB_TOKEN`.
 
+#### Linear: choose what Itervox reads
+
+A Linear tracker's scope is the **AND** of three optional filters. Leave them all out to read every project.
+
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: ENG          # only this project (omit: every project)
+  assignee: me               # only issues assigned to this user: me, a user id or an email (omit: anyone)
+  labels: ["agent"]          # only issues carrying ANY of these labels (omit: no label filter)
+```
+
+| Set | Itervox reads |
+|---|---|
+| nothing | every issue the key can read, in every project |
+| `project_slug` | that project's issues (as before) |
+| `assignee` | that user's issues across every project and team the key can read (`team: ENG` narrows to one team) |
+| `project_slug` + `assignee` | that user's issues inside the project |
+| `labels` with any of the above | only the issues among them carrying at least one of the labels |
+
+With `assignee: me` a dedicated "Itervox" Linear user can own the agent lane: assign a ticket to it to hand it to the agents, reassign it to take it back. Itervox never changes an issue's assignee or labels itself, so a run never moves its own issue out of scope. Change the scope at runtime in the dashboard's **Settings → Tracker Scope**. `itervox doctor` checks that the assignee resolves and its issues are readable. See [Linear setup → Scope](/guides/linear-setup/#scope-project-assignee-labels).
+
+Need OR, exclusions or more fields? Replace those keys with `tracker.filter`, a list of groups: every condition in a group must match, any group matching reads the issue (Linear and GitHub):
+
+```yaml
+tracker:
+  filter:
+    - projects: [ENG]
+      labels_any: [agent, ai]
+      labels_none: [blocked]
+    - assignee: me
+      labels_all: [urgent]
+```
+
+See [Tracker filter](/configuration/#tracker-filter); Settings → Tracker Scope builds it with a live match count, and `itervox doctor` prints how many issues it matches.
+
 Commit `.itervox/agents/**`; those files define your project agent profiles. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, or runtime queue files.
 
 ### 3. Run
@@ -96,7 +145,7 @@ itervox
 
 Itervox starts polling your tracker, spawning agents for active issues, streaming logs to the terminal, and writing `.itervox/HEARTBEAT.md` with current daemon state. By default it loads `WORKFLOW.md` from the current directory; pass `-workflow <path>` only if it lives elsewhere.
 
-Open the dashboard to see the Kanban board. If you omitted `server.port` from `WORKFLOW.md`, it defaults to `http://localhost:8090` — but `itervox init` scaffolds `server.port: 0` (OS-assigned), so don't assume 8090 blindly. Find the actual URL in `.itervox/dashboard_url` or the `dashboard URL:` line of `itervox doctor` — both give the **token-free** URL (no bearer token is stored there). The dashboard also needs the bearer token, which comes from one of: the TUI's `w` key (copies the tokenised URL to the clipboard), the tokenised URL printed once on the startup terminal's stderr (only when stderr is a terminal), `<logs-dir>/api-token` for an auto-generated token (mode 0600; `<logs-dir>` defaults to `~/.itervox/logs/<kind>/<slug>-<project>/`), or the value you pinned as `ITERVOX_API_TOKEN` in `.itervox/.env`. See [Remote access → The API token](/guides/remote-access/#the-api-token).
+Open the dashboard to see the Kanban board. If you omitted `server.port` from `WORKFLOW.md`, it defaults to `http://localhost:8090` — but `itervox init` scaffolds `server.port: 0` (OS-assigned), so don't assume 8090 blindly. Find the actual URL in `.itervox/dashboard_url` or the `dashboard URL:` line of `itervox doctor` — both give the **token-free** URL (no bearer token is stored there). The dashboard also needs the bearer token, which comes from one of: the tokenised URL printed once on the startup terminal's stderr (only when stderr is a terminal), `<logs-dir>/api-token` for an auto-generated token (mode 0600; `<logs-dir>` defaults to `~/.itervox/logs/<kind>/<slug>-<project>/`), or the value you pinned as `ITERVOX_API_TOKEN` in `.itervox/.env`. See [Remote access → The API token](/guides/remote-access/#the-api-token).
 
 ### 4. (Optional) Verbose mode
 
@@ -105,6 +154,46 @@ itervox -verbose
 ```
 
 Enables DEBUG-level logging including agent output.
+
+## Workspace setup
+
+Each issue runs in its own git worktree, which holds only what git tracks.
+Two `workspace` settings get it ready for the agent:
+
+- **Files the project needs but does not commit.** List them in
+  `workspace.copy_files` (paths or globs from the repository root). They are
+  copied from your checkout into each new worktree before
+  `hooks.after_create` runs, and refreshed on later runs unless the
+  worktree's copy is newer. Only gitignored files are copied: a tracked or
+  unignored match is skipped with a warning, so a copied file can never be
+  committed from the worktree. `itervox init` suggests `.env` and
+  `.env.local` when they exist and are gitignored. Values from a copied
+  dotenv file are masked in Itervox's logs, but **the agent can read every
+  copied file** — copy only what you would hand it.
+- **A port per workspace.** Each issue's workspace gets its own TCP port
+  from `workspace.port_range` (default `41000-41999`) as `ITERVOX_PORT`, in
+  the agent's environment and every hook's, so several agents can run dev
+  servers at once. Prompts can use `{{ run.port }}`, and the issue's **Now**
+  panel shows it. The port stays with the issue while its worktree exists,
+  survives a daemon restart, and is released when the worktree is cleared.
+
+```yaml
+workspace:
+  worktree: true
+  copy_files: [".env", ".env.local"]
+  port_range: "41000-41999"
+```
+
+```bash
+# hooks.after_create — .env and ITERVOX_PORT are both there already
+pnpm install --frozen-lockfile
+pnpm run db:migrate
+# and in the prompt or a hook: pnpm dev --port "$ITERVOX_PORT"
+```
+
+With SSH workers nothing is copied over: the agent runs in the same
+workspace path on the worker host, which must be shared with this machine.
+See [Workspace setup](/configuration/#workspace-setup) for the full rules.
 
 ## What happens next
 
@@ -115,7 +204,7 @@ Enables DEBUG-level logging including agent output.
 5. If the agent needs a human decision, Itervox pauses the issue in `input_required` and lets you reply from the dashboard or tracker
 6. Otherwise Itervox transitions the issue state on success
 
-All of this is visible in real time via the web dashboard or terminal UI.
+All of this is visible in real time via the web dashboard, or from a terminal with `itervox watch` and `itervox logs -f <issue>`.
 
 ## The spec behind Itervox
 

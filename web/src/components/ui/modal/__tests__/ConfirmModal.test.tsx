@@ -22,6 +22,30 @@ describe('ConfirmModal', () => {
     expect(screen.getByText('This action cannot be undone.')).toBeInTheDocument();
   });
 
+  it('shows an optional context eyebrow above the title', () => {
+    const { rerender } = render(
+      <ConfirmModal isOpen onClose={vi.fn()} onConfirm={vi.fn()} title="Pause?" />,
+    );
+    expect(screen.queryByTestId('confirm-context')).toBeNull();
+    rerender(
+      <ConfirmModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+        title="Pause?"
+        context="Dashboard · status strip"
+      />,
+    );
+    const eyebrow = screen.getByTestId('confirm-context');
+    expect(eyebrow).toHaveTextContent('Dashboard · status strip');
+    expect(eyebrow).toHaveClass('eyebrow');
+    // The eyebrow comes before the title in reading order.
+    expect(
+      eyebrow.compareDocumentPosition(screen.getByText('Pause?')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it('calls onClose when Cancel is clicked', () => {
     const onClose = vi.fn();
     render(<ConfirmModal isOpen={true} onClose={onClose} onConfirm={vi.fn()} title="Delete?" />);

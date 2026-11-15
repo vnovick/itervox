@@ -1,3 +1,5 @@
+import type { AgentBackend } from '../../../lib/backends';
+import type { ReactNode } from 'react';
 import { MarkdownPromptEditor } from '../profiles/MarkdownPromptEditor';
 import { PROFILE_VARIABLES, TRIGGER_VARIABLES } from '../profiles/promptCompletions';
 import { checkboxCls, fieldLabelCls, helperTextCls, selectCls } from '../formStyles';
@@ -12,6 +14,9 @@ import { AutomationInstructionsPanel } from './AutomationInstructionsPanel';
 import { CronScheduleFields } from './CronScheduleFields';
 import { RateLimitedFieldsBlock } from './RateLimitedFieldsBlock';
 import { BlockersResolvedFieldsBlock } from './BlockersResolvedFieldsBlock';
+import { PREventFilterFields } from './PREventFilterFields';
+import type { PREventFilterField } from './prEventFilters';
+import { isPREventTrigger } from '../../../types/automationTriggers';
 
 const AUTOMATION_VARIABLES = [...PROFILE_VARIABLES, ...TRIGGER_VARIABLES];
 
@@ -40,7 +45,11 @@ export function AutomationEditorFields({
   onSwitchToBackendChange,
   onCooldownMinutesChange,
   onMoveToStateChange,
+  onPREventFilterChange,
+  leadingField,
 }: {
+  /** A field rendered first in the profile / trigger row (the automation id in the form). */
+  leadingField?: ReactNode;
   values: AutomationFormValues;
   availableProfiles: string[];
   availableStates: string[];
@@ -61,9 +70,10 @@ export function AutomationEditorFields({
   onMaxAgeMinutesChange: (value: string) => void;
   onAutoResumeChange: (value: boolean) => void;
   onSwitchToProfileChange: (value: string) => void;
-  onSwitchToBackendChange: (value: '' | 'claude' | 'codex') => void;
+  onSwitchToBackendChange: (value: '' | AgentBackend) => void;
   onCooldownMinutesChange: (value: string) => void;
   onMoveToStateChange: (value: string) => void;
+  onPREventFilterChange: (field: PREventFilterField, value: string[]) => void;
 }) {
   // CORE-047 round 2: an unknown trigger (newer daemon) is read-only — none
   // of the known trigger-specific sections apply to it.
@@ -73,6 +83,7 @@ export function AutomationEditorFields({
   const isIssueEnteredState = known && values.triggerType === 'issue_entered_state';
   const isRateLimited = known && values.triggerType === 'rate_limited';
   const isBlockersResolved = known && values.triggerType === 'blockers_resolved';
+  const isPREvent = known && isPREventTrigger(values.triggerType);
   const supportsBatchLimit =
     isCron ||
     values.triggerType === 'tracker_comment_added' ||
@@ -81,24 +92,8 @@ export function AutomationEditorFields({
 
   return (
     <div className="space-y-4">
-      <label className="border-theme-line bg-theme-bg-soft flex items-start gap-3 rounded-[var(--radius-sm)] border px-3 py-3">
-        <input
-          type="checkbox"
-          checked={values.enabled}
-          onChange={(event) => {
-            onEnabledChange(event.target.checked);
-          }}
-          className={checkboxCls}
-        />
-        <span className="min-w-0">
-          <span className="text-theme-text block text-sm font-medium">Enabled</span>
-          <span className="text-theme-text-secondary block text-xs">
-            Disabled automations stay in configuration but do not dispatch work.
-          </span>
-        </span>
-      </label>
-
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className={`grid gap-3 ${leadingField ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+        {leadingField}
         <div>
           <label htmlFor="automation-profile-select" className={fieldLabelCls}>
             Profile
@@ -146,6 +141,21 @@ export function AutomationEditorFields({
         </div>
       </div>
 
+      <label className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <input
+          type="checkbox"
+          checked={values.enabled}
+          onChange={(event) => {
+            onEnabledChange(event.target.checked);
+          }}
+          className={checkboxCls}
+        />
+        <span className="text-theme-text">Enabled</span>
+        <span className="field-help">
+          Disabled automations stay in configuration but do not dispatch work.
+        </span>
+      </label>
+
       {isIssueEnteredState && (
         <div>
           <label htmlFor="automation-entered-state-select" className={fieldLabelCls}>
@@ -184,7 +194,7 @@ export function AutomationEditorFields({
       )}
 
       {isInputRequired && (
-        <label className="border-theme-line bg-theme-bg-soft flex items-start gap-3 rounded-[var(--radius-sm)] border px-3 py-3">
+        <label className="flex items-start gap-3">
           <input
             type="checkbox"
             checked={values.autoResume}
@@ -223,40 +233,44 @@ export function AutomationEditorFields({
         />
       )}
 
+      {isPREvent && <PREventFilterFields values={values} onChange={onPREventFilterChange} />}
+
       <AutomationInstructionsPanel
         triggerType={values.triggerType}
         onInstructionsChange={onInstructionsChange}
       />
 
-      <MarkdownPromptEditor
-        value={values.instructions}
-        onChange={onInstructionsChange}
-        label="Instructions"
-        variables={AUTOMATION_VARIABLES}
-        placeholder="Write small automation-specific instructions in Markdown. These are layered on top of the selected profile."
-        helperText={
-          <>
-            Automation instructions are rendered with Liquid before each run. Use{' '}
-            <span className="font-mono">{'{{ issue.* }}'}</span> and{' '}
-            <span className="font-mono">{'{{ trigger.* }}'}</span> for runtime context.
-          </>
-        }
-      />
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+        <MarkdownPromptEditor
+          value={values.instructions}
+          onChange={onInstructionsChange}
+          label="Instructions"
+          variables={AUTOMATION_VARIABLES}
+          placeholder="Write small automation-specific instructions in Markdown. These are layered on top of the selected profile."
+          helperText={
+            <>
+              Automation instructions are rendered with Liquid before each run. Use{' '}
+              <span className="font-mono">{'{{ issue.* }}'}</span> and{' '}
+              <span className="font-mono">{'{{ trigger.* }}'}</span> for runtime context.
+            </>
+          }
+        />
 
-      <AutomationFilterFields
-        values={values}
-        availableStates={availableStates}
-        availableLabels={availableLabels}
-        supportsBatchLimit={supportsBatchLimit}
-        isInputRequired={isInputRequired}
-        onMatchModeChange={onMatchModeChange}
-        onStatesChange={onStatesChange}
-        onLabelsAnyChange={onLabelsAnyChange}
-        onIdentifierRegexChange={onIdentifierRegexChange}
-        onLimitChange={onLimitChange}
-        onInputContextRegexChange={onInputContextRegexChange}
-        onMaxAgeMinutesChange={onMaxAgeMinutesChange}
-      />
+        <AutomationFilterFields
+          values={values}
+          availableStates={availableStates}
+          availableLabels={availableLabels}
+          supportsBatchLimit={supportsBatchLimit}
+          isInputRequired={isInputRequired}
+          onMatchModeChange={onMatchModeChange}
+          onStatesChange={onStatesChange}
+          onLabelsAnyChange={onLabelsAnyChange}
+          onIdentifierRegexChange={onIdentifierRegexChange}
+          onLimitChange={onLimitChange}
+          onInputContextRegexChange={onInputContextRegexChange}
+          onMaxAgeMinutesChange={onMaxAgeMinutesChange}
+        />
+      </div>
     </div>
   );
 }

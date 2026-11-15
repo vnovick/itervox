@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../../store/itervoxStore';
+import { EMPTY_AUTOMATIONS, EMPTY_HISTORY, EMPTY_RUNNING } from '../../utils/constants';
 import { Card } from '../../components/ui/Card/Card';
 import { AutomationActivityCard } from './AutomationActivityCard';
-import type { AutomationDef, HistoryRow, RunningRow } from '../../types/schemas';
+import type { HistoryRow, RunningRow } from '../../types/schemas';
 
 /**
  * Activity sub-tab body. Renders one AutomationActivityCard per configured
@@ -11,11 +13,14 @@ import type { AutomationDef, HistoryRow, RunningRow } from '../../types/schemas'
  * automationId locally — no extra fetch required.
  */
 export default function AutomationsActivityTab() {
-  const snapshot = useItervoxStore((state) => state.snapshot);
-
-  const automations: AutomationDef[] = snapshot?.automations ?? [];
-  const running: RunningRow[] = snapshot?.running ?? [];
-  const history: HistoryRow[] = snapshot?.history ?? [];
+  // #211 — narrow selector: only the three branches this tab reads.
+  const { automations, running, history } = useItervoxStore(
+    useShallow((state) => ({
+      automations: state.snapshot?.automations ?? EMPTY_AUTOMATIONS,
+      running: state.snapshot?.running ?? EMPTY_RUNNING,
+      history: state.snapshot?.history ?? EMPTY_HISTORY,
+    })),
+  );
 
   const sorted = useMemo(() => {
     return [...automations].sort((a, b) => {
@@ -27,7 +32,7 @@ export default function AutomationsActivityTab() {
 
   if (automations.length === 0) {
     return (
-      <Card variant="elevated" className="space-y-2">
+      <Card variant="panel" padding="lg" className="space-y-2">
         <p className="text-theme-text text-sm font-semibold">No automations configured yet</p>
         <p className="text-theme-muted text-sm leading-relaxed">
           Switch to the Configure tab to add your first cron, input-required, or run-failed rule.
@@ -37,7 +42,7 @@ export default function AutomationsActivityTab() {
   }
 
   return (
-    <div className="space-y-4" data-testid="automations-activity">
+    <div className="flex flex-col gap-4" data-testid="automations-activity">
       {sorted.map((automation) => (
         <AutomationActivityCard
           key={automation.id}

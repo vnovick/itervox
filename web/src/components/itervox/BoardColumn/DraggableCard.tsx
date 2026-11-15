@@ -151,7 +151,7 @@ export default function DraggableCard({
       <div
         ref={setNodeRef}
         {...listeners}
-        className={`border-theme-line-strong overflow-hidden rounded-lg border-2 border-dashed transition-all duration-300 ease-in-out ${
+        className={`border-theme-line-strong overflow-hidden rounded-[var(--radius-md)] border-2 border-dashed transition-all duration-300 ease-in-out ${
           shouldCollapse ? 'my-0 max-h-0 border-0 opacity-0' : 'opacity-100'
         }`}
         style={shouldCollapse ? undefined : { height: h }}

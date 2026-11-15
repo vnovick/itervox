@@ -1,3 +1,4 @@
+import { Suspense, lazy } from 'react';
 import AgentQueueView from '../../../components/itervox/AgentQueueView';
 import { NotificationsView } from '../../../components/itervox/NotificationsView';
 import type {
@@ -10,9 +11,25 @@ import type {
   TrackerIssue,
 } from '../../../types/schemas';
 import { BoardView } from './BoardView';
-import { DepsGraph } from './DepsGraph';
 import { ListView } from './ListView';
 import type { DashboardViewMode } from './viewModeLabel';
+
+// #211 — DepsGraph pulls in @xyflow/react (and its stylesheet), the largest
+// single dependency of the Dashboard route. Load it only when the Deps tab
+// opens so the Dashboard chunk stays free of it.
+const DepsGraph = lazy(() => import('./DepsGraph').then((m) => ({ default: m.DepsGraph })));
+
+function DepsGraphFallback() {
+  return (
+    <div
+      data-testid="deps-graph-loading"
+      role="status"
+      className="text-theme-muted py-8 text-center text-sm"
+    >
+      Loading dependency graph…
+    </div>
+  );
+}
 
 interface DashboardIssueViewsProps {
   viewMode: DashboardViewMode;
@@ -60,7 +77,7 @@ export function DashboardIssueViews({
   onEditProfile,
 }: DashboardIssueViewsProps) {
   return (
-    <div className="px-4 pt-3 pb-4 sm:px-[18px] sm:pt-[14px] sm:pb-[18px]">
+    <div>
       {viewMode === 'board' && (
         <BoardView
           issues={filteredIssues}
@@ -83,7 +100,7 @@ export function DashboardIssueViews({
         />
       )}
       {viewMode === 'agents' && (
-        <div className="-mx-4 overflow-x-auto px-4 pb-2 md:-mx-6 md:px-6">
+        <div className="-mx-3 overflow-x-auto px-3 pb-2 sm:-mx-4 sm:px-4">
           <AgentQueueView
             issues={allIssues}
             backlogStates={backlogStates}
@@ -98,16 +115,18 @@ export function DashboardIssueViews({
         </div>
       )}
       {viewMode === 'deps' && (
-        <DepsGraph
-          graphNodes={dependencyGraphNodes}
-          graphEdges={dependencyGraphEdges}
-          cycles={dependencyCycles}
-          onSelectIssue={onIssueSelect}
-          depsAnalyzerProfile={depsAnalyzerProfile}
-          depsLastAnalyzedAt={depsLastAnalyzedAt}
-          depsAnalyzeJob={depsAnalyzeJob}
-          profileDefs={profileDefs}
-        />
+        <Suspense fallback={<DepsGraphFallback />}>
+          <DepsGraph
+            graphNodes={dependencyGraphNodes}
+            graphEdges={dependencyGraphEdges}
+            cycles={dependencyCycles}
+            onSelectIssue={onIssueSelect}
+            depsAnalyzerProfile={depsAnalyzerProfile}
+            depsLastAnalyzedAt={depsLastAnalyzedAt}
+            depsAnalyzeJob={depsAnalyzeJob}
+            profileDefs={profileDefs}
+          />
+        </Suspense>
       )}
       {viewMode === 'notifications' && <NotificationsView onSelect={onIssueSelect} />}
     </div>

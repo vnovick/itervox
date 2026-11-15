@@ -35,13 +35,12 @@ import (
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/outbox"
+	"github.com/vnovick/itervox/internal/prwatch"
 	"github.com/vnovick/itervox/internal/server"
-	"github.com/vnovick/itervox/internal/statusui"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
 	"github.com/vnovick/itervox/internal/tracker/local"
-	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -57,110 +56,6 @@ func newAppSessionID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func printUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: itervox [command] [flags]
-
-Commands:
-  demo    Try Itervox in about a minute: a throwaway board with fake
-          issues and a scripted agent (no tracker, keys or agent CLI).
-             --dir      scratch directory (default: a new temp dir)
-             --no-open  do not open the dashboard in a browser
-             --tracker  memory|local  (default: memory)
-
-  quickstart  From a repository to a running board in one command:
-          detect the tracker and agent CLI, write (or migrate) WORKFLOW.md,
-          set up the tracker token and GitHub labels (asks first), run
-          doctor, start the daemon in the background and print the URL.
-             --tracker  github|linear|local  (default: detected)
-             --runner   claude|codex   (default: detected)
-             --dir      repository directory (default: .)
-             --workflow workflow path (default: <dir>/WORKFLOW.md)
-             --yes, -y  answer yes to every confirmation
-             --no-start run the checks only; do not start the daemon
-             --ready-timeout  how long to wait for the daemon (default: 90s)
-
-  init    Scan a repository and generate a WORKFLOW.md starter file,
-          or migrate an existing one with --update.
-             --tracker  linear|github|local  (required for new workflows)
-             --runner   claude|codex    (default: claude)
-             --output   output file path (default: WORKFLOW.md)
-             --dir      directory to scan (default: .)
-             --force    overwrite existing output file
-             --issue-template  add the agent-ready issue template
-                        without asking (GitHub; printed for Linear)
-             --update   migrate an existing WORKFLOW.md to the latest
-                        schema (writes WORKFLOW.md.bak, extracts inline
-                        profile prompts to .itervox/agents/<name>/
-                        INSTRUCTIONS.md, seeds SOUL.md, stamps
-                        itervox_schema_version)
-             --workflow path to the WORKFLOW.md to migrate when using
-                        --update (default: WORKFLOW.md)
-
-  clear   Remove workspace directories created by itervox
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             [identifier ...]  specific issues to clear; omit for all
-
-  stop    Stop all daemons serving the current project (uses PID file +
-          process scan as fallback, so pre-upgrade daemons are caught)
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --grace    SIGTERM → SIGKILL grace period (default: 30s)
-             --force    skip the grace period and SIGKILL immediately
-
-  status  List running itervox daemons for the current project
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --all      also list daemons from other projects
-
-  secret  Set or list .itervox/.env values without showing them
-             set KEY    read the value with echo off (or from stdin)
-             list       show each key as set / placeholder / empty
-             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
-             --replace  (set) replace a value that is already set
-
-  --version  Print version information
-
-Run mode (default when no command given):
-`)
-	flag.PrintDefaults()
-}
-
-// defaultLogsDir returns a per-project logs directory under ~/.itervox/logs/
-// derived from the tracker kind and project slug in the WORKFLOW.md at path.
-// Falls back to ~/.itervox/logs if the config can't be read or has no slug.
-func defaultLogsDir(workflowPath string) string {
-	base := filepath.Join("~", ".itervox", "logs")
-	if home, err := os.UserHomeDir(); err == nil {
-		base = filepath.Join(home, ".itervox", "logs")
-	}
-	cfg, err := config.Load(workflowPath)
-	if err != nil || cfg.Tracker.Kind == "" || cfg.Tracker.ProjectSlug == "" {
-		// No slug to namespace by — fall back to a directory derived from the
-		// workflow's own path rather than the shared base.
-		//
-		// The shared base was a cross-project state collision: this directory
-		// holds automation_queue.json, which carries the DEPENDENCY AUDIT, so
-		// every project without a project_slug read and wrote one another's
-		// audit rows. Observed live — a Linear project inherited ten
-		// `demo-id-*` rows written by an unrelated `kind: memory` run, then
-		// asked Linear about issues that had never existed there on every
-		// refresh cycle.
-		return filepath.Join(base, "workflow", config.WorkspaceProjectKey(workflowPath))
-	}
-	// Encode the slug so it is safe as a directory name component, and append
-	// the workflow key.
-	//
-	// The slug ALONE is not a project identity: two checkouts of one repo (a
-	// git worktree dev setup), or several repos driven by one Linear project,
-	// share a slug and would share this directory — which holds
-	// automation_queue.json and therefore the dependency audit, plus
-	// history.json, paused.json and input_required.json. The PID guard does
-	// not stop it: it keys on the workflow's directory, so both checkouts pass.
-	//
-	// The slug stays in the path so the directory remains recognisable to a
-	// human browsing ~/.itervox/logs.
-	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
-	return filepath.Join(base, cfg.Tracker.Kind, safe+"-"+config.WorkspaceProjectKey(workflowPath))
 }
 
 func configuredBackend(command, explicit string) string {
@@ -230,6 +125,31 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		} else {
 			slog.Info("codex CLI validated successfully")
 		}
+	case config.BackendOpenCode, config.BackendCursor, config.BackendCustom:
+		resolvedCmd := cfg.Agent.Command
+		if profileName != "" {
+			if p, ok := cfg.Agent.Profiles[profileName]; ok && p.Command != "" {
+				resolvedCmd = p.Command
+			}
+		}
+		// A custom backend is one command per profile, so it is
+		// validated per command; the others once per backend.
+		key := backend
+		if backend == config.BackendCustom {
+			key = backend + ":" + resolvedCmd
+		}
+		if _, ok := validatedBackends[key]; ok {
+			return nil
+		}
+		validatedBackends[key] = struct{}{}
+		if err := validateExtraBackendCLI(backend, resolvedCmd); err != nil {
+			if profileName != "" {
+				slog.Warn(backend+" CLI validation failed for profile", "profile", profileName, "error", err)
+				return nil // profile failures are non-fatal
+			}
+			return fmt.Errorf("%s CLI not found or not executable: %w", backend, err)
+		}
+		slog.Info(backend+" CLI validated successfully", "profile", profileName)
 	default:
 		if profileName != "" {
 			slog.Warn("unsupported backend in profile, will fall back to default runner", "profile", profileName, "backend", backend)
@@ -238,6 +158,19 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		}
 	}
 	return nil
+}
+
+// validateExtraBackendCLI checks the CLI of an OpenCode, Cursor or custom
+// backend. A var so tests can stub the checks.
+var validateExtraBackendCLI = func(backend, command string) error {
+	switch backend {
+	case config.BackendOpenCode:
+		return agent.ValidateOpenCodeCLICommand(command)
+	case config.BackendCursor:
+		return agent.ValidateCursorCLICommand(command)
+	default:
+		return agent.ValidateCustomCommand(command, exec.LookPath)
+	}
 }
 
 // generateAPIToken returns a cryptographically random 32-byte hex token
@@ -338,28 +271,17 @@ var bootCrash crashReport
 var noPrintToken bool
 
 func main() {
-	// TTY recovery safety net (T-12) for panics on the MAIN goroutine only.
-	// recover() cannot see a panic on any other goroutine: those are handled
-	// where they start — orchestrator.RecoverGoroutine for one-shot tasks and
-	// failFastOnPanic (which restores the terminal before re-panicking) for
-	// long-lived loops, enforced by `make no-bare-go` (CORE-008) — and every
-	// unrecovered crash dump is also written to <logs-dir>/crash.log by
-	// debug.SetCrashOutput (armCrashOutput, CORE-007). See
-	// internal/statusui/statusui.go for the cooked-mode restoration the TUI
-	// does on its own clean exit.
-	defer func() {
-		if r := recover(); r != nil {
-			if term.IsTerminal(os.Stdin.Fd()) {
-				_ = exec.Command("stty", "sane").Run()
-			}
-			panic(r) // re-raise so the stack trace surfaces.
-		}
-	}()
-
+	// #258: the Landlock launcher re-executes this binary; it restricts
+	// itself and execs the agent before anything else runs.
+	if code, ok := agent.RunIsolationHelper(os.Args); ok {
+		exitWithoutCleanup(code)
+	}
+	runGuardrailEntrypoint(os.Args) // #204: shims and hooks, before any daemon start-up work
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
-	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"), !statusui.TerminalAvailable())))
-	loadDotEnv() // must run before config.LoadConfig / os.Getenv calls
+	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"))))
+	loadDotEnv()             // must run before config.LoadConfig / os.Getenv calls
+	installSupervisorToken() // #119: before anything reads ITERVOX_API_TOKEN
 	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that
 	// a .env could carry): itervox may be started from a git hook, and every
 	// subprocess it spawns — git, gh, hooks, agent CLIs — must act on the
@@ -379,6 +301,9 @@ func main() {
 		switch os.Args[1] {
 		case "init":
 			runInit(os.Args[2:])
+			return
+		case "run": // #252: one issue, then exit (CI)
+			runIssueCLI(os.Args[2:])
 			return
 		case "clear":
 			runClear(os.Args[2:])
@@ -418,6 +343,33 @@ func main() {
 		case "secret":
 			runSecret(os.Args[2:])
 			return
+		case "hub": // #228
+			runHub(os.Args[2:])
+			return
+		case "token": // #214
+			runToken(os.Args[2:])
+			return
+		case "mcp": // #216
+			runMCP(os.Args[2:])
+			return
+		case "config":
+			runConfig(os.Args[2:])
+			return
+		case "import":
+			runImport(os.Args[2:])
+			return
+		case "export":
+			runExport(os.Args[2:])
+			return
+		case "report":
+			runReport(os.Args[2:])
+			return
+		case "task": // #251
+			runTask(os.Args[2:])
+			return
+		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply", "approve": // #120, #240
+			runClientCommand(os.Args[1], os.Args[2:])
+			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
 			return
@@ -432,9 +384,13 @@ func main() {
 	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: a per-project dir under ~/.itervox/logs)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
 	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "how long a drain waits for in-flight agent turns on SIGINT/SIGTERM (or before applying an operator edit to WORKFLOW.md) before cancelling them; a second signal stops at once")
-	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file, and for stderr when no terminal is attached (systemd, containers); with a terminal stderr stays text (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
+	logFormatFlag := flag.String("log-format", "", "log format: text|json for the log file and stderr (default: text; env: ITERVOX_LOG_FORMAT; flag wins over env)")
 	flag.BoolVar(&noPrintToken, "no-print-token", false, "never print the tokenised dashboard URL on stderr (by default it is printed only when stderr is a terminal; ITERVOX_PRINT_TOKEN=1 forces it; an auto-generated token is always written to <logs-dir>/api-token, mode 0600)")
+	flag.BoolVar(&tuiFlag, "tui", false, "removed in v0.3: the terminal UI is gone; watch a running daemon with itervox watch")
+	flag.BoolVar(&noHubFlag, "no-hub", false, "do not become or join the machine's itervox hub (#228; same as hub.enabled: false)")
+	flag.BoolVar(&headlessFlag, "headless", false, "never print the tokenised dashboard URL, even on a terminal (watch with: itervox watch)")
 	flag.Parse()
+	exitIfTUIRequested() // #240: --tui is gone; point to itervox watch
 
 	logLevel := slog.LevelInfo
 	if *verbose {
@@ -521,13 +477,12 @@ func main() {
 		MaxAge:     logRetention.MaxAgeDays,
 		Compress:   true,
 	}
-	// CORE-059: with no terminal attached (systemd, containers) stderr uses
-	// the resolved --log-format, so `json` yields one JSON object per slog
-	// record on stderr too; with a terminal it stays human (charmlog) text.
+	// CORE-059: stderr uses the resolved --log-format, so `json` yields one
+	// JSON object per slog record on stderr too; text is human (charmlog).
 	// Both sinks sit behind the RedactingHandler (T-29 / F-NEW-A): any
 	// string attr or msg matching a known secret pattern (Bearer tokens,
 	// lin_api_*, ghp_*, …) is rewritten to "***" before reaching either.
-	bootHandler, stderrHandler := bootLogHandlers(os.Stderr, rotatingFile, logLevel, logFormat, !statusui.TerminalAvailable())
+	bootHandler, stderrHandler := bootLogHandlers(os.Stderr, rotatingFile, logLevel, logFormat)
 	slog.SetDefault(slog.New(bootHandler))
 	// stderrOnly bypasses the rotating-file sink. Use it for any record that
 	// must NEVER hit disk — e.g. the dashboard URL that intentionally carries
@@ -551,6 +506,7 @@ func main() {
 		slog.Warn("crash: crash output not armed", "error", err)
 	}
 	bootCrash = report
+	logPATHResolution(applyLoginShellPATH(*workflowPath)) // #119: before any agent CLI lookup
 
 	// Top-level context: cancelled on first SIGINT/SIGTERM to begin graceful drain.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -590,6 +546,8 @@ func main() {
 		defer removePIDFile(*workflowPath)
 		defer removeDashboardURLFile(*workflowPath)
 		defer removeHeartbeatFile(*workflowPath)
+		defer removeDaemonRegistryEntry() // runs first: never outlive daemon.pid
+		defer stopHub()                   // #228: hand the hub over before the record goes
 		// os.Exit skips the defers above, so every fatalExit path — a failed
 		// rebind, an invalid config on the first iteration — used to leave
 		// these files behind and make doctor report a daemon that had died.
@@ -598,6 +556,7 @@ func main() {
 			removePIDFile(*workflowPath)
 			removeDashboardURLFile(*workflowPath)
 			removeHeartbeatFile(*workflowPath)
+			removeDaemonRegistryEntry()
 		}
 	}
 
@@ -654,6 +613,8 @@ func main() {
 			continue
 		}
 		cfg := loaded
+		logFrontMatterReport(*workflowPath, cfg.FrontMatter) // #239: once per notice
+		maybeStartHub(ctx, cfg, *workflowPath, noHubFlag)    // #228: once, outside the event loop
 		firstIter = false
 		reloadAttempt = 0         // reset on every successful load
 		publishConfigInvalid(nil) // clear the banner
@@ -724,19 +685,21 @@ func main() {
 		dc := newDrainControl()
 		reloadReq := make(chan struct{}, 1)
 
-		// Watch WORKFLOW.md; request a drain-then-reload on change.
+		// Watch WORKFLOW.md and the settings files (#245); request a
+		// drain-then-reload on a change that loads. An edit that does not
+		// load keeps this generation running and shows on the banner.
 		go func() {
 			defer failFastOnPanic("workflow-watcher")
-			// Baseline = the bytes cfg was parsed from, not the watcher's own
-			// first reading: an edit between the load above and this start
-			// still reloads (M1-close C2).
+			// Baselines = the bytes cfg was parsed from, not the watcher's
+			// own first readings: an edit between the load above and this
+			// start still reloads (M1-close C2).
 			onChange := func() {
 				select {
 				case reloadReq <- struct{}{}:
-				default: // a reload is already pending; it re-reads the file
+				default: // a reload is already pending; it re-reads the files
 				}
 			}
-			if err := workflow.WatchFrom(runCtx, *workflowPath, cfg.WorkflowHash, onChange); err != nil && runCtx.Err() == nil {
+			if err := watchConfigFiles(runCtx, *workflowPath, cfg, onChange, configWatchOptions{}); err != nil && runCtx.Err() == nil {
 				slog.Warn("workflow watcher stopped", "error", err)
 			}
 		}()
@@ -744,7 +707,7 @@ func main() {
 		runDone := make(chan error, 1)
 		go func() {
 			defer failFastOnPanic("run-generation")
-			runDone <- run(runCtx, cancel, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, logFormat, stderrOnly, srvPersist.generation(), srvAddr, dc)
+			runDone <- run(runCtx, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, logFormat, stderrOnly, srvPersist.generation(), srvAddr, dc)
 		}()
 
 		var runErr error
@@ -804,7 +767,7 @@ func main() {
 // the socket outlives it, so reloads keep the port. run() must not return
 // while its HTTP server could still accept — the next run() serves on the
 // same socket.
-func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, logFormat string, stderrOnly *slog.Logger, srvListener net.Listener, actualAddr string, dc *drainControl) error {
+func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, logFormat string, stderrOnly *slog.Logger, srvListener net.Listener, actualAddr string, dc *drainControl) error {
 	// The settings generation this run's config was loaded under (the main
 	// loop's loadSettingsGeneration bumped it just before calling run, and
 	// nothing bumps it again until run has returned). Saves made by this
@@ -815,18 +778,19 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		return fmt.Errorf("build tracker: %w", err)
 	}
 
-	var runner agent.Runner = agent.NewMultiRunner(
-		agent.NewClaudeRunner(),
-		map[string]agent.Runner{
-			"codex": agent.NewCodexRunner(),
-		},
-	)
+	var runner agent.Runner = agent.NewBackendMultiRunner()
 	runner = commandResolverRunner{inner: runner}
 	if demoSession != nil {
 		// `itervox demo` (#76): the session's memory tracker and scripted
 		// runner; no agent CLI is needed, so none is validated below.
 		tr = demoSession.tracker
 		runner = demoSession.runner
+	}
+	resolveTrackerAssignee(ctx, cfg, tr) // #182: off the event loop, before the store reads through it
+	tr, webhooks := withTrackerStore(ctx, cfg, workflowPath, tr)
+	tr = withLocalSync(cfg, workflowPath, tr) // #118
+	if demoSession == nil {
+		tr = withLocalTasks(cfg, tr) // #251: Itervox-only tasks next to Linear/GitHub
 	}
 
 	// T-32: apply SSH StrictHostKeyChecking config. run() executes once per
@@ -884,11 +848,15 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
+	orch.RevertScan = lessonRevertScan(cfg, workflowPath)                 // #217: reverted-PR lessons
+	sessTmux := wireSessions(orch, cfg, workflowPath, demoSession != nil) // #178
 	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
 	// unified-dependency-graph Task 6 — operator deps-override dismissals live
 	// under the project's .itervox/ dir (not logDir) so they persist alongside
 	// the sidecar they dismiss edges from, independent of --log placement.
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
+	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
+	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
@@ -910,6 +878,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	if cfg.Tracker.Outbox {
 		orch.SetWriteSink(orchestrator.NewOutboxWriteSink(ob))
 		orch.SetOutbox(ob)
+		wireCoalescedPush(cfg, ob, tr) // #115
 	}
 
 	var agentSessionsDir string
@@ -925,12 +894,18 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		// CORE-053 — the backend circuit breakers survive a restart.
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
-		orch.SetPendingReviewsFile(pendingReviewsPath) // M4-close BH-M4-2
+		orch.SetPendingReviewsFile(pendingReviewsPath)                                      // M4-close BH-M4-2
+		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                        // #136
+		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                       // #173
+		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json"))  // #177
+		orch.SetReviewContinuationsFile(filepath.Join(logDir, "review_continuations.json")) // review and continue
+		orch.SetFeedFile(filepath.Join(logDir, "feed.jsonl"))                               // #213
+		orch.SetDispatchPauseFile(filepath.Join(logDir, "dispatch_paused.json"))            // #213
 		agentSessionsDir = filepath.Join(logDir, "sessions")
 		orch.SetAgentLogDir(agentSessionsDir)
 	}
-	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
-		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + cfg.Tracker.ProjectSlug)
+	if name := cfg.Tracker.ScopeName(); cfg.Tracker.Kind != "" && name != "" {
+		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + name)
 	}
 
 	appSessionID := newAppSessionID()
@@ -954,7 +929,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	// `srvListener != nil` block below — so it stays called from there.
 	depsSvc, bindDepsNotify := wireDepsAnalyzerService(ctx, orch, cfg, tr, runner, workflowPath, agentSessionsDir)
 
-	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath, depsSvc, ob)
+	// System visibility: the run monitor (sysmon_wire.go).
+	runMon, removeRunMon := startRunMonitor(ctx, cfg, workflowPath, orch)
+	defer removeRunMon()
+	snap := withSystemSnapshot(buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath, depsSvc, ob), runMon.mon)
 
 	// HTTP server setup. The listener was bound by main's reload loop —
 	// which owns the socket across reloads — before the TUI starts, so the
@@ -996,7 +974,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				"host", cfg.Server.Host,
 				"hint", "set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated: true to opt out")
 		} else if cfg.Server.AllowUnauthenticatedLAN && os.Getenv("ITERVOX_API_TOKEN") == "" {
-			slog.Warn("server: starting with no authentication (server.allow_unauthenticated: true) — anyone who can reach this bind address, including through a tunnel or reverse proxy, has full API access",
+			slog.Warn("server: starting with no authentication (server.allow_unauthenticated: true) — anyone who can reach this bind address, including through a tunnel or reverse proxy, has full API access as admin; stored viewer/operator tokens (.itervox/tokens.json) are not consulted",
 				"host", cfg.Server.Host)
 		}
 		// When a token is set (user-provided OR auto-generated above), tell the
@@ -1015,11 +993,13 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 				Token:       tok,
 				Generated:   tokenGenerated,
 				LogsDir:     filepath.Dir(logFile),
-				NoPrintFlag: noPrintToken,
+				NoPrintFlag: noPrintToken || headlessFlag, // #120
 				PrintEnv:    os.Getenv(printTokenEnv),
 				StderrIsTTY: term.IsTerminal(os.Stderr.Fd()),
+				Supervised:  supervisorTokenActive,
 			})
 		}
+		writeDaemonRegistryEntry(newDaemonRecord(workflowPath, actualAddr, filepath.Dir(logFile), os.Getenv("ITERVOX_API_TOKEN"), tokenGenerated, supervisorTokenActive))
 	}
 	if actualAddr != "" {
 		actionTokenStore = agentactions.NewStore()
@@ -1052,39 +1032,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		}()
 	}
 
-	// Redirect slog to file-only before the TUI takes the alt-screen — but
-	// only when the TUI is actually about to start. Without this redirect,
-	// concurrent slog writes to stderr corrupt the bubbletea display; the TUI
-	// log pane reads directly from logBuf instead of stderr, so nothing is
-	// lost by going file-only. But statusui.Run refuses to start the TUI at
-	// all when there is no controlling terminal (systemd, container, CI,
-	// detached stdio — issue #49-2), and an unconditional redirect paid the
-	// cost (stderr goes dark) for none of the benefit in that case. TTY
-	// availability is decided here, before the redirect, via the same
-	// TTY-ownership check statusui.Run performs internally (TerminalAvailable
-	// wraps checkForegroundTTYOwnership with no retry/sleep so the two checks
-	// cannot drift). Headless keeps the pre-TUI stderr+file fanout so
-	// journalctl et al. keep working.
-	// Wrapped in RedactingHandler (both branches, via postStartupHandler) so
-	// secrets-in-msg/attrs are scrubbed before hitting ~/.itervox/logs/ and,
-	// in headless mode, stderr too (T-29 / F-NEW-A).
-	// newFileLogHandler keeps this in sync with the pre-TUI file handler above
-	// so --log-format=json survives the redirect instead of silently reverting
-	// to text once the TUI starts.
-	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler(), statusui.TerminalAvailable())))
-	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath, quitApp)
-	if actualAddr != "" {
-		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
-			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/?token=%s", actualAddr, tok)
-		} else {
-			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
-		}
-	}
-	tuiDone := statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
-	// Wait for the TUI to fully restore the terminal (stty sane) before run()
-	// returns. Without this, the process can exit while the terminal is still
-	// in raw mode, leaving the user's shell broken (no Ctrl-C, no echo).
-	defer func() { <-tuiDone }()
+	// Post-startup logging: stderr + the log file, both behind the
+	// RedactingHandler (T-29 / F-NEW-A). The terminal UI that used to take
+	// stderr over is gone (#240), so stderr never goes dark.
+	slog.SetDefault(slog.New(postStartupHandler(fileWriter, logLevel, logFormat, stderrOnly.Handler())))
 
 	if err := ensureItervoxGitignore(filepath.Join(filepath.Dir(workflowPath), ".itervox")); err != nil {
 		slog.Warn("heartbeat: gitignore update failed", "error", err)
@@ -1102,6 +1053,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		DashboardURL:  heartbeatDashboardURL,
 		LastCrash:     bootCrash,
 	}, snap, heartbeatMinInterval)
+	heartbeat.syncProbe = newSyncStatusSource(cfg, tr, ob, orch).fingerprint // #117
 	if err := heartbeat.WriteNow(time.Now().UTC()); err != nil {
 		slog.Warn("heartbeat: startup write failed", "path", heartbeat.path, "error", err)
 	}
@@ -1113,6 +1065,11 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	// Start serving on the already-bound listener.
 	//
+	// #173: the PR-event watcher (poll of the open managed PRs, plus the
+	// webhook receiver when pr_events.webhook_secret is set).
+	// #238: the same GitHub client (and token source) serves change review.
+	githubPRs := &prwatch.Client{Token: prEventsTokenSource(cfg)}
+	prEventWebhooks := startPREvents(ctx, cfg, tr, orch, githubPRs)
 	// #52 deferral — startDepsAutoAnalyze (below) is wired inside this
 	// `srvListener != nil` block purely because that's where depsSvc,
 	// adapter, and the other server-only wiring already live, not because
@@ -1137,6 +1094,9 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			snap := orch.Snapshot()
 			ti := app.EnrichIssue(*issue, snap, time.Now(), cfg)
 			ti.StatusChanges = statusChangeRows(snap.IssueStatusHistory[issue.Identifier])
+			ti.Review = reviewRow(snap, issue.Identifier)                // #135
+			app.ApplyPlaybook(&ti, *issue, snap, orch.PlaybookChooser()) // #218
+			ti.Task = issueTaskRow(orch, issue.Identifier)               // #251
 			return &ti, nil
 		}
 
@@ -1190,7 +1150,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 		// CORE-045 — opt-in Prometheus endpoint, behind the bearer token.
 		var metricsHandler http.Handler
 		if cfg.Server.Metrics.Enabled {
-			metricsHandler = newMetricsHandler(orch, ob, cfg.Tracker.Kind)
+			metricsHandler = newMetricsHandler(orch, ob, cfg.Tracker.Kind, runMon.mon)
 		}
 		srv := server.New(server.Config{
 			Snapshot:         snap,
@@ -1199,10 +1159,17 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			Client:           adapter,
 			FetchIssue:       fetchIssue,
 			ProjectManager:   pm,
+			ScopeManager:     newScopeManager(tr, workflowPath, settingsGen), // #182
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
+			Tokens:           openTokenStore(ctx, workflowPath), // #214: viewer/operator/admin tokens
 			ActionTokenStore: actionTokenStore,
 			SkillsClient:     adapter,
+			Rules:            &rulesAdapter{cfg: cfg, orch: orch}, // #157
+			Memory:           newMemoryAdapter(cfg, orch),         // #202, #203
+			SettingsLayers:   adapter,                             // #158
 			DepsAnalyzer:     depsSvc,
+			// #204: the guardrail endpoints of agent shims and hooks.
+			Guardrails: wireGuardrails(cfg, orch, sessTmux, actionTokenStore, actualAddr),
 			// gaps_11 G-3 — merge_pr policy is read-only after startup, so it
 			// is passed by value rather than via cfgMu-guarded accessors.
 			MergeStrategy:       cfg.Agent.MergeStrategy,
@@ -1212,6 +1179,8 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			// mode only); read-only after startup.
 			BindHost:     cfg.Server.Host,
 			AllowedHosts: cfg.Server.AllowedHosts,
+			// #231: the CORS allow-list (server.allowed_origins).
+			AllowedOrigins: cfg.Server.AllowedOrigins,
 			// CORE-043 — /api/v1/ready: event-loop atomics + the tracker
 			// rate-limit gate + the reload loop's config status. No cfgMu,
 			// no snapshot build.
@@ -1222,6 +1191,22 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			// CORE-048 — web client error reports feed the RecentFailures
 			// ring through the non-blocking RecordFailure (CORE-046).
 			ReportClientError: clientErrorReporter(orch),
+			Webhooks:          webhooks,        // #131: signed tracker deliveries
+			PREventWebhooks:   prEventWebhooks, // #173: signed GitHub PR-event deliveries
+			// #178: the Sessions panel API.
+			Sessions:        sessionsClient{orch: orch, liveSteering: cfg.Agent.LiveSteering, tmux: sessTmux},
+			RepoReadiness:   repoReadinessProvider(workflowPath),                                          // #200: the doctor checks, off the event loop
+			RepoEvals:       repoEvalsProvider(workflowPath),                                              // #201: persisted eval reports, read-only
+			RepoHotspots:    repoHotspotsProvider(orch, cfg, workflowPath),                                // #201: background job, off the event loop
+			Version:         version,                                                                      // #212: GET /api/v1/summary
+			Dispatch:        dispatchAdapter{orch: orch},                                                  // #213: the feed and the dispatch pause
+			Changes:         changesAdapter{orch: orch, mon: runMon.mon},                                  // #215: run context and worktree diff, off the event loop
+			Activity:        runMon.mon,                                                                   // system visibility: the activity audit
+			ChangeReview:    changeReviewAdapter{orch: orch, tr: tr, moveState: adapter.UpdateIssueState}, // #238: line comments, PR reviews, the diff's PR source
+			GitHubPRs:       githubPRs,                                                                    // #238: the PR-event watcher's GitHub client
+			Playbooks:       playbooksAdapter{orch: orch},                                                 // #218: playbooks, decision logs, verify-skill issue
+			Tasks:           newTasksAdapter(orch, workflowPath),                                          // #251: New task and task templates
+			SteeringPhrases: cfg.Sessions.SteeringPhrases,                                                 // #218
 		})
 		adapter.notify = srv.Notify
 		bindDepsNotify(srv.Notify)
@@ -1232,6 +1217,7 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 			srv.Notify()
 			heartbeat.Request()
 		}
+		runMon.bindNotify(srv.Notify)
 		srvDone = serveOnListener(ctx, srvListener, actualAddr, srv, srv.Shutdown)
 	}
 
@@ -1250,7 +1236,10 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 	}()
 
 	startAutomations(ctx, cfg, tr, orch)
-	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, tr, orch) // #84
+	// #133: a local issue file edit polls at once.
+	startLocalIssueWatch(ctx, tr, orch.Refresh)
+	commentCommandsDone := startCommentCommands(ctx, cfg, workflowPath, commentCommandsTracker(trackerBehindTasks(tr)), orch) // #84
+	localSyncDone := startLocalSync(ctx, tr, orch.Refresh)                                                                    // #118: local issue files <-> tracker.sync
 
 	// outbox Task 3 — the flusher is the outbox's ONLY delivery path: it
 	// calls the raw tracker (tr), never orch.writeSink(). Gated by the same
@@ -1294,196 +1283,14 @@ func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath s
 
 	runErr := joinRun(orchDone, srvDone, srvListener, flusherDone, logBuf)
 	<-commentCommandsDone
+	<-localSyncDone
 	final := orch.Snapshot()
-	failureCarry.store(final.RecentFailures, final.FailureAcks)
+	carryRunState(final) // RecentFailures + acks (CORE-046), tmux sessions (#178)
 	return runErr
 }
 
 // buildSnapFunc (the StateSnapshot wiring that used to live here) moved to
 // snapshot_build.go — outbox Task 4 size-budget extraction.
-
-// buildTUIConfig wires the terminal status-UI config and returns the cancel
-// function (used as the 'x' key handler in statusui.Run). Extracted from run().
-func buildTUIConfig(
-	orch *orchestrator.Orchestrator,
-	tr tracker.Tracker,
-	cfg *config.Config,
-	workflowPath string,
-	quitApp func(),
-) (statusui.Config, func(string) bool) {
-	// Built once per run generation, so this is that generation's settings
-	// generation (see run's settingsGen).
-	settingsGen := currentSettingsGeneration(workflowPath)
-	tuiCfg := statusui.Config{
-		MaxAgents:     cfg.Agent.MaxConcurrentAgents,
-		TodoStates:    cfg.Tracker.ActiveStates,
-		BacklogStates: cfg.Tracker.BacklogStates,
-		QuitApp:       quitApp,
-	}
-	if cfg.Server.Port != nil {
-		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
-			tuiCfg.DashboardURL = dashboardBaseURL(cfg.Server.Host, *cfg.Server.Port) + "?token=" + tok
-		} else {
-			tuiCfg.DashboardURL = dashboardBaseURL(cfg.Server.Host, *cfg.Server.Port)
-		}
-	}
-	if tpm, ok := tr.(tracker.ProjectManager); ok {
-		tuiCfg.FetchProjects = func() ([]statusui.ProjectItem, error) {
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			projects, err := tpm.FetchProjects(fetchCtx)
-			if err != nil {
-				return nil, err
-			}
-			items := make([]statusui.ProjectItem, len(projects))
-			for i, p := range projects {
-				items[i] = statusui.ProjectItem{ID: p.ID, Name: p.Name, Slug: p.Slug}
-			}
-			return items, nil
-		}
-		tuiCfg.SetProjectFilter = func(slugs []string) {
-			_ = saveProjectFilter(tpm, workflowPath, settingsGen, slugs, "tui") // logged inside
-		}
-	}
-	tuiCfg.AdjustWorkers = func(delta int) {
-		// V4: same serialized write-then-apply as the dashboard's
-		// SetWorkers/BumpWorkers, so a TUI bump racing a dashboard save
-		// cannot leave WORKFLOW.md and memory on different values.
-		unlock, lockErr := beginSettingsSave(workflowPath, settingsGen)
-		if lockErr != nil {
-			slog.Warn("tui: worker change not saved; WORKFLOW.md is reloading — retry", "error", lockErr)
-			return
-		}
-		defer unlock()
-		next := max(1, min(orch.MaxWorkers()+delta, 50))
-		if err := workflow.PatchIntField(workflowPath, "max_concurrent_agents", next); err != nil {
-			slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md; worker count unchanged", "error", err)
-			return
-		}
-		orch.SetMaxWorkers(next)
-	}
-	{
-		backlogAndActive := append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...)
-		tuiCfg.FetchBacklog = func() ([]statusui.BacklogIssueItem, error) {
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			issues, err := tr.FetchIssuesByStates(fetchCtx, backlogAndActive)
-			if err != nil {
-				return nil, err
-			}
-			items := make([]statusui.BacklogIssueItem, len(issues))
-			for i, iss := range issues {
-				pri := 0
-				if iss.Priority != nil {
-					pri = *iss.Priority
-				}
-				var desc string
-				if iss.Description != nil {
-					desc = *iss.Description
-				}
-				var comments []statusui.CommentItem
-				for _, c := range iss.Comments {
-					comments = append(comments, statusui.CommentItem{Author: c.AuthorName, Body: c.Body})
-				}
-				items[i] = statusui.BacklogIssueItem{
-					Identifier:  iss.Identifier,
-					Title:       iss.Title,
-					State:       iss.State,
-					Priority:    pri,
-					Description: desc,
-					Comments:    comments,
-				}
-			}
-			return items, nil
-		}
-		if len(cfg.Tracker.ActiveStates) > 0 {
-			tuiCfg.DispatchIssue = func(identifier string) error {
-				dispCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				// cfg.Tracker.ActiveStates is cfgMu-guarded (runtime setter:
-				// SetTrackerStatesCfg via PUT /settings/tracker/states) and this
-				// closure runs at TUI keypress time, well after the HTTP server
-				// starts serving — read via the getter at invocation time rather
-				// than closing over a value captured at startup. BacklogStates
-				// has no runtime setter, so the direct cfg read stays legal.
-				active, _, _ := orch.TrackerStatesCfg()
-				if len(active) == 0 {
-					return fmt.Errorf("no tracker.active_states configured")
-				}
-				allStates := append(append([]string{}, cfg.Tracker.BacklogStates...), active...)
-				issues, err := tr.FetchIssuesByStates(dispCtx, allStates)
-				if err != nil {
-					return err
-				}
-				for _, iss := range issues {
-					if iss.Identifier == identifier {
-						return tr.UpdateIssueState(dispCtx, iss.ID, active[0])
-					}
-				}
-				return fmt.Errorf("issue %s not found", identifier)
-			}
-		}
-	}
-	tuiCfg.ResumeIssue = func(identifier string) bool {
-		ok := orch.ResumeIssue(identifier) == nil
-		if ok {
-			orch.Refresh()
-		}
-		return ok
-	}
-	tuiCfg.TerminateIssue = func(identifier string) bool {
-		ok := orch.TerminateIssue(identifier) == nil
-		if ok {
-			orch.Refresh()
-		}
-		return ok
-	}
-	tuiCfg.SetIssueProfile = func(identifier, profile string) {
-		orch.SetIssueProfile(identifier, profile)
-	}
-	tuiCfg.IssueProfiles = func() map[string]string {
-		s := orch.Snapshot()
-		return s.IssueProfiles
-	}
-	tuiCfg.TriggerPoll = orch.Refresh
-	tuiCfg.FetchIssueDetail = func(identifier string) (*statusui.BacklogIssueItem, error) {
-		fetchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		issue, err := tr.FetchIssueByIdentifier(fetchCtx, identifier)
-		if err != nil {
-			return nil, err
-		}
-		pri := 0
-		if issue.Priority != nil {
-			pri = *issue.Priority
-		}
-		var desc string
-		if issue.Description != nil {
-			desc = *issue.Description
-		}
-		var comments []statusui.CommentItem
-		for _, c := range issue.Comments {
-			comments = append(comments, statusui.CommentItem{Author: c.AuthorName, Body: c.Body})
-		}
-		return &statusui.BacklogIssueItem{
-			Identifier:  issue.Identifier,
-			Title:       issue.Title,
-			State:       issue.State,
-			Priority:    pri,
-			Description: desc,
-			Comments:    comments,
-		}, nil
-	}
-
-	tuiCancel := func(identifier string) bool {
-		issue := orch.GetRunningIssue(identifier)
-		if issue == nil {
-			return false
-		}
-		return orch.CancelIssue(identifier) == nil
-	}
-	return tuiCfg, tuiCancel
-}
 
 // deduplicateStates concatenates backlog, active, terminal states and the
 // completion state (if non-empty), removing duplicates while preserving order.
@@ -1718,6 +1525,11 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 		return linear.NewClient(linear.ClientConfig{
 			APIKey:         cfg.Tracker.APIKey,
 			ProjectSlug:    cfg.Tracker.ProjectSlug,
+			Assignee:       strings.TrimSpace(cfg.Tracker.Assignee), // #182: project AND assignee AND labels
+			Team:           strings.TrimSpace(cfg.Tracker.Team),
+			Labels:         cfg.Tracker.Labels,
+			Filter:         cfg.Tracker.Filter, // #198
+			WorkingState:   cfg.Tracker.WorkingState,
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
 			Endpoint:       cfg.Tracker.Endpoint,
@@ -1733,6 +1545,8 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			// reload.
 			CompletionState: cfg.Tracker.CompletionState,
 			Endpoint:        cfg.Tracker.Endpoint,
+			Filter:          cfg.Tracker.Filter, // #198
+			WorkingState:    cfg.Tracker.WorkingState,
 		}), nil
 	case "local":
 		// #85: one Markdown file per issue under .itervox/issues/; the
@@ -1855,12 +1669,12 @@ func runAction(args []string) {
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/comment"
 		body = map[string]string{"body": *commentBody}
 	case "create-issue":
-		fs := flag.NewFlagSet("action create-issue", flag.ExitOnError)
-		title := fs.String("title", "", "title for the follow-up issue")
-		issueBody := fs.String("body", "", "body/description for the follow-up issue")
-		_ = fs.Parse(args[1:])
-		if strings.TrimSpace(*title) == "" {
-			fmt.Fprintln(os.Stderr, "itervox action create-issue: --title is required")
+		createBody, err := createIssueActionBody(args[1:], os.Stderr)
+		if errors.Is(err, flag.ErrHelp) {
+			fatalExit(0)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "itervox action create-issue:", err)
 			fatalExit(2)
 		}
 		if strings.TrimSpace(os.Getenv("ITERVOX_CREATE_ISSUE_STATE")) == "" {
@@ -1868,7 +1682,7 @@ func runAction(args []string) {
 			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/create-issue"
-		body = map[string]string{"title": *title, "body": *issueBody}
+		body = createBody
 	case "move-state":
 		fs := flag.NewFlagSet("action move-state", flag.ExitOnError)
 		state := fs.String("state", "", "target tracker state")

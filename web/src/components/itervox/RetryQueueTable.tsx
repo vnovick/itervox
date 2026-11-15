@@ -55,16 +55,13 @@ export default function RetryQueueTable() {
   if (retrying.length === 0) return null;
 
   return (
-    <div
-      id="retry-queue"
-      className="border-theme-line bg-theme-bg-elevated scroll-mt-20 overflow-hidden rounded-[var(--radius-lg)] border"
-    >
+    <div id="retry-queue" className="glass-panel scroll-mt-20 overflow-hidden">
       {/* Header */}
       <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3">
         <div>
-          <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold">
+          <h2 className="section-title flex items-center gap-2">
             Retry Queue
-            <span className="bg-theme-warning-soft text-theme-warning-text rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+            <span className="count-pill text-theme-warning-text">
               {q ? `${String(filtered.length)}/${String(retrying.length)}` : retrying.length}
             </span>
           </h2>

@@ -20,14 +20,18 @@ export function ReviewQueueSection() {
   // statements left over from an earlier refactor. `classifyReviewSource`
   // reads the session id from the snapshot it already receives, so the
   // destructured field was dead weight.
-  const { reviewerProfile, completionState, running, history } = useItervoxStore(
-    useShallow((s) => ({
-      reviewerProfile: s.snapshot?.reviewerProfile ?? '',
-      completionState: s.snapshot?.completionState ?? '',
-      running: s.snapshot?.running ?? EMPTY_RUNNING,
-      history: s.snapshot?.history ?? EMPTY_HISTORY,
-    })),
-  );
+  const { reviewerProfile, completionState, running, history, currentAppSessionId } =
+    useItervoxStore(
+      useShallow((s) => ({
+        reviewerProfile: s.snapshot?.reviewerProfile ?? '',
+        completionState: s.snapshot?.completionState ?? '',
+        running: s.snapshot?.running ?? EMPTY_RUNNING,
+        history: s.snapshot?.history ?? EMPTY_HISTORY,
+        // #211 — classifyReviewSource reads only these two branches; select
+        // them instead of the whole snapshot, whose root changes every frame.
+        currentAppSessionId: s.snapshot?.currentAppSessionId,
+      })),
+    );
 
   const { data: issues = [] } = useIssues();
   const triggerReview = useTriggerAIReview();
@@ -59,15 +63,16 @@ export function ReviewQueueSection() {
   // Per-identifier review-source classification, delegated to the shared
   // helper in lib/operatorQueue so this surface and NotificationsView use
   // identical logic. Gap §10.1.
-  const snapshot = useItervoxStore((s) => s.snapshot);
   const reviewSourceByIdentifier = useMemo(() => {
     const map: Record<string, 'session' | 'tracker'> = {};
-    if (!snapshot) return map;
     for (const issue of awaitingReview) {
-      map[issue.identifier] = classifyReviewSource(snapshot, issue.identifier);
+      map[issue.identifier] = classifyReviewSource(
+        { currentAppSessionId, history },
+        issue.identifier,
+      );
     }
     return map;
-  }, [awaitingReview, snapshot]);
+  }, [awaitingReview, currentAppSessionId, history]);
   const totalItems = awaitingReview.length + reviewing.length + recentReviews.length;
   const q = search.trim().toLowerCase();
   const filteredAwaiting = useMemo(
@@ -115,12 +120,12 @@ export function ReviewQueueSection() {
   if (!reviewerProfile) return null;
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
+    <div className="glass-panel overflow-hidden">
       {/* Header */}
       <div className="border-theme-line flex items-center justify-between gap-3 border-b px-4 py-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-theme-text text-sm font-semibold tracking-tight">Review Queue</h2>
-          <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+          <h2 className="section-title">Review Queue</h2>
+          <span className="count-pill">
             {q ? `${String(visibleItems)}/${String(totalItems)}` : totalItems}
           </span>
         </div>
@@ -134,7 +139,7 @@ export function ReviewQueueSection() {
             onClick={() => {
               setExpanded((prev) => !prev);
             }}
-            className="border-theme-line text-theme-text-secondary hover:text-theme-text min-h-8 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium"
+            className="glass-chip text-theme-text hover:bg-theme-panel-strong min-h-8 px-3 py-1 text-xs font-medium"
           >
             {expanded ? 'Collapse' : 'Expand'}
           </button>

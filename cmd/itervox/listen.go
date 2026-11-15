@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -157,7 +156,7 @@ func isAddrInUse(err error) bool {
 	if errors.As(err, &opErr) {
 		var sysErr *os.SyscallError
 		if errors.As(opErr.Err, &sysErr) {
-			return sysErr.Err == syscall.EADDRINUSE
+			return isAddrInUseErrno(sysErr.Err)
 		}
 	}
 	return false
@@ -169,11 +168,6 @@ func isAddrInUse(err error) bool {
 // that is already bracketed ("[::1]") is unwrapped first.
 func bindAddr(host string, port int) string {
 	return net.JoinHostPort(unbracketHost(host), strconv.Itoa(port))
-}
-
-// dashboardBaseURL is the dashboard URL for a configured host and port.
-func dashboardBaseURL(host string, port int) string {
-	return "http://" + bindAddr(host, port) + "/"
 }
 
 func unbracketHost(h string) string {

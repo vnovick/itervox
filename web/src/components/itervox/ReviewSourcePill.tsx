@@ -12,7 +12,7 @@ interface Props {
 export function ReviewSourcePill({ source }: Props) {
   if (source === 'session') {
     return (
-      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
+      <span className="bg-theme-success-soft text-theme-success-text rounded px-1.5 py-0.5 text-[10px] font-medium">
         ✓ completed this session
       </span>
     );

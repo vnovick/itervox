@@ -9,6 +9,8 @@
 // The rate-limit switch cap moved to RateLimitsFailoverCard (CORE-093).
 
 import { useEffect, useState } from 'react';
+import { inputCls } from './formStyles';
+import { cn } from '../../components/ui/cn';
 
 interface RetriesCardProps {
   maxRetries: number;
@@ -76,11 +78,8 @@ export function RetriesCard({
   };
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Retries</h2>
-      </div>
-      <div className="space-y-5 px-5 py-5">
+    <div>
+      <div className="space-y-5">
         <div>
           <label htmlFor="retries-max" className="text-theme-text block text-sm font-medium">
             Max retries per issue
@@ -107,7 +106,7 @@ export function RetriesCard({
                 e.currentTarget.blur();
               }
             }}
-            className="border-theme-line bg-theme-bg-soft text-theme-text mt-2 w-32 rounded-md border px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)] focus:outline-none"
+            className={cn(inputCls, 'mt-2 w-32')}
           />
           {retriesError && (
             <span role="alert" className="text-theme-danger-text mt-1 block text-xs">
@@ -134,7 +133,7 @@ export function RetriesCard({
             onChange={(e) => {
               void commitFailedState(e.target.value);
             }}
-            className="border-theme-line bg-theme-bg-soft text-theme-text mt-2 max-w-md rounded-md border px-3 py-1.5 text-sm focus:ring-2 focus:ring-[var(--accent)] focus:outline-none"
+            className={cn(inputCls, 'mt-2 max-w-md')}
           >
             <option value="">{PAUSE_LABEL}</option>
             {trackerStateOptions

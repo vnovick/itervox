@@ -43,13 +43,10 @@ export function NarrativeFeed() {
   }, [logs, logSeq]);
 
   return (
-    <div
-      data-testid="narrative-feed"
-      className="border-theme-line bg-theme-panel overflow-hidden rounded-[var(--radius-md)] border"
-    >
-      <div className="border-theme-line flex items-center justify-between border-b px-4 py-2.5">
-        <h3 className="text-theme-text text-sm font-semibold">Recent Events</h3>
-        <span className="text-theme-muted font-mono text-xs">last {MAX_FEED_LINES}</span>
+    <div data-testid="narrative-feed" className="glass-panel overflow-hidden">
+      <div className="border-theme-line flex items-center justify-between border-b px-4 py-3 sm:px-[18px]">
+        <h3 className="section-title">Recent Events</h3>
+        <span className="text-theme-muted text-xs">last {MAX_FEED_LINES}</span>
       </div>
 
       {entries.length === 0 ? (

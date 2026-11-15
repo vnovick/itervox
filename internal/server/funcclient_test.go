@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // FuncClient moved here from server.go (CORE-110): it is test-only.
@@ -25,7 +26,7 @@ type FuncClient struct {
 	DispatchReviewerFn                func(string) error
 	CommentOnIssueFn                  func(context.Context, string, string) error
 	PostOperatorCommentFn             func(context.Context, string, string) (bool, error)
-	CreateIssueFn                     func(context.Context, string, string, string, string) (*domain.Issue, error)
+	CreateIssueFn                     func(context.Context, string, tracker.NewIssue) (*domain.Issue, error)
 	UpdateIssueStateFn                func(context.Context, string, string) error
 	SetWorkersFn                      func(int) error
 	BumpWorkersFn                     func(int) (int, error)
@@ -158,9 +159,9 @@ func (c *FuncClient) PostOperatorComment(ctx context.Context, identifier, body s
 	}
 	return false, errNotConfigured
 }
-func (c *FuncClient) CreateIssue(ctx context.Context, identifier, title, body, state string) (*domain.Issue, error) {
+func (c *FuncClient) CreateIssue(ctx context.Context, identifier string, in tracker.NewIssue) (*domain.Issue, error) {
 	if c.CreateIssueFn != nil {
-		return c.CreateIssueFn(ctx, identifier, title, body, state)
+		return c.CreateIssueFn(ctx, identifier, in)
 	}
 	return nil, errNotConfigured
 }

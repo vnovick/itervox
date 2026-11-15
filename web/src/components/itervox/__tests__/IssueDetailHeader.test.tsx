@@ -142,3 +142,37 @@ describe('IssueDetailHeader automation badge (T-9)', () => {
     expect(badge.getAttribute('title')).toBe('Rule deleted');
   });
 });
+
+describe('IssueDetailHeader sandbox badge (#258)', () => {
+  it('shows "Sandboxed (bubblewrap)" while the live run is sandboxed', () => {
+    render(
+      <MemoryRouter>
+        <IssueDetailHeader
+          issue={baseIssue}
+          runningRows={[makeRunningRow({ identifier: 'ENG-1', isolation: 'bubblewrap' })]}
+          history={[]}
+          profileDefs={undefined}
+          defaultBackend="claude"
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('issue-detail-isolation-badge')).toHaveTextContent(
+      'Sandboxed (bubblewrap)',
+    );
+  });
+
+  it('shows no badge for an unsandboxed run', () => {
+    render(
+      <MemoryRouter>
+        <IssueDetailHeader
+          issue={baseIssue}
+          runningRows={[makeRunningRow({ identifier: 'ENG-1' })]}
+          history={[]}
+          profileDefs={undefined}
+          defaultBackend="claude"
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId('issue-detail-isolation-badge')).not.toBeInTheDocument();
+  });
+});

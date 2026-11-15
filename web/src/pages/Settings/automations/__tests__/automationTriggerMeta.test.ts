@@ -27,6 +27,11 @@ const baseValues = {
   switchToBackend: '',
   cooldownMinutes: '',
   moveToState: '',
+  checkNames: [],
+  conclusions: [],
+  reviewStates: [],
+  reviewAuthors: [],
+  mergeableStates: [],
 } as const;
 
 describe('automation trigger metadata', () => {

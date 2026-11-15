@@ -15,6 +15,7 @@ import (
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/depsanalysis"
+	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -38,6 +39,10 @@ type Orchestrator struct {
 	tracker   tracker.Tracker
 	runner    agent.Runner
 	workspace workspace.Provider // nil is safe — workspace ops skipped (useful in tests)
+	// isolationDetect resolves the sandbox mechanism for runs with
+	// isolation "process" (#258); nil means agent.DetectIsolation. Tests
+	// inject availability here. Set before Run; read-only afterwards.
+	isolationDetect func() (agent.IsolationMechanism, error)
 	// sink is the write path for completion/failed-state transitions and
 	// worker-exit outcome comments (see write_sink.go's WriteSink doc
 	// comment for the full call-site list). New() defaults it to a
@@ -91,6 +96,13 @@ type Orchestrator struct {
 	// stray late write lands in the SAME test's (already-read, harmless)
 	// buffer rather than a different test's.
 	Logger *slog.Logger
+	// RevertScan, when set, lists the PRs the base branch reverted (#217):
+	// cmd/itervox supplies #201's revert detection, read through
+	// internal/gitexec. The orchestrator runs it off the event loop every
+	// revertScanEvery while lessons are on and proposes a reverted_pr
+	// lesson for each reverted agent PR. Must be set before Run (same
+	// visibility rule as OnStateChange).
+	RevertScan func(ctx context.Context) ([]RevertedPR, error)
 
 	snapMu     sync.RWMutex
 	lastSnap   State
@@ -137,6 +149,9 @@ type Orchestrator struct {
 	// (CORE-053), next to autoSwitchedFile. Guarded by autoSwitchedMu; set
 	// before Run.
 	backendHealthFile string
+	// spendFile is issue_spend.json (#136); guarded by autoSwitchedMu like
+	// the other ledger paths.
+	spendFile string
 
 	// inputRequiredMu guards inputRequiredFile.
 	inputRequiredMu   sync.RWMutex
@@ -146,15 +161,40 @@ type Orchestrator struct {
 	// owned by the single event-loop State.
 	automationQueueMu   sync.RWMutex
 	automationQueueFile string // optional path for persisting AutomationQueue across restarts
+	// lastAutomationQueueSave is the queue state last handed to the ledger
+	// (a private deep copy) and automationQueueEncodes counts the encodes;
+	// storeSnap skips an unchanged queue by it (#210). Event loop only.
+	lastAutomationQueueSave *automationQueueSave
+	automationQueueEncodes  int
+	// eventLeftStateUnchanged is set by handleEvent for an event that did
+	// not change State (a discovery pass that found nothing new); Run then
+	// skips that turn's storeSnap and its dashboard notify (#210). Event
+	// loop only.
+	eventLeftStateUnchanged bool
 
 	// depsOverridesMu guards depsOverridesFile only. State.DepsOverrides
 	// itself remains owned by the single event-loop State.
 	// unified-dependency-graph Task 6.
 	depsOverridesMu   sync.RWMutex
 	depsOverridesFile string // optional path for persisting DepsOverrides across restarts
+	// playbookOverridesFile persists State.PlaybookOverrides (#218); guarded
+	// by depsOverridesMu like depsOverridesFile, set before Run.
+	playbookOverridesFile string
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string
+	// deferredStateMovesFile persists State.DeferredStateMoves (#177).
+	deferredStateMovesFile string
+	// reviewContinuationsFile persists State.ReviewContinuations.
+	reviewContinuationsFile string
+	// feedFile persists State.Feed / FeedSeq (feed.jsonl) and
+	// dispatchPauseFile persists State.DispatchPaused (dispatch_paused.json)
+	// (#213). Set before Run; read-only afterwards.
+	feedFile          string
+	dispatchPauseFile string
+	// prEventsFile persists State.ManagedPRs, PREventDispatched and
+	// PREventBaselines (#173).
+	prEventsFile string
 	// daemonInstanceID stamps the queue persistence envelope so a reader can
 	// distinguish state written by this daemon from state inherited from
 	// another (todolist4 A.2). Set once at construction; reads are lock-free.
@@ -179,12 +219,16 @@ type Orchestrator struct {
 	failureEventsDropped atomic.Int64
 	seedFailures         []FailureRecord
 	seedFailureAcks      map[string]time.Time // M6-close V3 (CORE-175 acks across reload)
+	seedTmux             []TmuxSession        // #178: SeedTmuxSessions, applied at the top of Run
 
 	// CORE-043: readiness signals, written only by the event loop and read
 	// lock-free by the /ready probe (see readiness.go).
 	loopIdleNano    atomic.Int64
 	tickStartedNano atomic.Int64
 	lastPollOK      atomic.Bool
+	// lastPollOKNano is when a candidate poll last succeeded (#117): the
+	// sync status's last pull when no tracker store is in front.
+	lastPollOKNano  atomic.Int64
 	pollRateLimited atomic.Bool
 	pollShedding    atomic.Bool
 	// draining mirrors State.Draining for off-loop readers (CORE-057).
@@ -229,23 +273,23 @@ type Orchestrator struct {
 	userTerminatedMu  sync.Mutex
 	userTerminatedIDs map[string]struct{} // like userCancelledIDs but releases claim without pausing
 
-	// issueProfilesMu guards issueProfiles AND reviewerInjectedProfiles —
-	// they're tracked together because reviewer-dispatch writes both under the
-	// same lock. issueProfiles is written by SetIssueProfile (any goroutine)
-	// and read by dispatch (event loop goroutine) and Snapshot.
+	// issueProfilesMu guards issueProfiles, the operator's per-issue profile
+	// overrides. issueProfiles is written by SetIssueProfile (any goroutine)
+	// and read by dispatch (event loop goroutine) and Snapshot. Reviewer runs
+	// never write it: a reviewer's profile is its run's own (#127).
 	// RWMutex allows concurrent Snapshot() calls without serialising each other.
 	issueProfilesMu sync.RWMutex
 	issueProfiles   map[string]string // identifier → profile name
-
-	// reviewerInjectedProfiles marks identifiers whose issueProfiles entry was
-	// set by dispatchReviewerForIssue (T-21). On reviewer-run TerminalSucceeded
-	// we clear ONLY entries we marked here, leaving user-set overrides intact.
-	reviewerInjectedProfiles map[string]struct{}
 
 	// issueBackendsMu guards issueBackends, which is written by SetIssueBackend
 	// (any goroutine) and read by dispatch (event loop goroutine) and Snapshot.
 	issueBackendsMu sync.RWMutex
 	issueBackends   map[string]string // identifier → "claude"|"codex"
+
+	// tasks are the New task specs (#251): custom instructions, base branch
+	// and playbook per task identifier. Written by HTTP goroutines and read
+	// by startRun, under tasks.mu (task.go).
+	tasks taskBook
 
 	// commentCountsMu guards commentCounts, which is written by
 	// BumpCommentCount (any goroutine, called from the HTTP handler that
@@ -277,6 +321,9 @@ type Orchestrator struct {
 	// prMergedAutomations (P1) mirrors prOpenedAutomations for the merge-side
 	// trigger. Compiled rules are installed via SetPRMergedAutomations.
 	prMergedAutomations []PRMergedAutomation
+	// prEventAutomations holds the compiled PR-event rules (#173),
+	// installed via SetPREventAutomations under automationsMu.
+	prEventAutomations []PREventAutomation
 
 	// trackerCommentAutomations (P0-B) holds compiled tracker_comment_added
 	// rules so the body-filter dispatch helper can short-circuit comments
@@ -301,6 +348,9 @@ type Orchestrator struct {
 	// so Claude Code writes full session logs (including sub-agents) to disk.
 	// Set via SetAgentLogDir before calling Run.
 	agentLogDir string
+	// runMonitor is the system-visibility store (run_monitor.go); nil
+	// when not installed. Set before Run, read-only after.
+	runMonitor RunMonitor
 
 	// depsSidecarCache is the mtime-cached reader over
 	// `.itervox/dependencies.json`, read once per tick by onTick to feed
@@ -317,6 +367,13 @@ type Orchestrator struct {
 	// agentActionTokens issues and validates short-lived per-run action grants.
 	// Set via SetAgentActionTokens before Run.
 	agentActionTokens *agentactions.Store
+
+	// guardApprovals holds the guardrail approval requests of running
+	// agents (#204). Concurrency-safe on its own; not State.
+	guardApprovals *guardrails.Approvals
+	// guardrailExe overrides the binary guardrail shims run (tests).
+	// Set before Run.
+	guardrailExe string
 
 	// appSessionID is a unique ID for this daemon invocation, used to group
 	// all history entries produced during a single run of the binary.
@@ -350,11 +407,26 @@ type Orchestrator struct {
 	// workspace.base_branch (#73), so Run waits for them like the comments.
 	prRetargetWg sync.WaitGroup
 
+	// memoryWg tracks the goroutines that record memory usage (#202):
+	// EventMemoryUsed hands the lastUsed/useCount rewrite of the memory
+	// files to one, and Run waits for them before returning.
+	memoryWg sync.WaitGroup
+	// lessonWg tracks the lesson-drafting goroutines (#203): detection on
+	// the event loop hands drafting and the proposal write to a goroutine
+	// that reports back with EventLessonDrafted. Run joins it after the
+	// loop exits (the drafting call's context is Run's, so it ends
+	// promptly).
+	lessonWg sync.WaitGroup
+
 	// findOpenPRURL and setPRBase are the gh seams for stacked-PR base
 	// handling (#73); nil means workspace.FindOpenPRURL / workspace.SetPRBase.
 	// Tests replace them.
 	findOpenPRURL func(ctx context.Context, wsPath string) string
 	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// oneShot is the `itervox run` mode (#252); nil in the daemon. Set
+	// before Run by SetOneShot. Its Resume is consumed by the event loop.
+	oneShot *OneShot
+
 	// ensurePRFooter is the gh seam for the agent.pr_footer footer (#81); nil
 	// means workspace.EnsurePRFooter.
 	ensurePRFooter func(ctx context.Context, prURL string) (bool, error)
@@ -370,6 +442,13 @@ type Orchestrator struct {
 	// depsRefreshWg tracks the in-flight dependency-refresh goroutine so Run
 	// can wait for it before returning.
 	depsRefreshWg sync.WaitGroup
+
+	// #178 step 3: discovery of sessions started by hand
+	// (sessions_external.go). Set before Run; the discovery goroutine is
+	// joined through extSessionsWg.
+	extSessions         ExternalSessionSource
+	extSessionsInterval time.Duration
+	extSessionsWg       sync.WaitGroup
 
 	// workersWg joins every runWorker goroutine before Run returns, bounded
 	// by workerJoinGrace (CORE-026, worker_join.go). Added on the event loop
@@ -387,18 +466,29 @@ type Orchestrator struct {
 	// that must correct a ledger synchronously at shutdown (BH5) can do so
 	// without being overwritten. Nil until Run starts.
 	loopExited atomic.Pointer[chan struct{}]
-	// exitsSent records, per issue ID, when a worker started finishing: its
-	// move to tracker.completion_state, or delivering its exit (deliverExit).
-	// Worker goroutines write it; the event loop copies
-	// it into State.ExitPending before reconciling and deletes an entry once
-	// that exit is handled. See ReconcileTrackerStates.
-	exitsSent sync.Map
 
 	// started is set to true at the beginning of Run. It guards SetHistoryFile
 	// and SetHistoryKey: calling either after Run starts is a programming error
 	// (those fields are only read under historyMu from the event-loop goroutine,
 	// and loadHistoryFromDisk has already consumed them by the time Run returns).
 	started atomic.Bool
+
+	// trackerReadBudgetOverride replaces trackerReadBudget's derived bound
+	// when non-zero (#187). Tests only; set before Run.
+	trackerReadBudgetOverride time.Duration
+	// trackerBreakerCooldownOverride replaces trackerBreakerCooldown's
+	// derived bound when non-zero (#187). Tests only; set before Run.
+	trackerBreakerCooldownOverride time.Duration
+	// trackerReadsWg joins the off-loop tracker poll and claim-read
+	// goroutines (#187) before Run returns. Their reads use Run's ctx, so
+	// shutdown cancels them.
+	trackerReadsWg sync.WaitGroup
+	// pollDegraded mirrors State.TrackerBreaker.Degraded() for /ready
+	// (#187). Written only by the event loop.
+	pollDegraded atomic.Bool
+	// pollStartedNano is when the in-flight off-loop poll started (unix
+	// nanos), 0 when none is (#187). Written only by the event loop.
+	pollStartedNano atomic.Int64
 }
 
 // New constructs an Orchestrator ready to Run. wm may be nil (workspace ops skipped).
@@ -408,22 +498,22 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		sshHostDescs = make(map[string]string)
 	}
 	return &Orchestrator{
-		cfg:                      cfg,
-		tracker:                  tr,
-		runner:                   runner,
-		workspace:                wm,
-		sink:                     NewDirectWriteSink(tr),
-		events:                   make(chan OrchestratorEvent, 64),
-		refresh:                  make(chan struct{}, 1),
-		workerCancels:            make(map[string]context.CancelFunc),
-		userCancelledIDs:         make(map[string]struct{}),
-		userTerminatedIDs:        make(map[string]struct{}),
-		issueProfiles:            make(map[string]string),
-		reviewerInjectedProfiles: make(map[string]struct{}),
-		issueBackends:            make(map[string]string),
-		commentCounts:            make(map[string]int),
-		sshHostDescs:             sshHostDescs,
-		daemonInstanceID:         newDaemonInstanceID(),
+		cfg:               cfg,
+		tracker:           tr,
+		runner:            runner,
+		workspace:         wm,
+		sink:              NewDirectWriteSink(tr),
+		events:            make(chan OrchestratorEvent, 64),
+		refresh:           make(chan struct{}, 1),
+		workerCancels:     make(map[string]context.CancelFunc),
+		userCancelledIDs:  make(map[string]struct{}),
+		userTerminatedIDs: make(map[string]struct{}),
+		issueProfiles:     make(map[string]string),
+		issueBackends:     make(map[string]string),
+		commentCounts:     make(map[string]int),
+		sshHostDescs:      sshHostDescs,
+		daemonInstanceID:  newDaemonInstanceID(),
+		guardApprovals:    guardrails.NewApprovals(),
 	}
 }
 

@@ -1,0 +1,190 @@
+/*
+ * Liquid Glass tokens for itervox.dev, the same palette, surfaces and radii as
+ * the dashboard (web/src/index.css). Shared by the landing page and the
+ * Starlight docs (custom.css imports this file).
+ *
+ * Theme: dark is the default; Starlight sets data-theme="light" | "dark" on
+ * <html>, and the landing page uses the same attribute and storage key.
+ */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #080c17;
+  --glow-blue: rgba(96, 140, 255, 0.42);
+  --glow-peach: rgba(255, 150, 110, 0.3);
+  --glow-mint: rgba(70, 200, 170, 0.26);
+  --glass: rgba(255, 255, 255, 0.075);
+  --glass-solid: #1b1e28;
+  --glass-border: rgba(255, 255, 255, 0.11);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  --glass-shadow: 0 10px 30px rgba(0, 0, 0, 0.31);
+  --glass-blur: blur(26px) saturate(180%);
+  --card: rgba(255, 255, 255, 0.1);
+  --card-solid: #363942;
+  --card-border: rgba(255, 255, 255, 0.145);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.17), 0 4px 14px rgba(0, 0, 0, 0.21);
+  --chip: rgba(255, 255, 255, 0.09);
+  --chip-solid: #1e222c;
+  --chip-border: rgba(255, 255, 255, 0.12);
+  --chip-hi: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  --subtle: rgba(255, 255, 255, 0.06);
+  --hairline: rgba(255, 255, 255, 0.14);
+  --seg-on: rgba(255, 255, 255, 0.16);
+  --text: #e8edf7;
+  --text2: #b4bfd3;
+  --muted: #a3aec2;
+  --accent: #3b6cf0;
+  --accent-soft: rgba(76, 125, 255, 0.2);
+  --accent-text: #a8c0ff;
+  --accent-glow: rgba(76, 125, 255, 0.45);
+  --ok: #86efac;
+  --ok-soft: rgba(34, 197, 94, 0.16);
+  --warn: #fdba74;
+  --code: rgba(3, 6, 14, 0.55);
+  --code-text: #d7def0;
+  --inline-code: rgba(255, 255, 255, 0.09);
+  --sheen: rgba(255, 255, 255, 0.38);
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-shell: 28px;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #e9edf5;
+  --glow-blue: rgba(96, 140, 255, 0.55);
+  --glow-peach: rgba(255, 150, 110, 0.45);
+  --glow-mint: rgba(70, 200, 170, 0.38);
+  --glass: rgba(255, 255, 255, 0.44);
+  --glass-solid: #f3f5f9;
+  --glass-border: rgba(255, 255, 255, 0.65);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.95), inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+  --glass-shadow: 0 10px 30px rgba(28, 38, 72, 0.12);
+  --card: rgba(255, 255, 255, 0.72);
+  --card-solid: #fcfcfd;
+  --card-border: rgba(255, 255, 255, 0.85);
+  --card-shadow: inset 0 1px 0 #fff, 0 4px 14px rgba(28, 38, 72, 0.08);
+  --chip: rgba(255, 255, 255, 0.55);
+  --chip-solid: #f7f8fb;
+  --chip-border: rgba(255, 255, 255, 0.7);
+  --chip-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --subtle: rgba(23, 32, 51, 0.06);
+  --hairline: rgba(23, 32, 51, 0.12);
+  --seg-on: #ffffff;
+  --text: #172033;
+  --text2: #3b465c;
+  --muted: #4b5568;
+  --accent: #1d4ed8;
+  --accent-soft: rgba(29, 78, 216, 0.1);
+  --accent-text: #1d4ed8;
+  --accent-glow: rgba(29, 78, 216, 0.28);
+  --ok: #166534;
+  --ok-soft: rgba(22, 163, 74, 0.14);
+  --warn: #9a3412;
+  --code: rgba(23, 32, 51, 0.88);
+  --code-text: #e3e8f2;
+  --inline-code: rgba(23, 32, 51, 0.07);
+  --sheen: rgba(255, 255, 255, 0.95);
+}
+
+/* No backdrop-filter, or the viewer asked for less transparency: every
+   translucent surface falls back to its opaque twin. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root,
+  :root[data-theme] {
+    --glass: var(--glass-solid);
+    --card: var(--card-solid);
+    --chip: var(--chip-solid);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root,
+  :root[data-theme] {
+    --glass: var(--glass-solid);
+    --card: var(--card-solid);
+    --chip: var(--chip-solid);
+    --glass-blur: none;
+  }
+}
+
+/* Surfaces. The blur sits on ::after so a backdrop-filter never becomes the
+   containing block of fixed-position children; ::before draws the specular
+   edge. */
+.glass,
+.glass-card,
+.glass-chip {
+  position: relative;
+  isolation: isolate;
+}
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-shell);
+  box-shadow: var(--glass-hi), var(--glass-shadow);
+}
+.glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.glass-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+  box-shadow: var(--card-shadow);
+}
+.glass-chip {
+  background: var(--chip);
+  border: 1px solid var(--chip-border);
+  border-radius: 999px;
+  box-shadow: var(--chip-hi);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.glass::before,
+.glass-card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    150deg,
+    var(--sheen),
+    rgba(255, 255, 255, 0) 30%,
+    rgba(255, 255, 255, 0) 70%,
+    rgba(255, 255, 255, 0.14)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* The fixed glow field every glass surface blurs. */
+.glow-field {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(circle 520px at 8% 6%, var(--glow-blue), transparent),
+    radial-gradient(circle 460px at 94% 30%, var(--glow-peach), transparent),
+    radial-gradient(circle 560px at 45% 96%, var(--glow-mint), transparent);
+}
+
+/* Theme-paired screenshots: one image per theme, the other hidden. */
+:root[data-theme='light'] .only-dark,
+:root:not([data-theme='light']) .only-light {
+  display: none !important;
+}

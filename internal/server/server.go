@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,8 +11,14 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationdef"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/issuefilter"
+	"github.com/vnovick/itervox/internal/sysmon"
+	"github.com/vnovick/itervox/internal/tracker"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -46,7 +51,9 @@ var ErrBackendLimited = errors.New("server: agent backend is limited")
 
 // RunningRow is a single row in the active sessions table.
 type RunningRow struct {
-	Identifier    string    `json:"identifier"`
+	Identifier string `json:"identifier"`
+	// Title is the issue's title (#240: itervox watch lanes).
+	Title         string    `json:"title,omitempty"`
 	State         string    `json:"state"`
 	TurnCount     int       `json:"turnCount"`
 	LastEvent     string    `json:"lastEvent,omitempty"`
@@ -71,6 +78,26 @@ type RunningRow struct {
 	// CommentCount counts review/comment actions taken during this run
 	// (T-6 surface). Zero for runs that have not commented.
 	CommentCount int `json:"commentCount,omitempty"`
+	// OutOfScope is set when the issue left the tracker's scope mid-run
+	// (#182: reassigned away, moved out of the project): the run finishes,
+	// but no new run is dispatched for it.
+	OutOfScope bool `json:"outOfScope,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run was given (#157).
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIds,omitempty"`
+	// Profile is the run's resolved agent profile, empty for the default
+	// (#240).
+	Profile string `json:"profile,omitempty"`
+	// CostUSDEstimated is the run's session-cumulative estimated cost as
+	// its backend reports it (Claude's total_cost_usd, CORE-091); null
+	// until reported, and always null for Codex (#240).
+	CostUSDEstimated *float64 `json:"costUsdEstimated,omitempty"`
+	// Isolation names the sandbox the run's agent runs in ("bubblewrap",
+	// "landlock", "sandbox-exec"; #258); absent when unsandboxed.
+	Isolation string `json:"isolation,omitempty"`
+	// Resources is the run's latest resource sample (system visibility);
+	// absent before the first sample or without the run monitor.
+	Resources *sysmon.RunUsage `json:"resources,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -90,6 +117,9 @@ type HistoryRow struct {
 	SessionID    string    `json:"sessionId,omitempty"`
 	AppSessionID string    `json:"appSessionId,omitempty"`
 	Kind         string    `json:"kind,omitempty"` // "worker" (default) | "reviewer" | "automation"
+	// ProfileName is the profile the run used (#186: prompt versions are
+	// per profile).
+	ProfileName string `json:"profileName,omitempty"`
 	// AutomationID / TriggerType propagate the automation context onto
 	// completed runs so that the Activity tab and Timeline filter chip can
 	// scope history per-automation. Empty for manual runs.
@@ -97,6 +127,67 @@ type HistoryRow struct {
 	TriggerType  string `json:"triggerType,omitempty"`
 	// CommentCount: comments posted during this run (T-6 surface).
 	CommentCount int `json:"commentCount,omitempty"`
+	// RulesHash / RuleIDs name the rule set the run used (#157).
+	RulesHash string   `json:"rulesHash,omitempty"`
+	RuleIDs   []string `json:"ruleIds,omitempty"`
+	// MemoryIDs are the memory entries the run's prompt carried (#202).
+	MemoryIDs []string `json:"memoryIds,omitempty"`
+	// RunID names the run (#125, #186); empty for runs recorded before it was kept.
+	RunID string `json:"runId,omitempty"`
+	// PromptDigest identifies the prompt version the run was dispatched with
+	// (#186): 64 hex chars of SHA-256 over SOUL.md + INSTRUCTIONS.md + the
+	// resolved rules + the prompt template. PromptParts are per-component
+	// digests. Hashes only, never prompt text.
+	PromptDigest string              `json:"promptDigest,omitempty"`
+	PromptParts  *HistoryPromptParts `json:"promptParts,omitempty"`
+	// Playbook is the task-type playbook the run was given (#218).
+	Playbook string `json:"playbook,omitempty"`
+	// Steers are the operator messages delivered to the run (#186), redacted
+	// and bounded; SteersDropped counts the older ones not kept.
+	Steers        []HistorySteer `json:"steers,omitempty"`
+	SteersDropped int            `json:"steersDropped,omitempty"`
+	// ContinuedFromReview marks a run that continued from an operator
+	// review (POST .../review-continue); ReviewComments counts its line
+	// comments.
+	ContinuedFromReview bool `json:"continuedFromReview,omitempty"`
+	ReviewComments      int  `json:"reviewComments,omitempty"`
+	// Resources is the run's resource summary (peak memory, CPU time,
+	// processes, disk I/O, activity counts); absent without the monitor.
+	Resources *sysmon.RunSummary `json:"resources,omitempty"`
+}
+
+// QueuedReviewRow is an operator review waiting for its issue's next
+// worker run: never the review text.
+type QueuedReviewRow struct {
+	Identifier   string    `json:"identifier"`
+	Comments     int       `json:"comments"`
+	HasNote      bool      `json:"hasNote,omitempty"`
+	MoveToActive bool      `json:"moveToActive"`
+	QueuedAt     time.Time `json:"queuedAt"`
+}
+
+// HistoryPromptParts are the per-component digests of a run's prompt
+// version (#186): truncated SHA-256 hex, "" for a component the run lacked.
+type HistoryPromptParts struct {
+	Soul         string `json:"soul,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	Rules        string `json:"rules,omitempty"`
+	// Memory is the digest of the run's memory block (#202).
+	Memory string `json:"memory,omitempty"`
+	// Playbook is the digest of the run's playbook block (#218).
+	Playbook string `json:"playbook,omitempty"`
+	// Task is the digest of the run's task instructions block (#251).
+	Task     string `json:"task,omitempty"`
+	Template string `json:"template,omitempty"`
+}
+
+// HistorySteer is one operator message delivered to a run (#178, #186).
+type HistorySteer struct {
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+	// Delivery is "live" (written into the running turn) or "resume" (the
+	// prompt of the next resumed turn).
+	Delivery string `json:"delivery"`
 }
 
 // RateLimitInfo holds the last observed API rate limit snapshot.
@@ -312,6 +403,75 @@ type ProjectManager interface {
 	GetProjectFilter() []string
 }
 
+// TrackerScope is the combined tracker scope (#182): issues in any of
+// Projects (empty: every project) AND assigned to Assignee ("": anyone;
+// "me", a user id or an email) AND carrying any of Labels (empty: no label
+// filter).
+type TrackerScope struct {
+	Projects []string `json:"projects"`
+	Assignee string   `json:"assignee"`
+	Labels   []string `json:"labels"`
+	// Filter is the effective tracker filter (#198) as groups: tracker.filter,
+	// or the legacy keys above as one implicit group (empty: every issue).
+	Filter issuefilter.Filter `json:"filter"`
+	// FilterMode is set when a filter (not the legacy keys) is in effect.
+	FilterMode bool `json:"filterMode"`
+	// Conditions lists the filter conditions the tracker supports.
+	Conditions []string `json:"conditions"`
+}
+
+// TrackerTeam is one teams choice of a filter group (#198).
+type TrackerTeam struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+// FilterPreview is what a proposed filter would read (#198): the number of
+// issues in the active states it matches and the first identifiers.
+type FilterPreview struct {
+	Count       int      `json:"count"`
+	Identifiers []string `json:"identifiers"`
+}
+
+// ErrFilterInvalid is returned (wrapped) by ScopeManager.SetFilter and
+// PreviewFilter for a filter the tracker cannot read (an empty group, an
+// unsupported condition, ...): a 422.
+var ErrFilterInvalid = errors.New("invalid tracker filter")
+
+// TrackerUser is one assignee choice.
+type TrackerUser struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email,omitempty"`
+}
+
+// ErrScopeAssigneeNotFound is returned (wrapped) by ScopeManager.SetScope
+// when the assignee matches no user the tracker key can see: a 422.
+var ErrScopeAssigneeNotFound = errors.New("assignee not found")
+
+// ScopeManager is implemented by trackers whose read scope combines
+// projects, an assignee and labels (#182, Linear).
+type ScopeManager interface {
+	GetScope() TrackerScope
+	// SetScope resolves the assignee, persists the scope to WORKFLOW.md and
+	// applies it. An error means nothing changed: a wrapped
+	// ErrSettingsReloading is the reload fence (503), a wrapped
+	// ErrScopeAssigneeNotFound an unknown user (422), anything else a
+	// failed resolve or persist (500).
+	SetScope(ctx context.Context, scope TrackerScope) error
+	// SetFilter (#198) validates and resolves the filter, persists it as
+	// tracker.filter (commenting the legacy scope keys out) and applies it;
+	// an empty filter reads every issue. Errors as SetScope, plus a wrapped
+	// ErrFilterInvalid (422).
+	SetFilter(ctx context.Context, filter issuefilter.Filter) error
+	// PreviewFilter counts what filter would read now, read-only.
+	PreviewFilter(ctx context.Context, filter issuefilter.Filter) (FilterPreview, error)
+	FetchLabels(ctx context.Context) ([]string, error)
+	FetchUsers(ctx context.Context) ([]TrackerUser, error)
+	FetchTeams(ctx context.Context) ([]TrackerTeam, error)
+}
+
 // OrchestratorClient abstracts the orchestrator and workflow operations called
 // by HTTP handlers. A nil value in Config is replaced with noopClient.
 // PRMergedEmitter is an optional capability some OrchestratorClient
@@ -388,7 +548,10 @@ type OrchestratorClient interface {
 	// agent — the dashboard's reply box / provide-input is the intended way to
 	// answer an agent.
 	PostOperatorComment(ctx context.Context, identifier, body string) (queued bool, err error)
-	CreateIssue(ctx context.Context, identifier, title, body, stateName string) (*domain.Issue, error)
+	// CreateIssue creates a follow-up of the issue identifier names; in
+	// carries the title, body, state, labels and blocked_by_source flag the
+	// tracker adapter applies (see tracker.NewIssue).
+	CreateIssue(ctx context.Context, identifier string, in tracker.NewIssue) (*domain.Issue, error)
 	UpdateIssueState(ctx context.Context, identifier, stateName string) error
 	SetWorkers(n int) error
 	BumpWorkers(delta int) (int, error)
@@ -501,7 +664,7 @@ func (noopClient) CommentOnIssue(context.Context, string, string) error { return
 func (noopClient) PostOperatorComment(context.Context, string, string) (bool, error) {
 	return false, errNotConfigured
 }
-func (noopClient) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
+func (noopClient) CreateIssue(context.Context, string, tracker.NewIssue) (*domain.Issue, error) {
 	return nil, errNotConfigured
 }
 func (noopClient) UpdateIssueState(context.Context, string, string) error { return errNotConfigured }
@@ -583,6 +746,20 @@ type StateSnapshot struct {
 	// ActiveProjectFilter is the current runtime project filter slugs.
 	// nil/absent means "using WORKFLOW.md default"; empty array means "all issues".
 	ActiveProjectFilter []string `json:"activeProjectFilter,omitempty"`
+	// TrackerScope describes the tracker's read scope for the header
+	// (#182), e.g. "ENG · assigned to me · label: agent". Empty for
+	// trackers without a combinable scope.
+	TrackerScope string `json:"trackerScope,omitempty"`
+	// ScopeAssignee is the scope's assignee spec ("me", an id or an email;
+	// "" for anyone) and ScopeAssigneeName who it resolved to (#182).
+	ScopeAssignee     string `json:"scopeAssignee,omitempty"`
+	ScopeAssigneeName string `json:"scopeAssigneeName,omitempty"`
+	// ScopeLabels is the scope's label filter (any of them; #182).
+	ScopeLabels []string `json:"scopeLabels,omitempty"`
+	// FilterConditions lists the tracker filter conditions the tracker
+	// supports (#198); absent for trackers without a filter. The dashboard
+	// shows the group builder when it is present.
+	FilterConditions []string `json:"filterConditions,omitempty"`
 	// AvailableProfiles is the list of named agent profile names defined in WORKFLOW.md.
 	// Empty/absent means no profiles are configured.
 	AvailableProfiles []string `json:"availableProfiles,omitempty"`
@@ -676,9 +853,12 @@ type StateSnapshot struct {
 	// refresh batch.
 	DepsRefreshLastDurationMs int64 `json:"depsRefreshLastDurationMs,omitempty"`
 	// DepsRefreshDegradedCount is how many rows are past the failure threshold.
-	DepsRefreshDegradedCount int                      `json:"depsRefreshDegradedCount,omitempty"`
-	DependencyGraphNodes     []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
-	DependencyGraphEdges     []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
+	DepsRefreshDegradedCount int `json:"depsRefreshDegradedCount,omitempty"`
+	// DependencyGraphNodes lists only issues that are an endpoint of at
+	// least one DependencyGraphEdges row (#210): an audited issue with no
+	// blocker and no dependent is not sent.
+	DependencyGraphNodes []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
+	DependencyGraphEdges []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
 	// DependencyCycles surfaces this tick's cycle-detection output (Task 4)
 	// so the dashboard and heartbeat can flag issues stuck in a dependency
 	// cycle that no amount of waiting will resolve. critical-path-ordering
@@ -715,6 +895,14 @@ type StateSnapshot struct {
 	// when none is recorded: a successful poll clears a poll failure, and a
 	// write failure ages out after an hour.
 	LastTrackerError *TrackerErrorRow `json:"lastTrackerError,omitempty"`
+	// TrackerPoll is the off-loop tracker poll's status (#187): whether a
+	// poll is in flight and for how long, whether it is slow, and whether
+	// the tracker breaker has it degraded. Absent on daemons predating it.
+	TrackerPoll *TrackerPollRow `json:"trackerPoll,omitempty"`
+	// SyncStatus is the tracker sync status (#117): last successful pull,
+	// lag, pending tracker writes and the last sync error. Absent on daemons
+	// predating it.
+	SyncStatus *SyncStatusRow `json:"syncStatus,omitempty"`
 	// RecentFailures is the bounded ring of operator-relevant failures
 	// (CORE-046), oldest recorded first. Deliberately NOT omitempty: always an
 	// array (possibly empty) on a current daemon. Messages are redacted.
@@ -724,21 +912,36 @@ type StateSnapshot struct {
 	// acknowledged. Omitted when empty.
 	FailureAcks []FailureAckRow `json:"failureAcks,omitempty"`
 	// Capabilities lists optional daemon features the dashboard may use
-	// (CORE-175: "failure_ack"). Omitted when empty.
+	// (CORE-175: "failure_ack"; #213: "dispatch_pause"). Omitted when empty.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// DispatchPaused is the daemon-wide dispatch pause (#213): null when
+	// dispatch runs, else its reason, until and start.
+	DispatchPaused *DispatchPauseRow `json:"dispatchPaused"`
+	// System is the machine's load, memory and workspace disk, the live
+	// runs' resource totals and the activity mode (system visibility).
+	// Absent without the run monitor.
+	System *sysmon.SystemStatus `json:"system,omitempty"`
+	// FeedSeq is the newest event feed seq (#213); GET /api/v1/feed?since=
+	// reads what came after a client's cursor.
+	FeedSeq int64 `json:"feedSeq"`
+	// CallerScope is the requesting token's scope (#214): viewer, operator
+	// or admin. Set per caller by GET /api/v1/state and the /events stream,
+	// never by the orchestrator's snapshot builder; the dashboard hides the
+	// controls the scope cannot use.
+	CallerScope string `json:"callerScope,omitempty"`
 	// Totals is the daemon-session token and estimated-cost accounting
 	// (CORE-091). Omitted only by daemons predating it.
 	Totals *TotalsRow `json:"totals,omitempty"`
 	// CandidateSeen is this tick's "what tracker polling saw" backlog rows —
 	// one per candidate-issue identifier, carrying the tracker's UpdatedAt
-	// when known. Additive, internal-tooling field: no dashboard consumer
-	// today (the web Zod schema ignores unknown keys, so no web change is
-	// needed). Read by cmd/itervox's deps auto-analyze scheduler as its
-	// change-signal source — DependencyGraphNodes/DependencyAudit are NOT a
-	// substitute because both stay empty until a dependency relation already
-	// exists, which is exactly wrong for detecting a fresh backlog with zero
-	// relations yet. analyzer-autonomy Task 4 fix round.
-	CandidateSeen []CandidateSeenRow `json:"candidateSeen,omitempty"`
+	// when known. In-process only: read by cmd/itervox's deps auto-analyze
+	// scheduler as its change-signal source — DependencyGraphNodes/
+	// DependencyAudit are NOT a substitute because both stay empty until a
+	// dependency relation already exists, which is exactly wrong for
+	// detecting a fresh backlog with zero relations yet. analyzer-autonomy
+	// Task 4 fix round. Not serialized (#210): no API consumer reads it and
+	// it was ~19 KB of every dashboard frame.
+	CandidateSeen []CandidateSeenRow `json:"-"`
 	// OutboxEntries is this tick's write-ahead-outbox contents, in global
 	// enqueue order (write-ahead-outbox design, "Surfaces"). Empty/absent
 	// when the outbox is empty or the kill switch (tracker.outbox: false)
@@ -766,6 +969,13 @@ type StateSnapshot struct {
 	// sorted by identifier. Describes the NEXT dispatch; the running
 	// session's backend stays on RunningRow.Backend.
 	AutoSwitches []AutoSwitchRow `json:"autoSwitches,omitempty"`
+	// ProposedLessons is how many proposed lessons wait in the Memory
+	// page's review queue (#203): the Memory nav item's count. Omitted when
+	// none.
+	ProposedLessons int `json:"proposedLessons,omitempty"`
+	// QueuedReviews are operator reviews waiting for their issue's next
+	// worker run (POST .../review-continue), oldest first.
+	QueuedReviews []QueuedReviewRow `json:"queuedReviews,omitempty"`
 }
 
 // Backend health statuses carried by BackendHealthRow.Status.
@@ -868,9 +1078,97 @@ type TrackerErrorRow struct {
 	ConsecutiveFailures int        `json:"consecutiveFailures,omitempty"`
 }
 
+// TrackerPollRow is the wire shape of the off-loop tracker poll (#187).
+// The poll tick reads the tracker on its own goroutine, so a slow tracker no
+// longer freezes the event loop; this row is how an operator sees it.
+//
+//   - InFlight / StartedAt / RunningForMs: a poll is running, since when,
+//     and for how long at the snapshot's generation.
+//   - Slow: the running poll (or the last one) took longer than SlowAfterMs
+//     (the poll interval plus half an interval, at least 1 s).
+//   - Degraded: the tracker breaker opened after
+//     ConsecutiveTransportFailures polls in a row hit a timeout, network
+//     error or 5xx; tracker reads are skipped until BreakerOpenUntil, then
+//     one poll probes the tracker.
+type TrackerPollRow struct {
+	InFlight                     bool       `json:"inFlight"`
+	StartedAt                    *time.Time `json:"startedAt,omitempty"`
+	RunningForMs                 int64      `json:"runningForMs,omitempty"`
+	LastFinishedAt               *time.Time `json:"lastFinishedAt,omitempty"`
+	LastDurationMs               int64      `json:"lastDurationMs"`
+	SlowAfterMs                  int64      `json:"slowAfterMs"`
+	Slow                         bool       `json:"slow"`
+	Degraded                     bool       `json:"degraded"`
+	BreakerOpenUntil             *time.Time `json:"breakerOpenUntil,omitempty"`
+	ConsecutiveTransportFailures int        `json:"consecutiveTransportFailures,omitempty"`
+}
+
+// Sync modes (SyncStatusRow.Mode).
+const (
+	// SyncModeStore: the local tracker store (#113) pulls in the background
+	// and serves every list read.
+	SyncModeStore = "store"
+	// SyncModeDirect: no store; every poll tick reads the tracker.
+	SyncModeDirect = "direct"
+	// SyncModeLocalSync: the local issue files (tracker.kind: local) synced
+	// both ways with Linear or GitHub (#118, tracker.sync). The pull side
+	// is the sync's last good cycle; the pending writes include the sync's
+	// queued remote writes.
+	SyncModeLocalSync = "local_sync"
+)
+
+// SyncStatusRow is the tracker sync status (#117), on the snapshot for the
+// dashboard and API clients, and summarised in HEARTBEAT.md for
+// `itervox doctor`.
+//
+// Pull side: LastPullAt is the last successful pull (store mode) or
+// candidate poll (direct mode), nil when none has succeeded yet. LagMs is
+// now − LastPullAt at snapshot time. Stale is set when LagMs exceeds
+// LagWarnAfterMs, or when nothing was ever pulled and the last pull failed.
+// LastError is the newest failed pull while the failure run lasts (cleared
+// by a good pull), classified (tracker.ClassifyError) and never the
+// tracker's raw response.
+//
+// Push side (the write-ahead outbox, #115): PendingWrites is every queued
+// tracker write; PendingUrgent, PendingBatched (waiting for the push
+// interval), PendingRetrying (failed at least once), PendingDegraded and
+// PendingRateLimited break it down (they overlap). NextPushAt is when the
+// next queued write is due; at or before GeneratedAt means "now".
+type SyncStatusRow struct {
+	Mode                string        `json:"mode"`
+	LastPullAt          *time.Time    `json:"lastPullAt,omitempty"`
+	LagMs               *int64        `json:"lagMs,omitempty"`
+	LagWarnAfterMs      int64         `json:"lagWarnAfterMs"`
+	Stale               bool          `json:"stale"`
+	SyncIntervalMs      int64         `json:"syncIntervalMs"`
+	CursorAt            *time.Time    `json:"cursorAt,omitempty"`
+	ConsecutiveFailures int           `json:"consecutiveFailures,omitempty"`
+	LastError           *SyncErrorRow `json:"lastError,omitempty"`
+	PendingWrites       int           `json:"pendingWrites"`
+	PendingUrgent       int           `json:"pendingUrgent"`
+	PendingBatched      int           `json:"pendingBatched"`
+	PendingRetrying     int           `json:"pendingRetrying"`
+	PendingDegraded     int           `json:"pendingDegraded"`
+	PendingRateLimited  int           `json:"pendingRateLimited"`
+	OldestPendingAt     *time.Time    `json:"oldestPendingAt,omitempty"`
+	NextPushAt          *time.Time    `json:"nextPushAt,omitempty"`
+	PushIntervalMs      int64         `json:"pushIntervalMs"`
+}
+
+// SyncErrorRow is a classified sync failure (#117): Kind is a
+// tracker.ErrorClass* value (rate_limited, auth, not_found, api_status,
+// graphql, timeout, network, canceled, unknown — clients must tolerate new
+// kinds) and Message a fixed-vocabulary summary, redacted.
+type SyncErrorRow struct {
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`
+	Message string    `json:"message"`
+}
+
 // FailureRow is the wire shape of one orchestrator.FailureRecord (CORE-046).
 // Kind is worker_failed | worker_stalled | tracker_poll | tracker_write |
-// persist | outbox | panic | client (clients must tolerate new kinds).
+// persist | outbox | panic | client | automation | workspace_fetch (clients
+// must tolerate new kinds).
 // OccurredAt is when the producer saw the failure (latest repeat when Count >
 // 1); RecordedAt is when the event loop recorded it. The ring is ordered by
 // RecordedAt; the dashboard sorts by OccurredAt.
@@ -896,6 +1194,11 @@ type TotalsRow struct {
 type TotalsCoverageRow struct {
 	ClaudeRuns int `json:"claudeRuns"`
 	CodexRuns  int `json:"codexRuns"`
+	// RunsByBackend counts the runs per backend name; CostBackends lists the
+	// backends that reported a cost. A backend with runs but not listed is
+	// left out of CostUSDEstimated (Codex, and any that report no cost).
+	RunsByBackend map[string]int `json:"runsByBackend,omitempty"`
+	CostBackends  []string       `json:"costBackends,omitempty"`
 }
 
 // CapabilityFailureAck is advertised in StateSnapshot.Capabilities when the
@@ -1004,6 +1307,10 @@ type InputRequiredRow struct {
 	// AgeMinutes is the wall-clock age of the entry in whole minutes — handy
 	// for the dashboard tooltip without re-parsing QueuedAt on every render.
 	AgeMinutes int `json:"ageMinutes,omitempty"`
+	// GuardrailApproval marks a guardrail approval request (#204): a reply
+	// whose first word is approve/yes/ok runs the held command once; any
+	// other reply rejects it (#240: itervox watch prints itervox approve).
+	GuardrailApproval bool `json:"guardrailApproval,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -1086,7 +1393,10 @@ type TrackerIssue struct {
 	BlockedByDetails []BlockerDetail        `json:"blockedByDetails,omitempty"`
 	Comments         []CommentRow           `json:"comments,omitempty"`
 	StatusChanges    []IssueStatusChangeRow `json:"statusChanges,omitempty"`
-	IneligibleReason string                 `json:"ineligibleReason,omitempty"`
+	// Review is the issue's latest review (#135): each reviewer's verdict
+	// and, once every reviewer has run, the quorum result.
+	Review           *IssueReviewRow `json:"review,omitempty"`
+	IneligibleReason string          `json:"ineligibleReason,omitempty"`
 	// AgentProfile is the name of the per-issue agent profile override, if any.
 	AgentProfile string `json:"agentProfile,omitempty"`
 	// AgentBackend is the per-issue backend override, if any ("claude" or "codex").
@@ -1094,6 +1404,25 @@ type TrackerIssue struct {
 	// AutoSwitch is set when AgentProfile/AgentBackend come from an
 	// automatic switch rather than an operator pin (CORE-055).
 	AutoSwitch *AutoSwitchRow `json:"autoSwitch,omitempty"`
+	// Playbook is the task-type playbook the issue's next run gets (#218),
+	// empty for none; PlaybookSource says how it was chosen ("override",
+	// "label", "keyword"); PlaybookOverride is the operator's choice (a
+	// name or "none"), empty for automatic.
+	Playbook         string `json:"playbook,omitempty"`
+	PlaybookSource   string `json:"playbookSource,omitempty"`
+	PlaybookOverride string `json:"playbookOverride,omitempty"`
+	// Task is the issue's New task record (#251): its custom instructions
+	// and base branch, and whether it has started (the instructions are
+	// editable until then). Only on the single-issue read.
+	Task *IssueTaskRow `json:"task,omitempty"`
+}
+
+// IssueTaskRow is an issue's New task record (#251).
+type IssueTaskRow struct {
+	Instructions string `json:"instructions,omitempty"`
+	BaseBranch   string `json:"baseBranch,omitempty"`
+	Local        bool   `json:"local,omitempty"`
+	Started      bool   `json:"started"`
 }
 
 // IssueLogEntry is one parsed log event for /api/v1/issues/{id}/logs.
@@ -1107,59 +1436,6 @@ type IssueLogEntry struct {
 	// Populated for Codex shell completions (exit_code, status, output_size).
 	Detail    string `json:"detail,omitempty"`
 	SessionID string `json:"sessionId,omitempty"`
-}
-
-// broadcaster fans out state-change notifications to multiple SSE clients.
-type broadcaster struct {
-	mu      sync.Mutex
-	clients map[chan struct{}]struct{}
-}
-
-func newBroadcaster() *broadcaster {
-	return &broadcaster{clients: make(map[chan struct{}]struct{})}
-}
-
-func (b *broadcaster) subscribe() chan struct{} {
-	ch := make(chan struct{}, 1)
-	b.mu.Lock()
-	b.clients[ch] = struct{}{}
-	b.mu.Unlock()
-	return ch
-}
-
-func (b *broadcaster) unsubscribe(ch chan struct{}) {
-	b.mu.Lock()
-	delete(b.clients, ch)
-	b.mu.Unlock()
-}
-
-func (b *broadcaster) notify() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// close wakes up every subscribed SSE handler so they can exit promptly on
-// graceful shutdown. Each subscriber's channel is removed from the clients
-// map so a duplicate notify() doesn't double-send. Safe to call multiple
-// times. G-03 (gaps_280426_2).
-func (b *broadcaster) close() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		// Send before delete so any already-blocked receiver wakes; the
-		// `default` branch covers handlers that have already drained.
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-		delete(b.clients, ch)
-	}
 }
 
 // Shutdown ends every streaming (SSE) handler of this Server — /events,
@@ -1211,14 +1487,32 @@ type Config struct {
 	FetchIssue func(ctx context.Context, identifier string) (*TrackerIssue, error)
 	// ProjectManager supports project filtering (Linear only). Nil = no project API.
 	ProjectManager ProjectManager
+	// ScopeManager supports the combined tracker scope (#182: projects AND
+	// assignee AND labels; Linear only). Nil = no /tracker/* scope API.
+	ScopeManager ScopeManager
 	// APIToken, when non-empty, enables bearer-token authentication on all
 	// /api/ routes except /api/v1/health. Requests must include the header
 	// "Authorization: Bearer <token>".
 	APIToken string
+	// Tokens is the stored-token index (.itervox/tokens.json, #214): named
+	// viewer / operator / admin tokens accepted alongside APIToken, which
+	// stays admin. Consulted only in token mode (APIToken set); nil means
+	// no stored tokens and answers 503 on the token-management routes.
+	Tokens *apitokens.Store
 	// ActionTokenStore validates short-lived per-run grants for agent action routes.
 	ActionTokenStore *agentactions.Store
 	// SkillsClient exposes the skills-inventory surface (T-87). Nil → noop.
 	SkillsClient SkillsClient
+	// Rules backs the Rules editor endpoints (#157). Nil → 503.
+	Rules RulesClient
+	// Memory backs the Memory page endpoints (#202). Nil → 503.
+	Memory MemoryClient
+	// Guardrails backs the guardrail endpoints of agent shims and hooks
+	// (#204). Nil → 501.
+	Guardrails GuardrailsClient
+	// SettingsLayers backs the schema-driven Settings page's layer
+	// endpoints (#158). Nil → 503 (the schema endpoint always answers).
+	SettingsLayers SettingsLayersClient
 	// DepsAnalyzer backs the /api/v1/deps/analyze endpoints (Phase 2.3 of
 	// v0.2.0 todolist6). Nil makes the endpoints return 503.
 	DepsAnalyzer DepsAnalyzer
@@ -1243,6 +1537,10 @@ type Config struct {
 	// tunnel, MagicDNS, container service name) the Host guard accepts in
 	// server.allow_unauthenticated mode. Ignored in token mode.
 	AllowedHosts []string
+	// AllowedOrigins is server.allowed_origins (#231), normalized: origins
+	// whose pages may call the API cross-origin (internal/cors). Empty:
+	// same-origin only.
+	AllowedOrigins []string
 	// Readiness supplies the /api/v1/ready probe's inputs (CORE-043). It must
 	// be cheap and lock-light — atomics published by the event loop plus the
 	// tracker rate-limit gate — and must never take cfgMu or build a
@@ -1258,10 +1556,64 @@ type Config struct {
 	// was full (the handler answers 503). Nil: reports are logged and counted
 	// only.
 	ReportClientError func(ClientErrorReport) bool
+	// Webhooks, when non-nil, serves POST /api/v1/webhooks/<tracker> for the
+	// tracker it names (#131). The route is outside the bearer-token group
+	// and the Host guard: GitHub and Linear cannot send the token, and every
+	// delivery must carry the webhook secret's HMAC signature instead.
+	Webhooks WebhookHandler
+	// PREventWebhooks, when non-nil, serves POST /api/v1/webhooks/pr-events
+	// (#173): signed GitHub check_run, status, pull_request and
+	// pull_request_review deliveries for the PR-event automation triggers.
+	// Same exemptions and signature rule as Webhooks.
+	PREventWebhooks WebhookHandler
 	// ClientErrorLimiter rate-limits POST /api/v1/client-errors. Nil uses
 	// the process-wide default, which survives the Server rebuild every
 	// WORKFLOW.md reload performs.
 	ClientErrorLimiter *ClientErrorLimiter
+	// Sessions backs the /api/v1/sessions endpoints (#178): the list,
+	// messages, transcripts, tmux screen and keys, and New session / kill.
+	// Nil answers 503.
+	Sessions SessionsClient
+	// RepoReadiness runs the repository readiness checks for GET
+	// /api/v1/repo/readiness (#200): the same check functions as
+	// `itervox doctor`, injected by cmd/itervox. Nil answers 503.
+	RepoReadiness RepoReadinessFunc
+	// RepoEvals reads the persisted eval reports for GET
+	// /api/v1/repo/evals (#201). Read-only: no eval run is started from the
+	// server. Nil answers 503.
+	RepoEvals RepoEvalsFunc
+	// RepoHotspots returns the latest failure-hotspots result for GET
+	// /api/v1/repo/hotspots (#201), computed by a background job off the
+	// event loop. Nil answers 503.
+	RepoHotspots RepoHotspotsFunc
+	// Version is the daemon's build version, reported by GET
+	// /api/v1/summary (#212). Read-only after startup.
+	Version string
+	// Dispatch backs GET /api/v1/feed and POST /api/v1/dispatch/pause|resume
+	// (#213). Nil answers 503.
+	Dispatch DispatchClient
+	// Changes backs GET /api/v1/issues/{identifier}/context and /diff
+	// (#215). Nil answers 503.
+	Changes ChangesClient
+	// ChangeReview and GitHubPRs back change review (#238): line comments
+	// to the running agent or the PR, operator PR reviews, and the diff's
+	// PR source. GitHubPRs is the PR-event watcher's GitHub client (the
+	// daemon's existing credentials). Either nil: no PR source, and the
+	// PR routes answer 409 no_pr.
+	ChangeReview ChangeReviewClient
+	GitHubPRs    PRReviewAPI
+	// Playbooks backs the playbook, decision-log and verify-skill-issue
+	// endpoints (#218). Nil answers 503.
+	Playbooks PlaybooksClient
+	// SteeringPhrases are the steering chips GET /api/v1/steering/phrases
+	// serves (#218, sessions.steering_phrases). Read-only after startup.
+	SteeringPhrases []config.SteeringPhrase
+	// Tasks backs New task and the saved task templates (#251). Nil
+	// answers 503.
+	Tasks TasksClient
+	// Activity backs GET /api/v1/issues/{identifier}/activity (system
+	// visibility). Nil answers 503.
+	Activity ActivityClient
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1273,16 +1625,28 @@ type Server struct {
 	client         OrchestratorClient
 	fetchIssue     func(ctx context.Context, identifier string) (*TrackerIssue, error)
 	projectManager ProjectManager
+	scopeManager   ScopeManager
 	bc             *broadcaster
+	// frames caches the encoded snapshot frame of the broadcaster's
+	// current version for every /events client (#210), one cache per
+	// caller scope (#214): the frame carries callerScope, and below admin
+	// it is the redacted snapshot.
+	frames [len(frameScopes)]sseFrameCache
 	// streamsDone is closed by Shutdown; every streaming handler returns
 	// when it closes (CORE-025). A Server built without New has a nil
 	// channel, which never fires.
 	streamsDone  chan struct{}
 	streamsOnce  sync.Once
 	apiToken     string
+	tokens       *apitokens.Store
 	actionTokens *agentactions.Store
 	skills       SkillsClient
-	depsAnalyzer DepsAnalyzer
+	rules        RulesClient
+	memory       MemoryClient
+	guardrails   GuardrailsClient
+	// settingsLayers mirrors Config.SettingsLayers (#158).
+	settingsLayers SettingsLayersClient
+	depsAnalyzer   DepsAnalyzer
 	// mergeStrategy / mergeBlockLabels mirror Config.MergeStrategy /
 	// Config.MergeBlockLabels — startup-fixed merge_pr policy. gaps_11 G-3.
 	mergeStrategy    string
@@ -1301,7 +1665,33 @@ type Server struct {
 	// the route's rate limiter (CORE-048): Config.ClientErrorLimiter or the
 	// process-wide DefaultClientErrorLimiter.
 	reportClientError func(ClientErrorReport) bool
+	webhooks          WebhookHandler
+	prEventWebhooks   WebhookHandler
 	clientErrors      *ClientErrorLimiter
+	sessions          SessionsClient
+	// repoReadiness mirrors Config.RepoReadiness (#200).
+	repoReadiness RepoReadinessFunc
+	// repoEvals / repoHotspots mirror Config.RepoEvals / RepoHotspots (#201).
+	repoEvals    RepoEvalsFunc
+	repoHotspots RepoHotspotsFunc
+	// version mirrors Config.Version (#212).
+	version string
+	// dispatch mirrors Config.Dispatch (#213).
+	dispatch DispatchClient
+	// changes mirrors Config.Changes (#215).
+	changes ChangesClient
+	// activity backs the system-visibility activity endpoint.
+	activity ActivityClient
+	// changeReview / github mirror Config.ChangeReview / Config.GitHubPRs
+	// (#238).
+	changeReview ChangeReviewClient
+	github       PRReviewAPI
+	// playbooks / steeringPhrases mirror Config.Playbooks /
+	// Config.SteeringPhrases (#218).
+	playbooks       PlaybooksClient
+	steeringPhrases []config.SteeringPhrase
+	// tasks mirrors Config.Tasks (#251).
+	tasks TasksClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1326,11 +1716,17 @@ func New(cfg Config) *Server {
 		client:         client,
 		fetchIssue:     cfg.FetchIssue,
 		projectManager: cfg.ProjectManager,
+		scopeManager:   cfg.ScopeManager,
 		bc:             newBroadcaster(),
 		streamsDone:    make(chan struct{}),
 		apiToken:       cfg.APIToken,
+		tokens:         cfg.Tokens,
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
+		rules:          cfg.Rules,
+		memory:         cfg.Memory,
+		guardrails:     cfg.Guardrails,
+		settingsLayers: cfg.SettingsLayers,
 		depsAnalyzer:   cfg.DepsAnalyzer,
 
 		mergeStrategy:       cfg.MergeStrategy,
@@ -1339,7 +1735,22 @@ func New(cfg Config) *Server {
 		readiness:           cfg.Readiness,
 		metrics:             cfg.Metrics,
 		reportClientError:   cfg.ReportClientError,
+		webhooks:            cfg.Webhooks,
+		prEventWebhooks:     cfg.PREventWebhooks,
 		clientErrors:        cfg.ClientErrorLimiter,
+		sessions:            cfg.Sessions,
+		repoReadiness:       cfg.RepoReadiness,
+		repoEvals:           cfg.RepoEvals,
+		repoHotspots:        cfg.RepoHotspots,
+		version:             cfg.Version,
+		dispatch:            cfg.Dispatch,
+		changes:             cfg.Changes,
+		activity:            cfg.Activity,
+		changeReview:        cfg.ChangeReview,
+		github:              cfg.GitHubPRs,
+		playbooks:           cfg.Playbooks,
+		steeringPhrases:     cfg.SteeringPhrases,
+		tasks:               cfg.Tasks,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1349,6 +1760,9 @@ func New(cfg Config) *Server {
 	// wraps the authenticated sub-router. Must be registered before routes()
 	// per chi's "middleware before routes" rule.
 	s.router.Use(securityHeadersMiddleware)
+	// #231: the CORS allow-list, ahead of auth so a listed origin's
+	// preflight (which carries no token) is answered.
+	s.router.Use(cors.Middleware(cfg.AllowedOrigins))
 	// CORE-162: DNS-rebinding guard, ahead of every route (SPA, static files,
 	// /api, SSE). Unauthenticated mode only — see hostGuard for why token
 	// mode does not need it.
@@ -1380,6 +1794,13 @@ func (s *Server) Notify() {
 	s.bc.notify()
 }
 
+// DashboardHandler serves the embedded dashboard (static files, index.html
+// fallback) behind the daemon's hardening headers, for the hub (#228),
+// which serves the same bundle on its own listener.
+func DashboardHandler() http.Handler {
+	return securityHeadersMiddleware(spaHandler())
+}
+
 func spaHandler() http.Handler {
 	fs := spaFS()
 	fileServer := http.FileServer(fs)
@@ -1388,6 +1809,16 @@ func spaHandler() http.Handler {
 		// and a stale copy would load old bundles after a binary rebuild.
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		// #231: the web app manifest and the service worker are not hashed,
+		// so they must be revalidated too; the manifest's type is not in
+		// every system's MIME table.
+		switch r.URL.Path {
+		case "/manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
+			w.Header().Set("Cache-Control", "no-cache")
+		case "/sw.js":
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		f, err := fs.Open(r.URL.Path)
 		if err != nil {
@@ -1424,27 +1855,67 @@ func (s *Server) routes() {
 		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
 		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
 		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
+		// #204: guardrail shims and hooks, gated by the run's guardrail token.
+		r.Post("/agent-actions/{identifier}/guardrail/events", s.handleGuardrailEvent)
+		r.Post("/agent-actions/{identifier}/guardrail/approvals", s.handleGuardrailApprovalRequest)
+		r.Get("/agent-actions/{identifier}/guardrail/approvals/{id}", s.handleGuardrailApprovalStatus)
+		// Tracker webhooks (#131): signed by the webhook secret, not the
+		// bearer token.
+		r.Post("/webhooks/{tracker}", s.handleWebhook)
 
 		// If an API token is configured, all remaining routes require it.
 		// Use r.Group to create a sub-router so middleware is applied only to
 		// authenticated routes without violating chi's "middleware before routes" rule.
 		r.Group(func(r chi.Router) {
-			if s.apiToken != "" {
-				r.Use(s.bearerAuthMiddleware)
-			} else {
-				// server.allow_unauthenticated: no bearer check, so refuse
-				// cross-site state-changing requests instead (CORE-041).
-				r.Use(crossOriginGuardMiddleware)
-			}
+			s.useAuth(r)
 
+			r.Get("/whoami", s.handleWhoami) // #214
+			r.Get("/tokens", s.handleListTokens)
+			r.Post("/tokens", s.handleCreateToken)
+			r.Delete("/tokens/{id}", s.handleRevokeToken)
+			r.Post("/tokens/{id}/rotate", s.handleRotateToken)
 			r.Get("/state", s.handleState)
+			r.Get("/summary", s.handleSummary)                                     // #212: ETag'd poll target for supervisors
+			r.Get("/route-scopes", s.handleRouteScopes)                            // #228: the hub's proxy reads it
+			r.Get("/feed", s.handleFeed)                                           // #213: the event feed, by cursor
+			r.Post("/dispatch/pause", s.handlePauseDispatch)                       // #213
+			r.Post("/dispatch/resume", s.handleResumeDispatch)                     // #213
+			r.Get("/history", s.handleHistory)                                     // #186
+			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions)       // #186
+			r.Get("/repo/readiness", s.handleRepoReadiness)                        // #200
+			r.Get("/repo/evals", s.handleRepoEvals)                                // #201
+			r.Get("/repo/hotspots", s.handleRepoHotspots)                          // #201
+			r.Post("/repo/readiness/verify-skill-issue", s.handleVerifySkillIssue) // #218
+			r.Get("/playbooks", s.handleListPlaybooks)                             // #218
+			r.Get("/steering/phrases", s.handleSteeringPhrases)                    // #218
+			r.Post("/tasks", s.handleCreateTask)                                   // #251
+			r.Put("/tasks/{identifier}/instructions", s.handleSetTaskInstructions) // #251
+			r.Get("/task-templates", s.handleListTaskTemplates)                    // #251
+			r.Post("/task-templates/{name}", s.handleSaveTaskTemplate(false))      // #251
+			r.Put("/task-templates/{name}", s.handleSaveTaskTemplate(true))        // #251
+			r.Delete("/task-templates/{name}", s.handleDeleteTaskTemplate)         // #251
 			r.Get("/events", s.handleEvents)
+			r.Get("/sessions", s.handleListSessions)
+			r.Post("/sessions/{id}/message", s.handleSessionMessage)
+			r.Get("/sessions/{id}/transcript", s.handleSessionTranscript)
+			r.Post("/sessions", s.handleStartSession)
+			r.Delete("/sessions/{id}", s.handleKillSession)
+			r.Get("/sessions/{id}/screen", s.handleSessionScreen)
+			r.Post("/sessions/{id}/keys", s.handleSessionKeys)
 			r.Get("/issues", s.handleIssues)
 			r.Get("/issues/{identifier}", s.handleIssueDetail)
 			r.Get("/issues/{identifier}/logs", s.handleIssueLogs)
 			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
+			r.Get("/issues/{identifier}/context", s.handleIssueContext)           // #215
+			r.Get("/issues/{identifier}/activity", s.handleIssueActivity)         // system visibility: operator
+			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
+			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
+			r.Post("/issues/{identifier}/review-continue", s.handleReviewContinue)
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)        // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
@@ -1477,6 +1948,12 @@ func (s *Server) routes() {
 			r.Get("/projects", s.handleListProjects)
 			r.Get("/projects/filter", s.handleGetProjectFilter)
 			r.Put("/projects/filter", s.handleSetProjectFilter)
+			r.Get("/tracker/scope", s.handleGetTrackerScope)                // #182
+			r.Put("/tracker/scope", s.handleSetTrackerScope)                // #182
+			r.Get("/tracker/labels", s.handleTrackerLabels)                 // #182
+			r.Get("/tracker/users", s.handleTrackerUsers)                   // #182
+			r.Get("/tracker/teams", s.handleTrackerTeams)                   // #198
+			r.Post("/tracker/filter/preview", s.handleTrackerFilterPreview) // #198
 			r.Post("/settings/workers", s.handleSetWorkers)
 			r.Delete("/workspaces", s.handleClearAllWorkspaces)
 			r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
@@ -1498,6 +1975,10 @@ func (s *Server) routes() {
 			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
 			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
 			r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
+			// Schema-driven Settings page (#158).
+			r.Get("/settings/schema", s.handleSettingsSchema)
+			r.Get("/settings/layers", s.handleGetSettingsLayers)
+			r.Put("/settings/layers/{layer}", s.handleSaveSettingsLayer)
 
 			// Dependency analysis (Phase 2.3 of v0.2.0 todolist6).
 			r.Post("/deps/analyze", s.handleDepsAnalyzeEnqueue)
@@ -1505,12 +1986,33 @@ func (s *Server) routes() {
 			r.Delete("/deps/analyze/{jobId}", s.handleDepsAnalyzeCancel)
 
 			// Skills inventory + analytics (T-87, T-95/T-96, T-102).
+			// Rules editor (#157).
+			r.Get("/rules", s.handleGetRules)
+			r.Get("/rules/preview", s.handlePreviewRules)
+			r.Put("/rules/{layer}", s.handleSaveRules)
+			// Memory page (#202).
+			r.Get("/memory", s.handleListMemory)
+			r.Get("/memory/recall", s.handleRecallMemory) // #216
+			r.Post("/memory", s.handleCreateMemory)
+			r.Put("/memory/{id}", s.handleUpdateMemory)
+			r.Delete("/memory/{id}", s.handleDeleteMemory)
+			r.Post("/memory/{id}/pin", s.handlePinMemory)
+			r.Post("/memory/{id}/promote", s.handlePromoteMemory)
+			r.Post("/memory/{id}/approve", s.handleApproveLesson) // #203
+			r.Post("/memory/{id}/reject", s.handleRejectLesson)   // #203
+			// #217: lesson to rule, enforcement suggestions.
+			r.Post("/memory/{id}/promote-to-rule", s.handlePromoteLessonToRule)
+			r.Post("/memory/{id}/enforcement/accept", s.handleAcceptLessonEnforcement)
+			r.Post("/memory/{id}/enforcement/dismiss", s.handleDismissLessonEnforcement)
 			r.Get("/skills/inventory", s.handleSkillsInventory)
 			r.Post("/skills/scan", s.handleSkillsScan)
 			r.Get("/skills/issues", s.handleSkillsIssues)
 			r.Post("/skills/fix", s.handleSkillsFix)
 			r.Get("/skills/analytics", s.handleSkillsAnalytics)
 			r.Get("/skills/analytics/recommendations", s.handleSkillsAnalyticsRecommendations)
+			// Backend-aware references (#123): editor check + profile backends.
+			r.Post("/skills/check-refs", s.handleSkillsCheckRefs)
+			r.Get("/skills/profile-backends", s.handleSkillsProfileBackends)
 
 			r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -1523,17 +2025,30 @@ func (s *Server) routes() {
 	// bearer token in token mode, and the CSRF guard (plus the root Host
 	// guard) in unauthenticated mode — never in the unauthenticated set.
 	s.router.Group(func(r chi.Router) {
-		if s.apiToken != "" {
-			r.Use(s.bearerAuthMiddleware)
-		} else {
-			r.Use(crossOriginGuardMiddleware)
-		}
+		s.useAuth(r)
 		r.Get("/metrics", s.handleMetrics)
 	})
 
 	// React SPA: serves all non-API paths from the embedded web/dist.
 	// Falls back to index.html so React Router client-side routing works.
 	s.router.Handle("/*", spaHandler())
+}
+
+// useAuth installs the authentication and scope middlewares of an
+// authenticated group (#214): the bearer check in token mode; in
+// server.allow_unauthenticated mode the CSRF guard (CORE-041) and an admin
+// principal for every caller. scopeMiddleware then enforces routeScopes in
+// both modes.
+func (s *Server) useAuth(r chi.Router) {
+	if s.apiToken != "" {
+		r.Use(s.bearerAuthMiddleware)
+	} else {
+		// server.allow_unauthenticated: no bearer check, so refuse
+		// cross-site state-changing requests instead (CORE-041).
+		r.Use(crossOriginGuardMiddleware)
+		r.Use(unauthenticatedAdminMiddleware)
+	}
+	r.Use(scopeMiddleware)
 }
 
 // handleMetrics serves the injected Prometheus handler, or 404 when
@@ -1549,24 +2064,4 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 // handleHealth returns a lightweight 200 OK for load balancer probes.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// bearerAuthMiddleware rejects requests that do not carry a valid
-// "Authorization: Bearer <token>" header matching s.apiToken.
-func (s *Server) bearerAuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		auth := r.Header.Get("Authorization")
-		presented := strings.TrimPrefix(auth, prefix)
-		// subtle.ConstantTimeCompare requires equal-length inputs to run in
-		// constant time and returns 0 (not a panic) for a length mismatch, so
-		// it is safe to call directly on the raw byte slices without a
-		// length pre-check that would itself leak length via early return.
-		match := subtle.ConstantTimeCompare([]byte(presented), []byte(s.apiToken)) == 1
-		if !strings.HasPrefix(auth, prefix) || !match {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

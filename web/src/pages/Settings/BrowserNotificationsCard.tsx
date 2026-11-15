@@ -10,10 +10,10 @@ export function BrowserNotificationsCard() {
   const { supported, enabled, enable, disable } = useAttentionNotifications({ watch: false });
   const [refused, setRefused] = useState(false);
   return (
-    <div className="border-theme-line bg-theme-panel flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4">
+    <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="min-w-0">
         <p className="text-theme-text text-sm font-medium">Notify me in this browser</p>
-        <p className="text-theme-muted mt-0.5 text-xs">
+        <p className="text-theme-text-secondary mt-0.5 text-xs">
           {supported
             ? 'A desktop notification when an issue needs your input or a run fails for good, only while this tab is in the background. Stored in this browser only.'
             : 'Not available here: notifications need HTTPS (or localhost) and permission that has not been blocked. The page title and the Dashboard badge still count what needs you.'}
@@ -26,13 +26,12 @@ export function BrowserNotificationsCard() {
       </div>
       {supported &&
         (enabled ? (
-          <Button size="sm" onClick={disable}>
+          <Button pill onClick={disable}>
             Turn off
           </Button>
         ) : (
           <Button
-            size="sm"
-            variant="primary"
+            pill
             onClick={() => {
               void enable().then((ok) => {
                 setRefused(!ok);

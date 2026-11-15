@@ -48,6 +48,8 @@ export function useSettingsPageData() {
   const autoReview = useItervoxStore((s) => s.snapshot?.autoReview ?? false);
   const trackerKind = useItervoxStore((s) => s.snapshot?.trackerKind);
   const activeProjectFilter = useItervoxStore((s) => s.snapshot?.activeProjectFilter);
+  // #198 — the tracker reads through a filter: Settings shows the group builder.
+  const filterSupported = useItervoxStore((s) => (s.snapshot?.filterConditions?.length ?? 0) > 0);
 
   const actions = useSettingsActions();
   const issuesQuery = useIssues();
@@ -116,6 +118,7 @@ export function useSettingsPageData() {
     autoReview,
     trackerKind,
     activeProjectFilter,
+    filterSupported,
     trackerStateOptions,
     automationLabelOptions,
     automationProfileOptions,

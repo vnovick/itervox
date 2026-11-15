@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { useLocation, useNavigate, useParams, type Location } from 'react-router';
+import { useCallback, useContext, useEffect, useRef } from 'react';
+import {
+  UNSAFE_NavigationContext,
+  useHref,
+  useLocation,
+  useNavigate,
+  useParams,
+  type Location,
+} from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../store/itervoxStore';
 import { useUIStore, type AutomationsTab } from '../store/uiStore';
@@ -29,6 +36,9 @@ import { useToastStore } from '../store/toastStore';
 //   automatic choice (bare /logs, the legacy ?identifier= link, the fallback
 //   for an unknown id) REPLACES. An id in the URL wins over the auto-select
 //   and is only abandoned once loading has settled without it.
+//
+// useNewTaskUrlOpen (mounted by the Dashboard page, #251):
+//   ?newTask=1 opens the New task dialog once and is removed (REPLACE).
 //
 // useAutomationsTabUrlState (mounted by the Automations page, CORE-085):
 //   ?tab= <-> uiStore.automationsTab. A tab click PUSHES (Back returns to the
@@ -172,6 +182,24 @@ function filtersKey(f: DashboardUrlFilters): string {
   return `${f.view}\u0000${f.q}\u0000${f.state}`;
 }
 
+/**
+ * #251 — `?newTask=1` (the Mac app's "New Task…" item, or a shared link)
+ * opens the New task dialog once; the param is then removed (replace), so
+ * Back and a reload do not reopen it.
+ */
+export function useNewTaskUrlOpen(): void {
+  const location = useLocation();
+  const write = useWrite();
+  const wanted = new URLSearchParams(location.search).get('newTask') !== null;
+  useEffect(() => {
+    if (!wanted) return;
+    useUIStore.getState().setNewTaskOpen(true);
+    write(location, { newTask: null }, true);
+    // Keyed on the param only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted]);
+}
+
 export function useDashboardUrlState(): void {
   const location = useLocation();
   const write = useWrite();
@@ -272,8 +300,17 @@ export function useLogsUrlSelection({ union, visible, settled }: LogsUrlSelectio
   const storeId = useItervoxStore((s) => s.activeIssueId);
   const setStoreId = useItervoxStore((s) => s.setActiveIssueId);
 
+  // The router's history may already be somewhere else while this page is
+  // still mounted: a link to a lazy route (the header's status pills) keeps
+  // the old page on screen inside a transition until the new chunk loads. An
+  // automatic REPLACE fired from that stale page would overwrite the user's
+  // navigation, so it only runs while history still points at this page.
+  const { navigator } = useContext(UNSAFE_NavigationContext);
+  const renderedHref = useHref({ pathname: location.pathname });
   const go = useCallback(
     (identifier: string | null, replace: boolean) => {
+      const live = (navigator as { location?: { pathname?: string } }).location?.pathname;
+      if (replace && live !== undefined && live !== renderedHref) return;
       void navigate(
         {
           pathname: logsPath(identifier),
@@ -283,7 +320,7 @@ export function useLogsUrlSelection({ union, visible, settled }: LogsUrlSelectio
         { replace },
       );
     },
-    [navigate, location.search, location.hash],
+    [navigate, navigator, renderedHref, location.search, location.hash],
   );
 
   const inUnion = (id: string) => union.includes(id);

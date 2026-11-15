@@ -21,6 +21,7 @@ Queue entries drain oldest-first by their original queue time. Cron triggers coa
 One-shot triggers preserve the trigger payload in the queue key:
 
 - `pr_opened` keeps the PR URL.
+- The PR-event triggers (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`) keep one row per event (PR, head SHA and the check, review or mergeable transition).
 - `input_required` keeps the question/comment key.
 - `run_failed` keeps the retry attempt.
 - `rate_limited` keeps the failed profile/backend.

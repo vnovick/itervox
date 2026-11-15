@@ -1,0 +1,31 @@
+{
+  "machine": {
+    "load1": 1.5,
+    "load5": 1.2,
+    "load15": 0.9,
+    "loadKnown": true,
+    "cpuCount": 8,
+    "memTotalBytes": 17179869184,
+    "memAvailableBytes": 6442450944,
+    "memPressure": "ok",
+    "disk": {
+      "path": "/home/me/.itervox/workspaces/app",
+      "freeBytes": 4294967296,
+      "totalBytes": 536870912000
+    },
+    "diskWarnBytes": 5368709120,
+    "diskPauseBytes": 0,
+    "diskLow": true,
+    "diskCritical": false,
+    "sampledAt": "2026-05-25T12:00:00Z"
+  },
+  "runs": {
+    "runs": 2,
+    "cpuPercent": 120.5,
+    "rssBytes": 1073741824,
+    "processes": 11
+  },
+  "activityMode": "sampled",
+  "activityModeReason": "precise mode unavailable: tracefs is not mounted at /sys/kernel/tracing",
+  "platform": "linux"
+}

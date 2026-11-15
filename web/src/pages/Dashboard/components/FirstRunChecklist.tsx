@@ -120,10 +120,10 @@ export function FirstRunChecklist() {
     <section
       aria-labelledby="first-run-heading"
       data-testid="first-run-checklist"
-      className="border-theme-line bg-theme-bg-elevated rounded-[var(--radius-lg)] border px-4 py-3"
+      className="glass-panel px-4 py-4 sm:px-[18px]"
     >
       <div className="mb-2 flex items-center justify-between gap-3">
-        <h2 id="first-run-heading" className="text-theme-text text-sm font-semibold">
+        <h2 id="first-run-heading" className="section-title">
           Getting started
         </h2>
         <Button

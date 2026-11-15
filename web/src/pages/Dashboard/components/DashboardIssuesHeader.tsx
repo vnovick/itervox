@@ -31,60 +31,55 @@ export function DashboardIssuesHeader({
   search,
   setSearch,
 }: DashboardIssuesHeaderProps) {
+  const filtersShown = viewMode !== 'agents' && viewMode !== 'deps' && viewMode !== 'notifications';
   return (
-    <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3 sm:px-[18px] sm:py-[14px]">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold tracking-tight">
-            Issues
-            <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
-              {filteredCount}
-            </span>
-          </h2>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-2">
-          <div className="bg-theme-bg-elevated border-theme-line inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border p-[3px]">
-            {dashboardViewModes(availableProfileCount > 0).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={viewMode === mode}
-                onClick={() => {
-                  setViewMode(mode);
-                }}
-                className={`rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-semibold transition-all ${
-                  viewMode === mode ? 'bg-theme-accent text-white' : 'text-theme-muted'
-                }`}
-              >
-                {viewModeLabel(mode, notificationsTotal)}
-              </button>
-            ))}
-          </div>
-
+    <div className="flex flex-wrap items-center gap-2.5 px-1">
+      <h2 className="text-theme-text mr-1.5 flex items-baseline gap-1.5 text-base font-semibold">
+        Issues
+        <span className="text-theme-muted font-medium tabular-nums">{filteredCount}</span>
+      </h2>
+      <div role="group" aria-label="Issue view" className="segmented">
+        {dashboardViewModes(availableProfileCount > 0).map((mode) => (
           <button
-            onClick={onRefresh}
-            disabled={loading}
-            className="border-theme-line text-theme-text-secondary flex h-7 w-7 items-center justify-center rounded-lg border text-sm transition-colors disabled:opacity-50"
-            title={loading ? 'Refreshing...' : 'Refresh issues'}
-            aria-label="Refresh issues"
+            key={mode}
+            type="button"
+            aria-pressed={viewMode === mode}
+            onClick={() => {
+              setViewMode(mode);
+            }}
+            className="min-h-8 py-1 text-sm"
           >
-            {loading ? '...' : '↻'}
+            {viewModeLabel(mode, notificationsTotal)}
           </button>
-        </div>
+        ))}
       </div>
 
-      {viewMode !== 'agents' && viewMode !== 'deps' && viewMode !== 'notifications' && (
-        <>
-          <FilterPills pills={filterPills} activeId={stateFilter} onChange={setStateFilter} />
+      {filtersShown && (
+        <FilterPills pills={filterPills} activeId={stateFilter} onChange={setStateFilter} />
+      )}
+
+      <div className="ml-auto flex w-full min-w-0 items-center gap-2 sm:w-auto">
+        {filtersShown && (
           <SearchInput
             placeholder="Search identifier or title..."
             label="Search issues"
             value={search}
             onChange={setSearch}
-            className="flex-1"
+            className="flex-1 sm:w-[240px] sm:flex-none"
+            inputClassName="h-10"
           />
-        </>
-      )}
+        )}
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="glass-chip text-theme-text-secondary hover:text-theme-text ml-auto flex h-9 w-9 flex-shrink-0 items-center justify-center text-sm transition-colors disabled:opacity-50"
+          title={loading ? 'Refreshing...' : 'Refresh issues'}
+          aria-label="Refresh issues"
+        >
+          {loading ? '...' : '↻'}
+        </button>
+      </div>
     </div>
   );
 }

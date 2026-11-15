@@ -20,6 +20,8 @@ import type { NormalisedSession } from '../../components/itervox/timeline/types'
 
 import { TimelineSidebar } from './components/TimelineSidebar';
 import { TimelineDetailPanel } from './components/TimelineDetailPanel';
+import { PromptVersionFilter } from './components/PromptVersionFilter';
+import { groupByPromptVersion } from '../../utils/promptVersions';
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,12 @@ export default function Timeline() {
   const historySessions = useMemo(() => rawHistory.map(fromHistory), [rawHistory]);
   const automationOnly = useUIStore((s) => s.timelineAutomationOnly);
   const setAutomationOnly = useUIStore((s) => s.setTimelineAutomationOnly);
+  // #186 — prompt-version filter over history ('' = all runs).
+  const promptVersions = useMemo(() => groupByPromptVersion(rawHistory), [rawHistory]);
+  const [promptFilter, setPromptFilter] = useState('');
+  const activePromptFilter = promptVersions.some((v) => v.digest === promptFilter)
+    ? promptFilter
+    : '';
 
   const allSessions = useMemo<NormalisedSession[]>(() => {
     // dedupSessionsPreferLive guards the ~5s stale-running window where the
@@ -41,10 +49,13 @@ export default function Timeline() {
     const sorted = dedupSessionsPreferLive([...historySessions, ...liveSessions]).sort(
       (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
     );
-    return automationOnly
-      ? sorted.filter((s) => s.automationId !== undefined && s.automationId !== '')
+    const byPrompt = activePromptFilter
+      ? sorted.filter((s) => s.promptDigest === activePromptFilter)
       : sorted;
-  }, [historySessions, liveSessions, automationOnly]);
+    return automationOnly
+      ? byPrompt.filter((s) => s.automationId !== undefined && s.automationId !== '')
+      : byPrompt;
+  }, [historySessions, liveSessions, automationOnly, activePromptFilter]);
 
   const hasAnyAutomationRun = useMemo(
     () => historySessions.some((s) => s.automationId) || liveSessions.some((s) => s.automationId),
@@ -251,10 +262,7 @@ export default function Timeline() {
     <>
       <PageMeta title="Itervox | Timeline" description="Agent timeline" />
 
-      <div
-        data-testid="timeline-filter-bar"
-        className="border-theme-line flex items-center gap-2 border-b px-3 py-2"
-      >
+      <div data-testid="timeline-filter-bar" className="mb-4 flex flex-wrap items-center gap-2">
         <button
           type="button"
           data-testid="timeline-chip-automation"
@@ -269,24 +277,27 @@ export default function Timeline() {
               ? 'Show only runs dispatched by an automation rule'
               : 'No automation runs in the current snapshot'
           }
-          className={`rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+          className={`glass-chip min-h-10 px-3.5 text-[13px] transition-colors ${
             !hasAnyAutomationRun
-              ? 'border-theme-line text-theme-muted/60 cursor-not-allowed'
+              ? 'text-theme-muted cursor-not-allowed opacity-70'
               : automationOnly
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
-                : 'border-theme-line text-theme-muted hover:text-theme-text'
+                ? 'bg-theme-success-soft text-theme-success-text'
+                : 'text-theme-text hover:bg-theme-panel'
           }`}
         >
           automation runs only
         </button>
-        <span className="text-theme-muted ml-auto font-mono text-[10px]">
-          {allSessions.length} runs
-        </span>
+        <PromptVersionFilter
+          versions={promptVersions}
+          value={activePromptFilter}
+          onChange={setPromptFilter}
+        />
+        <span className="text-theme-text-secondary text-[13px]">{allSessions.length} runs</span>
       </div>
 
       {/* CORE-087 — stacked below md (select above the detail pane); dvh
           so mobile browser chrome does not push the pane off-screen. */}
-      <div className="flex h-[calc(100dvh-140px)] min-h-[420px] flex-col md:min-h-[500px] md:flex-row">
+      <div className="flex h-[calc(100dvh-170px)] min-h-[420px] flex-col gap-4 md:min-h-[500px] md:flex-row md:items-start">
         <TimelineSidebar
           issueGroups={issueGroups}
           selectedId={selectedId}

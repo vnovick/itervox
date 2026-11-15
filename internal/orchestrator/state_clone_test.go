@@ -16,6 +16,12 @@ import (
 // TestStateCloneDeepCopiesAllReferenceFields. Same pattern as
 // cfg_mu_audit_test.go::AllowedMutableCfgFields.
 var cloneAllowlist = map[string]string{
+	// #213: the feed ring is append-only and trimmed only by re-slicing from
+	// the front (appendFeed / trimFeed), so the loop never writes an index a
+	// shared header can read; copying 5000 events on every storeSnap would
+	// undo #210. Evidence: grep -rnE 'Feed\[[^]]*\] *=|Feed = .*\[:0\]' internal/orchestrator → 0 hits;
+	// TestFeedCloneSharesNoWritableIndex.
+	"State.Feed": "append-only ring, trimmed by re-slicing only (never written through)",
 	// Cancel handles are process-local capabilities, not state: Clone
 	// clears them so a snapshot reader can never cancel a live worker.
 	"RunEntry.WorkerCancel": "cleared to nil by Clone (snapshot readers must not cancel workers)",
@@ -26,6 +32,17 @@ var cloneAllowlist = map[string]string{
 	"RunEntry.RetryAttempt": "immutable *int (reassigned, never written through)",
 	"RunEntry.CostUSD":      "immutable *float64 (reassigned from a fresh copy, never written through)",
 	"RetryEntry.Error":      "immutable *string",
+	// #157: a run's rule ids are set once by startRun from a fresh slice
+	// (rules.Set.IDs) and never appended to or written through. Evidence:
+	// grep -rnE 'RuleIDs(\[[^]]*\])? *=|append\([^,]*RuleIDs' internal/orchestrator → only
+	// the startRun assignment and struct copies.
+	"RunEntry.RuleIDs":  "immutable []string (set once at dispatch, never written through)",
+	"RunRecord.RuleIDs": "immutable []string (copied from RunEntry.RuleIDs, never written through)",
+	// #202: a run's memory ids are set once by startRun from a fresh slice
+	// (memory.Selection.IDs). Evidence: grep -rnE
+	// 'MemoryIDs(\[[^]]*\])? *=|append\([^,]*MemoryIDs' internal/orchestrator →
+	// only the startRun assignment and the CompletedRun copy.
+	"RunEntry.MemoryIDs":    "immutable []string (set once at dispatch, never written through)",
 	"Issue.Priority":        "immutable *int from the tracker adapter",
 	"Issue.BranchName":      "immutable *string from the tracker adapter",
 	"Issue.Description":     "immutable *string from the tracker adapter",

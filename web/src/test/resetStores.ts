@@ -31,7 +31,15 @@ export function resetAllStores(): void {
     dashboardStateFilter: 'all',
     expandedRunningId: null,
     expandedPausedId: null,
+    newTaskOpen: false,
     logsIssueSearch: '',
+    rulesLayer: 'project',
+    rulesView: 'form',
+    rulesPreviewProfile: '',
+    rulesPreviewIssue: '',
+    settingsLayer: 'project',
+    settingsView: 'form',
+    memoryLessonsView: 'queue', // #203
   });
 
   // Clear browser storage so token-store cross-tab state doesn't leak.

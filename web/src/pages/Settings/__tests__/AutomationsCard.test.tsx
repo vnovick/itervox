@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AutomationsCard } from '../AutomationsCard';
 import { SUGGESTED_AUTOMATIONS } from '../automations/suggestedAutomations';
+import { findEditor, replaceEditorText } from '../../../test/codemirror';
 
 // The AutomationFormModal embeds a TestFireControl that uses useMutation.
 // Tests need a QueryClientProvider; wrap renders in this helper.
@@ -139,5 +140,35 @@ describe('AutomationsCard', () => {
 
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(MSG_AUTOMATIONS_SAVE_SUCCESS)).toBeInTheDocument();
+  }, 15000);
+
+  // #122: the automation instructions editor is CodeMirror; what is typed
+  // there is what Save hands to onSave.
+  it('saves the instructions typed in the CodeMirror editor unchanged', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(true);
+    const instructions =
+      '## QA\n\nCheck {{ issue.identifier }} — {% if trigger.pr_url %}{{ trigger.pr_url }}{% endif %}\n\t- `make verify`';
+
+    render(
+      withQueryClient(
+        <AutomationsCard
+          automations={[existingQaAutomation]}
+          availableProfiles={['qa']}
+          availableStates={['Ready for QA']}
+          availableLabels={['qa']}
+          onSave={onSave}
+        />,
+      ),
+    );
+
+    await user.click(screen.getAllByRole('button', { name: /edit/i })[0]);
+    const editor = await findEditor('Instructions');
+    replaceEditorText(editor, instructions);
+    await user.click(screen.getByRole('button', { name: /Save Changes/i }));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const saved = onSave.mock.calls[0][0] as AutomationDef[];
+    expect(saved[0].instructions).toBe(instructions);
   }, 15000);
 });

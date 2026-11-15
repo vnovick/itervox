@@ -109,13 +109,13 @@ describe('BoardColumn', () => {
     expect(overlay.className).toContain('opacity-0');
   });
 
-  // All columns use bg-theme-bg-soft per the prototype lane spec
-  it('applies bg-soft class for all states', () => {
+  // Every column uses the shared .board-column surface, whatever its state.
+  it('applies the board-column surface for all states', () => {
     for (const state of ['Done', 'In Progress', 'Blocked', 'Backlog']) {
       const { container } = render(
         <BoardColumn state={state} issues={[]} isOver={false} onSelect={vi.fn()} />,
       );
-      expect((container.firstChild as HTMLElement).className).toContain('bg-theme-bg-soft');
+      expect(container.firstChild as HTMLElement).toHaveClass('board-column');
     }
   });
 

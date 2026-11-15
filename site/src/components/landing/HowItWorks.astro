@@ -1,0 +1,141 @@
+---
+const steps = [
+  {
+    n: '1', tag: 'Tracker', title: 'Issues appear in your tracker',
+    body: 'Itervox polls Linear, GitHub Issues, or Markdown files under <code>.itervox/issues/</code>, and claims the work that is ready.',
+    rows: [
+      { color: '#94a3b8', id: 'ENG-148', text: 'Paginate the audit log' },
+      { color: '#94a3b8', id: 'ENG-149', text: 'Audit log pages in admin' },
+    ],
+  },
+  {
+    n: '2', tag: 'Agents', title: 'Agents spawn in parallel, one per issue',
+    body: 'Each agent runs in its own git worktree, with retries, stall detection and live logs. Locally, or on SSH worker hosts.',
+    rows: [
+      { color: '#22c55e', id: 'ENG-148', text: 'claude', pill: 'Running', tone: 'pill-ok' },
+      { color: '#22c55e', id: 'ENG-145', text: 'codex @ build-1', pill: 'Running', tone: 'pill-ok' },
+    ],
+  },
+  {
+    n: '3', tag: 'PRs', title: 'PRs opened, issues transitioned',
+    body: "When the work is done the PR link lands on the issue and its state moves on. You review and merge — that's it.",
+    rows: [
+      { color: '#3b6cf0', id: 'ENG-142', text: 'pull/87', pill: 'In Review', tone: 'pill-accent' },
+      { color: '#3b6cf0', id: 'ENG-136', text: 'merged', pill: 'Done', tone: '' },
+    ],
+  },
+];
+---
+<section id="how" class="wrap section">
+  <div class="section-head">
+    <div>
+      <span class="num">01 — HOW IT WORKS</span>
+      <h2 class="h2">You already have the agents. Now orchestrate them.</h2>
+    </div>
+    <p class="lead">Running coding agents by hand, one issue at a time, doesn't scale. Itervox turns them into a fleet.</p>
+  </div>
+  <div class="grid-3">
+    {steps.map((s) => (
+      <article class="glass step">
+        <div class="step-top"><span class="step-n">{s.n}</span><span class="pill">{s.tag}</span></div>
+        <h3 class="h3">{s.title}</h3>
+        <p class="body" set:html={s.body} />
+        <div class="glass-card rows">
+          {s.rows.map((r) => (
+            <div class="row">
+              <span class="dot" style={`background:${r.color}`}></span>
+              <span class="mono row-id">{r.id}</span>
+              <span>{r.text}</span>
+              {r.pill && <span class={`pill ${r.tone}`}>{r.pill}</span>}
+            </div>
+          ))}
+        </div>
+      </article>
+    ))}
+  </div>
+  <div class="glass terms">
+    <pre class="term"><span class="t-dim"># in your repository</span>
+<span class="t-acc">$</span> itervox quickstart
+<span class="t-dim">  detects tracker + agent CLI, writes WORKFLOW.md,</span>
+<span class="t-dim">  runs itervox doctor, starts the daemon</span>
+<span class="t-acc">$</span> itervox demo   <span class="t-dim"># or try a throwaway board first</span></pre>
+    <pre class="term hide-sm"><span class="t-dim">09:41:35</span> <span class="t-ok">INFO</span> worker: starting ENG-142 backend=claude
+<span class="t-dim">09:41:36</span> <span class="t-ok">INFO</span> dispatch complete dispatched=2 running=3
+<span class="t-dim">09:44:12</span> <span class="t-ok">INFO</span> worker: PR link commented pr_url=pull/87
+<span class="t-dim">09:44:12</span> <span class="t-ok">INFO</span> ENG-142 transitioned to="Done"</pre>
+  </div>
+</section>
+
+<style>
+  .step {
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .step-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .step-n {
+    font-family: var(--font-mono);
+    font-size: 44px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--accent-text);
+  }
+  .rows {
+    margin-top: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-radius: 16px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    min-width: 0;
+  }
+  .row .pill {
+    margin-left: auto;
+    font-size: 12px;
+  }
+  .row span {
+    white-space: nowrap;
+  }
+  .row-id {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .terms {
+    margin-top: 20px;
+    padding: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .terms .term {
+    flex: 1 1 420px;
+    min-width: 0;
+  }
+  @media (max-width: 820px) {
+    .step {
+      padding: 22px;
+    }
+    .step-n {
+      font-size: 34px;
+    }
+    .terms {
+      padding: 8px;
+      border-radius: 22px;
+    }
+    .terms .term {
+      flex-basis: 100%;
+      font-size: 13px;
+    }
+  }
+</style>

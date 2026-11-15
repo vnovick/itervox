@@ -8,8 +8,13 @@
 //   - Judge: a small interface that returns pass/fail with a one-line reason.
 //   - Report: aggregates per-profile pass rate, formats human and JSON output.
 //
-// LLM-judge (Tier 3) and real Anthropic/OpenAI invocations are deferred to
-// P1.c/d; this package is enough to gate prompt regressions deterministically.
+// Recorded mode (EvaluateAll) replays the committed recording.jsonl files and
+// is the fast, free gate in `make verify`. Live mode (RunLive, #189) runs each
+// scenario against a real backend CLI with the profile's current SOUL.md /
+// INSTRUCTIONS.md and resolved rules, records the transcript in the same
+// format and judges it with the same judges; it spends tokens, so it runs
+// only on explicit opt-in (ITERVOX_EVALS_LIVE=1). An LLM judge (Tier 3) is
+// still deferred.
 package evals
 
 import (
@@ -17,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -29,8 +35,8 @@ type Scenario struct {
 	Expect  ScenarioExpect
 }
 
-// ScenarioInput is the input fixture (intentionally tiny; the recorded LLM
-// response is what carries the model output).
+// ScenarioInput is the input fixture, parsed from input.yaml by ParseInput.
+// Recorded mode does not read it; live mode feeds it to the agent.
 type ScenarioInput struct {
 	IssueIdentifier string
 	IssueState      string
@@ -38,7 +44,16 @@ type ScenarioInput struct {
 	IssueBody       string
 	BranchName      string
 	CommentBody     string
+	CommentAuthor   string
 	PRNumber        int
+	PRLabels        []string
+	RequiredChecks  []RequiredCheck
+	// Candidates lists the open PRs when input.yaml sets pr.candidates;
+	// HasCandidates distinguishes an explicit empty list (no open PR) from
+	// an absent key (the single pr.number PR).
+	Candidates    []PRCandidate
+	HasCandidates bool
+	PRDiff        string
 }
 
 // ScenarioExpect is the structural acceptance criterion. The minimum
@@ -49,7 +64,11 @@ type ScenarioExpect struct {
 	RequiredActionCalls []string
 	ForbiddenActions    []string
 	MarkerPhrases       []string
-	BlockedLabels       []string
+	// ForbiddenPhrases are absence checks (#189): no comment the agent
+	// emitted may contain any of them (e.g. the reject path must never
+	// carry the "/ai-approved" marker).
+	ForbiddenPhrases []string
+	BlockedLabels    []string
 }
 
 // Recording is the cached transcript. The minimum-viable shape is a list of
@@ -58,6 +77,10 @@ type ScenarioExpect struct {
 type Recording struct {
 	Actions  []string
 	Comments []string
+	// PromptDigest is the prompt version a live recording was made with,
+	// from its meta line (#201); empty for hand-written fixtures and live
+	// recordings made before #201.
+	PromptDigest string
 }
 
 // LoadScenarios walks the fixture root and returns all Scenarios it can read.
@@ -138,42 +161,57 @@ func IsRecordingStale(scenario Scenario, soulMtime, instructionsMtime int64) boo
 
 // JudgeVerdict is the result of evaluating one scenario against its
 // expectation. A passing scenario reports pass=true; the reason field is the
-// one-line explanation surfaced in the report.
+// one-line explanation surfaced in the report. Failures lists every
+// assertion that failed (#201), in the order the judge checks them; Reason
+// is the first of them.
 type JudgeVerdict struct {
-	Pass   bool
-	Reason string
+	Pass     bool
+	Reason   string
+	Failures []string
+}
+
+// failedVerdict is the verdict for a non-empty list of failed assertions.
+func failedVerdict(failures []string) JudgeVerdict {
+	return JudgeVerdict{Pass: false, Reason: failures[0], Failures: failures}
 }
 
 // JudgeDeterministic is the Tier-1 judge: check that the recorded transcript
 // called the required actions and omitted the forbidden ones.
 func JudgeDeterministic(scenario Scenario, recording Recording) JudgeVerdict {
+	var failures []string
 	for _, want := range scenario.Expect.RequiredActionCalls {
 		if !containsString(recording.Actions, want) {
-			return JudgeVerdict{Pass: false, Reason: "missing required action: " + want}
+			failures = append(failures, "missing required action: "+want)
 		}
 	}
 	for _, banned := range scenario.Expect.ForbiddenActions {
 		if containsString(recording.Actions, banned) {
-			return JudgeVerdict{Pass: false, Reason: "forbidden action called: " + banned}
+			failures = append(failures, "forbidden action called: "+banned)
 		}
+	}
+	if len(failures) > 0 {
+		return failedVerdict(failures)
 	}
 	return JudgeVerdict{Pass: true, Reason: "all required actions present"}
 }
 
 // JudgeStructural is the Tier-2 judge: check that the agent emitted at least
-// one comment containing each marker phrase the scenario expects.
+// one comment containing each marker phrase the scenario expects, and that
+// no comment contains a forbidden phrase (the absence check, #189).
 func JudgeStructural(scenario Scenario, recording Recording) JudgeVerdict {
+	var failures []string
+	for _, banned := range scenario.Expect.ForbiddenPhrases {
+		if slices.ContainsFunc(recording.Comments, func(c string) bool { return strings.Contains(c, banned) }) {
+			failures = append(failures, "forbidden phrase present in comments: "+banned)
+		}
+	}
 	for _, phrase := range scenario.Expect.MarkerPhrases {
-		found := false
-		for _, c := range recording.Comments {
-			if strings.Contains(c, phrase) {
-				found = true
-				break
-			}
+		if !slices.ContainsFunc(recording.Comments, func(c string) bool { return strings.Contains(c, phrase) }) {
+			failures = append(failures, "marker phrase missing from comments: "+phrase)
 		}
-		if !found {
-			return JudgeVerdict{Pass: false, Reason: "marker phrase missing from comments: " + phrase}
-		}
+	}
+	if len(failures) > 0 {
+		return failedVerdict(failures)
 	}
 	return JudgeVerdict{Pass: true, Reason: "marker phrases present"}
 }
@@ -199,11 +237,24 @@ type ScenarioVerdict struct {
 	Deterministic JudgeVerdict
 	Structural    JudgeVerdict
 	Stale         bool
+	// Error is a live-mode failure that kept the transcript from being
+	// judged as a complete run: the backend failed, the run hit its budget,
+	// or the suite budget ran out before it started. Empty in recorded mode.
+	Error string
+	// PromptDigest is the prompt version the transcript was produced with
+	// (#201), computed with the daemon's prompt digest (#186). A live run
+	// computes it from the workflow it ran (DigestSource "live"); recorded
+	// mode reads it from the recording's meta line (DigestSource
+	// "recording"), which only recordings made by a live run since #201
+	// carry. Empty when unknown.
+	PromptDigest string
+	DigestSource string
 }
 
-// Pass returns true when every judge verdict on this scenario passes.
+// Pass returns true when every judge verdict on this scenario passes and
+// the run itself did not fail.
 func (v ScenarioVerdict) Pass() bool {
-	return v.Deterministic.Pass && v.Structural.Pass
+	return v.Error == "" && v.Deterministic.Pass && v.Structural.Pass
 }
 
 // Aggregate counts pass/fail across the report.
@@ -244,6 +295,9 @@ func (r Report) Format() string {
 			stale = " (stale recording)"
 		}
 		fmt.Fprintf(&b, "  %s %s/%s%s\n", mark, v.Profile, v.Scenario, stale)
+		if v.Error != "" {
+			fmt.Fprintf(&b, "    run:           %s\n", v.Error)
+		}
 		if !v.Deterministic.Pass {
 			fmt.Fprintf(&b, "    deterministic: %s\n", v.Deterministic.Reason)
 		}

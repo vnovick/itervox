@@ -1,0 +1,18 @@
+{
+  "inputTokens": 900,
+  "outputTokens": 90,
+  "costUsdEstimated": 0.31,
+  "costCoverage": {
+    "claudeRuns": 1,
+    "codexRuns": 0,
+    "runsByBackend": {
+      "claude": 1,
+      "cursor": 1,
+      "opencode": 2
+    },
+    "costBackends": [
+      "claude",
+      "opencode"
+    ]
+  }
+}

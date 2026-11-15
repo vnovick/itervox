@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/vnovick/itervox/internal/procgroup"
@@ -70,13 +70,13 @@ func validateCLI(name, hint string) error {
 		}
 	}
 
-	if !validateCLIShellFallback {
-		return fmt.Errorf("%s CLI not available: not found on PATH (%s)", name, hint)
-	}
-
 	// Attempt 2: fall back to an interactive login shell so ~/.zshrc /
 	// ~/.bashrc PATH additions and shell aliases/functions are picked up.
+	// There is none on a Windows host without bash (loginShell is "").
 	shell := loginShell()
+	if !validateCLIShellFallback || shell == "" {
+		return fmt.Errorf("%s CLI not available: not found on PATH (%s)", name, hint)
+	}
 	// Bounded stderr (fix round 1, M7): an rc file can print arbitrarily
 	// much, and only the tail explains a failure.
 	stderr := newTailBuffer(maxValidationStderrBytes)
@@ -108,17 +108,15 @@ const validationWaitDelay = 2 * time.Second
 
 func buildValidationShellCommand(ctx context.Context, shell, invocation string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, shell, "-ilc", invocation)
-	// Group kill on the 5s deadline plus a WaitDelay (M7). Configure sets
-	// Setpgid; it is replaced below by Setsid, which ALSO makes the shell
-	// the leader of a new process group (pgid == pid), so procgroup's
-	// Cancel — Kill(cmd.Process.Pid) — still reaches the whole group.
-	// Setsid and Setpgid cannot be combined: setpgid after setsid fails
-	// with EPERM for a session leader.
-	procgroup.Configure(cmd, validationWaitDelay)
-	// Detach the fallback login shell from the caller's controlling TTY so an
-	// interactive rc file cannot steal or leave behind the foreground process
-	// group just before Bubble Tea starts.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Group kill on the 5s deadline plus a WaitDelay (M7). On Unix
+	// ConfigureDetached replaces Configure's Setpgid with Setsid, which
+	// ALSO makes the shell the leader of a new process group (pgid == pid),
+	// so procgroup's Cancel — Kill(cmd.Process.Pid) — still reaches the
+	// whole group. Setsid detaches the fallback login shell from the
+	// caller's controlling TTY so an interactive rc file cannot steal or
+	// leave behind the foreground process group just before Bubble Tea
+	// starts.
+	procgroup.ConfigureDetached(cmd, validationWaitDelay)
 	return cmd
 }
 
@@ -166,6 +164,9 @@ func (c *ClaudeRunner) RunTurn(
 	if err := rejectNULPrompt(prompt); err != nil {
 		return TurnResult{Failed: true, FailureText: err.Error()}, err
 	}
+	if err := refuseRemoteIsolation(ctx, workerHost); err != nil { // #258
+		return TurnResult{Failed: true, FailureText: err.Error()}, err
+	}
 	// turnCtx is always cancellable, even when the hard turn timeout is
 	// disabled (turnTimeoutMs <= 0): on a read error we must be able to kill
 	// the subprocess immediately rather than relying on a no-op cancel that
@@ -182,10 +183,22 @@ func (c *ClaudeRunner) RunTurn(
 	}
 	defer cancel()
 
+	// Created before the command is built: a sandboxed turn (#258) gets
+	// the log dir writable only if it exists by then.
+	logDirEnv := ""
+	if logDir != "" && workerHost == "" {
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
+		}
+		logDirEnv = "CLAUDE_CODE_LOG_DIR=" + logDir
+	}
 	var cmd *exec.Cmd
 	var stdinFeed *remoteStdin // SSH only: the script, then held open (CORE-155)
 	var promptIn *os.File      // local only: the prompt, for the CLI's stdin (CORE-156)
 	defer func() { closePromptFile(promptIn) }()
+	var steer *Steering              // #178: local claude with live steering only
+	var live *liveInput              // its stream-json stdin
+	defer func() { live.finish() }() // no-op when nil; stops the writer on every return
 	if workerHost != "" {
 		// Remote execution: SSH to host and run command in a login shell.
 		// The workspace path is expected to exist on the remote host (e.g. NFS share).
@@ -218,43 +231,71 @@ func (c *ClaudeRunner) RunTurn(
 			return TurnResult{Failed: true}, err
 		}
 	} else {
-		if claudeReadsPrompt(sessionID, prompt) {
+		// #178: with live steering the prompt and any operator message
+		// reach the CLI through a stream-json pipe instead of the prompt
+		// file (see steer.go).
+		steer = liveSteeringFor(ctx, workerHost, sessionID, prompt)
+		if steer != nil {
+			var err error
+			if live, err = newLiveInput(); err != nil {
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
+		} else if claudeReadsPrompt(sessionID, prompt) {
 			var err error
 			if promptIn, err = promptFile(prompt); err != nil {
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
 			}
 		}
-		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
-			// Clean absolute path with no flags — run the binary directly,
-			// no shell needed; the prompt file is its stdin.
-			cmd = exec.CommandContext(turnCtx, command, buildDirectArgs(sessionID, prompt, permissionMode)...)
-			setPromptStdin(cmd, promptIn)
+		shell := loginShell()
+		if name, head, direct := directInvocation(command, shell, "claude"); direct {
+			// Clean absolute path with no flags (or, on Windows, no bash to
+			// run a command line with) — run the binary directly, no shell
+			// needed; the prompt file is its stdin.
+			var err error
+			argv := append(append([]string{name}, head...), buildDirectArgsLive(sessionID, prompt, permissionMode, live != nil)...)
+			if cmd, err = agentCommand(ctx, turnCtx, argv, logDir); err != nil { // #258: sandboxed when the run asks
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
+			if live != nil {
+				cmd.Stdin = live.r
+			} else {
+				setPromptStdin(cmd, promptIn)
+			}
 		} else {
 			// Bare name — wrap in login shell so PATH is resolved at
 			// runtime. The prompt file is fd 3, redirected to the CLI's
 			// stdin by the command itself, so a login profile that reads
 			// stdin cannot consume it.
-			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
-				buildShellCmd(command, sessionID, prompt, localPromptRedirectFor(promptIn), permissionMode))
-			setPromptFD3(cmd, promptIn)
+			redirect := localPromptRedirectFor(promptIn)
+			if live != nil {
+				redirect = localPromptRedirect
+			}
+			var err error
+			argv := []string{shell, "-lc",
+				RunEnvFrom(ctx).shellPrefix() + buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil)}
+			if cmd, err = agentCommand(ctx, turnCtx, argv, logDir); err != nil { // #258
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
+			if live != nil {
+				setPromptFD3(cmd, live.r)
+			} else {
+				setPromptFD3(cmd, promptIn)
+			}
 		}
 	}
 	setProcessGroup(cmd)
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
 	}
-	logDirEnv := ""
-	if logDir != "" && workerHost == "" {
-		if err := os.MkdirAll(logDir, 0o755); err != nil {
-			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
-		}
-		logDirEnv = "CLAUDE_CODE_LOG_DIR=" + logDir
-	}
 	// Set unconditionally: Go inherits the parent environment when cmd.Env is
 	// nil, so leaving it unset on any path silently drops the marker. For the
 	// SSH path cmd.Env applies to the local ssh process only — the marker
 	// travels in the shell command instead (see below).
-	cmd.Env = itervoxAgentEnv(logDirEnv)
+	var runEnv []string
+	if workerHost == "" {
+		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
+	}
+	cmd.Env = itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -265,17 +306,22 @@ func (c *ClaudeRunner) RunTurn(
 	stderrBuf := newTailBuffer(maxStderrCaptureBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
+		live.abandon()
+		live = nil
 		return TurnResult{Failed: true}, fmt.Errorf("agent: start: %w", err)
 	}
 	stdinFeed.start()
+	if live != nil {
+		live.start(prompt, steer)
+	}
 	if workerHost == "" {
 		// CORE-042: record the local group in the orphan ledger until Wait
 		// has returned (the deferred call runs after cmd.Wait below).
 		defer procgroup.Track(ctx, cmd)()
 	}
 
-	result, readErr := readLines(turnCtx, log, onProgress, stdout, readTimeoutMs, "claude", ParseLine)
+	result, readErr := readLines(turnCtx, log, onProgress, stdout, readTimeoutMs, "claude", endOnResult(ParseLine, live))
 
 	if readErr != nil {
 		// The stream ended abnormally (idle read timeout or a read error such
@@ -292,6 +338,7 @@ func (c *ClaudeRunner) RunTurn(
 	// Wait regardless of readErr so we don't leave zombie processes.
 	waitErr := cmd.Wait()
 	stdinFeed.join() // Wait closed ssh's stdin pipe; the writer has returned
+	live.finish()    // #178: the CLI has exited; stop the live-input writer
 	if waitErr != nil && readErr == nil {
 		result.Failed = true
 	}
@@ -371,6 +418,18 @@ func buildDirectArgs(sessionID *string, prompt string, mode PermissionMode) []st
 	return args
 }
 
+// buildDirectArgsLive is buildDirectArgs; live adds the stream-json input
+// flags of a live-steered turn (#178, steer.go) after the shared flags.
+func buildDirectArgsLive(sessionID *string, prompt string, mode PermissionMode, live bool) []string {
+	args := buildDirectArgs(sessionID, prompt, mode)
+	if !live {
+		return args
+	}
+	n := len(sharedFlagsSliceFor(mode))
+	out := append(append(append([]string{}, args[:n]...), liveInputFlags...), args[n:]...)
+	return out
+}
+
 // buildShellCmd returns the full shell command string for bash/zsh -lc.
 // The prompt is never in it (CORE-156): when the turn takes a prompt, the
 // command ends in `-p` followed by promptRedirect, the redirection that
@@ -382,12 +441,21 @@ func buildDirectArgs(sessionID *string, prompt string, mode PermissionMode) []st
 // " --output-format ..." which bash interprets as `--output-format` being
 // the command name, surfacing as `--output-format: command not found`.
 func buildShellCmd(command string, sessionID *string, prompt, promptRedirect string, mode PermissionMode) string {
+	return buildShellCmdLive(command, sessionID, prompt, promptRedirect, mode, false)
+}
+
+// buildShellCmdLive is buildShellCmd; live adds the stream-json input flags
+// of a live-steered turn (#178, steer.go).
+func buildShellCmdLive(command string, sessionID *string, prompt, promptRedirect string, mode PermissionMode, live bool) string {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		slog.Warn("agent: empty command resolved at dispatch — falling back to 'claude'. Check WORKFLOW.md agent.command and any profile.command fields.")
 		command = "claude"
 	}
 	cmd := command + sharedFlagsStrFor(mode)
+	if live {
+		cmd += " " + strings.Join(liveInputFlags, " ")
+	}
 	if sessionID != nil && *sessionID != "" {
 		// Resume an existing session. When a prompt is also provided (e.g.,
 		// the user's reply to an input-required question), -p makes Claude
@@ -497,12 +565,9 @@ func toolDescription(name string, rawInput json.RawMessage) string {
 			return fmt.Sprintf("waiting on %d sub-agent(s)", n)
 		}
 		return ""
-	case "read":
-		return str("file_path")
-	case "write":
-		return str("file_path")
-	case "edit", "multiedit":
-		return str("file_path")
+	case "read", "write", "edit", "multiedit", "delete":
+		// Claude's file_path; OpenCode's filePath; Cursor's path.
+		return cmp.Or(str("file_path"), str("filePath"), str("path"))
 	case "glob":
 		p := str("pattern")
 		if d := str("path"); d != "" {
@@ -643,12 +708,36 @@ func setProcessGroup(cmd *exec.Cmd) {
 	procgroup.Configure(cmd, 5*time.Second)
 }
 
-// loginShell returns the user's login shell from $SHELL, falling back to bash.
+// loginShell returns the user's login shell from $SHELL, falling back to
+// bash. On Windows it is procgroup.Shell's bash instead ($SHELL there is
+// an MSYS path when set at all), or "" when there is none.
 func loginShell() string {
-	if sh := os.Getenv("SHELL"); sh != "" {
-		return sh
+	sh := os.Getenv("SHELL")
+	if sh == "" {
+		sh = "bash"
 	}
-	return "bash"
+	return procgroup.Shell(sh)
+}
+
+// directInvocation reports whether a local turn starts the agent CLI
+// without a shell, and if so its executable and leading arguments (the
+// turn's own flags follow). A clean absolute path with no flags always
+// runs directly. Anything else needs a login shell to resolve it — and
+// when there is none (shell == "", a Windows host without bash) the
+// command is split on whitespace and executed directly, the Windows PATH
+// finding the CLI; an empty command falls back to fallback.
+func directInvocation(command, shell, fallback string) (name string, head []string, direct bool) {
+	if filepath.IsAbs(command) && !strings.Contains(command, " ") {
+		return command, nil, true
+	}
+	if shell != "" {
+		return "", nil, false
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return fallback, nil, true
+	}
+	return fields[0], fields[1:], true
 }
 
 // ShellQuote wraps s in single quotes for bash. Its output is parsed only by
@@ -738,13 +827,14 @@ const streamReaderOverheadBytes = 2*streamReadBufferBytes + 128<<10
 var errStreamLineTooLong = fmt.Errorf("agent: stream line exceeds %d MiB cap", maxStreamLineBytes>>20)
 
 // isTerminalStreamType reports whether a top-level "type" ends a turn for
-// either parser: Claude "result" (ParseLine) or Codex "turn.completed" /
-// "turn.failed" (ParseCodexLine). One set serves both runners — a
+// any parser: Claude and Cursor "result" (ParseLine), Codex
+// "turn.completed" / "turn.failed" (ParseCodexLine), the custom protocol's
+// "done" / "failed" (ParseCustomLine; OpenCode has no terminal line). One set serves both runners — a
 // Claude-only type on the Codex stream merely buffers and is then ignored by
 // ParseCodexLine.
 func isTerminalStreamType(t string) bool {
 	switch t {
-	case "result", "turn.completed", "turn.failed":
+	case "result", "turn.completed", "turn.failed", "done", "failed":
 		return true
 	}
 	return false

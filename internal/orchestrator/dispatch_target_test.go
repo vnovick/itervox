@@ -186,3 +186,31 @@ func TestResolveDispatchTarget_ResumeEmptyCommandWithConflictingProfileNeverPair
 	got = resolveResumeTarget("", "codex", "/opt/bin/agent-wrapper", "claude")
 	assert.Equal(t, dispatchTarget{Command: "/opt/bin/agent-wrapper", RunnerCommand: "@@itervox-backend=codex /opt/bin/agent-wrapper", Backend: "codex"}, got)
 }
+
+// The new backends resume on their own binary: an empty stored command
+// resolves to cursor-agent for a cursor session (the backend name is not
+// its binary), and a custom session, which has no binary, never turns a
+// mismatching command into one.
+func TestResolveResumeTarget_NewBackendBinaries(t *testing.T) {
+	got := resolveResumeTarget("", "cursor", "", "claude")
+	assert.Equal(t, "cursor-agent", got.Command)
+	assert.Equal(t, "cursor", got.Backend)
+	assert.Equal(t, "cursor-agent", got.RunnerCommand, "the binary names the backend; no hint needed")
+
+	got = resolveResumeTarget("claude --verbose", "opencode", "", "claude")
+	assert.Equal(t, "opencode", got.Command, "a stored opencode session resumes on the opencode binary")
+	assert.NotEmpty(t, got.Reason)
+
+	got = resolveResumeTarget("", "custom", "", "./agent.sh")
+	assert.Equal(t, "./agent.sh", got.Command, "custom falls back to agent.command")
+	assert.Equal(t, config.BackendHintPrefix+"custom ./agent.sh", got.RunnerCommand)
+
+	got = resolveResumeTarget("codex exec", "custom", "", "./agent.sh")
+	assert.Equal(t, "codex", got.Backend, "a custom session cannot resume on a codex command; it keeps codex")
+	assert.Equal(t, "codex exec", got.RunnerCommand)
+	assert.Contains(t, got.Reason, "kept")
+
+	assert.True(t, resumeBackendMatches("opencode", "opencode"))
+	assert.False(t, resumeBackendMatches("opencode", "cursor"))
+	assert.False(t, resumeBackendMatches("gemini", "gemini"))
+}

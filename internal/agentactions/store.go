@@ -21,8 +21,20 @@ type Grant struct {
 	RunSessionID     string
 	AllowedActions   []string
 	CreateIssueState string
-	MoveIssueState   string
-	ExpiresAt        time.Time
+	// CreateIssueLabels is the profile's create_issue_labels allow-list: the
+	// only labels a create_issue call under this grant may put on the new
+	// issue (#253). Empty allows none.
+	CreateIssueLabels []string
+	MoveIssueState    string
+	ExpiresAt         time.Time
+}
+
+// Scope is the optional per-action targeting a grant carries: the
+// create_issue state and label allow-list, and the move_state target.
+type Scope struct {
+	CreateIssueState  string
+	CreateIssueLabels []string
+	MoveIssueState    string
 }
 
 // Store is an in-memory, concurrency-safe action-grant registry. All access is
@@ -51,6 +63,14 @@ func (s *Store) Issue(issueIdentifier, runSessionID string, allowedActions []str
 // IssueScoped creates a new action grant with optional target-state scopes for
 // state-mutating actions.
 func (s *Store) IssueScoped(issueIdentifier, runSessionID string, allowedActions []string, createIssueState, moveIssueState string, ttl time.Duration) (string, error) {
+	return s.IssueWithScope(issueIdentifier, runSessionID, allowedActions, Scope{
+		CreateIssueState: createIssueState, MoveIssueState: moveIssueState,
+	}, ttl)
+}
+
+// IssueWithScope creates a new action grant carrying every scope field,
+// including the create_issue label allow-list.
+func (s *Store) IssueWithScope(issueIdentifier, runSessionID string, allowedActions []string, scope Scope, ttl time.Duration) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -67,12 +87,13 @@ func (s *Store) IssueScoped(issueIdentifier, runSessionID string, allowedActions
 	actions := slices.Clone(allowedActions)
 	slices.Sort(actions)
 	s.grants[token] = Grant{
-		IssueIdentifier:  issueIdentifier,
-		RunSessionID:     runSessionID,
-		AllowedActions:   actions,
-		CreateIssueState: createIssueState,
-		MoveIssueState:   moveIssueState,
-		ExpiresAt:        expiresAt,
+		IssueIdentifier:   issueIdentifier,
+		RunSessionID:      runSessionID,
+		AllowedActions:    actions,
+		CreateIssueState:  scope.CreateIssueState,
+		CreateIssueLabels: slices.Clone(scope.CreateIssueLabels),
+		MoveIssueState:    scope.MoveIssueState,
+		ExpiresAt:         expiresAt,
 	}
 	return token, nil
 }

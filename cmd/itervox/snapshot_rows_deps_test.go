@@ -1,9 +1,9 @@
 package main
 
 import (
-	"time"
-
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -267,4 +267,63 @@ func TestDependencyGraphRowsInferredProvenance(t *testing.T) {
 	for _, id := range []string{"ENG-8", "ENG-9", "ENG-10", "ENG-11", "ENG-12", "ENG-13"} {
 		assert.True(t, identifiers[id], "expected node %s in graph", id)
 	}
+}
+
+// TestSnapshotOmitsCandidateSeenAndEdgelessGraphNodes (#210): the dashboard
+// frame carries no candidateSeen key (the deps auto-analyze scheduler still
+// reads the in-process field) and no graph node that no edge touches.
+func TestSnapshotOmitsCandidateSeenAndEdgelessGraphNodes(t *testing.T) {
+	s := func(v string) *string { return &v }
+	state := orchestrator.State{
+		TerminalStates: []string{"Done"},
+		DependencyAudit: map[string]*orchestrator.DependencyAuditEntry{
+			"ENG-1": {Identifier: "ENG-1", IssueState: "Todo"}, // no blocker, no dependent
+			"ENG-2": {Identifier: "ENG-2", IssueState: "Todo", BlockedBy: []domain.BlockerRef{
+				{Identifier: s("ENG-3"), State: s("Todo")},
+			}},
+			"ENG-3": {Identifier: "ENG-3", IssueState: "Todo"}, // a blocker: kept
+			"ENG-4": {Identifier: "ENG-4", IssueState: "Done"}, // no blocker, no dependent
+		},
+		InferredDeps: map[string][]orchestrator.InferredDepEntry{
+			"ENG-6": {{Source: "ENG-5", SourceKnown: true}},
+		},
+		CandidateSeen: []orchestrator.CandidateSeenRow{{Identifier: "ENG-1"}, {Identifier: "ENG-2"}},
+	}
+	nodes, edges := dependencyGraphRows(state)
+	snap := server.StateSnapshot{
+		DependencyGraphNodes: nodes,
+		DependencyGraphEdges: edges,
+		CandidateSeen:        snapshotCandidateSeenRows(state.CandidateSeen),
+	}
+	require.Len(t, snap.CandidateSeen, 2, "the in-process field the auto-analyze scheduler reads is still filled")
+
+	data, err := json.Marshal(snap)
+	require.NoError(t, err)
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &wire))
+	assert.NotContains(t, wire, "candidateSeen", "candidateSeen has no API reader and is not sent")
+
+	var wireNodes []server.DependencyGraphNodeRow
+	require.NoError(t, json.Unmarshal(wire["dependencyGraphNodes"], &wireNodes))
+	ids := make([]string, 0, len(wireNodes))
+	for _, n := range wireNodes {
+		ids = append(ids, n.Identifier)
+	}
+	assert.Equal(t, []string{"ENG-2", "ENG-3", "ENG-5", "ENG-6"}, ids, "only nodes an edge touches, sorted")
+	require.Len(t, edges, 2)
+	for _, n := range wireNodes {
+		if n.Identifier == "ENG-2" {
+			assert.Equal(t, "Todo", n.State, "an endpoint keeps its audited state")
+		}
+	}
+
+	// No edges at all: no nodes on the wire either.
+	nodes, edges = dependencyGraphRows(orchestrator.State{DependencyAudit: map[string]*orchestrator.DependencyAuditEntry{
+		"ENG-1": {Identifier: "ENG-1", IssueState: "Todo"},
+	}})
+	assert.Empty(t, nodes)
+	assert.Empty(t, edges)
+	data, err = json.Marshal(server.StateSnapshot{DependencyGraphNodes: nodes, DependencyGraphEdges: edges})
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "dependencyGraphNodes")
 }

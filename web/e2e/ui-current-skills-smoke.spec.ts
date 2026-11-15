@@ -1,7 +1,8 @@
 // T-97 — Phase-1 skills inventory e2e smoke (route-mocked).
 //
 // Boots the dashboard with a minimal skills inventory served via mockApi
-// overrides and asserts the SkillsCard renders, Re-scan triggers the right
+// overrides and asserts the SkillsCard renders on Repo Analysis →
+// Capabilities (#200; it moved from Settings), Re-scan triggers the right
 // mutation, and the Fix button on a non-destructive recommendation calls
 // /api/v1/skills/fix.
 
@@ -47,7 +48,7 @@ const fakeIssues = [
 
 test.describe('T-97 skills smoke', () => {
   test('SkillsCard hydrates from /api/v1/skills/inventory + /issues', async ({ page }) => {
-    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/settings' });
+    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/repo#capabilities' });
     api.override(/\/api\/v1\/skills\/inventory$/, async (route) =>
       route.fulfill({
         status: 200,
@@ -66,12 +67,15 @@ test.describe('T-97 skills smoke', () => {
     // Reload to pick up the new overrides.
     await page.reload();
 
-    await expect(page.locator('h2#section-skills')).toContainText('Skills Inventory');
+    await expect(page.getByRole('tab', { name: 'Capabilities' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
     await expect(page.getByText('Profile not seen in recent runs')).toBeVisible();
   });
 
   test('Re-scan button POSTs to /api/v1/skills/scan', async ({ page }) => {
-    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/settings' });
+    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/repo#capabilities' });
     api.override(/\/api\/v1\/skills\/inventory$/, async (route) =>
       route.fulfill({
         status: 200,
@@ -92,7 +96,7 @@ test.describe('T-97 skills smoke', () => {
   });
 
   test('Analytics section renders runtime recommendations (T-104/T-106)', async ({ page }) => {
-    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/settings' });
+    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/repo#usage' });
     api.override(/\/api\/v1\/skills\/inventory$/, async (route) =>
       route.fulfill({
         status: 200,
@@ -145,7 +149,7 @@ test.describe('T-97 skills smoke', () => {
   });
 
   test('Non-destructive Fix button POSTs to /api/v1/skills/fix without confirm', async ({ page }) => {
-    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/settings' });
+    const { api } = await bootApp(page, { scenario: quickstartScenario, route: '/repo#capabilities' });
     api.override(/\/api\/v1\/skills\/inventory$/, async (route) =>
       route.fulfill({
         status: 200,

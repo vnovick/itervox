@@ -1,0 +1,295 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/vnovick/itervox/internal/apitokens"
+	"github.com/vnovick/itervox/internal/logging"
+	"github.com/vnovick/itervox/internal/sysmon"
+)
+
+// changes.go — #215: the run context (GET /api/v1/issues/{identifier}/context)
+// and the worktree diff (GET /api/v1/issues/{identifier}/diff).
+//
+// Scopes. Both routes are viewer reads. The run context carries only
+// redacted, bounded text (the last assistant step, the last tool call's
+// target, never tool output). The diff's file list (paths, statuses, line
+// counts) is viewer; a file's hunks (?file=) need operator, because an
+// agent can commit a secret and a hunk shows it verbatim. Below admin the
+// hunks are additionally passed through logging.RedactString (known secret
+// shapes, whitespace preserved); admins see them as written.
+
+// CapabilityRunContext is advertised in StateSnapshot.Capabilities when the
+// daemon serves the run-context and diff endpoints (#215).
+const CapabilityRunContext = "run_context"
+
+// Errors a ChangesClient returns, mapped to HTTP statuses.
+var (
+	// ErrNoWorktree: the issue has no worktree on disk (404 no_worktree).
+	ErrNoWorktree = errors.New("server: issue has no worktree")
+	// ErrDiffBaseNotFound: no base ref has a merge base with the worktree's
+	// HEAD (404 base_not_found).
+	ErrDiffBaseNotFound = errors.New("server: base branch not found")
+	// ErrBadDiffBase: the base parameter is not a ref name (400).
+	ErrBadDiffBase = errors.New("server: invalid base")
+	// ErrDiffFileNotChanged: ?file= is not in the diff (404 file_not_changed).
+	ErrDiffFileNotChanged = errors.New("server: file is not changed")
+)
+
+// RunToolCall is the run's most recent tool call: its name and target,
+// never its output.
+type RunToolCall struct {
+	Name   string    `json:"name"`
+	Target string    `json:"target,omitempty"`
+	At     time.Time `json:"at,omitzero"`
+}
+
+// RunSteerRow is one delivered steering message (redacted, bounded).
+type RunSteerRow struct {
+	Text     string    `json:"text"`
+	At       time.Time `json:"at"`
+	Delivery string    `json:"delivery,omitempty"`
+}
+
+// HandoffRow is one handoff in the issue's worktree.
+type HandoffRow struct {
+	Title   string `json:"title"`
+	Path    string `json:"path"`
+	Partial bool   `json:"partial,omitempty"`
+}
+
+// RunContextRow is what a ChangesClient knows about an issue's current run
+// (Live) or its latest finished one.
+type RunContextRow struct {
+	RunID             string        `json:"runId"`
+	Live              bool          `json:"live"`
+	Kind              string        `json:"kind,omitempty"`
+	Profile           string        `json:"profile,omitempty"`
+	Backend           string        `json:"backend,omitempty"`
+	StartedAt         time.Time     `json:"startedAt,omitzero"`
+	FinishedAt        time.Time     `json:"finishedAt,omitzero"`
+	Outcome           string        `json:"outcome,omitempty"`
+	UpdatedAt         time.Time     `json:"updatedAt,omitzero"`
+	BaseBranch        string        `json:"baseBranch,omitempty"`
+	CurrentStep       string        `json:"currentStep,omitempty"`
+	LastToolCall      *RunToolCall  `json:"lastToolCall,omitempty"`
+	ToolCalls         int           `json:"toolCalls"`
+	TurnCount         int           `json:"turnCount"`
+	InputTokens       int           `json:"inputTokens"`
+	OutputTokens      int           `json:"outputTokens"`
+	TotalTokens       int           `json:"totalTokens"`
+	PendingInput      string        `json:"pendingInput,omitempty"`
+	PendingApproval   bool          `json:"pendingApproval,omitempty"`
+	QueuedSteers      int           `json:"queuedSteers"`
+	Steers            []RunSteerRow `json:"steers"`
+	GuardrailBlocks   int           `json:"guardrailBlocks"`
+	LastGuardrailKind string        `json:"lastGuardrailKind,omitempty"`
+	// Playbook is the live run's task-type playbook (#218).
+	Playbook string `json:"playbook,omitempty"`
+	// Resources is the run's resource use (system visibility): the latest
+	// sample of a live run, the final one of a finished run.
+	Resources *sysmon.RunUsage `json:"resources,omitempty"`
+}
+
+// DiffFileRow is one changed file.
+type DiffFileRow struct {
+	Path      string `json:"path"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Binary    bool   `json:"binary,omitempty"`
+}
+
+// DiffResponse is GET /api/v1/issues/{identifier}/diff without ?file=.
+type DiffResponse struct {
+	Identifier string        `json:"identifier"`
+	Base       string        `json:"base"`
+	MergeBase  string        `json:"mergeBase"`
+	Files      []DiffFileRow `json:"files"`
+	Truncated  bool          `json:"truncated,omitempty"`
+	// HunksAllowed tells the client whether ?file= is open to its scope.
+	HunksAllowed bool `json:"hunksAllowed"`
+	// Source is what was diffed (#238): "worktree" (the worktree against
+	// the merge base) or "pr" (the pull request's files, base...head).
+	// Sources lists what ?source= may ask for: "pr" once the issue has a
+	// GitHub PR, "worktree" while a run is live or when there is no PR.
+	Source  string   `json:"source,omitempty"`
+	Sources []string `json:"sources,omitempty"`
+	// PRURL and HeadSHA name the pull request (source "pr", or whenever
+	// one exists).
+	PRURL   string `json:"prUrl,omitempty"`
+	HeadSHA string `json:"headSha,omitempty"`
+	// PRError says why the PR's files could not be read when the diff fell
+	// back to the worktree ("github_failed", "pr_not_found").
+	PRError string `json:"prError,omitempty"`
+	// WorktreePath is the worktree's directory on the daemon's host, for
+	// open-in-editor links.
+	WorktreePath string `json:"worktreePath,omitempty"`
+}
+
+// FileDiffResponse is GET /api/v1/issues/{identifier}/diff?file=.
+type FileDiffResponse struct {
+	Identifier string      `json:"identifier"`
+	Base       string      `json:"base"`
+	File       DiffFileRow `json:"file"`
+	Patch      string      `json:"patch"`
+	Truncated  bool        `json:"truncated,omitempty"`
+	Bytes      int         `json:"bytes"`
+	MaxBytes   int         `json:"maxBytes"`
+	// Source is "worktree" or "pr" (#238).
+	Source string `json:"source,omitempty"`
+}
+
+// RunContextResponse is GET /api/v1/issues/{identifier}/context.
+type RunContextResponse struct {
+	Identifier string         `json:"identifier"`
+	Run        *RunContextRow `json:"run"`
+	// Port is the issue workspace's ITERVOX_PORT (#250); omitted when the
+	// workspace has none.
+	Port int `json:"port,omitempty"`
+	// ChangedFiles are the worktree's changed files (nil when it has none
+	// or no worktree); ChangedFilesError says why they are missing.
+	ChangedFiles      []DiffFileRow `json:"changedFiles"`
+	ChangedFilesError string        `json:"changedFilesError,omitempty"`
+	Handoffs          []HandoffRow  `json:"handoffs"`
+}
+
+// ChangesClient backs the run-context and diff endpoints (#215).
+// cmd/itervox adapts the orchestrator. Diff and FileDiff run git and must
+// be called off the event loop (they are: an HTTP handler goroutine).
+type ChangesClient interface {
+	RunContext(identifier string) (RunContextRow, bool)
+	Diff(ctx context.Context, identifier, base string) (DiffResponse, error)
+	FileDiff(ctx context.Context, identifier, base, file string) (FileDiffResponse, error)
+	Handoffs(identifier string) []HandoffRow
+	// WorkspacePort is the issue workspace's ITERVOX_PORT, or 0 (#250).
+	WorkspacePort(identifier string) int
+}
+
+// writeChangesError maps a ChangesClient error to its response.
+func writeChangesError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNoWorktree):
+		writeError(w, http.StatusNotFound, "no_worktree", "the issue has no worktree")
+	case errors.Is(err, ErrDiffBaseNotFound):
+		writeError(w, http.StatusNotFound, "base_not_found", "no base branch to diff against was found")
+	case errors.Is(err, ErrBadDiffBase):
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_base", "base must be a branch name", "base")
+	case errors.Is(err, ErrDiffFileNotChanged):
+		writeErrorWithField(w, http.StatusNotFound, "file_not_changed", "the file is not changed against the base", "file")
+	case errors.Is(err, context.DeadlineExceeded):
+		writeError(w, http.StatusGatewayTimeout, "diff_timeout", "git did not answer in time")
+	default:
+		writeError(w, http.StatusInternalServerError, "diff_failed", "the diff could not be computed")
+	}
+}
+
+// handleIssueContext serves GET /api/v1/issues/{identifier}/context.
+func (s *Server) handleIssueContext(w http.ResponseWriter, r *http.Request) {
+	if s.changes == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_supported", "run context is not available")
+		return
+	}
+	id := chi.URLParam(r, "identifier")
+	resp := RunContextResponse{Identifier: id, Handoffs: s.changes.Handoffs(id), Port: s.changes.WorkspacePort(id)}
+	if run, ok := s.changes.RunContext(id); ok {
+		run.Resources = usageForScope(run.Resources, callerScope(r))
+		resp.Run = &run
+	}
+	diff, err := s.changes.Diff(r.Context(), id, "")
+	switch {
+	case err == nil:
+		resp.ChangedFiles = diff.Files
+	case errors.Is(err, ErrNoWorktree):
+		if resp.Run == nil && len(resp.Handoffs) == 0 {
+			writeError(w, http.StatusNotFound, "no_run_context", "the issue has no run and no worktree")
+			return
+		}
+		resp.ChangedFilesError = "no_worktree"
+	case errors.Is(err, ErrDiffBaseNotFound):
+		resp.ChangedFilesError = "base_not_found"
+	case errors.Is(err, context.DeadlineExceeded):
+		resp.ChangedFilesError = "diff_timeout"
+	default:
+		resp.ChangedFilesError = "diff_failed"
+	}
+	if resp.Handoffs == nil {
+		resp.Handoffs = []HandoffRow{}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleIssueDiff serves GET /api/v1/issues/{identifier}/diff[?base=][&file=][&source=].
+// #238: once the issue has a GitHub PR the default source is the PR's
+// files (what GitHub will merge); ?source=worktree keeps the live worktree.
+func (s *Server) handleIssueDiff(w http.ResponseWriter, r *http.Request) {
+	if s.changes == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_supported", "worktree diffs are not available")
+		return
+	}
+	id := chi.URLParam(r, "identifier")
+	q := r.URL.Query()
+	scope := callerScope(r)
+	file := q.Get("file")
+	if file != "" && !scope.Allows(apitokens.ScopeOperator) {
+		writeInsufficientScope(w, apitokens.ScopeOperator, scope)
+		return
+	}
+	src := s.resolveDiffSource(id)
+	switch q.Get("source") {
+	case "":
+	case DiffSourceWorktree:
+		src.use = DiffSourceWorktree
+	case DiffSourcePR:
+		if src.prURL == "" {
+			writeError(w, http.StatusNotFound, "no_pr", "the issue has no GitHub pull request")
+			return
+		}
+		src.use, src.explicit = DiffSourcePR, true
+	default:
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_source", `source must be "pr" or "worktree"`, "source")
+		return
+	}
+	if src.use == DiffSourcePR {
+		handled, prErr := s.servePRDiff(w, r, id, file, src)
+		if handled {
+			return
+		}
+		src.use, src.prError = DiffSourceWorktree, prErr // the PR could not be read: fall back
+	}
+	base := q.Get("base")
+	if file == "" {
+		diff, err := s.changes.Diff(r.Context(), id, base)
+		if err != nil {
+			writeChangesError(w, err)
+			return
+		}
+		diff.Identifier = id
+		diff.HunksAllowed = scope.Allows(apitokens.ScopeOperator)
+		if diff.Files == nil {
+			diff.Files = []DiffFileRow{}
+		}
+		src.decorate(&diff)
+		if s.changeReview != nil {
+			diff.WorktreePath = s.changeReview.WorktreePath(id)
+		}
+		writeJSON(w, http.StatusOK, diff)
+		return
+	}
+	fd, err := s.changes.FileDiff(r.Context(), id, base, file)
+	if err != nil {
+		writeChangesError(w, err)
+		return
+	}
+	fd.Identifier = id
+	fd.Source = DiffSourceWorktree
+	if scope != apitokens.ScopeAdmin {
+		fd.Patch = logging.RedactString(fd.Patch)
+	}
+	writeJSON(w, http.StatusOK, fd)
+}
