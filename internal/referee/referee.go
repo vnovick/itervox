@@ -61,11 +61,6 @@ func Run(ctx context.Context, prog string, args []string, env func(string) strin
 	return dispatch(ctx, prog, args, env, stdout, stderr)
 }
 
-// run is Run for the in-package tests, with the standalone program name.
-func run(ctx context.Context, args []string, env envFunc, stdout, stderr io.Writer) int {
-	return dispatch(ctx, "referee", args, env, stdout, stderr)
-}
-
 func dispatch(ctx context.Context, prog string, args []string, env envFunc, stdout, stderr io.Writer) int {
 	usage := strings.ReplaceAll(usageTemplate, "{prog}", prog)
 	if len(args) == 0 {

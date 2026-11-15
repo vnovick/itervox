@@ -3,6 +3,7 @@ package referee
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,11 @@ import (
 
 	"github.com/vnovick/itervox/internal/gitexec"
 )
+
+// run is Run with the standalone program name, for the tests.
+func run(ctx context.Context, args []string, env envFunc, stdout, stderr io.Writer) int {
+	return dispatch(ctx, "referee", args, env, stdout, stderr)
+}
 
 func TestMain(m *testing.M) {
 	gitexec.UnsetInProcess()
