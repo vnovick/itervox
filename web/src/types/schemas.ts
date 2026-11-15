@@ -2418,6 +2418,51 @@ export const DecisionsResponseSchema = z.object({
 });
 export type DecisionsResponse = z.infer<typeof DecisionsResponseSchema>;
 
+// Signed checks (agent.profiles.<name>.verify, 0.3.3) — GET
+// /api/v1/issues/{identifier}/attestations (internal/server/attestations.go).
+// `verified`: signature valid for the daemon's key and the record's tree is
+// the run's final tree (its seal); `reason` says why not.
+export const AttestationRecordSchema = z.object({
+  kind: z.string(),
+  name: z.string().optional(),
+  command: z.string().optional(),
+  pipefail: z.boolean().optional(),
+  exitCode: z.number(),
+  timedOut: z.boolean().optional(),
+  error: z.string().optional(),
+  startedAt: z.string().optional(),
+  durationMs: z.number().default(0),
+  outputSha256: z.string().optional(),
+  outputTail: z.string().optional(),
+  treeHash: z.string().optional(),
+  head: z.string().optional(),
+  keyId: z.string().optional(),
+  verified: z.boolean(),
+  reason: z.string().optional(),
+});
+export type AttestationRecord = z.infer<typeof AttestationRecordSchema>;
+
+export const AttestationRunSchema = z.object({
+  runId: z.string(),
+  profile: z.string().optional(),
+  finalTree: z.string().optional(),
+  records: z
+    .array(AttestationRecordSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type AttestationRun = z.infer<typeof AttestationRunSchema>;
+
+export const AttestationsResponseSchema = z.object({
+  identifier: z.string(),
+  keyId: z.string().optional(),
+  runs: z
+    .array(AttestationRunSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type AttestationsResponse = z.infer<typeof AttestationsResponseSchema>;
+
 export const SteeringPhraseSchema = z.object({ label: z.string(), message: z.string() });
 export type SteeringPhrase = z.infer<typeof SteeringPhraseSchema>;
 

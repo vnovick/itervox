@@ -811,6 +811,7 @@ agent:
 - Each check is written as a signed record to `.itervox/attestations/<identifier>/<run id>.jsonl` next to `WORKFLOW.md`: the command, its real exit code, start time and duration, the SHA-256 of the combined output and a redacted output tail, the hash of the working tree it ran on and the HEAD commit. Read them with [`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations) or check a file with [`itervox attest verify`](/cli/#itervox-attest--check-signed-check-records).
 - The agent's prompt names the checks (`- signed checks: …` in the `## Evidence (required)` block) so it does not spend turns recording them; anything it writes for them in its evidence file is ignored. Other `require_evidence` names are read from the file as before.
 - Reviewer and automation runs are not checked, as with `require_evidence`. The value must be a list of maps; a malformed entry is a config error, never dropped. Load-time only.
+- The dashboard shows the records in the issue panel's **Signed checks** section: each run's checks with their exit code, duration, short tree hash and whether the record and the run's seal verify.
 
 See [Signed checks](/guides/guardrails/#signed-checks) for the record format, the key and what it does and does not prove.
 
