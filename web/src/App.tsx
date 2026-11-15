@@ -21,6 +21,7 @@ import {
   AgentsIcon,
   AutomationsIcon,
   DashboardIcon,
+  FocusIcon,
   LogsIcon,
   MemoryIcon,
   RepoIcon,
@@ -42,6 +43,7 @@ import { CommandPaletteHost } from './components/itervox/CommandPaletteHost';
 import { AttentionNotifier } from './components/itervox/AttentionNotifier';
 import { getApiContext, routerBasename } from './auth/apiBase';
 import { isEmbeddedLanding, useEmbedded, useEmbeddedNavigateHook } from './hooks/useEmbeddedShell';
+import { FOCUS_PATH } from './hooks/useFocusIssue';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Sessions = lazy(() => import('./pages/Sessions'));
@@ -77,7 +79,16 @@ const NAV_ITEMS = [
   { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
+// Embedded in the desktop app, a window opens on the issue view; the
+// sidebar lists it right after the board so it can be reached again.
+const EMBEDDED_NAV_ITEMS = [
+  NAV_ITEMS[0],
+  { to: FOCUS_PATH, icon: <FocusIcon />, label: 'Issue view' },
+  ...NAV_ITEMS.slice(1),
+] as const;
+
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+  const embedded = useEmbedded();
   // CORE-078 — same count as the attention inbox and the page title.
   const attention = useAttentionCount();
   // #178 — sessions waiting for input badge the Sessions tab.
@@ -103,7 +114,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <span className="text-theme-text text-[17px] font-bold tracking-[-0.01em]">Itervox</span>
       </div>
       <nav className="flex flex-col gap-0.5">
-        {NAV_ITEMS.map((item) => (
+        {(embedded ? EMBEDDED_NAV_ITEMS : NAV_ITEMS).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -128,8 +139,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 // mobile nav drawer's `inert` behavior without needing to also mount the SSE
 // hooks, routes and query client that the default App export wires up.
 export function AppShell() {
-  // Embedded in the desktop app: no sidebar or drawer (the app has its
-  // project rail and a Go menu); the top bar carries the navigation.
+  // Embedded in the desktop app the shell is the web one (sidebar and
+  // drawer); the window's project tabs sit above it, outside the page.
   const embedded = useEmbedded();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -164,21 +175,8 @@ export function AppShell() {
     lockScroll: false,
   });
 
-  if (embedded) {
-    return (
-      <div className="min-h-screen" data-shell="embedded">
-        <main className="flex min-w-0 flex-col px-3 pb-6 md:px-4">
-          <AppHeader />
-          <div className="min-w-0 flex-1 pt-4">
-            <Outlet />
-          </div>
-        </main>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen md:pl-[232px]">
+    <div className="min-h-screen md:pl-[232px]" data-shell={embedded ? 'embedded' : undefined}>
       {/* Desktop sidebar: a labelled glass column, inset from the window. */}
       <aside className="glass-shell fixed top-4 bottom-4 left-4 z-40 hidden w-[200px] flex-col overflow-y-auto px-2.5 py-4 md:flex">
         <SidebarContent />
