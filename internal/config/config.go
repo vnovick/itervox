@@ -671,6 +671,9 @@ type AgentConfig struct {
 	// model dropdown. When empty, the frontend falls back to a built-in default
 	// list.
 	AvailableModels map[string][]ModelOption
+	// Playbooks is agent.playbooks (#218): per-task-type playbooks chosen by
+	// label, then by a keyword classifier. Load-time config.
+	Playbooks PlaybooksConfig
 }
 
 // ModelOption represents an available model for a backend. Matches the
@@ -723,6 +726,13 @@ type ServerConfig struct {
 	// MagicDNS hostnames belong here. Ignored in token mode. Read-only after
 	// startup.
 	AllowedHosts []string
+	// AllowedOrigins (YAML `server.allowed_origins`, #231) is the CORS
+	// allow-list: origins (scheme://host[:port], normalized as a browser
+	// sends them) whose pages may call this daemon's API, and the hub when
+	// this daemon serves it, cross-origin with a bearer token — a dashboard
+	// hosted elsewhere, for example. Empty (the default) is same-origin
+	// only. Read-only after startup.
+	AllowedOrigins []string
 	// Metrics (YAML `server.metrics`) controls the Prometheus text endpoint
 	// GET /metrics (CORE-045). Read-only after startup.
 	Metrics MetricsConfig
@@ -807,7 +817,7 @@ type Config struct {
 	// and migration errors.
 	WorkflowPath string
 	// WorkflowHash is the sha256 of the WORKFLOW.md bytes Load parsed into
-	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
+	// this Config. cmd/itervox passes it to its config watcher as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
 	WorkflowHash [32]byte
@@ -817,10 +827,19 @@ type Config struct {
 	Agent        AgentConfig
 	Hooks        HooksConfig
 	Server       ServerConfig
+	// Hub is the `hub` section (#228). Read-only after startup.
+	Hub          HubConfig
 	Dependencies DependenciesConfig
 	// Sessions configures the Sessions panel's discovery of agent sessions
 	// started by hand (#178). Read-only after startup.
 	Sessions SessionsConfig
+	// Memory configures the managed memory block of each run (#202).
+	// Read-only after startup.
+	Memory MemoryConfig
+	// Guardrails limits what agents Itervox starts may do with git, the
+	// GitHub/GitLab CLIs and deploy commands (#204). Read-only after
+	// startup.
+	Guardrails GuardrailsConfig
 	// PREvents is pr_events (#173): how the PR-event automation triggers
 	// (pr_check_completed, pr_synchronized, pr_review_submitted,
 	// pr_mergeable_changed) learn about GitHub activity. Read once at
@@ -828,6 +847,15 @@ type Config struct {
 	PREvents       PREventsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
+	// FrontMatter reports the layered keys WORKFLOW.md's front matter still
+	// sets: deprecated (they move to the settings files) and in conflict
+	// with a settings file (#239). Set by Load; read-only after startup.
+	FrontMatter FrontMatterReport
+	// SettingsFiles are the user, project and local settings files Load
+	// looked at, present or not, each with the hash of the bytes it read
+	// (#245). cmd/itervox watches them alongside WORKFLOW.md with these
+	// hashes as the baselines. Set by Load; read-only after startup.
+	SettingsFiles []SettingsFile
 }
 
 // PREventsConfig is pr_events (#173).
@@ -850,11 +878,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	// #129: the user and project settings files sit under the front matter.
-	layers, err := readSettingsLayers(path)
+	// #129, #239: the user, project and local settings files sit over the
+	// front matter; what the front matter still sets of the layered
+	// sections is reported (deprecated, or in conflict with a file).
+	layers, files, err := readSettingsLayerFiles(path)
 	if err != nil {
 		return nil, err
 	}
+	report := frontMatterReport(wf.Config, layers)
 	if len(layers) > 0 {
 		wf.Config, _ = mergeLayers(wf.Config, layers)
 	}
@@ -876,6 +907,8 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.WorkflowHash = wf.ContentHash
+	cfg.SettingsFiles = files
+	cfg.FrontMatter = report
 	return cfg, nil
 }
 
@@ -1034,6 +1067,7 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.LiveSteering = boolField(agent, "live_steering", false)
+	cfg.Agent.Playbooks = parsePlaybooksConfig(nestedMap(agent, "playbooks")) // #218
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	budget := nestedMap(agent, "budget")
 	cfg.Agent.Budget = BudgetConfig{
@@ -1125,6 +1159,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Server.AllowedHosts = allowedHosts
+	if cfg.Server.AllowedOrigins, err = normalizeAllowedOrigins(strSliceField(srv, "allowed_origins", nil)); err != nil {
+		return nil, err
+	}
 	cfg.Server.Metrics.Enabled = boolField(nestedMap(srv, "metrics"), "enabled", false)
 	if v, ok := srv["allowed_hosts"]; ok && v != nil {
 		if _, isList := v.([]any); !isList {
@@ -1132,8 +1169,19 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		}
 	}
 
+	// Hub (#228)
+	if cfg.Hub, err = parseHubConfig(nestedMap(raw, "hub")); err != nil {
+		return nil, err
+	}
+
 	// Sessions (#178)
 	cfg.Sessions = parseSessionsConfig(nestedMap(raw, "sessions"))
+
+	// Memory (#202)
+	cfg.Memory = parseMemoryConfig(nestedMap(raw, "memory"))
+
+	// Guardrails (#204)
+	cfg.Guardrails = parseGuardrailsConfig(nestedMap(raw, "guardrails"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

@@ -18,7 +18,7 @@ Sharp rules for `.tsx` work in this repo. Read before writing.
 Three non-overlapping layers. Pick exactly one per piece of state.
 
 - **Server state** (`/api/v1/*` fetches): TanStack Query via `web/src/queries/*.ts`. Use `useQuery` / `useMutation` with the existing optimistic-update + rollback pattern from `queries/issues.ts`. **Never** put server state into Zustand.
-- **Real-time SSE snapshot**: the orchestrator `StateSnapshot` arrives via `useItervoxSSE` and lives in `itervoxStore`. Read with a selector: `useItervoxStore((s) => s.snapshot)`. **Settings mutations must call `refreshSnapshot()`, never `patchSnapshot()`** — `patchSnapshot` will be overwritten by the next SSE tick.
+- **Real-time SSE snapshot**: the orchestrator `StateSnapshot` arrives via `useItervoxSSE` and lives in `itervoxStore`. Read with a narrow selector per field (`useItervoxStore((s) => s.snapshot?.running ?? EMPTY_RUNNING)`) or `useShallow` over an object of the fields you use. **Never** subscribe to the whole snapshot (`(s) => s.snapshot`): `generatedAt` changes on every SSE frame, so the component re-renders on each one. `pnpm lint` runs `web/scripts/snapshotSelectorGuard.mjs`, which fails on it outside the store and SSE modules (#211). **Settings mutations must call `refreshSnapshot()`, never `patchSnapshot()`** — `patchSnapshot` will be overwritten by the next SSE tick.
 - **Ephemeral UI state** (open/closed, filters, view mode, search): a Zustand store like `uiStore.ts`. **Do not** use `useState` in a page component for anything that should survive navigation.
 
 ## 3. Reuse existing primitives — grep first

@@ -15,9 +15,9 @@ func LoadRecording(scenario Scenario) (Recording, error) {
 }
 
 // LoadRecordingFile reads any recording-format file (a promoted fixture, a
-// candidate, or a live run's output). Lines with an unknown "event" — such
-// as live mode's "meta" and "result" lines — are skipped, so a live
-// recording replays in recorded mode unchanged.
+// candidate, or a live run's output). A live recording's "meta" line only
+// contributes its prompt digest (#201); "result" lines and unknown events
+// are skipped, so a live recording replays in recorded mode unchanged.
 func LoadRecordingFile(path string) (Recording, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -37,14 +37,17 @@ func LoadRecordingFile(path string) (Recording, error) {
 			continue
 		}
 		var event struct {
-			Event  string `json:"event"`
-			Action string `json:"action"`
-			Body   string `json:"body"`
+			Event        string `json:"event"`
+			Action       string `json:"action"`
+			Body         string `json:"body"`
+			PromptDigest string `json:"prompt_digest"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
 		switch event.Event {
+		case "meta":
+			rec.PromptDigest = event.PromptDigest
 		case "action":
 			rec.Actions = append(rec.Actions, event.Action)
 		case "comment":
@@ -78,6 +81,9 @@ func EvaluateScenario(scenario Scenario) ScenarioVerdict {
 		fileMtimeUnix(filepath.Join(scenario.Dir, "INSTRUCTIONS.md")))
 	verdict.Deterministic = JudgeDeterministic(scenario, recording)
 	verdict.Structural = JudgeStructural(scenario, recording)
+	if d := recording.PromptDigest; d != "" {
+		verdict.PromptDigest, verdict.DigestSource = d, DigestSourceRecording
+	}
 	return verdict
 }
 

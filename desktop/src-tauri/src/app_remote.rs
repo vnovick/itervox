@@ -2,7 +2,7 @@
 //! the remote half of the refresh, and the menu flows. The decisions live in
 //! `remote`, `remote_ops`, `remote_model`, `tunnel` and `sysevents`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use crate::client;
 use crate::events::Alert;
 use crate::prompt::{ask_choice, ask_text};
-use crate::remote::{token_key, IapMode, Remotes, Transport, REMOTES_FILE};
-use crate::remote_model::{ConnectionView, DashboardTarget, RemoteCore};
+use crate::remote::{hub_key, token_key, IapMode, Remotes, Transport, REMOTES_FILE};
+use crate::remote_model::{hubs_down, ConnectionView, DashboardTarget, RemoteCore};
 use crate::remote_ops::{
-    add_connection, forget_tokens, obtain_token, rediscover, tunnel_specs, AddRequest,
+    add_connection, forget_tokens, obtain_token, rediscover, tunnel_specs_with, AddRequest,
 };
 use crate::sessions::SessionsJob;
 use crate::shellpath::{resolve_tools_for_app, Tools};
@@ -53,6 +53,8 @@ pub struct RemoteShared {
     statuses: Mutex<Vec<TunnelStatus>>,
     tools: OnceLock<Tools>,
     stopped: AtomicBool,
+    /// Keep-alive connections to the remote daemons, through their tunnels.
+    clients: client::ClientPool,
 }
 
 impl RemoteShared {
@@ -90,6 +92,7 @@ impl RemoteShared {
             statuses: Mutex::default(),
             tools: OnceLock::new(),
             stopped: AtomicBool::new(false),
+            clients: client::ClientPool::default(),
         });
         (s, rx, err)
     }
@@ -124,10 +127,13 @@ impl RemoteShared {
                 let tools = me.tools().clone();
                 let mut mgr = TunnelManager::new(tools, log_dir, TunnelTiming::default());
                 let mut events = PollingSystemEvents::new();
-                me.sync(&mut mgr);
+                // #232: connections whose hub stopped answering; their
+                // members get their own tunnels until it serves again.
+                let mut down = HashSet::new();
+                me.sync(&mut mgr, &down);
                 loop {
                     match rx.recv_timeout(TUNNEL_TICK) {
-                        Ok(TunnelCmd::Sync) => me.sync(&mut mgr),
+                        Ok(TunnelCmd::Sync) => me.sync(&mut mgr, &down),
                         Ok(TunnelCmd::Restart(ids)) => {
                             for id in ids {
                                 mgr.restart(&id, Instant::now());
@@ -150,6 +156,11 @@ impl RemoteShared {
                     let changed = mgr.tick(now, &health_probe);
                     let statuses = mgr.statuses(now);
                     me.remember_ports(&statuses);
+                    let now_down = hubs_down(&lock(&me.remotes), &statuses);
+                    if now_down != down {
+                        down = now_down;
+                        me.sync(&mut mgr, &down);
+                    }
                     *lock(&me.statuses) = statuses;
                     if changed {
                         on_change();
@@ -159,8 +170,8 @@ impl RemoteShared {
             .map(|_| ())
     }
 
-    fn sync(&self, mgr: &mut TunnelManager) {
-        let specs = tunnel_specs(&lock(&self.remotes));
+    fn sync(&self, mgr: &mut TunnelManager, hub_down: &HashSet<String>) {
+        let specs = tunnel_specs_with(&lock(&self.remotes), hub_down);
         let ids: HashSet<String> = specs.iter().map(|s| s.id.clone()).collect();
         mgr.retain(&ids);
         let now = Instant::now();
@@ -199,20 +210,7 @@ impl RemoteShared {
         let remotes = lock(&self.remotes).clone();
         let tunnels = lock(&self.statuses).clone();
         let jobs = RemoteCore::fetch_jobs(&remotes, &tunnels, self.tokens.as_ref());
-        let states: HashMap<_, _> = std::thread::scope(|s| {
-            let hs: Vec<_> = jobs
-                .iter()
-                .map(|j| {
-                    s.spawn(move || {
-                        (
-                            j.key.clone(),
-                            client::fetch_state(&j.url, j.token.as_deref()),
-                        )
-                    })
-                })
-                .collect();
-            hs.into_iter().filter_map(|h| h.join().ok()).collect()
-        });
+        let states = client::fetch_all(&self.clients, &jobs);
         let mut core = lock(&self.core);
         let before = core.views().to_vec();
         let alerts = core.apply(&remotes, &tunnels, self.tokens.as_ref(), &states);
@@ -229,6 +227,11 @@ impl RemoteShared {
 
     pub fn views(&self) -> Vec<ConnectionView> {
         lock(&self.core).views().to_vec()
+    }
+
+    /// Whether a remote daemon has agent work in flight (#212).
+    pub fn busy(&self) -> bool {
+        lock(&self.core).views().iter().any(ConnectionView::busy)
     }
 
     /// Where a remote daemon's dashboard opens, and its window title.
@@ -430,6 +433,7 @@ impl RemoteShared {
                 c.daemons
                     .iter()
                     .map(|d| token_key(&c.id, &d.workflow))
+                    .chain(c.hub.as_ref().map(|_| hub_key(&c.id)))
                     .collect()
             })
             .unwrap_or_default();

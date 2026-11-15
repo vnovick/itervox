@@ -9,6 +9,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/depsanalysis"
 	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/server"
@@ -31,17 +32,17 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 	// depsSidecar is mtime-cached; Latest() reads the sidecar only when the
 	// file has changed since the last successful load. v0.2.0 todolist6.
 	depsSidecar := depsanalysis.NewSidecarCache(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))
-	syncSrc := newSyncStatusSource(cfg, tr, ob, orch) // #117
+	syncSrc := newSyncStatusSource(cfg, tr, ob, orch)     // #117
+	lessons := newProposedLessonCounter(cfg.WorkflowPath) // #203: the Memory nav count
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
 		now := time.Now()
 
 		running := make([]server.RunningRow, 0, len(s.Running))
 		for _, r := range s.Running {
-			msg := r.LastMessage
-			if len(msg) > 120 {
-				msg = msg[:120] + "…"
-			}
+			// #240: redacted like every other log surface, before the cut
+			// (a cut secret no longer matches its pattern).
+			msg := clip(logging.RedactString(r.LastMessage), 121)
 			var lastEvAt string
 			if r.LastEventAt != nil {
 				lastEvAt = r.LastEventAt.Format(time.RFC3339)
@@ -63,27 +64,30 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				liveComments = c
 			}
 			running = append(running, server.RunningRow{
-				Identifier:    r.Issue.Identifier,
-				State:         r.Issue.State,
-				TurnCount:     r.TurnCount,
-				Tokens:        r.TotalTokens,
-				InputTokens:   r.InputTokens,
-				OutputTokens:  r.OutputTokens,
-				LastEvent:     msg,
-				LastEventAt:   lastEvAt,
-				SessionID:     r.SessionID,
-				WorkerHost:    r.WorkerHost,
-				Backend:       r.Backend,
-				Kind:          r.Kind,
-				AutomationID:  r.AutomationID,
-				TriggerType:   r.TriggerType,
-				CommentCount:  liveComments,
-				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
-				StartedAt:     r.StartedAt,
-				SubagentCount: subCount,
-				OutOfScope:    isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
-				RulesHash:     r.RulesHash,
-				RuleIDs:       r.RuleIDs,
+				Identifier:       r.Issue.Identifier,
+				State:            r.Issue.State,
+				TurnCount:        r.TurnCount,
+				Tokens:           r.TotalTokens,
+				InputTokens:      r.InputTokens,
+				OutputTokens:     r.OutputTokens,
+				LastEvent:        msg,
+				LastEventAt:      lastEvAt,
+				SessionID:        r.SessionID,
+				WorkerHost:       r.WorkerHost,
+				Backend:          r.Backend,
+				Kind:             r.Kind,
+				AutomationID:     r.AutomationID,
+				TriggerType:      r.TriggerType,
+				CommentCount:     liveComments,
+				ElapsedMs:        now.Sub(r.StartedAt).Milliseconds(),
+				StartedAt:        r.StartedAt,
+				SubagentCount:    subCount,
+				OutOfScope:       isOutOfScope(s.OutOfScope, r.Issue.Identifier), // #182
+				RulesHash:        r.RulesHash,
+				RuleIDs:          r.RuleIDs,
+				Title:            r.Issue.Title, // #240
+				Profile:          r.ProfileName, // #240
+				CostUSDEstimated: r.CostUSD,     // #240
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -160,11 +164,13 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				CommentCount: r.CommentCount,
 				RulesHash:    r.RulesHash,
 				RuleIDs:      r.RuleIDs,
+				MemoryIDs:    r.MemoryIDs, // #202
 				ProfileName:  r.ProfileName,
 				// #186: prompt version, run ID and steering history.
 				RunID:         r.RunID,
 				PromptDigest:  r.PromptDigest,
 				PromptParts:   historyPromptParts(r.PromptParts),
+				Playbook:      r.Playbook, // #218
 				Steers:        historySteers(r.Steers),
 				SteersDropped: r.SteersDropped,
 			})
@@ -286,12 +292,17 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// CORE-175 — operator acks of worker failures + the capability
 			// that makes the dashboard offer the action.
 			FailureAcks:  failureAckRows(s),
-			Capabilities: []string{server.CapabilityFailureAck},
+			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause, server.CapabilityRunContext, server.CapabilityChangeReview},
+			// #213 — the daemon-wide dispatch pause and the feed head.
+			DispatchPaused: dispatchPauseRow(s.DispatchPaused),
+			FeedSeq:        s.FeedSeq,
 			// CORE-091 — daemon-session token / estimated-cost totals.
 			Totals: totalsRow(s),
 			// CORE-055 — agent backend breakers and auto-switch provenance.
 			BackendHealth: backendHealthRows(s, knownBackends(cfg, profiles)),
 			AutoSwitches:  autoSwitchRows(s),
+			// #203 — proposed lessons waiting in the Memory page's queue.
+			ProposedLessons: lessons.Count(),
 		}
 		// Stale threshold for the dashboard badge: pick the longest
 		// MaxAgeMinutes across all enabled input_required automations. If no
@@ -318,7 +329,7 @@ func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
 	if p == (orchestrator.PromptParts{}) {
 		return nil
 	}
-	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Template: p.Template}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Template: p.Template}
 }
 
 // historySteers maps a run's delivered operator messages (#186).

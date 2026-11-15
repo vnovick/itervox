@@ -9,3 +9,4 @@ run/
 /*.json
 bin/
 *.db
+evals/

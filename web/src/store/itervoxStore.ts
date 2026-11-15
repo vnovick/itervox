@@ -4,7 +4,8 @@ import type { StateSnapshot } from '../types/schemas';
 import { StateSnapshotSchema } from '../types/schemas';
 import { authedFetch } from '../auth/authedFetch';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
-import { reportClientError } from '../lib/clientErrorReporter';
+import { reportClientError, setClientErrorReportGate } from '../lib/clientErrorReporter';
+import { normalizeScope, scopeAllows } from '../auth/scope';
 
 const MAX_LOG_LINES = 500;
 
@@ -186,3 +187,12 @@ export const useItervoxStore = create<ItervoxStore>((set, get) => ({
     if (get().schemaDriftCount !== 0) set({ schemaDriftCount: 0 });
   },
 }));
+
+// #214 — client error reports need the operator scope: a viewer's dashboard
+// does not send them. Before the first snapshot the scope is unknown and
+// reports are sent (an older daemon, or the admin bootstrap token, is the
+// common case).
+setClientErrorReportGate(() => {
+  const snap = useItervoxStore.getState().snapshot;
+  return snap === null || scopeAllows(normalizeScope(snap.callerScope), 'operator');
+});

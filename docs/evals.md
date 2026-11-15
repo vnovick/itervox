@@ -104,8 +104,40 @@ candidate against `expected.yaml` first and refuses one that fails; `FORCE=1`
 promotes it anyway (for a deliberate contract change you still update
 `expected.yaml` yourself). The rename is atomic.
 
-The same commands are `go run ./cmd/itervox-evals live|record|promote`; run
+The same commands are `go run ./cmd/itervox-evals recorded|live|record|promote`; run
 `go run ./cmd/itervox-evals live -h` for the flags.
+
+## Saved reports and the dashboard
+
+`make evals` judges the committed recordings like `make evals-fast`, through
+`go run ./cmd/itervox-evals recorded`, and saves the report. `make evals-live`
+and `make evals-record` save theirs too (#201). Each report is JSON at
+`.itervox/evals/<ISO8601>.json` (for example `20261021T093015.250Z.json`; set
+`EVALS_RESULTS_DIR`, or `-results-dir` on the CLI, `""` to save nothing). The
+directory gets its own `.gitignore` and only the newest 20 reports are kept:
+it is local runtime state, never committed. `make evals-fast` (in `make
+verify`) saves nothing.
+
+A report lists, per scenario, pass or fail, every failed assertion (missing
+or forbidden actions, `forbidden_phrases` present, marker phrases missing),
+the live run's error, tokens and cost, and the **prompt digest** the scenario
+ran against. It is the digest run history records for dispatched runs (#186,
+SHA-256 over SOUL.md, INSTRUCTIONS.md, the resolved rules and the prompt
+template, `agent.reviewer_prompt` for a reviewer profile), computed by
+`orchestrator.ComposeEvalPrompt` from the workflow the live run used, so an
+eval result and the dashboard's Prompt versions name the same version. Live
+recordings also carry it in their `meta` line (`prompt_digest`). Recorded
+mode replays a fixed transcript: it reports the digest only when the
+recording was made by a live run since #201 (`digestSource: "recording"`);
+the hand-written fixtures have none.
+
+The dashboard's **Repo Analysis → Evals** section (`/repo#evals`, from
+`GET /api/v1/repo/evals`) reads the newest reports of the project whose
+`WORKFLOW.md` the daemon runs and shows the latest result per profile and
+scenario, its failed assertions, its digest and when it ran. A case that
+fails on the current digest after passing on the previous one is marked
+**regression**. Run the evals from the project root (where `make` writes
+`.itervox/evals/`); the dashboard never starts a run.
 
 ## CI
 

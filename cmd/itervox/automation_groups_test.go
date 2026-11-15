@@ -12,7 +12,6 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
-	"github.com/vnovick/itervox/internal/workflow"
 )
 
 const automationGroupsWorkflow = `---
@@ -76,10 +75,11 @@ func TestAutomationFilterAcceptsGroups(t *testing.T) {
 	assert.True(t, match(2, domain.Issue{Labels: []string{"triage"}}), "labels_any keeps working")
 	assert.False(t, match(2, domain.Issue{Labels: []string{"docs"}}))
 
-	// Dashboard round-trip: definitions → WORKFLOW.md → config.
+	// Dashboard round-trip: definitions → the settings file (#239; was
+	// WORKFLOW.md) → config.
 	defs := automationconfig.DefinitionsFromConfigs(cfg.Automations)
 	assert.Equal(t, cfg.Automations[1].Filter.Groups, defs[1].Filter.Groups)
-	require.NoError(t, workflow.PatchAutomationsBlock(path, defs))
+	require.NoError(t, persistSettings(path, []setting{{Key: "automations", Value: automationsSetting(defs)}}))
 	again, err := config.Load(path)
 	require.NoError(t, err)
 	for i := range cfg.Automations {

@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use crate::events::{Alert, AlertKind};
+use crate::hub_source::{HubPage, HubStatus};
 use crate::model::ProjectView;
 use crate::remote_model::ConnectionView;
 
@@ -34,7 +35,14 @@ pub enum MenuAction {
     RemoveRemote(String),
     /// The Sessions window: every daemon's agent sessions (#178).
     OpenSessions,
+    /// Pause / resume ALL dispatch on every reachable local daemon (#213).
+    /// Running agents continue; nothing new starts until resumed.
+    PauseAll,
+    ResumeAll,
     RefreshNow,
+    /// Open a view of the machine's hub (#232): its dashboard, the Phones
+    /// view with the pairing QR code, or the notification settings.
+    OpenHub(HubPage),
     CheckForUpdates,
     InstallUpdate,
     InstallCli,
@@ -94,6 +102,26 @@ impl Builder {
     }
 }
 
+/// The dashboard's Repo Analysis page (#200): `{base}repo`. A remote
+/// daemon's link is rebased onto its tunnel when it is opened.
+pub fn repo_analysis_link(base_url: &str) -> String {
+    page_link(base_url, "repo")
+}
+
+/// The dashboard's Memory page (#202): `{base}memory`. Rebased onto a remote
+/// daemon's tunnel like the Repo Analysis link.
+pub fn memory_link(base_url: &str) -> String {
+    page_link(base_url, "memory")
+}
+
+fn page_link(base_url: &str, page: &str) -> String {
+    let mut b = base_url.to_string();
+    if !b.ends_with('/') {
+        b.push('/');
+    }
+    format!("{b}{page}")
+}
+
 /// Builds the menu for the current projects and recent alerts.
 pub fn build_menu<'a>(
     views: &[ProjectView],
@@ -135,6 +163,24 @@ pub fn build_menu<'a>(
                 "Open Dashboard",
                 v.running() && !busy,
                 MenuAction::OpenDashboard(v.key.clone()),
+            ),
+            b.item(
+                "Repo Analysis",
+                v.running() && !busy,
+                MenuAction::OpenUrl {
+                    project: v.key.clone(),
+                    url: repo_analysis_link(
+                        &v.record.as_ref().map(|r| r.base_url()).unwrap_or_default(),
+                    ),
+                },
+            ),
+            b.item(
+                "Memory",
+                v.running() && !busy,
+                MenuAction::OpenUrl {
+                    project: v.key.clone(),
+                    url: memory_link(&v.record.as_ref().map(|r| r.base_url()).unwrap_or_default()),
+                },
             ),
             MenuEntry::Separator,
             b.item(
@@ -207,6 +253,7 @@ pub fn build_menu<'a>(
     }
 
     entries.push(MenuEntry::Separator);
+    entries.push(pause_all_item(&mut b, views));
     entries.push(b.item(
         if waiting > 0 {
             format!("Sessions… ({waiting} waiting)")
@@ -242,10 +289,30 @@ pub fn build_menu<'a>(
     }
 }
 
+/// The "Pause all agents" item (#213): it pauses every reachable local
+/// daemon, and becomes "Resume all agents" once all of them are paused.
+/// Disabled when no daemon can be reached.
+fn pause_all_item(b: &mut Builder, views: &[ProjectView]) -> MenuEntry {
+    let reachable: Vec<&ProjectView> = views.iter().filter(|v| v.reachable()).collect();
+    let all_paused = !reachable.is_empty() && reachable.iter().all(|v| v.dispatch_paused());
+    if all_paused {
+        b.item("Resume all agents", true, MenuAction::ResumeAll)
+    } else {
+        b.item(
+            "Pause all agents",
+            !reachable.is_empty(),
+            MenuAction::PauseAll,
+        )
+    }
+}
+
 fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
     let mut items = vec![b.label(c.transport.clone())];
     if let Some(e) = &c.error {
         items.push(b.label(format!("⚠ {e}")));
+    }
+    if let Some(h) = &c.hub {
+        items.push(b.label(h.clone()));
     }
     items.push(MenuEntry::Separator);
     for d in &c.daemons {
@@ -269,6 +336,22 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
                 "Open Dashboard",
                 up,
                 MenuAction::OpenDashboard(d.key.clone()),
+            ),
+            b.item(
+                "Repo Analysis",
+                up,
+                MenuAction::OpenUrl {
+                    project: d.key.clone(),
+                    url: repo_analysis_link(&d.url().unwrap_or_default()),
+                },
+            ),
+            b.item(
+                "Memory",
+                up,
+                MenuAction::OpenUrl {
+                    project: d.key.clone(),
+                    url: memory_link(&d.url().unwrap_or_default()),
+                },
             ),
             b.item(token_label, true, MenuAction::RemoteToken(d.key.clone())),
             b.label(d.workflow.clone()),
@@ -300,6 +383,47 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
     MenuEntry::Submenu {
         label: format!("{marker}{} — {}", c.name, c.status_line()),
         items,
+    }
+}
+
+/// Inserts the hub section (#232) under the header: the hub's status and
+/// member count, and the hub views — its dashboard, "Phone…" (the Phones
+/// view with the pairing QR code, #231) and the notification settings
+/// (#229) — enabled while the app is connected to the hub. The tooltip
+/// names the hub too.
+pub fn append_hub_section(spec: &mut MenuSpec, hub: &HubStatus) {
+    let at = spec
+        .entries
+        .iter()
+        .position(|e| matches!(e, MenuEntry::Separator))
+        .unwrap_or(spec.entries.len());
+    let up = hub.serving();
+    let item = |n: usize, label: &str, page: HubPage, spec: &mut MenuSpec| {
+        let id = format!("itervox-hub-{n}");
+        spec.actions.insert(id.clone(), MenuAction::OpenHub(page));
+        MenuEntry::Item {
+            id,
+            label: label.into(),
+            enabled: up,
+        }
+    };
+    let section = vec![
+        MenuEntry::Separator,
+        MenuEntry::Item {
+            id: "itervox-hub-0".into(),
+            label: hub.line(),
+            enabled: false,
+        },
+        item(1, "Open Hub Dashboard", HubPage::Dashboard, spec),
+        item(2, "Phone…", HubPage::Phones, spec),
+        item(3, "Notification Settings…", HubPage::Notifications, spec),
+    ];
+    spec.entries.splice(at..at, section);
+    if let HubStatus::Serving { members, .. } = hub {
+        spec.tooltip.push_str(&format!(
+            " · hub: {members} project{}",
+            if *members == 1 { "" } else { "s" }
+        ));
     }
 }
 
@@ -371,6 +495,84 @@ mod tests {
         })
     }
 
+    fn label_of(spec: &MenuSpec, id: &str) -> Option<(String, bool)> {
+        spec.entries.iter().find_map(|e| match e {
+            MenuEntry::Item {
+                id: i,
+                label,
+                enabled,
+            } if i == id => Some((label.clone(), *enabled)),
+            _ => None,
+        })
+    }
+
+    /// #232 — the tray shows the hub's status and member count under the
+    /// header, with "Open Hub Dashboard", "Phone…" (the pairing QR code)
+    /// and "Notification Settings…" opening the hub's views while the app
+    /// is connected; when no hub serves they are shown disabled.
+    #[test]
+    fn tray_shows_hub_status() {
+        let mut spec = build_menu(&[view("/a", true), view("/b", true)], &[], [].iter(), None);
+        append_hub_section(
+            &mut spec,
+            &HubStatus::Serving {
+                members: 2,
+                version: "v0.2.9".into(),
+            },
+        );
+        // Header, separator, then the hub section, then the projects.
+        assert!(matches!(spec.entries[1], MenuEntry::Separator));
+        assert_eq!(
+            label_of(&spec, "itervox-hub-0"),
+            Some(("Hub · 2 projects".into(), false))
+        );
+        assert!(matches!(&spec.entries[2], MenuEntry::Item { id, .. } if id == "itervox-hub-0"));
+        assert!(matches!(spec.entries[6], MenuEntry::Separator));
+        assert!(matches!(&spec.entries[7], MenuEntry::Submenu { .. }));
+        for (id, label, page) in [
+            ("itervox-hub-1", "Open Hub Dashboard", HubPage::Dashboard),
+            ("itervox-hub-2", "Phone…", HubPage::Phones),
+            (
+                "itervox-hub-3",
+                "Notification Settings…",
+                HubPage::Notifications,
+            ),
+        ] {
+            assert_eq!(label_of(&spec, id), Some((label.into(), true)));
+            assert_eq!(spec.actions[id], MenuAction::OpenHub(page));
+        }
+        assert_eq!(spec.tooltip, "Itervox — 2 running · hub: 2 projects");
+
+        for (status, line) in [
+            (HubStatus::Absent, "Hub: not running — each project polled"),
+            (HubStatus::Connecting, "Hub: connecting…"),
+            (
+                HubStatus::Unreachable("refused".into()),
+                "Hub unreachable — polling each project",
+            ),
+        ] {
+            let mut spec = build_menu(&[view("/a", true)], &[], [].iter(), None);
+            append_hub_section(&mut spec, &status);
+            assert_eq!(label_of(&spec, "itervox-hub-0"), Some((line.into(), false)));
+            for id in ["itervox-hub-1", "itervox-hub-2", "itervox-hub-3"] {
+                assert!(!label_of(&spec, id).unwrap().1, "{id} disabled: {status:?}");
+            }
+            assert_eq!(spec.tooltip, "Itervox — 1 running");
+        }
+        let mut one = build_menu(&[], &[], [].iter(), None);
+        append_hub_section(
+            &mut one,
+            &HubStatus::Serving {
+                members: 1,
+                version: String::new(),
+            },
+        );
+        assert_eq!(
+            label_of(&one, "itervox-hub-0").unwrap().0,
+            "Hub · 1 project"
+        );
+    }
+
     #[test]
     fn start_stop_restart_enablement_follows_the_daemon() {
         let spec = build_menu(
@@ -389,12 +591,71 @@ mod tests {
         assert_eq!(spec.actions[id], MenuAction::Stop("/up".into()));
     }
 
+    /// #200: each daemon's submenu opens its dashboard's Repo Analysis
+    /// page, the same way a Recent alert opens an issue: OpenUrl with the
+    /// project key, through the usual token handoff.
+    #[test]
+    fn repo_analysis_item_opens_the_repo_route() {
+        let mut up = view("/up", true);
+        if let Some(r) = up.record.as_mut() {
+            r.url = "http://127.0.0.1:8090/".into();
+        }
+        let spec = build_menu(&[up, view("/down", false)], &[], [].iter(), None);
+        let (id, enabled) = find(&spec, "Repo Analysis", "up").unwrap();
+        assert!(enabled);
+        assert_eq!(
+            spec.actions[id],
+            MenuAction::OpenUrl {
+                project: "/up".into(),
+                url: "http://127.0.0.1:8090/repo".into(),
+            }
+        );
+        assert!(!find(&spec, "Repo Analysis", "down").unwrap().1);
+        assert_eq!(
+            repo_analysis_link("http://127.0.0.1:50001"),
+            "http://127.0.0.1:50001/repo"
+        );
+    }
+
+    /// #202: each daemon's submenu opens its dashboard's Memory page, the
+    /// same way as Repo Analysis: OpenUrl with the project key, through the
+    /// usual token handoff.
+    #[test]
+    fn memory_item_opens_the_memory_route() {
+        let mut up = view("/up", true);
+        if let Some(r) = up.record.as_mut() {
+            r.url = "http://127.0.0.1:8090/".into();
+        }
+        let spec = build_menu(&[up, view("/down", false)], &[], [].iter(), None);
+        let (id, enabled) = find(&spec, "Memory", "up").unwrap();
+        assert!(enabled);
+        assert_eq!(
+            spec.actions[id],
+            MenuAction::OpenUrl {
+                project: "/up".into(),
+                url: "http://127.0.0.1:8090/memory".into(),
+            }
+        );
+        assert!(!find(&spec, "Memory", "down").unwrap().1);
+        assert_eq!(
+            memory_link("http://127.0.0.1:50001"),
+            "http://127.0.0.1:50001/memory"
+        );
+    }
+
     #[test]
     fn a_pending_operation_disables_the_controls() {
         let mut v = view("/up", true);
         v.pending = Some(PendingOp::Stopping);
         let spec = build_menu(&[v], &[], [].iter(), None);
-        for l in ["Start", "Stop", "Restart", "Open Dashboard"] {
+        for l in [
+            "Start",
+            "Stop",
+            "Restart",
+            "Open Dashboard",
+            "Repo Analysis",
+            "Memory",
+        ] {
             assert!(!find(&spec, l, "up").unwrap().1, "{l}");
         }
     }
@@ -425,7 +686,7 @@ mod tests {
         let open = spec
             .actions
             .values()
-            .find(|a| matches!(a, MenuAction::OpenUrl { .. }))
+            .find(|a| matches!(a, MenuAction::OpenUrl { url, .. } if url.contains("?issue=")))
             .unwrap();
         assert_eq!(
             open,
@@ -473,6 +734,74 @@ mod tests {
         );
     }
 
+    /// #213: one tray item pauses all agents on every reachable daemon and
+    /// turns into "Resume all agents" once they are all paused; it is
+    /// disabled while no daemon can be reached.
+    #[test]
+    fn pause_all_agents_item_follows_the_daemons() {
+        let item = |spec: &MenuSpec| {
+            spec.entries
+                .iter()
+                .find_map(|e| match e {
+                    MenuEntry::Item { id, label, enabled }
+                        if matches!(
+                            spec.actions.get(id),
+                            Some(MenuAction::PauseAll | MenuAction::ResumeAll)
+                        ) =>
+                    {
+                        Some((label.clone(), *enabled, spec.actions[id].clone()))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let paused = |key: &str, on: bool| {
+            let mut v = view(key, true);
+            v.health = Health::Ok(StateSummary {
+                dispatch_paused: on,
+                ..Default::default()
+            });
+            v
+        };
+        assert_eq!(
+            item(&build_menu(&[view("/down", false)], &[], [].iter(), None)),
+            ("Pause all agents".into(), false, MenuAction::PauseAll),
+            "nothing to pause"
+        );
+        assert_eq!(
+            item(&build_menu(
+                &[paused("/a", false), view("/down", false)],
+                &[],
+                [].iter(),
+                None
+            )),
+            ("Pause all agents".into(), true, MenuAction::PauseAll)
+        );
+        assert_eq!(
+            item(&build_menu(
+                &[paused("/a", true), paused("/b", false)],
+                &[],
+                [].iter(),
+                None
+            )),
+            ("Pause all agents".into(), true, MenuAction::PauseAll),
+            "one daemon still dispatches"
+        );
+        let all = build_menu(
+            &[paused("/a", true), paused("/b", true), view("/down", false)],
+            &[],
+            [].iter(),
+            None,
+        );
+        assert_eq!(
+            item(&all),
+            ("Resume all agents".into(), true, MenuAction::ResumeAll)
+        );
+        assert!(paused("/a", true)
+            .status_line()
+            .ends_with("dispatch paused"));
+    }
+
     #[test]
     fn empty_menu_still_offers_add_and_quit() {
         let spec = build_menu(&[], &[], [].iter(), Some("itervox status failed"));
@@ -504,6 +833,7 @@ mod tests {
             }),
             health: Health::Ok(StateSummary::default()),
             has_token: true,
+            hub_path: None,
         };
         let conns = vec![
             ConnectionView {
@@ -512,6 +842,7 @@ mod tests {
                 transport: "ssh me@box".into(),
                 daemons: vec![daemon("remote/prod//srv/app/WORKFLOW.md", TunnelPhase::Up)],
                 error: None,
+                hub: None,
             },
             ConnectionView {
                 id: "eu".into(),
@@ -522,6 +853,7 @@ mod tests {
                     TunnelPhase::Connecting,
                 )],
                 error: None,
+                hub: None,
             },
         ];
         let spec = build_menu(&[], &conns, [].iter(), None);
@@ -550,6 +882,23 @@ mod tests {
             .filter(|a| matches!(a, MenuAction::OpenDashboard(_)))
             .collect();
         assert_eq!(open.len(), 2);
+        let repo: Vec<_> = spec
+            .actions
+            .values()
+            .filter_map(|a| match a {
+                MenuAction::OpenUrl { project, url } if url.ends_with("/repo") => {
+                    Some(project.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(repo.len(), 2, "a Repo Analysis item per remote daemon");
+        let memory = spec
+            .actions
+            .values()
+            .filter(|a| matches!(a, MenuAction::OpenUrl { url, .. } if url.ends_with("/memory")))
+            .count();
+        assert_eq!(memory, 2, "a Memory item per remote daemon");
         assert!(spec
             .actions
             .values()

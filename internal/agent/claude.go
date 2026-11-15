@@ -255,7 +255,7 @@ func (c *ClaudeRunner) RunTurn(
 				redirect = localPromptRedirect
 			}
 			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
-				buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil))
+				RunEnvFrom(ctx).shellPrefix()+buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil))
 			if live != nil {
 				cmd.ExtraFiles = []*os.File{live.r}
 			} else {
@@ -278,7 +278,11 @@ func (c *ClaudeRunner) RunTurn(
 	// nil, so leaving it unset on any path silently drops the marker. For the
 	// SSH path cmd.Env applies to the local ssh process only — the marker
 	// travels in the shell command instead (see below).
-	cmd.Env = itervoxAgentEnv(logDirEnv)
+	var runEnv []string
+	if workerHost == "" {
+		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
+	}
+	cmd.Env = itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

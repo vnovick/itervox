@@ -38,8 +38,9 @@ func copySymphonyFixture(t *testing.T) (string, []byte) {
 }
 
 // TestImportExportSymphonyRoundTrip (#158): `itervox import` turns the
-// Symphony fixture into an Itervox workflow that loads (settings in
-// .itervox/settings.jsonc, the tracker, hooks and prompt in WORKFLOW.md, the
+// Symphony fixture into an Itervox workflow that loads (settings — the
+// tracker and hooks included since #239 — in .itervox/settings.jsonc, the
+// prompt in WORKFLOW.md, the
 // original in WORKFLOW.md.bak, the Symphony-only codex keys reported), and
 // `itervox export --symphony` writes back the same Symphony core keys and
 // prompt.
@@ -74,7 +75,14 @@ func TestImportExportSymphonyRoundTrip(t *testing.T) {
 	assert.Equal(t, 2, front["itervox_schema_version"])
 	assert.NotContains(t, front, "polling", "an emptied section is dropped")
 	assert.NotContains(t, front, "agent")
-	assert.Equal(t, "linear", front["tracker"].(map[string]any)["kind"])
+	// #239: the tracker and hooks are layered settings now; they move too,
+	// the API key as its $VAR reference.
+	assert.NotContains(t, front, "tracker")
+	assert.NotContains(t, front, "hooks")
+	tracker := settings["tracker"].(map[string]any)
+	assert.Equal(t, "linear", tracker["kind"])
+	assert.Equal(t, "$LINEAR_API_KEY", tracker["api_key"])
+	assert.NotContains(t, readString(t, config.ProjectSettingsPath(path)), "lin_fixture", "the key is never resolved into the file")
 	assert.Contains(t, front["codex"], "approval_policy", "unmapped codex keys stay for the export")
 	assert.NotContains(t, front["codex"], "command")
 	assert.Contains(t, imported, "# A Symphony workflow", "WORKFLOW.md keeps its comments")

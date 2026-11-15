@@ -12,7 +12,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 )
 
-// #129 — settings layers: defaults < user < project < WORKFLOW.md.
+// #129 — settings layers; #239 — defaults < user < WORKFLOW.md < project < local.
 
 func writeSettings(t *testing.T, path, content string) {
 	t.Helper()
@@ -60,13 +60,18 @@ func TestProjectSettingOverridesTheUserSetting(t *testing.T) {
 	assert.Equal(t, 7, cfg.Agent.MaxConcurrentAgents, "maps merge key by key: the user value it does not set stays")
 }
 
-func TestWorkflowOverridesTheSettingsFiles(t *testing.T) {
-	wf := layeredProject(t, "agent:\n  max_turns: 2\n",
+// TestSettingsFilesOverrideTheWorkflow (#239, was
+// TestWorkflowOverridesTheSettingsFiles): every settings file now wins over
+// the same key in WORKFLOW.md's front matter; a key only the front matter
+// sets still applies.
+func TestSettingsFilesOverrideTheWorkflow(t *testing.T) {
+	wf := layeredProject(t, "agent:\n  max_turns: 2\n  max_retries: 8\n",
 		`{"agent": {"max_turns": 11, "max_concurrent_agents": 7}}`,
 		`{"agent": {"max_turns": 4}}`)
 	cfg, err := config.Load(wf)
 	require.NoError(t, err)
-	assert.Equal(t, 2, cfg.Agent.MaxTurns, "WORKFLOW.md wins")
+	assert.Equal(t, 4, cfg.Agent.MaxTurns, "the project file wins over WORKFLOW.md")
+	assert.Equal(t, 8, cfg.Agent.MaxRetries, "a key only WORKFLOW.md sets still applies")
 	assert.Equal(t, 7, cfg.Agent.MaxConcurrentAgents)
 }
 
@@ -86,11 +91,14 @@ func TestUserSettingsLayerIsOffUnderTestsUnlessNamed(t *testing.T) {
 	assert.Equal(t, "/x/settings.jsonc", config.UserSettingsPath())
 }
 
-func TestSettingsFileCannotSetTheTrackerOrBreakTheLoad(t *testing.T) {
-	wf := layeredProject(t, "", `{"tracker": {"kind": "github"}}`, "")
+// TestSettingsFileCannotSetAnUnlayeredSectionOrBreakTheLoad (#239, was
+// TestSettingsFileCannotSetTheTrackerOrBreakTheLoad: tracker is a layered
+// section now; guardrails is not).
+func TestSettingsFileCannotSetAnUnlayeredSectionOrBreakTheLoad(t *testing.T) {
+	wf := layeredProject(t, "", `{"guardrails": {"enabled": false}}`, "")
 	_, err := config.Load(wf)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `"tracker" cannot be set here`)
+	assert.Contains(t, err.Error(), `"guardrails" cannot be set here`)
 
 	wf = layeredProject(t, "", "", `{"agent": {"max_turns": }`)
 	_, err = config.Load(wf)
@@ -129,7 +137,7 @@ func TestSetSettingKeepsComments(t *testing.T) {
 	got, _ = os.ReadFile(path)
 	assert.Contains(t, string(got), "// team defaults")
 
-	err = config.SetSetting(path, "tracker.kind", "github")
+	err = config.SetSetting(path, "guardrails.enabled", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be set in a settings file")
 }
@@ -173,7 +181,7 @@ func TestSetSettingsWritesSeveralKeysInOneWrite(t *testing.T) {
 
 	err = config.SetSettings(path,
 		config.SettingAssignment{Key: "agent.max_turns", Value: 4},
-		config.SettingAssignment{Key: "tracker.kind", Value: "github"},
+		config.SettingAssignment{Key: "guardrails.enabled", Value: false},
 	)
 	require.Error(t, err)
 	after, _ := os.ReadFile(path)
@@ -288,8 +296,8 @@ func TestAuthAliasPrecedenceIsPerLayer(t *testing.T) {
 			`{"server": {"allow_unauthenticated_lan": true}}`, "", false},
 		{"project legacy false over user new true", "",
 			`{"server": {"allow_unauthenticated": true}}`, `{"server": {"allow_unauthenticated_lan": false}}`, false},
-		{"workflow legacy true over project new false", "server:\n  allow_unauthenticated_lan: true\n",
-			"", `{"server": {"allow_unauthenticated": false}}`, true},
+		{"project new false over workflow legacy true", "server:\n  allow_unauthenticated_lan: true\n",
+			"", `{"server": {"allow_unauthenticated": false}}`, false},
 		{"within one layer the new spelling wins", "",
 			`{"server": {"allow_unauthenticated": false, "allow_unauthenticated_lan": true}}`, "", false},
 		{"a lower layer's value stands when no higher layer sets either", "",
@@ -349,17 +357,17 @@ func TestExplainShowsTheResolvedWorkspaceRoot(t *testing.T) {
 	assert.Equal(t, config.LayerProject, byKey["workspace.root"].Layer)
 }
 
-// TestLocalSettingsLayerSitsBetweenProjectAndWorkflow (#158): the
-// project-local file wins over the project file, WORKFLOW.md wins over it,
-// and Explain names it.
-func TestLocalSettingsLayerSitsBetweenProjectAndWorkflow(t *testing.T) {
+// TestLocalSettingsLayerIsTheHighest (#158, #239; was
+// TestLocalSettingsLayerSitsBetweenProjectAndWorkflow): the project-local
+// file wins over the project file and over WORKFLOW.md, and Explain names it.
+func TestLocalSettingsLayerIsTheHighest(t *testing.T) {
 	wf := layeredProject(t, "agent:\n  max_retries: 9\n", "", `{"agent": {"max_turns": 4, "max_retries": 1, "max_concurrent_agents": 3}}`)
 	writeSettings(t, config.LocalSettingsPath(wf), `// mine
 {"$schema": "https://itervox.dev/schema/settings.schema.json", "agent": {"max_turns": 6, "max_retries": 2}}`)
 	cfg, err := config.Load(wf)
 	require.NoError(t, err)
 	assert.Equal(t, 6, cfg.Agent.MaxTurns, "local wins over project")
-	assert.Equal(t, 9, cfg.Agent.MaxRetries, "WORKFLOW.md wins over local")
+	assert.Equal(t, 2, cfg.Agent.MaxRetries, "local wins over WORKFLOW.md (#239)")
 	assert.Equal(t, 3, cfg.Agent.MaxConcurrentAgents, "maps merge key by key")
 	settings, err := config.Explain(wf)
 	require.NoError(t, err)

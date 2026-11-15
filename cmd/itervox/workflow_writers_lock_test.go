@@ -42,9 +42,8 @@ func TestCmdWorkflowWritersSerializeWithLockedPatchers(t *testing.T) {
 			})
 			return err
 		}, "model-g3"},
-		{"updateWorkflowProjectSlug", func(p string) error {
-			return updateWorkflowProjectSlug(p, []string{"slug-g3"})
-		}, "project_slug: slug-g3"},
+		// #239: updateWorkflowProjectSlug writes the settings file now, not
+		// WORKFLOW.md's text, so it is no longer a row here.
 	}
 	const trials = 3
 	for _, row := range rows {
@@ -66,7 +65,7 @@ func TestCmdWorkflowWritersSerializeWithLockedPatchers(t *testing.T) {
 				}
 				go func() { // locked partner: read, park, then write
 					partnerDone <- workflow.ApplyAndWriteFrontMatter(f, park,
-						workflow.MutateSetKey("agent.max_concurrent_agents", 7))
+						replaceFrontLine("  max_concurrent_agents: 1", "  max_concurrent_agents: 7"))
 				}()
 				<-holding
 
@@ -108,5 +107,19 @@ func TestCmdWorkflowWritersSerializeWithLockedPatchers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// replaceFrontLine is a test mutator that swaps one front-matter line (the
+// generic key writer it replaced, workflow.MutateSetKey, became test-only in
+// #239).
+func replaceFrontLine(old, new string) workflow.Mutator {
+	return func(front []string) ([]string, error) {
+		for i, l := range front {
+			if l == old {
+				front[i] = new
+			}
+		}
+		return front, nil
 	}
 }

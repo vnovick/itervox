@@ -1,0 +1,180 @@
+---
+title: Backend health and fallback
+description: What Itervox does when Claude or Codex hits a usage limit — the per-backend circuit breaker, issues held as backend_limited, and agent.backend_fallback to move work to the other backend and back.
+sidebar:
+  order: 9
+---
+
+Claude and Codex both stop working when an account reaches its usage limit,
+and both publish (most of the time) when the limit resets. Itervox reads
+those signals so that a limit does not burn through retries or fail issues:
+it stops starting work on the limited backend, holds what cannot run, and,
+if you configure a fallback, moves work to the other backend until the limit
+resets.
+
+There are two parts:
+
+- the **circuit breaker**, always on, which holds work on a limited backend;
+- **`agent.backend_fallback`**, opt-in, which reroutes that work instead.
+
+Every key and limit is in the
+[configuration reference](/configuration/#backend-health-and-fallback-agentbackend_fallback).
+
+## The circuit breaker
+
+Itervox keeps one breaker per agent backend **and worker host**: `claude`,
+`codex`, `claude@build-1` for an [SSH worker](/configuration/#ssh-dispatch),
+and so on. A limit seen on one host says nothing about local runs or another
+host, which may use other credentials.
+
+A breaker **opens** when:
+
+- a run stops on a usage limit (Claude's `rate_limit_event` with status
+  `rejected`, a result with API status 429 or 402, Codex's "You've hit your
+  usage limit"): the backend is limited until the vendor's published reset,
+  or for `default_cooldown_minutes` (15 by default) when no reset is
+  published;
+- Claude reports an API retry for a rate limit or overload three times
+  within 5 minutes on that backend and host: limited for 5 minutes, or the
+  vendor's retry delay when that is longer. Fewer retries only mark the
+  backend as `warning`.
+
+A breaker never holds longer than its source can justify (for example at
+most 5h15m for Claude's five-hour window); the exact caps are in the
+reference.
+
+### While a breaker is open
+
+- **No run starts on that backend and host.** Every way a run can start is
+  checked: new work, retries, reviewers, automation runs and resumes after
+  you answer a question.
+- **An issue that cannot run anywhere is held, not failed.** Its "why idle"
+  reason is **Agent backend limited** (`ineligibleReason: "backend_limited"`
+  in the API). It is not paused and uses no retry.
+- **Queued automations stay queued** with the same `backend_limited`
+  reason.
+
+### When the reset passes
+
+The breaker **half-opens**: exactly one issue is started as a probe, and the
+others keep waiting. If the probe succeeds (or stops to ask you a question),
+the breaker closes and work resumes. If the probe hits the limit again, the
+breaker reopens.
+
+Open breakers survive a restart: they are kept in `backend_health.json` in
+the daemon's log directory (runtime state; never commit it).
+
+### Where you see it
+
+- **Dashboard.** The live status strip shows a chip per backend that is not
+  healthy, for example `Claude limited until 14:30`, `Codex probing (ENG-7)`
+  or `Claude retrying rate limits`, with the number of issues held and
+  rerouted. **Settings → Rate limits & failover** shows the same breakers,
+  with **Clear** on a limited or probing one.
+- **API.** The state snapshot's `backendHealth[]` rows, and
+  `ineligibleReason: "backend_limited"` on held issues
+  ([API reference](/api-reference/#backend-health)).
+
+### Closing a breaker early
+
+If you know the backend is available again (for example, you switched the
+agent CLI to another account), press **Clear** next to its chip, or:
+
+```bash
+curl -X POST -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"backend":"claude","host":""}' \
+  http://127.0.0.1:8090/api/v1/backend-health/clear
+```
+
+`host` is empty for local runs, or the SSH worker host of a host-scoped
+breaker. Held issues are reconsidered on the next dispatch pass.
+
+## Falling back to the other backend
+
+Without a fallback, a limit means waiting. With `agent.backend_fallback`,
+a run whose backend is limited is moved to a counterpart profile on another
+backend, and moved back after the reset.
+
+Put the block in `.itervox/settings.jsonc` (or, deprecated since v0.3, in
+`WORKFLOW.md`'s front matter):
+
+```jsonc
+{
+  "agent": {
+    "backend_fallback": {
+      "chain": ["claude", "codex"],          // preference order
+      "profile_map": {                       // counterpart profile per backend
+        "coder": { "codex": "coder-codex" },
+        "reviewer": { "codex": "reviewer-codex" },
+        "default": { "codex": "coder-codex" } // issues that run agent.command
+      },
+      "on_unmapped": "hold",                 // hold | backend_hint
+      "default_cooldown_minutes": 15,
+      "min_dwell_minutes": 30,
+      "switch_back": "at_reset",             // at_reset | on_success | manual
+    },
+  },
+}
+```
+
+Every target profile must exist, be enabled and actually run that backend.
+The reverse direction is implied: `coder-codex` maps back to `coder` through
+the same row. `itervox init --template rate-limit-fallback` writes a working
+example with an implementer on each backend
+([starter templates](/cli/#starter-templates)).
+
+The block is read when the configuration loads: a hand edit of the settings
+file (or `WORKFLOW.md`) reloads the daemon and applies it. It has no runtime
+setter, and the Settings page shows it read-only outside its JSON view.
+
+### What a switch does
+
+- **Implementer runs** switch the issue: it keeps the new profile and
+  backend for later runs (a sticky override, shown on the card as
+  `codex (auto)` and listed in the snapshot's `autoSwitches`). Each switch
+  counts against `agent.max_switches_per_issue_per_window`; with that budget
+  spent, the issue is held instead of rerouted.
+- **Reviewer and automation runs** are rerouted for that one run and leave
+  the issue's profile alone.
+- A profile with no mapping is held as `backend_limited` (`on_unmapped:
+  hold`), or, with `on_unmapped: backend_hint`, runs its own command with the
+  chain's backend requested — which only works for wrapper commands; a
+  `claude …` command is never paired with Codex.
+- The reroute happens at once and uses no retry.
+
+### Switching back
+
+`switch_back` decides when the override is cleared:
+
+| Value | Cleared when |
+|---|---|
+| `at_reset` (default) | `min_dwell_minutes` has passed **and** the original backend is no longer limited. The next dispatch goes back through the breaker. |
+| `on_success` | The first successful run after the dwell. |
+| `manual` | Never automatically. Pin a backend on the issue, or use `agent.switch_revert_hours`. |
+
+The dwell never blocks a further hop when the fallback backend itself
+becomes limited.
+
+## Which rule wins
+
+1. **An operator's backend pin** on the issue (issue detail, or
+   `POST /api/v1/issues/{identifier}/backend`). A pinned issue is never
+   rerouted; when its backend is limited, it is held as `backend_limited`.
+2. **`agent.backend_fallback`**, for the profiles it maps (or every profile
+   with `on_unmapped: backend_hint`). When it handles a usage limit,
+   `rate_limited` automations are not evaluated for that exit.
+3. **`rate_limited` [automations](/guides/automations/)** for everything
+   else: unmapped profiles, pinned issues, and failures recognised from text
+   only when retries run out. They keep their own cap, cooldown and switch
+   target; a target on a limited backend is queued as `backend_limited`.
+
+Use `profile_map` for the common Claude ⇄ Codex pairs, and keep
+`rate_limited` rules for custom mappings or helper runs.
+
+## See also
+
+- [Configuration: backend health and fallback](/configuration/#backend-health-and-fallback-agentbackend_fallback)
+- [Agent profiles](/guides/agent-profiles/): the profiles a fallback maps between.
+- [Stacked pull requests](/guides/stacked-prs/): a fallback re-dispatch of a
+  dependent is stacked on its blocker when it can be.

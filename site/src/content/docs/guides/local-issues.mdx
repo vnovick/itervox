@@ -65,7 +65,7 @@ The schema is in docs/report.md.
 | `priority` | no | A number; lower is more urgent, as with Linear (1 urgent … 4 low). |
 | `labels` | no | A list. Read in lower case, like the other trackers. |
 | `blocked_by` | no | Identifiers of issues that block this one. A blocker that is not terminal keeps this issue from being dispatched; a blocker with no file also keeps it blocked. |
-| `branch` | no | The issue's branch. Itervox records it when an agent starts; [stacked work](/configuration/#tracker) builds on a blocker's branch. |
+| `branch` | no | The issue's branch. Itervox records it when an agent starts; [stacked work](/guides/stacked-prs/) builds on a blocker's branch. |
 | `created`, `updated` | no | RFC 3339 times. Itervox sets `updated` on every write. |
 | `remote` | no | The linked Linear or GitHub issue (`ENG-42`, or `"#42"` — quoted, since `#` starts a YAML comment), written by the [sync](#sync-with-linear-or-github). |
 
@@ -75,7 +75,7 @@ Everything after the front matter is the description, up to the last `## Comment
 
 ## Working with the files
 
-- **By hand.** Create `ITX-2.md`, change `state: Backlog` to `state: Todo`, add a comment: the change appears within a moment, without a restart: the daemon watches `.itervox/issues/` and polls at once when a file is added, edited or removed (an issue moved to an active state is dispatched right away, not at the next `polling.interval_ms`). Where the filesystem gives no change events, or one is missed, a rescan every 10 seconds catches it. Itervox's own writes do not count as changes. While the directory is watched, the board is served from what the watch has read; without a watch (no change events, or the directory missing) every read rescans the directory. Itervox re-reads the files whose size or modification time changed, and any file changed within two seconds of its last read (for filesystems with coarse timestamps). Before writing a file it always reads it again, so a change is applied to what is on disk.
+- **By hand.** Create `ITX-2.md`, change `state: Backlog` to `state: Todo`, add a comment: the change appears within a moment, without a restart: the daemon watches `.itervox/issues/` and polls at once when a file is added, edited or removed (an issue moved to an active state is dispatched right away, not at the next `polling.interval_ms`). Where the filesystem gives no change events, a rescan every 10 seconds catches changes; while the directory is watched, a safety-net rescan every 60 seconds catches a missed event. Itervox's own writes do not count as changes. While the directory is watched, the board is served from what the watch has read; without a watch (no change events, or the directory missing) every read rescans the directory. Itervox re-reads the files whose size or modification time changed, and any file changed within two seconds of its last read (for filesystems with coarse timestamps). Before writing a file it always reads it again, so a change is applied to what is on disk.
 - **From the dashboard.** Moving a card or posting a comment writes the file.
 - **By agents.** The agent actions that create issues, comment and move state work the same as with Linear or GitHub. A new issue takes the next free number for the prefix.
 

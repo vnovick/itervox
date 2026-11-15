@@ -1,6 +1,7 @@
 // Command itervox-evals runs the profile evals against a real agent CLI
 // (#189). It is a developer tool, not part of the released binary:
 //
+//	itervox-evals recorded [flags]                 judge the committed recordings (no agent, no tokens)
 //	itervox-evals live    [flags]                  run the live suite; transcripts go to -out
 //	itervox-evals record  [flags]                  re-record: write recording.candidate.jsonl next to each fixture
 //	itervox-evals promote [-force] -all | <profile>/<scenario>...
@@ -8,7 +9,9 @@
 //
 // live and record spend tokens and refuse to start unless
 // ITERVOX_EVALS_LIVE=1. Recorded mode (`make evals-fast`) stays the free gate
-// in `make verify`. See docs/evals.md.
+// in `make verify`. recorded, live and record also save the judged report as
+// JSON under -results-dir (default .itervox/evals, #201) for the dashboard's
+// Repo Analysis page. See docs/evals.md.
 package main
 
 import (
@@ -22,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/vnovick/itervox/internal/evals"
 )
@@ -46,6 +50,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
+	case "recorded":
+		return runRecorded(args[1:], stdout, stderr)
 	case "live", "record":
 		return runLive(ctx, args[0] == "record", args[1:], stdout, stderr)
 	case "promote":
@@ -61,6 +67,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `usage:
+  itervox-evals recorded [flags]  judge the committed recordings; saves the report under -results-dir
   itervox-evals live    [flags]   run the live suite (needs ITERVOX_EVALS_LIVE=1); transcripts go to -out
   itervox-evals record  [flags]   same, writing recording.candidate.jsonl next to each fixture
   itervox-evals promote [-fixtures dir] [-force] -all | <profile>/<scenario>...
@@ -90,6 +97,7 @@ func runLive(ctx context.Context, candidate bool, args []string, stdout, stderr 
 	if !candidate {
 		fs.StringVar(&opts.OutDir, "out", "", "directory for the run's transcripts (default: a new temp dir)")
 	}
+	resultsDir := resultsDirFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -105,12 +113,18 @@ func runLive(ctx context.Context, candidate bool, args []string, stdout, stderr 
 		}
 		opts.OutDir = dir
 	}
+	started := time.Now()
 	res, err := evals.RunLive(ctx, opts)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "itervox-evals:", err)
 		return 2
 	}
 	_, _ = fmt.Fprint(stdout, res.Report.Format())
+	mode := evals.ModeLive
+	if candidate {
+		mode = evals.ModeRecord
+	}
+	saveResults(*resultsDir, evals.NewResultFile(mode, res.Report, res.Runs, opts.Workflow, started, time.Now()), stdout, stderr)
 	spent := 0.0
 	for _, r := range res.Runs {
 		spent += r.CostUSD
@@ -189,4 +203,51 @@ func runPromote(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return code
+}
+
+// resultsDirFlag registers -results-dir: where the judged report is saved
+// as JSON (#201); "" saves nothing.
+func resultsDirFlag(fs *flag.FlagSet) *string {
+	return fs.String("results-dir", evals.ResultsDir, "directory the judged report is saved to as <ISO8601>.json for the dashboard's Repo Analysis page (\"\" = do not save)")
+}
+
+// saveResults persists a judged report. A failure to save is reported but
+// does not change the exit code: the verdicts were already printed.
+func saveResults(dir string, f evals.ResultFile, stdout, stderr io.Writer) {
+	if dir == "" {
+		return
+	}
+	path, err := evals.WriteResultFile(dir, f)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "itervox-evals: save report:", err)
+		return
+	}
+	_, _ = fmt.Fprintln(stdout, "[evals] report saved to", path)
+}
+
+// runRecorded judges the committed recordings — what `make evals-fast`
+// checks in `make verify` — and saves the report (#201). No agent runs.
+func runRecorded(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("recorded", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fixtures := fs.String("fixtures", defaultFixtures, "fixture root (<profile>/<scenario>/)")
+	profile := fs.String("profile", "", "only this profile's scenarios")
+	resultsDir := resultsDirFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	started := time.Now()
+	scenarios, err := evals.LoadScenarios(*fixtures, *profile)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "itervox-evals recorded:", err)
+		return 2
+	}
+	if len(scenarios) == 0 {
+		_, _ = fmt.Fprintln(stderr, "itervox-evals recorded: no scenarios under", *fixtures)
+		return 2
+	}
+	report := evals.EvaluateAll(scenarios)
+	_, _ = fmt.Fprint(stdout, report.Format())
+	saveResults(*resultsDir, evals.NewResultFile(evals.ModeRecorded, report, nil, "", started, time.Now()), stdout, stderr)
+	return report.ExitCode()
 }

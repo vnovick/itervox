@@ -56,6 +56,9 @@ type tmuxSessions struct {
 	processes func() ([]extsessions.Process, error)
 	// lookPath resolves an agent CLI; nil uses exec.LookPath.
 	lookPath func(string) (string, error)
+	// guard prepares the guardrails of each session it starts (#204); nil
+	// when guardrails are off.
+	guard *tmuxGuardrails
 }
 
 func (t *tmuxSessions) tmux() tmuxctl.Client { return t.detect.client }
@@ -284,9 +287,17 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*tmuxctl.DefaultTimeout)
 	defer cancel()
+	if t.guard != nil { // #204: shims and the pre-push hook, as for dispatched runs
+		if prefix, gerr := t.guard.prepare(ctx, s.ID, cwd); gerr != nil {
+			slog.Warn("guardrails: cannot prepare a tmux session; it starts unguarded", "session_id", s.ID, "error", gerr)
+		} else {
+			command = prefix + command
+		}
+	}
 	err = t.tmux().NewSession(ctx, s.ID, cwd, command)
 	t.orch.FinishTmuxSessionStart(s.ID, err != nil)
 	if err != nil {
+		t.guard.release(s.ID)
 		return orchestrator.AgentSession{}, fmt.Errorf("cmd/itervox: tmux new-session: %w", err)
 	}
 	slog.Info("sessions: tmux session started", "session_id", s.ID, "backend", s.Backend, "cwd", cwd,
@@ -312,6 +323,7 @@ func (t *tmuxSessions) kill(id string) error {
 		return fmt.Errorf("cmd/itervox: tmux kill-session: %w", err)
 	}
 	t.orch.EndTmuxSession(id)
+	t.guard.release(id) // #204
 	slog.Info("sessions: tmux session killed", "session_id", id)
 	return nil
 }

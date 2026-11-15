@@ -253,6 +253,7 @@ func runLiveScenario(ctx context.Context, cfg *config.Config, sc Scenario, opts 
 	if err != nil {
 		return fail("compose prompt: %v", err)
 	}
+	v.PromptDigest, v.DigestSource = composed.Digest, DigestSourceLive
 	root, err := os.MkdirTemp("", "itervox-eval-"+sc.Profile+"-"+sc.Name+"-*")
 	if err != nil {
 		return fail("sandbox: %v", err)
@@ -360,6 +361,7 @@ func liveMeta(sc Scenario, backend string, composed orchestrator.EvalPrompt, run
 		"backend":       backend,
 		"recorded_at":   now.UTC().Format(time.RFC3339),
 		"prompt_sha256": hex.EncodeToString(sum[:]),
+		"prompt_digest": composed.Digest, // #201: the daemon's prompt-version digest
 		"rules_hash":    composed.Rules.Hash(),
 		"tokens":        run.Tokens,
 		"cost_usd":      run.CostUSD,

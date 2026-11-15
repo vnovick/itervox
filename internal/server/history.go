@@ -30,6 +30,8 @@ type PromptVersionRow struct {
 	SuccessRate float64   `json:"successRate"`
 	FirstSeenAt time.Time `json:"firstSeenAt"`
 	LastSeenAt  time.Time `json:"lastSeenAt"`
+	// AvgDurationMs is the mean wall-clock duration of the runs (#200).
+	AvgDurationMs int64 `json:"avgDurationMs"`
 	// Profiles are the profiles that ran this version, sorted.
 	Profiles []string `json:"profiles"`
 }
@@ -70,6 +72,7 @@ func FilterHistoryByPrompt(rows []HistoryRow, prefix string) []HistoryRow {
 func GroupHistoryByPrompt(rows []HistoryRow) PromptVersionsResponse {
 	byDigest := map[string]*PromptVersionRow{}
 	profiles := map[string]map[string]bool{}
+	elapsed := map[string]int64{}
 	resp := PromptVersionsResponse{Versions: []PromptVersionRow{}}
 	for _, row := range rows {
 		if row.PromptDigest == "" {
@@ -85,6 +88,7 @@ func GroupHistoryByPrompt(rows []HistoryRow) PromptVersionsResponse {
 		}
 		v.Runs++
 		v.Statuses[row.Status]++
+		elapsed[row.PromptDigest] += row.ElapsedMs
 		if row.StartedAt.Before(v.FirstSeenAt) {
 			v.FirstSeenAt = row.StartedAt
 		}
@@ -97,6 +101,7 @@ func GroupHistoryByPrompt(rows []HistoryRow) PromptVersionsResponse {
 	}
 	for d, v := range byDigest {
 		v.SuccessRate = float64(v.Statuses["succeeded"]) / float64(v.Runs)
+		v.AvgDurationMs = elapsed[d] / int64(v.Runs)
 		v.Profiles = make([]string, 0, len(profiles[d]))
 		for p := range profiles[d] {
 			v.Profiles = append(v.Profiles, p)

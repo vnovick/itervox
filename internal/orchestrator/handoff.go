@@ -57,9 +57,14 @@ func buildRunContextBlock(runTimestamp, handoffPath string) string {
 		"",
 		fmt.Sprintf("- run.timestamp: `%s`", runTimestamp),
 		fmt.Sprintf("- run.handoff_path: `%s`", handoffPath),
+		fmt.Sprintf("- run.decisions_path: `%s`", decisionsPathFor(handoffPath)),
 		"",
 		"Write your deliverable Markdown to `run.handoff_path` before exiting.",
 		"It will be visible to every subsequent agent on this branch as a prior handoff.",
+		"",
+		"Log each significant decision as you make it: append one line to `run.decisions_path`",
+		"with four tab-separated fields — time (RFC 3339), the decision, why, and the alternative",
+		"you considered. Operators read these as the run's decision timeline.",
 	}, "\n")
 }
 

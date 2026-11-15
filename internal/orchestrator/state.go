@@ -141,6 +141,14 @@ type OrchestratorEvent struct { //nolint:revive
 	SessionMessage *SessionMessage
 	// SessionDelivery reports delivered messages (EventSessionMessageDelivered).
 	SessionDelivery *SessionDelivery
+	// MemoryUse reports the memory a run's prompt carried (EventMemoryUsed,
+	// #202).
+	MemoryUse *MemoryUse
+	// Lesson reports a lesson-drafting goroutine's result
+	// (EventLessonDrafted, #203).
+	Lesson *LessonReport
+	// Reverts reports a reverted-PR scan (EventRevertsScanned, #217).
+	Reverts *RevertScanReport
 	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
 	ExternalScan *ExternalScan
 	// Tmux is the payload of the tmux session events (#178).
@@ -148,8 +156,23 @@ type OrchestratorEvent struct { //nolint:revive
 	// DeferredMove is the move of an EventDeferStateMove or
 	// EventDeferredStateMoveSettled (#177).
 	DeferredMove *DeferredStateMove
+	// FromAgent marks an EventProvideInput sent by an agent through the
+	// token-gated agent-actions route: it never answers a guardrail
+	// approval (#204).
+	FromAgent bool
+	// Via names the human reply channel of an EventProvideInput when it is
+	// not the dashboard ("slack", #230); empty means the dashboard.
+	Via string
+	// guardrail is the payload of EventGuardrailApproval (#204).
+	guardrail *guardrailApprovalEvent
 	// deferReply receives the loop's decision on an EventDeferStateMove.
 	deferReply chan bool
+	// feed is the payload of EventFeedRecorded (#213).
+	feed *FeedEvent
+	// runContext is the payload of EventRunContext (#215).
+	runContext *runContextUpdate
+	// dispatchPause is the payload of EventSetDispatchPause (#213).
+	dispatchPause *dispatchPauseRequest
 	// deferFromState is the tracker state a deferred-move apply observed.
 	deferFromState string
 }
@@ -277,6 +300,11 @@ type InputRequiredEntry struct {
 	// question has been logged, so it fires once per entry rather than on
 	// every tick (CORE-123). Event-loop owned; session-scoped.
 	QuestionStuckWarned bool
+	// GuardrailApprovalID marks an entry that asks a human to approve a
+	// command a running agent is blocked on (#204): the run keeps going, a
+	// reply decides the request instead of resuming a session, and the
+	// entry is never persisted (it dies with the run).
+	GuardrailApprovalID string
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not
@@ -379,12 +407,22 @@ type RunEntry struct {
 	// applied. RuleIDs is shared with snapshot copies: it is immutable.
 	RulesHash string
 	RuleIDs   []string
+	// MemoryIDs are the ids of the memory entries in this run's `## Memory`
+	// block (#202), in block order. Set once at dispatch (startRun) and
+	// never mutated; shared with snapshot copies like RuleIDs.
+	MemoryIDs []string
 	// PromptDigest / PromptParts identify the prompt version the run was
 	// dispatched with (#186): SHA-256 over SOUL.md, INSTRUCTIONS.md, the
-	// resolved rules and the prompt template (see run_provenance.go). Set
+	// resolved rules, the memory block (#202) and the prompt template (see
+	// run_provenance.go). Set
 	// once at dispatch (startRun) and never mutated. Hashes only.
 	PromptDigest string
 	PromptParts  PromptParts
+	// Playbook / PlaybookSource name the task-type playbook the run was
+	// dispatched with (#218) and how it was chosen ("override", "label",
+	// "keyword"); empty when it had none. Set once at dispatch (startRun).
+	Playbook       string
+	PlaybookSource string
 	// Steers are the operator messages delivered to this run (#186), redacted
 	// and bounded (maxRunSteers, maxRunSteerBytes); SteersDropped counts the
 	// older ones the bound let go. Appended by the event loop on
@@ -398,6 +436,9 @@ type RunEntry struct {
 	totalsInput   int
 	totalsOutput  int
 	totalsCounted bool
+	// reviewVerdict is the verdict a finished reviewer recorded (#201),
+	// copied onto its CompletedRun. Event-loop bookkeeping.
+	reviewVerdict string
 }
 
 // CompletedRun is a snapshot of a finished worker session, kept in the history ring buffer.
@@ -434,6 +475,9 @@ type CompletedRun struct {
 	// no rule applied.
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIDs,omitempty"`
+	// MemoryIDs are the memory entries the run's prompt carried (#202);
+	// empty when it had none.
+	MemoryIDs []string `json:"memoryIDs,omitempty"`
 	// RunID is the run's ID (#125, #186); empty for entries written before
 	// it was recorded.
 	RunID string `json:"runID,omitempty"`
@@ -443,10 +487,23 @@ type CompletedRun struct {
 	// digests. Hashes only: history never stores prompt text.
 	PromptDigest string      `json:"promptDigest,omitempty"`
 	PromptParts  PromptParts `json:"promptParts,omitzero"`
+	// Playbook is the task-type playbook the run was given (#218); empty
+	// when it had none.
+	Playbook string `json:"playbook,omitempty"`
 	// Steers are the operator messages delivered to the run (#186), redacted
 	// and bounded; SteersDropped counts older ones the bound let go.
 	Steers        []RunSteer `json:"steers,omitempty"`
 	SteersDropped int        `json:"steersDropped,omitempty"`
+	// BranchName is the branch the run worked on (#201): the branch its exit
+	// reported, else the issue's worktree branch. PRURL is the PR the run
+	// created or continued; empty when it reported none. Repo Analysis
+	// hotspots diff the branch (or the PR's commit) to attribute the run.
+	BranchName string `json:"branchName,omitempty"`
+	PRURL      string `json:"prURL,omitempty"`
+	// ReviewVerdict is a reviewer run's recorded verdict, "approve" or
+	// "block" (#201); empty for other runs and for a reviewer whose exit
+	// recorded no verdict.
+	ReviewVerdict string `json:"reviewVerdict,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -694,6 +751,18 @@ type State struct {
 	// producers send EventFailureRecorded via RecordFailure. Not persisted;
 	// carried across WORKFLOW.md reloads by cmd/itervox (SeedRecentFailures).
 	RecentFailures []FailureRecord
+	// Feed is the #213 event feed (feed.go), oldest first, bounded by
+	// FeedCap / FeedMaxAge; FeedSeq is the last seq assigned. Appended only
+	// by the event loop (appendFeed); off-loop producers send
+	// EventFeedRecorded. Trimmed only by re-slicing from the front, so
+	// Clone shares it safely. Persisted to feed.jsonl.
+	Feed    []FeedEvent
+	FeedSeq int64
+	// DispatchPaused is the operator's daemon-wide dispatch pause (#213,
+	// global_pause.go). While Active, AvailableSlots is 0 and dispatchRun /
+	// dispatchReviewer defer instead of starting; running agents continue.
+	// Event-loop state, persisted to dispatch_paused.json.
+	DispatchPaused DispatchPause
 	// DependencyAudit tracks normalized blocker state by issue identifier.
 	DependencyAudit map[string]*DependencyAuditEntry
 	// DependencyTransitionSeq increments when dependency audit emits a transition.
@@ -808,6 +877,14 @@ type State struct {
 	// goroutine) only sends the event. unified-dependency-graph Task 6.
 	DepsOverrides map[string]time.Time
 
+	// PlaybookOverrides holds operator-chosen playbooks per issue identifier
+	// (#218): a playbook name, or playbook.None for "no playbook". Absent
+	// means automatic (label, then keyword classifier). Mutated only by the
+	// EventSetPlaybookOverride case in the event loop and persisted to
+	// .itervox/playbook_overrides.json; SetPlaybookOverride (any goroutine)
+	// only sends the event.
+	PlaybookOverrides map[string]string
+
 	// StackOnReviewState is tracker.completion_state, lower-cased, when
 	// dependencies.stacked_prs is on, and "" otherwise. Snapshotted each tick
 	// under cfgMu. An issue whose ONLY unresolved blocker is in this state
@@ -912,6 +989,43 @@ type State struct {
 	// attached and ended sessions dropped by each discovery pass.
 	// Session-scoped, carried across WORKFLOW.md reloads, not persisted.
 	TmuxSessions map[string]*TmuxSession
+
+	// LessonCorrections holds, per issue identifier, the human corrections
+	// (input-required replies, delivered steering messages) seen since the
+	// issue's last successful worker run (#203), redacted and bounded
+	// (maxLessonCorrectionsPerIssue, maxLessonCorrectionIssues). A
+	// failed-then-succeeded lesson reads them as "what changed"; the
+	// success clears them. Event-loop state; session-scoped, not persisted.
+	LessonCorrections map[string][]LessonCorrection
+	// LessonProposals is the per-issue lesson rate-limit ledger (#203): the
+	// times the issue's proposals were started within
+	// memory.lessons.rate_window_hours. A proposal that wrote nothing new
+	// (suppressed, bumped, failed) gives its stamp back. Event-loop state;
+	// session-scoped, not persisted.
+	LessonProposals map[string][]time.Time
+	// ReviewerAsks are the recent changes reviewers' blocking verdicts asked
+	// for (#217), redacted and bounded (maxReviewerAsks): a new ask similar
+	// to one from another run or issue proposes a reviewer_ask lesson.
+	// Event-loop state; session-scoped, not persisted.
+	ReviewerAsks []ReviewerAsk
+	// LessonRevertsSeen holds the reverted agent PRs (by URL) a
+	// reverted_pr lesson was already proposed for this session (#217),
+	// bounded (maxRevertsSeen). RevertScanAt / RevertScanInFlight pace the
+	// off-loop revert scan. Event-loop state; session-scoped, not persisted
+	// (a re-proposal after a restart only matches the existing lesson,
+	// whose evidence already names the run).
+	LessonRevertsSeen  map[string]time.Time
+	RevertScanAt       time.Time
+	RevertScanInFlight bool
+
+	// RunContexts holds, per run ID, what the run is doing (#215): its last
+	// assistant step and tool call (redacted, bounded, never tool output),
+	// its tool-call and guardrail-block counts, and the exit summary of a
+	// finished run. Event-loop state (run_context.go): updated by the
+	// debounced EventRunContext, guardrail failures and worker exits;
+	// bounded to the running runs plus runContextFinishedCap finished ones.
+	// Not in the SSE frame; session-scoped, not persisted.
+	RunContexts map[string]RunContext
 }
 
 // NewState initialises a State from a config snapshot.
@@ -972,5 +1086,8 @@ func NewState(cfg *config.Config) State {
 		ClaimChecks:        make(map[string]ClaimCheckPending),
 		SessionMessages:    make(map[string][]SessionMessage),
 		TmuxSessions:       make(map[string]*TmuxSession),
+		LessonCorrections:  make(map[string][]LessonCorrection),
+		LessonProposals:    make(map[string][]time.Time),
+		RunContexts:        make(map[string]RunContext),
 	}
 }
