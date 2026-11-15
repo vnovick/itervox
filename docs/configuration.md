@@ -456,7 +456,10 @@ deterministic blocker behavior shipped in v0.2.0.
 Automation rules can opt into a deterministic `blockers_resolved` trigger. Core
 dependency audit detects when a previously blocked issue has no unresolved
 blockers left; tracker mutation still happens only through an enabled automation
-whose selected profile is allowed to use `move_state`.
+whose selected profile is allowed to use `move_state`. Issues outside
+`active_states` (Backlog) are found by an off-loop scan of the rule's
+`filter.states` — or of `tracker.backlog_states` when the rule names none or uses
+`match_mode: any` — once per `agent.dependency_audit_refresh_interval_ms`.
 
 ```yaml
 automations:
