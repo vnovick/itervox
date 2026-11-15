@@ -71,6 +71,11 @@ type tmuxRig struct {
 	orch    *orchestrator.Orchestrator
 	ts      *tmuxSessions
 	srv     *server.Server
+	// boot's inputs, and how to stop the running orchestrator.
+	cfg    *config.Config
+	claude string
+	procs  func() ([]extsessions.Process, error)
+	stop   func()
 }
 
 // fakeCLI writes a fake agent CLI named name into bin: it records its
@@ -129,27 +134,43 @@ func newTmuxRig(t *testing.T, sessionsYAML string, needTmux bool) *tmuxRig {
 		return out, err
 	}
 	cfg.Polling.IntervalMs = 50
+	r.cfg, r.claude, r.procs = cfg, claude, procs
+	r.boot()
+	return r
+}
+
+// boot starts a fresh orchestrator, Sessions client and server over the
+// rig's project and tmux server: newTmuxRig's daemon, or (called again) the
+// same project's daemon after a restart, which stops the previous one.
+func (r *tmuxRig) boot() {
+	t, cfg := r.t, r.cfg
+	if r.stop != nil {
+		r.stop()
+	}
 	r.orch = orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
 	detect := &tmuxDetector{client: r.tmux}
 	r.ts = &tmuxSessions{orch: r.orch, detect: detect, control: cfg.Sessions.TmuxControl, projectRoot: r.project,
-		workspaceRoot: cfg.Workspace.Root, agentCommand: claude, processes: procs}
+		workspaceRoot: cfg.Workspace.Root, agentCommand: r.claude, processes: r.procs}
 	r.src = &pausableSource{inner: sessionSource{
 		scanner: &extsessions.Scanner{Options: extsessions.Options{ClaudeProjectsDir: filepath.Join(r.home, "projects"),
-			Window: 24 * time.Hour, Roots: []string{r.project}}, Processes: procs},
-		detect: detect,
+			Window: 24 * time.Hour, Roots: []string{r.project}}, Processes: r.procs},
+		detect:  detect,
+		project: r.project,
 	}}
 	r.orch.SetExternalSessionSource(r.src, 30*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); _ = r.orch.Run(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
+	orch := r.orch
+	go func() { defer close(done); _ = orch.Run(ctx) }()
+	var once sync.Once
+	r.stop = func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(r.stop)
 	r.srv = server.New(server.Config{
 		Snapshot:     func() server.StateSnapshot { return server.StateSnapshot{} },
 		RefreshChan:  make(chan struct{}, 1),
 		Sessions:     sessionsClient{orch: r.orch, tmux: r.ts},
 		AllowedHosts: []string{"example.com"},
 	})
-	return r
 }
 
 func (r *tmuxRig) do(method, path, body string) *httptest.ResponseRecorder {

@@ -1625,6 +1625,22 @@ export const SessionRowSchema = z.object({
   tmuxPane: z.object({ id: z.string(), label: z.string() }).nullable().optional(),
   controllable: z.boolean().optional(),
   attachCommand: z.string().optional(),
+  // The CLI process of a running hand-started session, when known.
+  pid: z.number().optional(),
+  // A tmux session itervox started in a previous daemon process and
+  // re-adopted after the restart; guardrailsStale: its guardrails were
+  // prepared by that previous process (pushes it must report are refused).
+  adopted: z.boolean().optional(),
+  guardrailsStale: z.boolean().optional(),
+});
+
+// POST /api/v1/sessions/{id}/stop — internal/server SessionStopResult.
+// "stopped": the CLI quit on its interrupt; "killed": tmux kill-session
+// (forced, or after the wait); "interrupted": the keys reached a
+// hand-started session that is still running.
+export const SessionStopResultSchema = z.object({
+  id: z.string(),
+  outcome: z.string(),
 });
 
 // Top-level "tmux" of GET /api/v1/sessions: re-detected every discovery

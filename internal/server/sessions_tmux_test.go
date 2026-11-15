@@ -131,3 +131,38 @@ func TestNewAndKillSessionEndpoints(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), "not_owned")
 }
+
+// POST /api/v1/sessions/{id}/stop passes force through and maps the
+// refusals: a hand-started session that cannot be stopped from here is
+// 403 not_controllable, a force stop of one 403 not_owned.
+func TestStopSessionEndpoint(t *testing.T) {
+	f := &fakeSessions{}
+	w := sessionsReq(t, f, http.MethodPost, "/api/v1/sessions/itervox-abc123/stop", "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, "itervox-abc123", f.stopped)
+	assert.False(t, f.stopForce)
+	assert.JSONEq(t, `{"id":"itervox-abc123","outcome":"stopped"}`, w.Body.String())
+
+	f = &fakeSessions{}
+	w = sessionsReq(t, f, http.MethodPost, "/api/v1/sessions/itervox-abc123/stop", `{"force":true}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.True(t, f.stopForce)
+
+	for _, c := range []struct {
+		err  error
+		code int
+		want string
+	}{
+		{server.ErrNotControllable, http.StatusForbidden, "not_controllable"},
+		{server.ErrSessionNotOwned, http.StatusForbidden, "not_owned"},
+		{server.ErrSessionNotFound, http.StatusNotFound, "not_found"},
+		{server.ErrPaneGone, http.StatusConflict, "pane_gone"},
+		{&server.TmuxUnavailableError{Hint: "brew install tmux"}, http.StatusConflict, "tmux_unavailable"},
+	} {
+		w = sessionsReq(t, &fakeSessions{tmuxErr: c.err}, http.MethodPost, "/api/v1/sessions/x/stop", `{}`)
+		assert.Equal(t, c.code, w.Code, c.want)
+		assert.Contains(t, w.Body.String(), c.want)
+	}
+	w = sessionsReq(t, &fakeSessions{}, http.MethodPost, "/api/v1/sessions/x/stop", `{"force":"yes"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}

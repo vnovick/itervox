@@ -150,6 +150,12 @@ type AgentSession struct {
 	// matched by process ancestry, or a tmux session itervox started); zero
 	// when none.
 	TmuxPane extsessions.TmuxPane
+	// PID is the CLI process of a running hand-started session, when known.
+	PID int
+	// Adopted / GuardrailsStale: a tmux session itervox started in a
+	// previous daemon process and re-adopted (TmuxSession).
+	Adopted         bool
+	GuardrailsStale bool
 }
 
 // Key is the id clients address the session by: the CLI session ID, or the
@@ -222,7 +228,7 @@ func Sessions(snap State, liveSteering bool) []AgentSession {
 			Status: SessionStatusExited, StartedAt: e.StartedAt, UpdatedAt: e.UpdatedAt, TmuxPane: e.TmuxPane,
 		}
 		if e.Running {
-			row.Status, row.InUseReason = SessionStatusRunning, e.RunningReason
+			row.Status, row.InUseReason, row.PID = SessionStatusRunning, e.RunningReason, e.PID
 		}
 		out = append(out, row)
 	}

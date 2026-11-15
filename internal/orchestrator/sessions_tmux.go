@@ -26,10 +26,16 @@ import (
 //     session whose tmux session is gone (the operator quit the CLI or
 //     killed it by hand).
 //
+//   - The same pass carries the sessions tmux lists as itervox's own for
+//     this project (TmuxOwned: named itervox-<id> AND tagged with this
+//     daemon's project directory, checked by cmd/itervox): the loop
+//     re-adopts each one it does not track (after a daemon restart), up to
+//     MaxTmuxSessions, unless itervox stopped it after the pass was taken.
+//
 // They count toward neither max_concurrent_agents nor tracker state.
 // Session-scoped: cmd/itervox carries them across WORKFLOW.md reloads
-// (SeedTmuxSessions); after a daemon restart they are plain hand-started
-// sessions that happen to run in tmux.
+// (SeedTmuxSessions), and a restarted daemon re-adopts them from their
+// tmux tags; nothing is persisted under .itervox.
 
 // Event types of itervox's tmux sessions.
 const (
@@ -67,6 +73,12 @@ type TmuxSession struct {
 	StartedAt time.Time
 	// Pane is the session's pane as of the last discovery pass.
 	Pane extsessions.TmuxPane
+	// Adopted: a previous daemon process started it; this one re-adopted it
+	// from its tmux tags.
+	Adopted bool
+	// GuardrailsStale: adopted, and its guardrails were prepared by the
+	// previous daemon process, whose guardrail token died with it.
+	GuardrailsStale bool
 }
 
 // TmuxSessionEvent is the payload of the tmux session events.
@@ -87,7 +99,15 @@ type ExternalScan struct {
 	TmuxPanes  []extsessions.TmuxPane
 	// ScannedAt is when the pane list was taken.
 	ScannedAt time.Time
+	// TmuxOwned are the sessions tmux lists as itervox's own for this
+	// project (name and project tag checked by the source); the loop
+	// re-adopts those it does not track.
+	TmuxOwned []TmuxSession
 }
+
+// tmuxEndedMemory is how long the loop remembers a tmux session itervox
+// stopped, so a discovery pass taken before the stop cannot re-adopt it.
+const tmuxEndedMemory = 2 * time.Minute
 
 // SeedTmuxSessions installs the tmux sessions a previous run() generation
 // owned (WORKFLOW.md reload). Must be called before Run.
@@ -211,6 +231,50 @@ func applyTmuxSessionEvent(state *State, t EventType, ev *TmuxSessionEvent, now 
 		}
 	case EventTmuxSessionEnded:
 		delete(state.TmuxSessions, id)
+		if state.TmuxSessionsEnded == nil {
+			state.TmuxSessionsEnded = map[string]time.Time{}
+		}
+		state.TmuxSessionsEnded[id] = now
+	}
+}
+
+// adoptTmuxSessions re-adopts the sessions a discovery pass lists as
+// itervox's own for this project that the loop does not track, while
+// fewer than MaxTmuxSessions are tracked. A session itervox stopped after
+// the pass was taken is not adopted. Event loop only.
+func adoptTmuxSessions(state *State, scan ExternalScan) {
+	for id, at := range state.TmuxSessionsEnded {
+		if scan.ScannedAt.Sub(at) > tmuxEndedMemory {
+			delete(state.TmuxSessionsEnded, id)
+		}
+	}
+	if !scan.TmuxListed {
+		return
+	}
+	for _, cand := range scan.TmuxOwned {
+		id := cand.ID
+		if id == "" || state.TmuxSessions[id] != nil {
+			continue
+		}
+		if at, ended := state.TmuxSessionsEnded[id]; ended && !at.Before(scan.ScannedAt) {
+			continue
+		}
+		if len(state.TmuxSessions) >= MaxTmuxSessions {
+			slog.Warn("orchestrator: tmux session not re-adopted: too many tmux sessions", "session", id)
+			continue
+		}
+		pane, ok := firstPaneOf(scan.TmuxPanes, id)
+		if !ok {
+			continue
+		}
+		s := cand
+		s.Status, s.Adopted, s.Pane = SessionStatusRunning, true, pane
+		if s.StartedAt.IsZero() || s.StartedAt.After(scan.ScannedAt) {
+			s.StartedAt = scan.ScannedAt
+		}
+		state.TmuxSessions[id] = &s
+		slog.Info("orchestrator: tmux session re-adopted", "session", id, "backend", s.Backend, "cwd", s.Cwd,
+			"guardrails_stale", s.GuardrailsStale)
 	}
 }
 
@@ -219,6 +283,9 @@ func applyTmuxSessionEvent(state *State, t EventType, ev *TmuxSessionEvent, now 
 func applyTmuxPanes(state *State, scan ExternalScan) {
 	if !scan.TmuxListed {
 		return
+	}
+	if state.TmuxSessions == nil {
+		state.TmuxSessions = map[string]*TmuxSession{}
 	}
 	for id, s := range state.TmuxSessions {
 		pane, ok := firstPaneOf(scan.TmuxPanes, id)
@@ -230,6 +297,7 @@ func applyTmuxPanes(state *State, scan ExternalScan) {
 			delete(state.TmuxSessions, id)
 		}
 	}
+	adoptTmuxSessions(state, scan)
 }
 
 // firstPaneOf returns the first listed pane of tmux session name.
@@ -252,6 +320,7 @@ func tmuxSessionRows(snap State) []AgentSession {
 		out = append(out, AgentSession{
 			ID: s.ID, Owner: SessionOwnerItervox, Kind: SessionKindTmux, Profile: s.Profile,
 			Backend: s.Backend, Cwd: s.Cwd, Status: s.Status, StartedAt: s.StartedAt, TmuxPane: s.Pane,
+			Adopted: s.Adopted, GuardrailsStale: s.GuardrailsStale,
 		})
 	}
 	return out

@@ -2056,15 +2056,42 @@ says, and does not count toward `max_concurrent_agents`.
 | `409` | `tmux_unavailable` | `tmux` is not installed |
 | `429` | `too_many_sessions` | 8 tmux sessions itervox started are running |
 
-These sessions are runtime state carried across `WORKFLOW.md` reloads; after
-a daemon restart they keep running in tmux but are listed as sessions started
-by hand.
+These sessions are runtime state carried across `WORKFLOW.md` reloads. They
+are tagged with tmux user options (`@itervox-project` and others), and a
+restarted daemon re-adopts a session named `itervox-<id>` whose
+`@itervox-project` is its own project directory (never by name alone), up to
+the cap of 8: such a row has `"adopted": true`, and `"guardrailsStale": true`
+when its guardrails were prepared by the previous daemon process (its pushes
+that `guardrails.lanes` must report are refused; see
+[Sessions → After a daemon restart](/guides/sessions/#after-a-daemon-restart)).
+
+#### `POST /api/v1/sessions/{id}/stop`
+
+Stops a session (admin). Body `{"force": false}` (optional).
+
+- A tmux session itervox started (or re-adopted): presses the CLI's interrupt
+  (Claude Code: `C-c` twice; Codex: `C-c`), waits up to 5 s for the tmux
+  session to end, then runs `tmux kill-session` if it is still there.
+  `force: true` runs `tmux kill-session` at once.
+- A hand-started session in a controllable pane (`sessions.tmux_control`):
+  the interrupt keys only, never `kill-session`; `force` is refused.
+
+`200 {"id": "itervox-3f9a1c", "outcome": "stopped"}` — `outcome` is
+`stopped` (the CLI quit), `killed` (`tmux kill-session`) or `interrupted` (a
+hand-started CLI that is still running).
+
+| Status | Code | When |
+|---|---|---|
+| `403` | `not_controllable` | A hand-started session outside a controllable tmux pane: stop it in its own terminal |
+| `403` | `not_owned` | `force` on a session itervox did not start |
+| `404` | `not_found` | Unknown session |
+| `409` | `tmux_unavailable` / `pane_gone` | As for the other tmux endpoints |
 
 #### `DELETE /api/v1/sessions/{id}`
 
-Kills a tmux session itervox started (`tmux kill-session`). `200 {"ok": true}`;
-`403 not_owned` for any other session; `404 not_found` for an unknown id;
-`409 tmux_unavailable` without tmux.
+The same as a force stop of a tmux session itervox started (`tmux
+kill-session`). `200 {"ok": true}`; `403 not_owned` for any other session;
+`404 not_found` for an unknown id; `409 tmux_unavailable` without tmux.
 
 ## Logs
 

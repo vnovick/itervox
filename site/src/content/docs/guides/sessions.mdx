@@ -101,7 +101,23 @@ Before every write the daemon checks again that the pane still exists and still 
 - the profile's `permission_mode`, else the confining default: `--permission-mode acceptEdits` for Claude, `--sandbox workspace-write` for Codex (`bypass` maps to the usual skip/bypass flags);
 - the first prompt as the CLI's positional argument.
 
-These sessions are itervox's (tab detail **started in tmux**): controllable whatever `sessions.tmux_control` says, with the attach command (`tmux attach -t itervox-<id>`) and a copy button, so you can take over in a terminal, and **Stop session**, which runs `tmux kill-session` (only for sessions itervox started). They do not count toward `max_concurrent_agents`; at most 8 run at once. When you quit the CLI the tmux session ends and the tab goes away. They survive a `WORKFLOW.md` reload; after a daemon restart they are still running in tmux, but itervox no longer owns them — they are listed like any session started by hand (controllable only with `tmux_control`).
+These sessions are itervox's (tab detail **started in tmux**): controllable whatever `sessions.tmux_control` says, with the attach command (`tmux attach -t itervox-<id>`) and a copy button, so you can take over in a terminal, and **Stop session** / **Force stop** (see [Stopping a session](#stopping-a-session)). They do not count toward `max_concurrent_agents`; at most 8 run at once. When you quit the CLI the tmux session ends and the tab goes away. They survive a `WORKFLOW.md` reload and a daemon restart.
+
+#### After a daemon restart
+
+Itervox tags each session it starts with tmux user options: `@itervox-project` (the absolute directory of the `WORKFLOW.md`), `@itervox-backend`, `@itervox-profile`, `@itervox-cwd` and, when guardrails were prepared for it, `@itervox-guarded`. Nothing is written under `.itervox/`. When the daemon starts, and on every discovery pass after that (every 15 seconds), it lists the tmux sessions and re-adopts as its own each one whose name is `itervox-<id>` **and** whose `@itervox-project` is this daemon's project directory — never by name alone, so a same-named session without the tag, or one another project's daemon started, stays a hand-started session. Re-adoption respects the cap of 8. A re-adopted session is controllable and stoppable again, with its attach command; its tab says **re-adopted after restart** and its controls say *Started by itervox (re-adopted after restart).*
+
+Guardrails of a re-adopted session: its shims and pre-push hook were prepared by the previous daemon process, and the token they use to reach the daemon lived only in that process's memory. The hooks still apply locally — no force push, deletion or tag push, no push to a protected branch, no self-merge, deploy commands refused — but the new daemon rejects their token, so their refusal reports do not reach the dashboard, and a push that `guardrails.lanes` must report (a `second_opinion` or `human` lane change) is refused, as a failed lane report always is. The tab shows *Guardrails from the previous daemon run* when this applies. Stop the session and start a new one for fresh guardrails. Guardrails are never weakened for an adopted session.
+
+### Stopping a session
+
+**Stop session** (admin token; asks first) depends on who started the session:
+
+- **A session itervox started** (including a re-adopted one): itervox presses the CLI's interrupt — Ctrl-C twice, 0.4 s apart, for Claude Code; Ctrl-C once for Codex — then waits up to 5 seconds for the tmux session to end, and runs `tmux kill-session` if it is still there. The result is *stopped* (the CLI quit) or *killed*. **Force stop** runs `tmux kill-session` at once.
+- **A session started by hand, in a tmux pane, with `sessions.tmux_control` on**: Stop presses the same interrupt keys and waits up to 5 seconds for the CLI's process to exit. It never kills a tmux session or pane itervox did not start: a CLI that ignores Ctrl-C keeps running (*interrupted*). There is no Force stop (`403 not_owned`).
+- **Any other session started by hand**: itervox does not stop it (`403 not_controllable`). A running one's tab says how: *Stop it in its own terminal: Ctrl-C, or kill &lt;pid&gt;.*
+
+Every stop is logged (`sessions: session stopped` with the session, backend, mode and outcome; each key as `sessions: tmux send`) and recorded in the event feed as `session_stopped` (outcome `stopped`, `killed` or `interrupted`).
 
 In the [Mac app's Sessions window](/guides/desktop-app/#sessions-window), **New session…** under a daemon opens its dashboard at this form.
 
@@ -123,6 +139,7 @@ Itervox writes to the agent processes it started — the stdin of the process th
 - `POST /api/v1/sessions/{id}/message` — message a running session, or type into a controllable tmux session (`{text, submit}`).
 - `GET /api/v1/sessions/{id}/transcript` — a page of a hand-started session's transcript.
 - `GET /api/v1/sessions/{id}/screen` and `POST /api/v1/sessions/{id}/keys` — a controllable session's screen and keys.
-- `POST /api/v1/sessions` and `DELETE /api/v1/sessions/{id}` — New session, and stopping one.
+- `POST /api/v1/sessions` — New session.
+- `POST /api/v1/sessions/{id}/stop` — stop a session (`{force}`; returns `{id, outcome}`); `DELETE /api/v1/sessions/{id}` is the same as a force stop.
 
 See [API reference → Sessions](/api-reference/#sessions).

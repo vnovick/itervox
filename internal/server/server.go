@@ -1922,6 +1922,7 @@ func (s *Server) routes() {
 			r.Get("/sessions/{id}/transcript", s.handleSessionTranscript)
 			r.Post("/sessions", s.handleStartSession)
 			r.Delete("/sessions/{id}", s.handleKillSession)
+			r.Post("/sessions/{id}/stop", s.handleStopSession)
 			r.Get("/sessions/{id}/screen", s.handleSessionScreen)
 			r.Post("/sessions/{id}/keys", s.handleSessionKeys)
 			r.Get("/issues", s.handleIssues)

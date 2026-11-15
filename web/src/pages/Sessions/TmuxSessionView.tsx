@@ -3,19 +3,15 @@ import { Button } from '../../components/ui/button';
 import { FIELD_CLASS } from '../../components/ui/Input';
 import { ConfirmModal } from '../../components/ui/modal/ConfirmModal';
 import { useSendSessionMessage } from '../../queries/sessions';
-import {
-  useKillSession,
-  useSendSessionKey,
-  useSessionScreen,
-  type SessionKey,
-} from '../../queries/sessionsTmux';
+import { useSendSessionKey, useSessionScreen, type SessionKey } from '../../queries/sessionsTmux';
 import type { SessionRow } from '../../types/schemas';
-import { CopyButton } from '../../components/ui/CopyButton';
+import { SessionStopControls } from './SessionStopControls';
 import { SCREEN_TONE_CLASS, screenLineTone } from './screenLineTone';
 
 // #178 tmux control: the live screen of a session running in a tmux pane,
-// a composer that pastes text (and presses Enter), a row of keys, and — for
-// a session itervox started — its attach command and Stop.
+// a composer that pastes text (and presses Enter), a row of keys, and
+// Stop (SessionStopControls: attach command and Force stop for a session
+// itervox started, keys-only Stop for a hand-started one).
 
 const KEYS: { key: SessionKey; label: string; title: string }[] = [
   { key: 'Escape', label: 'Esc', title: 'Escape' },
@@ -72,11 +68,9 @@ export function TmuxScreen({ id }: { id: string }) {
 /** Composer, keys, attach command and Stop of a controllable session. */
 export function TmuxControls({ session }: { session: SessionRow }) {
   const [draft, setDraft] = useState('');
-  const [confirm, setConfirm] = useState<'interrupt' | 'stop' | null>(null);
+  const [confirmInterrupt, setConfirmInterrupt] = useState(false);
   const send = useSendSessionMessage();
   const sendKey = useSendSessionKey();
-  const kill = useKillSession();
-  const owned = session.kind === 'tmux';
   const submit = (withEnter: boolean) => {
     const text = draft.trim();
     if (!text) return;
@@ -115,7 +109,7 @@ export function TmuxControls({ session }: { session: SessionRow }) {
           pill
           aria-label="Press Ctrl-C"
           onClick={() => {
-            setConfirm('interrupt');
+            setConfirmInterrupt(true);
           }}
         >
           Ctrl-C
@@ -155,42 +149,19 @@ export function TmuxControls({ session }: { session: SessionRow }) {
           Send
         </Button>
       </div>
-      {owned && session.attachCommand && (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-theme-muted">Attach from a terminal:</span>
-          <code data-testid="tmux-attach" className="font-mono">
-            {session.attachCommand}
-          </code>
-          <CopyButton text={session.attachCommand} label="Copy the attach command" />
-          <Button
-            size="sm"
-            variant="glass-danger"
-            pill
-            onClick={() => {
-              setConfirm('stop');
-            }}
-          >
-            Stop session
-          </Button>
-        </div>
-      )}
+      <SessionStopControls session={session} />
       <ConfirmModal
-        isOpen={confirm !== null}
+        isOpen={confirmInterrupt}
         onClose={() => {
-          setConfirm(null);
+          setConfirmInterrupt(false);
         }}
         onConfirm={() => {
-          if (confirm === 'interrupt') sendKey.mutate({ id: session.id, key: 'C-c' });
-          else kill.mutate(session.id);
-          setConfirm(null);
+          sendKey.mutate({ id: session.id, key: 'C-c' });
+          setConfirmInterrupt(false);
         }}
-        title={confirm === 'stop' ? 'Stop this session?' : 'Send Ctrl-C?'}
-        description={
-          confirm === 'stop'
-            ? 'Kills its tmux session and the agent in it.'
-            : 'Interrupts what the agent is doing.'
-        }
-        confirmLabel={confirm === 'stop' ? 'Stop session' : 'Send Ctrl-C'}
+        title="Send Ctrl-C?"
+        description="Interrupts what the agent is doing."
+        confirmLabel="Send Ctrl-C"
       />
     </div>
   );

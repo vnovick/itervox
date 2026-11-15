@@ -160,6 +160,7 @@ var routeScopes = map[string]routeAccess{
 	// Admin: configuration, tokens, tmux control, destructive maintenance.
 	"POST /api/v1/sessions":                                        accessAdmin, // starts a tmux session
 	"DELETE /api/v1/sessions/{id}":                                 accessAdmin,
+	"POST /api/v1/sessions/{id}/stop":                              accessAdmin, // graceful / force stop
 	"POST /api/v1/sessions/{id}/keys":                              accessAdmin,
 	"GET /api/v1/tokens":                                           accessAdmin,
 	"POST /api/v1/tokens":                                          accessAdmin,

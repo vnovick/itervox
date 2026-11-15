@@ -6,6 +6,7 @@ import { useDismissInput, useProvideInput } from '../../queries/issues';
 import { sessionKey, useSendSessionMessage } from '../../queries/sessions';
 import type { SessionRow, TmuxStatus } from '../../types/schemas';
 import { SessionMessages } from './SessionMessages';
+import { ExternalStopHint } from './SessionStopControls';
 import { TmuxMissingComposer } from './TmuxNotice';
 import { RequireScope } from '../../components/itervox/RequireScope';
 import { SteeringChips } from '../../components/itervox/SteeringChips';
@@ -53,6 +54,7 @@ export function SessionComposer({ session, inlineInput, tmux }: SessionComposerP
             {session.inUseReason}
           </p>
         )}
+        <ExternalStopHint session={session} />
         {tmux && (
           <p data-testid="session-tmux-hint" className="text-theme-muted text-xs">
             {TMUX_CONTROL_HINT}

@@ -294,7 +294,20 @@ only the event loop mutates them.
   (`EventExternalSessionsDiscovered`, carrying `ExternalScan` with the pane
   list) attaches panes and drops sessions whose tmux session is gone. Not
   counted toward `max_concurrent_agents`. Carried across `WORKFLOW.md`
-  reloads by cmd/itervox (`SeedTmuxSessions`), not persisted. `TestExternalSessionInspectionIsReadOnly`
+  reloads by cmd/itervox (`SeedTmuxSessions`), not persisted under
+  `.itervox/`: "New session" tags each session with tmux user options
+  (`tmuxctl.Opt*`: `@itervox-project` = the WORKFLOW.md dir, backend,
+  profile, cwd, guarded), and each discovery pass (the first at startup)
+  carries `ExternalScan.TmuxOwned` — sessions named `itervox-<6 hex>` AND
+  tagged with this daemon's project (`adoptableSessions`; never by name
+  alone) — which the loop re-adopts (`adoptTmuxSessions`: cap 8, not one
+  stopped after the pass was taken, `State.TmuxSessionsEnded`). An adopted
+  session's guardrail token died with the old process (agentactions is
+  memory-only): `GuardrailsStale`, shown in the UI, never re-issued.
+  Stopping (`POST /api/v1/sessions/{id}/stop`, admin,
+  cmd/itervox/sessions_stop.go, HTTP goroutine): owned = interrupt keys,
+  wait, then kill-session (force = kill-session); hand-started in a
+  controllable pane = keys only, never kill; otherwise refused. `TestExternalSessionInspectionIsReadOnly`
   keeps `internal/extsessions` free of writes, signals and commands other
   than `ps`/`lsof`.
 - `ManagedPRs`, `PREventDispatched` and `PREventBaselines` (#173) back the
