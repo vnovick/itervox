@@ -116,6 +116,37 @@ When `claude` is limited and nothing else in the chain is healthy, `coder`
 issues run on `coder-local`. They switch back once the limit resets, using
 the usual `switch_back` policy.
 
+## In the desktop app
+
+The [desktop app](/guides/desktop-app/) watches these servers for you. It
+reads each running daemon's list of model servers
+([`GET /api/v1/model-servers`](/api-reference/#model-servers)) and merges
+them across projects. The tray menu gets a **Model servers** section:
+
+```text
+Model servers
+local 127.0.0.1:8000 — answering · used by 2 projects
+GPU: NVIDIA GeForce RTX 4090 · 37% · 10.2/24.0 GB
+```
+
+A server is named after its profiles' `pool`, or "model server" when they
+set none. The project rail shows the same list under the projects. The app
+probes each server at most every 30 seconds, with a 3-second timeout, and
+any HTTP answer counts, as in doctor. It notifies you when a server that was
+answering misses two probes in a row, and again when it answers.
+
+The app only probes `127.0.0.1`, `localhost` and `::1`. It shows these
+servers as not checked, with the reason:
+
+- a URL from a variable;
+- any other host;
+- a project with `agent.ssh_hosts`, whose runs go to the worker hosts.
+
+The GPU line comes from `nvidia-smi` when it is on your PATH. On Apple
+silicon the app shows the integrated GPU, without its load. Otherwise it
+shows "not reported". CPU, memory and disk are on the dashboard's
+[machine status](/guides/system-visibility/#machine-status).
+
 ## Safety
 
 A local model does not make a run safer. The agent CLI runs with the same

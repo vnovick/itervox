@@ -42,6 +42,7 @@ type FuncClient struct {
 	SetIssueBackendFn                 func(string, string)
 	CheckIssueBackendPinFn            func(string, string) error
 	ClearBackendBreakerFn             func(string, string) bool
+	ModelServersFn                    func() []ModelServerRow
 	ProfileDefsFn                     func() map[string]ProfileDef
 	DefaultAgentCommandFn             func() string
 	AvailableModelsFn                 func() map[string][]ModelOption
@@ -243,6 +244,14 @@ func (c *FuncClient) ClearBackendBreaker(backend, host string) bool {
 		return c.ClearBackendBreakerFn(backend, host)
 	}
 	return false
+}
+
+// ModelServers implements ModelServerLister; nil when unset.
+func (c *FuncClient) ModelServers() []ModelServerRow {
+	if c.ModelServersFn != nil {
+		return c.ModelServersFn()
+	}
+	return nil
 }
 
 // CheckIssueBackendPin implements IssueBackendPinChecker; nil when unset.

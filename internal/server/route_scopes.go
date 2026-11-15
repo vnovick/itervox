@@ -56,6 +56,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/whoami":                            accessViewer,
 	"GET /api/v1/state":                             accessViewer,
 	"GET /api/v1/summary":                           accessViewer,
+	"GET /api/v1/model-servers":                     accessViewer, // URLs redacted below admin
 	"GET /api/v1/route-scopes":                      accessViewer, // #228: this table, for the hub's proxy
 	"GET /api/v1/feed":                              accessViewer,
 	"GET /api/v1/events":                            accessViewer,

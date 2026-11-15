@@ -162,6 +162,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/logs/identifiers` | viewer |
 | `GET` | `/api/v1/memory` | viewer |
 | `GET` | `/api/v1/memory/recall` | viewer |
+| `GET` | `/api/v1/model-servers` | viewer (URL credentials redacted below admin) |
 | `GET` | `/api/v1/playbooks` | viewer (#218) |
 | `GET` | `/api/v1/projects` | viewer |
 | `GET` | `/api/v1/projects/filter` | viewer |
@@ -1907,6 +1908,31 @@ pass. Errors: `400 bad_request` (`field: "backend"` unless `claude` or
 bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
+
+### Model servers
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/model-servers` | — | `200 {"servers":[…]}` |
+
+Lists the model servers that profile commands point their agent at, for the
+desktop app's "Model servers" section (see
+[Local models](/guides/local-models/#in-the-desktop-app)). The daemon reads
+the same command assignments as `itervox doctor` (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, `OPENAI_API_BASE`) from the live profile configuration,
+and never probes them:
+
+```json
+{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:8000","profiles":["(default)","coder-local"],"pools":["local"],"remote":false}]}
+```
+
+One row per variable and URL. `profiles` are the enabled profiles using it
+(`(default)` is `agent.command`), `pools` their quota pools
+(`agent.profiles.<name>.pool`, `[]` when none). `remote` is `true` when
+`agent.ssh_hosts` is set, since those runs go to worker hosts. A URL taken
+from a variable (`$LOCAL_MODEL_URL`) has `"unchecked": true`. Viewer scope;
+below admin, credentials in a URL are redacted. With no model server
+configured the list is empty.
 
 ### New task and task templates (#251)
 
