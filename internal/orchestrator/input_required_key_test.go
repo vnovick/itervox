@@ -120,7 +120,7 @@ func TestInputRequiredKeyPersistsAcrossRestart(t *testing.T) {
 	st.PendingInputResumes["ENG-2"] = &PendingInputResumeEntry{
 		IssueID: "id2", Identifier: "ENG-2", UserMessage: "r", QuestionCommentKey: testKey,
 	}
-	first.saveInputRequiredToDisk(st.InputRequiredIssues, st.PendingInputResumes)
+	first.saveInputRequiredToDisk(st.InputRequiredIssues, st.PendingInputResumes, nil)
 
 	second := New(cfg, mt, &blockedRunner{}, nil)
 	second.SetInputRequiredFile(path)
@@ -148,7 +148,7 @@ func TestLegacyInputRequiredFileWithoutKeyResolvesByID(t *testing.T) {
 		IssueID: "id1", Identifier: "ENG-1", Context: "q",
 		QuestionCommentKey: testKey, QuestionCommentID: "c-old",
 	}
-	first.saveInputRequiredToDisk(st.InputRequiredIssues, nil)
+	first.saveInputRequiredToDisk(st.InputRequiredIssues, nil, nil)
 
 	// Strip question_comment_key from the on-disk JSON to simulate a file
 	// written before keys existed — the simplest reliable way to get the

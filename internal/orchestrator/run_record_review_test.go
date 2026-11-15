@@ -215,7 +215,7 @@ func TestReviewerContinuationsStayReviewers(t *testing.T) {
 		assert.True(t, inputRequiredEntryFromPending(pending).Reviewer)
 
 		o.saveInputRequiredToDisk(map[string]*InputRequiredEntry{issue.Identifier: waiting},
-			map[string]*PendingInputResumeEntry{issue.Identifier: pending})
+			map[string]*PendingInputResumeEntry{issue.Identifier: pending}, nil)
 		loaded := o.loadInputRequiredFromDisk(NewState(o.cfg))
 		require.Contains(t, loaded.InputRequiredIssues, issue.Identifier)
 		assert.True(t, loaded.InputRequiredIssues[issue.Identifier].Reviewer, "a restart keeps the reviewer")

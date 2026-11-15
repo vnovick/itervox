@@ -866,6 +866,9 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
 	orch.SetPushLanesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "push_lanes.json"))                 // guardrails.lanes
 	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
+	// Per-issue profile overrides: loaded by every generation, so they survive
+	// a WORKFLOW.md / settings reload as well as a restart.
+	orch.SetIssueProfilesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "issue_profiles.json"))
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).

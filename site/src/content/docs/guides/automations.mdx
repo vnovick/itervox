@@ -631,7 +631,7 @@ The `policy` block controls behavior beyond the trigger and filter:
 
 - `auto_resume` — for `input_required` triggers: if the helper agent uses `provide_input`, resume the blocked run automatically.
 - `auto_switch` — for `rate_limited` triggers: required for automatic profile/backend switching. `auto_resume: true` is accepted as a compatibility alias.
-- `switch_to_profile` — for `rate_limited` triggers: reassign the issue to this profile when rate-limited.
+- `switch_to_profile` — for `rate_limited` triggers: reassign the issue to this profile when rate-limited. The issue's `agentProfile` shows the new profile and its next runs use it, even when an operator had pinned a profile on the issue before the switch. The switch is reverted after a successful run or after `agent.switch_revert_hours`, and the operator's pin then applies again; a pin set after the switch wins over it. `agent.max_switches_per_issue_per_window` caps how often an issue is switched.
 - `switch_to_backend` — for `rate_limited` triggers: override the backend when switching.
 - `cooldown_minutes` — for `rate_limited` triggers: minimum minutes before the automation can fire again on the same issue.
 - `move_to_state` — for `blockers_resolved` triggers: opt into moving matching unblocked issues to a target state. The selected profile must allow `move_state`.
