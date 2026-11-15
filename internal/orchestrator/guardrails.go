@@ -227,6 +227,9 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 		o.postQuestionKeyless(entry.IssueID, ev.Identifier, entry.QuestionCommentKey, body, err)
 	}
 	state.InputRequiredIssues[ev.Identifier] = entry
+	p := feedRunPayload(live) // #213: the command stays out of the feed
+	p.Kind = "guardrail_approval"
+	o.emitFeed(state, FeedInputRequired, ev.Identifier, p)
 	slog.Info("guardrails: approval requested", "issue_identifier", ev.Identifier, "command", g.Command)
 	if o.logBuf != nil {
 		o.logBuf.Add(ev.Identifier, makeBufLineWithSession("INFO", "guardrails: waiting for approval: "+g.Command, g.RunID))
@@ -237,10 +240,10 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 }
 
 // resolveGuardrailApproval answers entry's approval with a human reply
-// (via "dashboard" — also the Mac app —, "tracker", or "dismiss"): the
-// request is decided and the entry removed; nothing is resumed — the run
-// never stopped. A dashboard answer is mirrored to the tracker like any
-// input-required reply. Event loop.
+// (via "dashboard" — also the Mac app —, "slack" (#230), "tracker", or
+// "dismiss"): the request is decided and the entry removed; nothing is
+// resumed — the run never stopped. A dashboard or Slack answer is mirrored
+// to the tracker like any input-required reply. Event loop.
 func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequiredEntry, reply, via string) {
 	approved := guardrails.IsApproval(reply)
 	command := ""
@@ -250,6 +253,7 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 	o.guardApprovals.Decide(entry.GuardrailApprovalID, approved, reply)
 	delete(state.InputRequiredIssues, entry.Identifier)
 	if approved {
+		o.emitFeed(state, FeedGuardrailApproved, entry.Identifier, FeedPayload{Via: via}) // #213
 		slog.Info("guardrails: approved", "issue_identifier", entry.Identifier, "via", via, "command", command)
 		if o.logBuf != nil {
 			o.logBuf.Add(entry.Identifier, makeBufLine("INFO", "guardrails: approved via "+via+": "+command))
@@ -257,14 +261,15 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 	} else {
 		slog.Warn("guardrails: refused", "issue_identifier", entry.Identifier, "kind", guardrails.KindApprovalRejected, "via", via, "command", command)
 		metrics.GuardrailBlock(guardrails.KindApprovalRejected)
+		o.emitFeed(state, FeedGuardrailBlocked, entry.Identifier, FeedPayload{Kind: guardrails.KindApprovalRejected, Via: via}) // #213
 		appendRecentFailure(state, FailureRecord{Kind: FailureKindGuardrail, Identifier: entry.Identifier,
 			Source: guardrails.KindApprovalRejected, Message: "rejected via " + via + ": " + command, OccurredAt: time.Now()}, time.Now())
 		if o.logBuf != nil {
 			o.logBuf.Add(entry.Identifier, makeBufLine("WARN", "guardrails: rejected via "+via+": "+command))
 		}
 	}
-	if via == "dashboard" {
-		// Mirror the answer like any input-required reply.
+	if via == "dashboard" || via == InputViaSlack {
+		// Mirror a human's answer like any input-required reply.
 		if err := o.postInputRequiredComment(entry.IssueID, entry.Identifier,
 			o.newInputRequiredCommentKey(entry.Identifier), tracker.MarkManagedComment(reply), "reply"); err != nil {
 			slog.Warn("guardrails: approval answer not mirrored to the tracker", "issue_identifier", entry.Identifier, "error", err)

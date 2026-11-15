@@ -29,6 +29,55 @@ The prompt template is re-rendered on every agent turn. It has access to
 `issue.*` (identifier, title, description, state, priority, labels,
 blocked_by, branch_name, …) and the `attempt` counter on retries.
 
+## Settings files and WORKFLOW.md (#239)
+
+The runtime sections — `agent`, `automations`, `dependencies`, `hooks`, `hub`,
+`polling`, `server`, `tracker` and `workspace` — are layered settings. Each can
+live in three JSONC files with one published schema
+(`https://itervox.dev/schema/settings.schema.json`, `itervox config schema`):
+
+| Layer | File | Wins over |
+|-------|------|-----------|
+| `user` | `~/.itervox/settings.jsonc` (`ITERVOX_USER_SETTINGS`; `off` disables it): personal defaults | defaults |
+| `workflow` | `WORKFLOW.md` front matter (deprecated for these sections) | user |
+| `project` | `.itervox/settings.jsonc` (committed) | workflow |
+| `local` | `.itervox/settings.local.jsonc` (gitignored) | project |
+
+- `WORKFLOW.md` holds the prompt: its body is the Liquid template, and it stays
+  the import/export format (`itervox import`, `itervox export --symphony`). Its
+  front matter keeps the schema marker, the non-layered sections (`guardrails`,
+  `memory`, `sessions`, `pr_events`), `agent.profiles`, `agent.available_models`
+  and the legacy `agent.reviewer_prompt`.
+- Front-matter keys still apply. `itervox doctor` lists each as `deprecated:`
+  with where it moves (`.itervox/settings.jsonc`); the startup log names them
+  once. A key also set in the project or local file is a conflict: that file
+  wins, and the conflict is reported once. A user-file value under the front
+  matter is a default the project overrides, not a conflict.
+- `itervox init` (every template, and `itervox quickstart`) writes the layered
+  sections to `.itervox/settings.jsonc`, so a new project has nothing
+  deprecated.
+- Secrets are `$VAR` references in settings files (`"api_key": "$LINEAR_API_KEY"`);
+  values stay in the environment or `.itervox/.env`. Writers refuse an inline
+  secret.
+- `itervox init --update` moves the keys (with `WORKFLOW.md.bak` first,
+  comments kept, `--dry-run` to preview). Dashboard saves of tracker states,
+  the failed state, the project filter and scope, `dependencies.analysis_mode`
+  and automations write the project settings file (or the local one when it
+  already sets the key) and remove the key from `WORKFLOW.md`.
+- Live reload (#245): the daemon watches the user, project and local settings
+  files together with `WORKFLOW.md` (one 2 s debounce, the same validation, the
+  same drain-then-reload), so a hand edit of any of them applies without a
+  restart. A settings file that does not exist yet is watched by its path, so
+  creating it is picked up; deleting it reloads without that layer. Itervox's
+  own writes (Settings page saves) never reload; `itervox config set` and
+  `itervox init --update` reload a running daemon once. An edit that does not
+  load keeps the running config, logs one error naming the file and line, and
+  shows on the dashboard banner. `itervox doctor` lists the watched files. The
+  `cfgMu` runtime fields are unchanged.
+
+See the site guide "Moving settings out of WORKFLOW.md"
+(`site/src/content/docs/guides/settings-migration.mdx`).
+
 Any string value of the form `$VAR_NAME` is substituted with the corresponding
 environment variable at load time. Unset variables resolve to an empty string.
 
@@ -99,7 +148,7 @@ fields are also mutable via the dashboard Settings page and persist back to
 | `switch_revert_hours` | int | `0` | TTL (hours) after which an auto-applied profile/backend switch is reverted on the next poll cycle, returning the issue to its original profile and backend. `0` disables the revert. Operator-set overrides survive. WORKFLOW.md only |
 | `backend_fallback` | map | absent | Declarative reroute when a backend hits its usage limit, with reset-time switch-back and a minimum dwell. See [Backend health and fallback](#backend-health-and-fallback-agentbackend_fallback). Read at load time; not runtime-editable |
 | `ssh_hosts` | []string | `[]` | SSH worker hosts (`host` or `host:port`). Empty = run locally. Runtime-editable. Each worker needs bash 3.2+ (with process substitution: `/dev/fd` or a writable `TMPDIR`) with `sh`, `cat`, `printf`, `wc` and `sleep` (any SSH server: OpenSSH or Dropbear), and a login profile that does not read stdin. The prompt reaches the agent CLI on its stdin, never as an argument (`claude ... -p`, `codex exec ... -`), so no prompt size is refused on Linux workers (`MAX_ARG_STRLEN`); Claude Code caps piped input at 10 MB. Cancelling a turn (or stopping the daemon) stops the remote agent: when the ssh channel closes, the worker-side wrapper sends `SIGTERM` to the process group it created for the agent, and `SIGKILL` 2 s later; nothing outside that group is signalled, and a profile's `TMOUT` does not affect it |
-| `ssh_host_descriptions` | map[string]string | `{}` | Optional display labels for `ssh_hosts`, shown in the dashboard/TUI. Runtime-editable |
+| `ssh_host_descriptions` | map[string]string | `{}` | Optional display labels for `ssh_hosts`, shown in the dashboard. Runtime-editable |
 | `ssh_strict_host_checking` | string | `"accept-new"` | Default `StrictHostKeyChecking` mode for SSH worker connections. Valid: `accept-new` (TOFU — pin on first contact), `yes`, `no`, `ask`, `off`. Defaults to TOFU; rejects mismatched host keys on subsequent connections |
 | `ssh_strict_host_by_host` | map[string]string | `{}` | Per-host override for `StrictHostKeyChecking`. Keys are host addresses, values use the same set as `ssh_strict_host_checking`. Useful for hardening production hosts (`yes`) or temporarily relaxing sandbox VMs (`no`) |
 | `dispatch_strategy` | string | `"round-robin"` | Routing for SSH hosts. One of `round-robin`, `least-loaded`. Runtime-editable |
@@ -186,8 +235,10 @@ agent:
 | `min_dwell_minutes` | int | `30` | Minimum time a switched issue stays on the fallback before it may switch back. It never blocks a further hop when the fallback itself becomes limited |
 | `switch_back` | string | `at_reset` | `at_reset`: the override is cleared once the dwell has passed AND the original backend is no longer limited (its reset, or the cooldown, has passed); the next dispatch goes back through the breaker. `on_success`: cleared by the first successful run after the dwell. `manual`: never cleared automatically (pin a backend, or use `switch_revert_hours`) |
 
-The block is read at load time: edit `WORKFLOW.md` to change it (the normal
-reload applies it). There is no settings API for it.
+The block is read at load time: set it in `.itervox/settings.jsonc` (or,
+deprecated since v0.3, in `WORKFLOW.md`'s front matter); a hand edit of
+either file reloads the daemon, which applies it. It has no runtime setter,
+and the Settings page shows it read-only outside its JSON view.
 
 A switched implementer issue keeps its new profile and backend for later
 runs (a sticky override, shown on the card as `codex (auto)` and in the
@@ -242,6 +293,23 @@ appended after the selected profile files. `agent.profiles.*.prompt` is legacy
 input for `itervox init --update`; schema `2` rejects it at daemon startup.
 The dashboard profile editor edits `SOUL.md` and `INSTRUCTIONS.md` separately
 and writes those files before refreshing the snapshot.
+
+### `agent.playbooks` (#218)
+
+Task-type playbooks (`.itervox/playbooks/<name>.md`) inserted into a worker
+run's prompt right after `INSTRUCTIONS.md`. Chosen per issue: the operator's
+choice in the issue detail view, else the first label `labels` maps, else a
+confident keyword match over the title and description, else none. A
+playbook's frontmatter `require_evidence` joins the profile's. Read at load
+time; the files are read again for every run. See the site's
+[Playbooks guide](https://itervox.dev/guides/playbooks/).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Attach playbooks. |
+| `dir` | string | `.itervox/playbooks` | Directory, relative to `WORKFLOW.md` when not absolute. |
+| `classify` | bool | `true` | Keyword classifier when no label matches. |
+| `labels` | map | `bug`/`bugfix`/`bug-fix`/`regression` → `bug-fix`, `feature`/`enhancement` → `feature`, `refactor`/`refactoring`/`tech-debt` → `refactor`, `perf`/`performance` → `perf`, `investigation`/`spike`/`research` → `investigation`, `docs`/`documentation` → `docs` | Label (case-insensitive) → playbook; a set map replaces the defaults. |
 
 `allowed_actions` do not grant shell or tracker access by themselves. They only
 allow the daemon to mint short-lived per-run bearer grants for the corresponding
@@ -637,6 +705,7 @@ startup.
 | `external_window_hours` | int | `24` | Only sessions whose transcript was written to within this many hours are listed. Zero or negative falls back to the default. |
 | `external_scope` | string | `project` | `project`: only sessions whose working directory is inside the `WORKFLOW.md` directory or one of `external_roots` — sessions from unrelated directories are never read or shown. `all`: every recent session of the daemon's user. Any other value falls back to `project`. Sessions under the itervox workspace root are never listed either way. |
 | `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
+| `steering_phrases` | list | six defaults | One-click steering chips in the Sessions composer and the issue steer box (#218): `{label, message}` entries or bare default labels; `[]` shows none. See the site's [Steering phrases](https://itervox.dev/guides/playbooks/#steering-phrases). |
 | `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. |
 
 ```yaml
@@ -668,6 +737,29 @@ hosts are not guarded in v1.
 
 ---
 
+## `hub`
+
+The machine's itervox hub (#228): the first daemon started on a machine serves
+one URL, a scoped API proxy and a merged event feed for every project on it.
+Guide: [The itervox hub](../site/src/content/docs/guides/hub.mdx). Every key is read at startup (a
+`WORKFLOW.md` reload does not move the hub). The hub is machine-wide, so the
+natural home for them is the user settings file, `~/.itervox/settings.jsonc`;
+the daemon that wins the hub election uses its own values.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Take part in the hub: become it (the first daemon) or join it as a member. `false` is the same as `itervox --no-hub`. |
+| `port` | int | `8089` | The hub's port when this daemon serves it. A busy port moves to the next free one (up to 10 tried), recorded in `~/.itervox/daemons/hub.lock`. `0` lets the OS pick. |
+| `bind` | string | `"127.0.0.1"` | The hub's listen address: an IP address or `localhost`. Every hub route except the health probe needs a hub token (`itervox token create --hub`), so `0.0.0.0` or a Tailscale address is safe with tokens only; the hub serves plain HTTP, so put TLS in front of it on a network you do not control. |
+| `slack` | object | — | The hub's Slack channel (#230), through your own Slack app over Socket Mode: `enabled` (default `false`), `allowed_users` (Slack user IDs that may reply, approve, reject and steer; **empty: nobody**, alerts only), `channels` (hub project name → channel ID, or a user ID for a DM) and `default_channel`. IDs are checked at load. The app and bot tokens are not settings: `itervox hub slack setup` stores them in `~/.itervox/hub/.env`. Guide: [Slack](../site/src/content/docs/guides/slack.mdx). |
+
+```jsonc
+// ~/.itervox/settings.jsonc
+{
+  "hub": { "enabled": true, "port": 8089, "bind": "127.0.0.1" }
+}
+```
+
 ## `server`
 
 | Field | Type | Default | Description |
@@ -676,6 +768,7 @@ hosts are not guarded in v1.
 | `port` | int | `8090` | HTTP listen port. `0` = OS picks a free port (for running several daemons at once). If the configured port is in use, startup fails loudly naming the holder — no silent shifting. `ITERVOX_SERVER_PORT`, then `PORT`, override it |
 | `allow_unauthenticated` | bool | `false` | By default Itervox requires bearer-token auth on every request, on every bind — including loopback (`127.0.0.1`) — and auto-generates an ephemeral `ITERVOX_API_TOKEN` if none is set. Set this flag to `true` to disable that gate entirely — **only** for trusted, fully local setups where the daemon is physically unreachable from anyone else. Has an effect on every bind, not just non-loopback ones: a loopback daemon behind a tunnel or reverse proxy is just as exposed as one bound to `0.0.0.0`, which is why the gate is no longer bind-address-scoped. Renamed from `allow_unauthenticated_lan`; the old key still parses and works identically, but logs a deprecation warning at startup — new configs should use `allow_unauthenticated`. State-changing requests from another origin are still refused with 403 (see Authentication below). |
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` header names the dashboard answers when `allow_unauthenticated: true` (DNS-rebinding protection). Without a token every route refuses a request whose `Host` is a DNS name other than `localhost`, the configured `host`, or one listed here, with 403 `host_not_allowed`; IP addresses are always accepted. List the reverse-proxy, tunnel, Tailscale MagicDNS or container service hostname you browse to, without scheme (a `:port` is ignored). Entries are lower-cased and a Unicode name is converted to its punycode (`xn--`) form, which is what browsers send. An entry that could never match — a URL (`https://proxy.example`), a path, userinfo, or a wildcard (`*.ts.net`; wildcards are not supported, list each full name) — fails config load with an error naming it. Ignored in token mode. |
+| `allowed_origins` | list of strings | `[]` | CORS allow-list (#231): origins (`https://host[:port]`, no path) whose pages may call this daemon's API — and the hub's, when this daemon serves it — cross-origin with a bearer token, such as a dashboard you host elsewhere (see the phone guide, "A dashboard hosted elsewhere"). A listed origin gets `Access-Control-Allow-Origin` for itself (never `*`, never credentials) and its preflights are answered; with the default, an empty list, every page is same-origin only: no CORS header is sent and every cross-origin preflight is refused with 403 `origin_not_allowed`. Entries are lower-cased and a default port is dropped; one that could never match (no scheme, a path, a wildcard, userinfo) fails config load. Read at startup. |
 | `metrics.enabled` | bool | `false` | Serve Prometheus metrics at `GET /metrics` (text format) on the dashboard listener. Requires the same bearer token as `/api/v1/*`; off, `/metrics` answers 404. Families, labels and semantics: API reference, "Metrics". Read at startup. |
 
 ### Bind overrides from the environment
@@ -716,7 +809,7 @@ inject the port as `$PORT`, so the bind can come from the environment:
 
 Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and on the SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; if unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once — only when stderr is a terminal or `ITERVOX_PRINT_TOKEN=1` (`--no-print-token` always suppresses it). Headless (systemd, containers, redirected stderr), an auto-generated token is written to `<logs-dir>/api-token` (mode 0600, rewritten on every start) instead, and the log line carries only its path and a `sha256:` fingerprint. The dashboard prompts for the token on first load and persists it (session-only by default, or via "Remember" checkbox in `localStorage`).
 
-**Cross-origin guard in unauthenticated mode.** With `server.allow_unauthenticated: true` there is no bearer check, so Itervox instead refuses cross-origin state-changing requests, which stops a malicious web page in the operator's browser from driving the daemon. A `POST`, `PUT`, `PATCH` or `DELETE` to `/api/v1/*` gets `403` with code `cross_origin_forbidden` when the browser sends `Sec-Fetch-Site: cross-site` or `same-site`, or, for a browser that sends no `Sec-Fetch-Site`, an `Origin` whose host and port differ from the request's `Host` header (`Origin: null` never matches). Only host and port are compared, not the scheme, so a TLS-terminating proxy in front of a plain-HTTP daemon keeps working. Requests with neither header (curl, scripts, the TUI) pass, as do `GET` requests and the SSE streams. The Vite dev server (page on `:5173`, proxying to the daemon) passes on any browser that sends `Sec-Fetch-Site`, which all have since 2023. To call the API from a web page on another origin, run with a token instead: token mode has no origin check, because a browser never attaches the bearer token cross-site. The guard is not access control: anyone who can reach the port with curl still has full access.
+**Cross-origin guard in unauthenticated mode.** With `server.allow_unauthenticated: true` there is no bearer check, so Itervox instead refuses cross-origin state-changing requests, which stops a malicious web page in the operator's browser from driving the daemon. A `POST`, `PUT`, `PATCH` or `DELETE` to `/api/v1/*` gets `403` with code `cross_origin_forbidden` when the browser sends `Sec-Fetch-Site: cross-site` or `same-site`, or, for a browser that sends no `Sec-Fetch-Site`, an `Origin` whose host and port differ from the request's `Host` header (`Origin: null` never matches). Only host and port are compared, not the scheme, so a TLS-terminating proxy in front of a plain-HTTP daemon keeps working. Requests with neither header (curl, scripts, the terminal commands) pass, as do `GET` requests and the SSE streams. The Vite dev server (page on `:5173`, proxying to the daemon) passes on any browser that sends `Sec-Fetch-Site`, which all have since 2023. To call the API from a web page on another origin, run with a token instead: token mode has no origin check, because a browser never attaches the bearer token cross-site. The guard is not access control: anyone who can reach the port with curl still has full access.
 
 **Host guard (DNS rebinding) in unauthenticated mode.** The cross-origin guard cannot stop DNS rebinding: a page on a hostname the attacker controls re-points that name at your daemon's address and then talks to it *same-origin*, so it could otherwise store a profile with an arbitrary `command`, rewrite settings, or read state and logs. With `server.allow_unauthenticated: true`, every route — API, SSE, the dashboard and static files — therefore requires the request's `Host` (port and IPv6 brackets stripped, case-insensitive) to be `localhost`, an IP address, the configured `server.host`, or a name in `server.allowed_hosts`; anything else gets 403 with code `host_not_allowed`. IP addresses always pass because a rebinding attack needs a DNS name — so browsing to `http://192.168.1.20:8090` with `host: 0.0.0.0`, container probes by pod IP, and SSH tunnels to `localhost` all keep working, as does the Vite dev proxy (it forwards `Host: localhost:<port>`). `GET /api/v1/health` is exempt because it returns a constant, and `GET /api/v1/ready` because it returns only booleans and the tracker's rate-limit reset and is probed by whatever name the platform uses. **If you reach an unauthenticated daemon through a reverse proxy, tunnel, MagicDNS or container service hostname, add that name to `server.allowed_hosts`.** Token mode has no Host check: a rebound page never holds the bearer token.
 
@@ -811,7 +904,7 @@ either.
 
 ### What an edit to `WORKFLOW.md` does
 
-Settings saved from the dashboard or TUI never reload: each is written as the
+Settings saved from the dashboard never reload: each is written as the
 daemon's own write and applied in memory. An **operator edit** (your editor,
 `git pull`, a deploy) is detected by the file watcher and applied with
 **drain, then reload**: admission stops exactly as for a shutdown, in-flight
@@ -834,14 +927,12 @@ then shows the "config invalid" banner and waits for a fix.
 ### Log format
 
 `--log-format text|json` (or `ITERVOX_LOG_FORMAT`; the flag wins) selects
-the format of the rotating log file **and**, unless the terminal UI runs
-(it starts only with `--tui` since v0.2.4), of stderr — one JSON object per
-log record, for platforms that collect stdout/stderr. With `--tui` on a
-terminal, logs go to the file only. Both
+the format of the rotating log file **and** of stderr — one JSON object per
+log record, for platforms that collect stdout/stderr. Both
 sinks go through the same secret redaction (`Bearer` tokens, `lin_api_…`,
 `ghp_…`, `sk-ant-…` are written as `***`). Lines printed before logging
-starts or outside it (usage text, fatal start-up errors, the TUI's own
-"not starting" notice) are plain text in either format.
+starts or outside it (usage text, fatal start-up errors) are plain text in
+either format.
 
 ### Log retention
 
@@ -957,9 +1048,10 @@ workspace:
 
 ## `.itervox` project files
 
-`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, and starter
-profile files. Commit `.itervox/agents/**`: those files are project agent
-definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs,
+`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, starter
+profile files and the task-type playbooks in `.itervox/playbooks/` (#218).
+Commit `.itervox/agents/**` and `.itervox/playbooks/**`: those files are
+project agent definitions. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs,
 runtime queue files, or other generated daemon state.
 
 When a daemon starts, it writes `.itervox/HEARTBEAT.md` atomically with the

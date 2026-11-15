@@ -11,13 +11,15 @@ import (
 
 	"github.com/tailscale/hujson"
 	"github.com/vnovick/itervox/internal/atomicfs"
+	"github.com/vnovick/itervox/internal/workflow"
 )
 
 // newSettingsFile is what SetSetting starts a missing settings file from.
 const newSettingsFile = `// Itervox settings (JSONC: comments and trailing commas are fine).
-// Layers: built-in defaults < ~/.itervox/settings.jsonc < .itervox/settings.jsonc
-// < .itervox/settings.local.jsonc (gitignored) < WORKFLOW.md.
-// Sections: agent, polling, server, workspace. See the configuration docs.
+// Layers: built-in defaults < ~/.itervox/settings.jsonc < WORKFLOW.md front matter
+// < .itervox/settings.jsonc < .itervox/settings.local.jsonc (gitignored).
+// Sections: agent, automations, dependencies, hooks, hub, polling, server,
+// tracker, workspace. Secrets are $VAR references only. See the configuration docs.
 {
   "$schema": "` + SettingsSchemaURL + `",
 }
@@ -27,6 +29,7 @@ const newSettingsFile = `// Itervox settings (JSONC: comments and trailing comma
 // settings file at path, creating the file and any missing objects. Comments
 // and the layout of everything else in the file are kept (#129). A nil value
 // removes the key. The result is checked to parse before it replaces the file.
+// The write is registered as this process's own (see WriteJSONCFile).
 func SetSetting(path, key string, value any) error {
 	return SetSettings(path, SettingAssignment{Key: key, Value: value})
 }
@@ -47,7 +50,8 @@ func SetSettings(path string, settings ...SettingAssignment) error {
 	anyValue := false
 	for i, s := range settings {
 		parts := strings.Split(s.Key, ".")
-		if len(parts) < 2 || slices.Contains(parts, "") {
+		listSection := len(parts) == 1 && slices.Contains(ListSections, parts[0])
+		if (len(parts) < 2 && !listSection) || slices.Contains(parts, "") {
 			return fmt.Errorf("config: %q is not a settings key (use section.name, e.g. agent.max_turns)", s.Key)
 		}
 		if !slices.Contains(LayeredSections, parts[0]) {
@@ -56,7 +60,9 @@ func SetSettings(path string, settings ...SettingAssignment) error {
 		split[i] = parts
 		anyValue = anyValue || s.Value != nil
 	}
-	raw, err := os.ReadFile(path)
+	pre, err := os.ReadFile(path)
+	existed := err == nil
+	raw := pre
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		if !anyValue {
@@ -94,7 +100,7 @@ func SetSettings(path string, settings ...SettingAssignment) error {
 	// Inserted values arrive on one line; Format lays the file out again,
 	// keeping every comment.
 	doc.Format()
-	return WriteJSONCFile(path, doc.Pack(), func(out []byte) error {
+	return writeJSONC(path, pre, existed, doc.Pack(), func(out []byte) error {
 		_, err := parseSettings(out)
 		return err
 	})
@@ -127,7 +133,24 @@ func PatchJSONC(raw []byte, ops []JSONPatchOp) ([]byte, error) {
 // check accepts it (nil check: it must only parse as JSONC). Parent
 // directories are created. A refused or failed write leaves the file as it
 // was.
+//
+// Like SetSettings, the write is registered as this process's own
+// (workflow.RecordSelfWrite, #245): the daemon's watcher does not reload for
+// it. Every writer in the daemon holds the settings gate and applies what it
+// wrote in memory (or reports it as needing a restart); another process —
+// `itervox config set`, `itervox init --update` — has its own registry, so a
+// running daemon reloads once for its write.
 func WriteJSONCFile(path string, out []byte, check func([]byte) error) error {
+	pre, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("config: read %s: %w", path, err)
+	}
+	return writeJSONC(path, pre, err == nil, out, check)
+}
+
+// writeJSONC is WriteJSONCFile with the bytes the writer read (pre, existed)
+// for the self-write registration.
+func writeJSONC(path string, pre []byte, existed bool, out []byte, check func([]byte) error) error {
 	if check == nil {
 		check = func(b []byte) error { _, err := ParseJSONC(b); return err }
 	}
@@ -140,6 +163,7 @@ func WriteJSONCFile(path string, out []byte, check func([]byte) error) error {
 	if err := atomicfs.WriteFile(path, out, 0o644); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
 	}
+	workflow.RecordSelfWrite(path, pre, existed, out, true)
 	return nil
 }
 

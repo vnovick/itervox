@@ -73,7 +73,7 @@ Clicking **Add Automation** or **Use Template** opens the automation editor moda
 
 <Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor showing the trigger type dropdown with all ten trigger types" width={900} height={580} />
 
-The cron picker and raw expression field stay in sync. For non-cron triggers, the editor adapts to show trigger-specific fields (e.g. `state` for `issue_entered_state`, `input_context_regex` for `input_required`).
+The cron input offers presets (every 5 minutes, hourly, weekdays at 09:00, …), one field each for minute, hour, day, month and weekday, and the raw expression; all three stay in sync, and a line under them reads the schedule back in plain English ("At 09:00 on Monday through Friday"). It validates with the daemon's own rules: five fields of `*`, numbers, ranges (`1-5`), lists (`1,15`) and steps (`*/15`, `0-30/10`); weekday `0` is Sunday and `7` is invalid; month and day names (`JAN`, `MON`) and `@daily`-style aliases are not accepted. The 6- and 7-field Quartz forms other tools emit are accepted when the seconds field is `0` (and the year field `*`), and a whole-field `?` reads as `*`. An invalid expression names the field and blocks saving. For non-cron triggers, the editor adapts to show trigger-specific fields (e.g. `state` for `issue_entered_state`, `input_context_regex` for `input_required`).
 
 All changes are persisted to the `automations:` block in `WORKFLOW.md` and take effect on the next tick without a daemon restart.
 

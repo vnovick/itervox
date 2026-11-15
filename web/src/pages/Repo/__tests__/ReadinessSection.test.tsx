@@ -23,7 +23,7 @@ const readiness = {
     {
       id: 'gitignore_carveouts',
       title:
-        '.gitignore keeps .itervox/agents, .itervox/handoff and .itervox/memory.json committable',
+        '.gitignore keeps .itervox/agents, .itervox/handoff, .itervox/playbooks and .itervox/memory.json committable',
       status: 'warn',
       detail: 'missing !.itervox/agents/**',
       fix: 'run `itervox init --update --workflow WORKFLOW.md`',
@@ -90,5 +90,47 @@ describe('ReadinessSection (#200)', () => {
     await waitFor(() => {
       expect(vi.mocked(authedFetch).mock.calls.length).toBeGreaterThan(calls);
     });
+  });
+
+  it('offers Generate verify skill on a missing verify skill and creates the issue (#218)', async () => {
+    const withVerify = {
+      ...readiness,
+      checks: [
+        ...readiness.checks,
+        {
+          id: 'verify_skill',
+          title: 'Project verification skill or script',
+          status: 'warn',
+          detail: 'no project verification skill or script',
+          fix: 'add .claude/skills/verify/SKILL.md',
+        },
+      ],
+    };
+    vi.mocked(authedFetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const body =
+        url === '/api/v1/repo/readiness/verify-skill-issue'
+          ? { identifier: 'ENG-42', url: 'https://example.test/ENG-42' }
+          : withVerify;
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: url.endsWith('verify-skill-issue') ? 201 : 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    });
+    render(<ReadinessSection />);
+    await screen.findByRole('list', { name: 'Readiness checks' });
+    expect(within(row('tracker_reachable')).queryByRole('button')).toBeNull();
+    fireEvent.click(
+      within(row('verify_skill')).getByRole('button', { name: 'Generate verify skill' }),
+    );
+    expect(
+      await within(row('verify_skill')).findByRole('button', { name: 'Created ENG-42' }),
+    ).toBeDisabled();
+    expect(vi.mocked(authedFetch)).toHaveBeenCalledWith(
+      '/api/v1/repo/readiness/verify-skill-issue',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });

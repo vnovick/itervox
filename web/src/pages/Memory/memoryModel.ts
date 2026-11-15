@@ -75,6 +75,30 @@ export const TRIGGER_LABELS: Record<string, string> = {
   input_reply: 'Correction in an input reply',
   steering: 'Correction in a steering message',
   failed_then_succeeded: 'A failed run, then a successful one',
+  reviewer_ask: 'A change reviewers asked for more than once',
+  reverted_pr: 'A merged agent PR that was reverted',
+  recipe: 'A hard-won success (recipe)',
+};
+
+/** #217 — enforcement kinds, strongest first, in words. */
+export const ENFORCEMENT_KIND_LABELS: Record<string, string> = {
+  lint: 'Lint rule',
+  type: 'Type',
+  test: 'Test',
+  docs: 'CLAUDE.md / AGENTS.md rule',
+  rule: 'Itervox rule',
+};
+
+/** #217 — approved lessons (the Lessons tab's "Approved" view). */
+export function approvedLessons(entries: readonly MemoryEntry[]): MemoryEntry[] {
+  return entries.filter((e) => e.type === 'lesson' && e.status === 'active');
+}
+
+/** #217 — "Not helping" labels. */
+export const NOT_HELPING_LABELS: Record<string, string> = {
+  unused: 'Unused',
+  failing: 'Failing',
+  enforced: 'Enforced',
 };
 
 /** #203 — approved lessons the daemon flags as not helping. */

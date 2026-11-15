@@ -93,8 +93,8 @@
           "properties": {
             "trigger": {
               "type": "string",
-              "enum": ["input_reply", "steering", "failed_then_succeeded"],
-              "description": "What made Itervox propose it: a reply to an input-required question, a steering message, or a failed run followed by a successful one."
+              "enum": ["input_reply", "steering", "failed_then_succeeded", "reviewer_ask", "reverted_pr", "recipe"],
+              "description": "What made Itervox propose it: a reply to an input-required question, a steering message, a failed run followed by a successful one, a change reviewers asked for at least twice, a merged agent PR that was reverted, or a hard-won success (a recipe)."
             },
             "situation": { "type": "string", "maxLength": 2000, "description": "When the lesson applies." },
             "wentWrong": { "type": "string", "maxLength": 2000, "description": "What the agent did, or what failed." },
@@ -103,7 +103,36 @@
             "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "How sure Itervox is; raised each time the same lesson is seen again." },
             "evidence": { "type": "integer", "minimum": 0, "description": "How many times the lesson was seen." },
             "draftedBy": { "type": "string", "maxLength": 512, "description": "template, or profile:<name> for a lesson drafted by an agent profile." },
-            "approvedAt": { "type": "string", "format": "date-time", "description": "When a human approved it (or it was auto-approved)." }
+            "approvedAt": { "type": "string", "format": "date-time", "description": "When a human approved it (or it was auto-approved)." },
+            "verification": { "type": "string", "maxLength": 2000, "description": "For a recipe: the check that proved the fix worked." },
+            "rule": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["layer", "id"],
+              "description": "The rule the lesson was promoted to; the lesson is archived.",
+              "properties": {
+                "layer": { "type": "string", "description": "The rules layer: user or project." },
+                "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", "description": "The rule's id in that layer." },
+                "at": { "type": "string", "format": "date-time" }
+              }
+            },
+            "enforcement": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "status", "draft"],
+              "description": "The enforcement Itervox suggested once the lesson was seen memory.lessons.enforce_threshold times, and the reviewer's decision.",
+              "properties": {
+                "kind": { "type": "string", "enum": ["lint", "type", "test", "docs", "rule"], "description": "Strongest first: a lint rule, a type, a test, a CLAUDE.md or AGENTS.md rule, an Itervox rule." },
+                "status": { "type": "string", "enum": ["suggested", "accepted", "dismissed"] },
+                "title": { "type": "string", "maxLength": 512 },
+                "draft": { "type": "string", "minLength": 1, "maxLength": 2000, "description": "What to add and where." },
+                "draftedBy": { "type": "string", "maxLength": 512, "description": "template, or profile:<name>." },
+                "suggestedAt": { "type": "string", "format": "date-time" },
+                "decidedAt": { "type": "string", "format": "date-time" },
+                "issue": { "type": "string", "maxLength": 512, "description": "The Enforce: issue an accepted suggestion created." },
+                "issueUrl": { "type": "string", "maxLength": 512 }
+              }
+            }
           }
         }
       }

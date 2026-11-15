@@ -206,6 +206,11 @@ func (s Store) ProposeLesson(e Entry, opt ProposeOptions) (ProposeResult, error)
 		if err != nil {
 			return ProposeResult{}, err
 		}
+		if seenBefore(file.Entries[i], e) {
+			// The same runs again (a re-scan after a restart, say): no new
+			// evidence.
+			return ProposeResult{Outcome: LessonBumped, Entry: file.Entries[i]}, nil
+		}
 		cur := bumpLesson(file.Entries[i], e, now)
 		if err := validate(cur); err != nil {
 			return ProposeResult{}, err
@@ -259,6 +264,20 @@ func bumpLesson(cur, seen Entry, now time.Time) Entry {
 	cur.Lesson.Confidence = min(maxConfidence, max(cur.Lesson.Confidence, seen.Lesson.Confidence)+confidenceStep)
 	cur.Updated = now
 	return cur
+}
+
+// seenBefore reports whether every run a sighting names is already part of
+// the lesson's evidence: a sighting with run ids, none of them new.
+func seenBefore(cur, seen Entry) bool {
+	if len(seen.Source.RunIDs) == 0 {
+		return false
+	}
+	for _, id := range seen.Source.RunIDs {
+		if !slices.ContainsFunc(cur.Source.RunIDs, func(o string) bool { return strings.EqualFold(o, id) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // appendNew appends the items of add not already in list (case-insensitive).

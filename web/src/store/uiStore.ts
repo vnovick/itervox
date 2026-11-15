@@ -13,7 +13,7 @@ export type RulesEditorView = 'form' | 'json';
 export type MemoryTab = 'entries' | 'lessons';
 
 /** Lessons tab (#203): the review queue or the approved lessons not helping. */
-export type LessonsView = 'queue' | 'not-helping';
+export type LessonsView = 'queue' | 'approved' | 'not-helping';
 
 export type MemoryUsageFilter = 'all' | 'used' | 'unused';
 

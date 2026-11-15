@@ -17,7 +17,9 @@ import { useToastStore } from '../store/toastStore';
 import {
   SessionTranscriptSchema,
   SessionsResponseSchema,
+  SteeringPhrasesResponseSchema,
   type SessionRow,
+  type SteeringPhrase,
   type SessionsResponse,
   type SessionTranscript,
   type TranscriptEntry,
@@ -132,4 +134,23 @@ export function useSessionTranscript(id: string) {
     [pages],
   );
   return { ...q, entries };
+}
+
+const EMPTY_PHRASES: SteeringPhrase[] = [];
+
+/**
+ * #218 — the one-click steering chips (sessions.steering_phrases). Config,
+ * read once per page load; an older daemon without the route shows none.
+ */
+export function useSteeringPhrases(): SteeringPhrase[] {
+  const q = useQuery({
+    queryKey: ['steeringPhrases'] as const,
+    queryFn: async (): Promise<SteeringPhrase[]> => {
+      const { data } = await apiRequest('/api/v1/steering/phrases', { op: 'steering phrases' });
+      return SteeringPhrasesResponseSchema.parse(data).phrases;
+    },
+    staleTime: Infinity,
+    retry: false,
+  });
+  return q.data ?? EMPTY_PHRASES;
 }

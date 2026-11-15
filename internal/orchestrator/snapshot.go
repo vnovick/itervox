@@ -522,6 +522,15 @@ func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQ
 	if path == "" {
 		return
 	}
+	// #210: storeSnap runs on every event-loop turn — several times a second
+	// while agents stream output — but the queue and dependency ledger move
+	// far less often. Skip the copy, marshal, hash and envelope when nothing
+	// persisted changed since the last save; the ledger would discard the
+	// identical bytes anyway.
+	if last := o.lastAutomationQueueSave; last != nil && last.path == path &&
+		last.disk.matches(entries, order, backpressure, dependencyAudit, dependencyTransitionSeq, cronCursors) {
+		return
+	}
 	disk := automationQueueStateDisk{
 		Entries:                 copyAutomationQueueMap(entries),
 		Order:                   append([]string(nil), order...),
@@ -543,6 +552,8 @@ func (o *Orchestrator) saveAutomationQueueToDisk(entries map[string]*AutomationQ
 		slog.Warn("orchestrator: failed to envelope automation queue", "error", err)
 		return
 	}
+	o.automationQueueEncodes++
+	o.lastAutomationQueueSave = &automationQueueSave{path: path, disk: disk}
 	o.persistLedger(ledgerAutomationQueue, path, data, 0o600)
 }
 

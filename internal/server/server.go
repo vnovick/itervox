@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,7 +11,10 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agentactions"
+	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/automationdef"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/issuefilter"
 
@@ -47,7 +49,9 @@ var ErrBackendLimited = errors.New("server: agent backend is limited")
 
 // RunningRow is a single row in the active sessions table.
 type RunningRow struct {
-	Identifier    string    `json:"identifier"`
+	Identifier string `json:"identifier"`
+	// Title is the issue's title (#240: itervox watch lanes).
+	Title         string    `json:"title,omitempty"`
 	State         string    `json:"state"`
 	TurnCount     int       `json:"turnCount"`
 	LastEvent     string    `json:"lastEvent,omitempty"`
@@ -79,6 +83,13 @@ type RunningRow struct {
 	// RulesHash / RuleIDs name the rule set the run was given (#157).
 	RulesHash string   `json:"rulesHash,omitempty"`
 	RuleIDs   []string `json:"ruleIds,omitempty"`
+	// Profile is the run's resolved agent profile, empty for the default
+	// (#240).
+	Profile string `json:"profile,omitempty"`
+	// CostUSDEstimated is the run's session-cumulative estimated cost as
+	// its backend reports it (Claude's total_cost_usd, CORE-091); null
+	// until reported, and always null for Codex (#240).
+	CostUSDEstimated *float64 `json:"costUsdEstimated,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -121,6 +132,8 @@ type HistoryRow struct {
 	// digests. Hashes only, never prompt text.
 	PromptDigest string              `json:"promptDigest,omitempty"`
 	PromptParts  *HistoryPromptParts `json:"promptParts,omitempty"`
+	// Playbook is the task-type playbook the run was given (#218).
+	Playbook string `json:"playbook,omitempty"`
 	// Steers are the operator messages delivered to the run (#186), redacted
 	// and bounded; SteersDropped counts the older ones not kept.
 	Steers        []HistorySteer `json:"steers,omitempty"`
@@ -134,7 +147,9 @@ type HistoryPromptParts struct {
 	Instructions string `json:"instructions,omitempty"`
 	Rules        string `json:"rules,omitempty"`
 	// Memory is the digest of the run's memory block (#202).
-	Memory   string `json:"memory,omitempty"`
+	Memory string `json:"memory,omitempty"`
+	// Playbook is the digest of the run's playbook block (#218).
+	Playbook string `json:"playbook,omitempty"`
 	Template string `json:"template,omitempty"`
 }
 
@@ -807,9 +822,12 @@ type StateSnapshot struct {
 	// refresh batch.
 	DepsRefreshLastDurationMs int64 `json:"depsRefreshLastDurationMs,omitempty"`
 	// DepsRefreshDegradedCount is how many rows are past the failure threshold.
-	DepsRefreshDegradedCount int                      `json:"depsRefreshDegradedCount,omitempty"`
-	DependencyGraphNodes     []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
-	DependencyGraphEdges     []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
+	DepsRefreshDegradedCount int `json:"depsRefreshDegradedCount,omitempty"`
+	// DependencyGraphNodes lists only issues that are an endpoint of at
+	// least one DependencyGraphEdges row (#210): an audited issue with no
+	// blocker and no dependent is not sent.
+	DependencyGraphNodes []DependencyGraphNodeRow `json:"dependencyGraphNodes,omitempty"`
+	DependencyGraphEdges []DependencyGraphEdgeRow `json:"dependencyGraphEdges,omitempty"`
 	// DependencyCycles surfaces this tick's cycle-detection output (Task 4)
 	// so the dashboard and heartbeat can flag issues stuck in a dependency
 	// cycle that no amount of waiting will resolve. critical-path-ordering
@@ -863,21 +881,32 @@ type StateSnapshot struct {
 	// acknowledged. Omitted when empty.
 	FailureAcks []FailureAckRow `json:"failureAcks,omitempty"`
 	// Capabilities lists optional daemon features the dashboard may use
-	// (CORE-175: "failure_ack"). Omitted when empty.
+	// (CORE-175: "failure_ack"; #213: "dispatch_pause"). Omitted when empty.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// DispatchPaused is the daemon-wide dispatch pause (#213): null when
+	// dispatch runs, else its reason, until and start.
+	DispatchPaused *DispatchPauseRow `json:"dispatchPaused"`
+	// FeedSeq is the newest event feed seq (#213); GET /api/v1/feed?since=
+	// reads what came after a client's cursor.
+	FeedSeq int64 `json:"feedSeq"`
+	// CallerScope is the requesting token's scope (#214): viewer, operator
+	// or admin. Set per caller by GET /api/v1/state and the /events stream,
+	// never by the orchestrator's snapshot builder; the dashboard hides the
+	// controls the scope cannot use.
+	CallerScope string `json:"callerScope,omitempty"`
 	// Totals is the daemon-session token and estimated-cost accounting
 	// (CORE-091). Omitted only by daemons predating it.
 	Totals *TotalsRow `json:"totals,omitempty"`
 	// CandidateSeen is this tick's "what tracker polling saw" backlog rows —
 	// one per candidate-issue identifier, carrying the tracker's UpdatedAt
-	// when known. Additive, internal-tooling field: no dashboard consumer
-	// today (the web Zod schema ignores unknown keys, so no web change is
-	// needed). Read by cmd/itervox's deps auto-analyze scheduler as its
-	// change-signal source — DependencyGraphNodes/DependencyAudit are NOT a
-	// substitute because both stay empty until a dependency relation already
-	// exists, which is exactly wrong for detecting a fresh backlog with zero
-	// relations yet. analyzer-autonomy Task 4 fix round.
-	CandidateSeen []CandidateSeenRow `json:"candidateSeen,omitempty"`
+	// when known. In-process only: read by cmd/itervox's deps auto-analyze
+	// scheduler as its change-signal source — DependencyGraphNodes/
+	// DependencyAudit are NOT a substitute because both stay empty until a
+	// dependency relation already exists, which is exactly wrong for
+	// detecting a fresh backlog with zero relations yet. analyzer-autonomy
+	// Task 4 fix round. Not serialized (#210): no API consumer reads it and
+	// it was ~19 KB of every dashboard frame.
+	CandidateSeen []CandidateSeenRow `json:"-"`
 	// OutboxEntries is this tick's write-ahead-outbox contents, in global
 	// enqueue order (write-ahead-outbox design, "Surfaces"). Empty/absent
 	// when the outbox is empty or the kill switch (tracker.outbox: false)
@@ -1235,6 +1264,10 @@ type InputRequiredRow struct {
 	// AgeMinutes is the wall-clock age of the entry in whole minutes — handy
 	// for the dashboard tooltip without re-parsing QueuedAt on every render.
 	AgeMinutes int `json:"ageMinutes,omitempty"`
+	// GuardrailApproval marks a guardrail approval request (#204): a reply
+	// whose first word is approve/yes/ok runs the held command once; any
+	// other reply rejects it (#240: itervox watch prints itervox approve).
+	GuardrailApproval bool `json:"guardrailApproval,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -1328,6 +1361,13 @@ type TrackerIssue struct {
 	// AutoSwitch is set when AgentProfile/AgentBackend come from an
 	// automatic switch rather than an operator pin (CORE-055).
 	AutoSwitch *AutoSwitchRow `json:"autoSwitch,omitempty"`
+	// Playbook is the task-type playbook the issue's next run gets (#218),
+	// empty for none; PlaybookSource says how it was chosen ("override",
+	// "label", "keyword"); PlaybookOverride is the operator's choice (a
+	// name or "none"), empty for automatic.
+	Playbook         string `json:"playbook,omitempty"`
+	PlaybookSource   string `json:"playbookSource,omitempty"`
+	PlaybookOverride string `json:"playbookOverride,omitempty"`
 }
 
 // IssueLogEntry is one parsed log event for /api/v1/issues/{id}/logs.
@@ -1341,59 +1381,6 @@ type IssueLogEntry struct {
 	// Populated for Codex shell completions (exit_code, status, output_size).
 	Detail    string `json:"detail,omitempty"`
 	SessionID string `json:"sessionId,omitempty"`
-}
-
-// broadcaster fans out state-change notifications to multiple SSE clients.
-type broadcaster struct {
-	mu      sync.Mutex
-	clients map[chan struct{}]struct{}
-}
-
-func newBroadcaster() *broadcaster {
-	return &broadcaster{clients: make(map[chan struct{}]struct{})}
-}
-
-func (b *broadcaster) subscribe() chan struct{} {
-	ch := make(chan struct{}, 1)
-	b.mu.Lock()
-	b.clients[ch] = struct{}{}
-	b.mu.Unlock()
-	return ch
-}
-
-func (b *broadcaster) unsubscribe(ch chan struct{}) {
-	b.mu.Lock()
-	delete(b.clients, ch)
-	b.mu.Unlock()
-}
-
-func (b *broadcaster) notify() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// close wakes up every subscribed SSE handler so they can exit promptly on
-// graceful shutdown. Each subscriber's channel is removed from the clients
-// map so a duplicate notify() doesn't double-send. Safe to call multiple
-// times. G-03 (gaps_280426_2).
-func (b *broadcaster) close() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		// Send before delete so any already-blocked receiver wakes; the
-		// `default` branch covers handlers that have already drained.
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-		delete(b.clients, ch)
-	}
 }
 
 // Shutdown ends every streaming (SSE) handler of this Server — /events,
@@ -1452,6 +1439,11 @@ type Config struct {
 	// /api/ routes except /api/v1/health. Requests must include the header
 	// "Authorization: Bearer <token>".
 	APIToken string
+	// Tokens is the stored-token index (.itervox/tokens.json, #214): named
+	// viewer / operator / admin tokens accepted alongside APIToken, which
+	// stays admin. Consulted only in token mode (APIToken set); nil means
+	// no stored tokens and answers 503 on the token-management routes.
+	Tokens *apitokens.Store
 	// ActionTokenStore validates short-lived per-run grants for agent action routes.
 	ActionTokenStore *agentactions.Store
 	// SkillsClient exposes the skills-inventory surface (T-87). Nil → noop.
@@ -1490,6 +1482,10 @@ type Config struct {
 	// tunnel, MagicDNS, container service name) the Host guard accepts in
 	// server.allow_unauthenticated mode. Ignored in token mode.
 	AllowedHosts []string
+	// AllowedOrigins is server.allowed_origins (#231), normalized: origins
+	// whose pages may call the API cross-origin (internal/cors). Empty:
+	// same-origin only.
+	AllowedOrigins []string
 	// Readiness supplies the /api/v1/ready probe's inputs (CORE-043). It must
 	// be cheap and lock-light — atomics published by the event loop plus the
 	// tracker rate-limit gate — and must never take cfgMu or build a
@@ -1535,6 +1531,28 @@ type Config struct {
 	// /api/v1/repo/hotspots (#201), computed by a background job off the
 	// event loop. Nil answers 503.
 	RepoHotspots RepoHotspotsFunc
+	// Version is the daemon's build version, reported by GET
+	// /api/v1/summary (#212). Read-only after startup.
+	Version string
+	// Dispatch backs GET /api/v1/feed and POST /api/v1/dispatch/pause|resume
+	// (#213). Nil answers 503.
+	Dispatch DispatchClient
+	// Changes backs GET /api/v1/issues/{identifier}/context and /diff
+	// (#215). Nil answers 503.
+	Changes ChangesClient
+	// ChangeReview and GitHubPRs back change review (#238): line comments
+	// to the running agent or the PR, operator PR reviews, and the diff's
+	// PR source. GitHubPRs is the PR-event watcher's GitHub client (the
+	// daemon's existing credentials). Either nil: no PR source, and the
+	// PR routes answer 409 no_pr.
+	ChangeReview ChangeReviewClient
+	GitHubPRs    PRReviewAPI
+	// Playbooks backs the playbook, decision-log and verify-skill-issue
+	// endpoints (#218). Nil answers 503.
+	Playbooks PlaybooksClient
+	// SteeringPhrases are the steering chips GET /api/v1/steering/phrases
+	// serves (#218, sessions.steering_phrases). Read-only after startup.
+	SteeringPhrases []config.SteeringPhrase
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -1548,12 +1566,18 @@ type Server struct {
 	projectManager ProjectManager
 	scopeManager   ScopeManager
 	bc             *broadcaster
+	// frames caches the encoded snapshot frame of the broadcaster's
+	// current version for every /events client (#210), one cache per
+	// caller scope (#214): the frame carries callerScope, and below admin
+	// it is the redacted snapshot.
+	frames [len(frameScopes)]sseFrameCache
 	// streamsDone is closed by Shutdown; every streaming handler returns
 	// when it closes (CORE-025). A Server built without New has a nil
 	// channel, which never fires.
 	streamsDone  chan struct{}
 	streamsOnce  sync.Once
 	apiToken     string
+	tokens       *apitokens.Store
 	actionTokens *agentactions.Store
 	skills       SkillsClient
 	rules        RulesClient
@@ -1589,6 +1613,20 @@ type Server struct {
 	// repoEvals / repoHotspots mirror Config.RepoEvals / RepoHotspots (#201).
 	repoEvals    RepoEvalsFunc
 	repoHotspots RepoHotspotsFunc
+	// version mirrors Config.Version (#212).
+	version string
+	// dispatch mirrors Config.Dispatch (#213).
+	dispatch DispatchClient
+	// changes mirrors Config.Changes (#215).
+	changes ChangesClient
+	// changeReview / github mirror Config.ChangeReview / Config.GitHubPRs
+	// (#238).
+	changeReview ChangeReviewClient
+	github       PRReviewAPI
+	// playbooks / steeringPhrases mirror Config.Playbooks /
+	// Config.SteeringPhrases (#218).
+	playbooks       PlaybooksClient
+	steeringPhrases []config.SteeringPhrase
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
 	// the background, so a second request is refused instead of starting a
 	// second clear over the same tree (CORE-114).
@@ -1617,6 +1655,7 @@ func New(cfg Config) *Server {
 		bc:             newBroadcaster(),
 		streamsDone:    make(chan struct{}),
 		apiToken:       cfg.APIToken,
+		tokens:         cfg.Tokens,
 		actionTokens:   cfg.ActionTokenStore,
 		skills:         skillsClient,
 		rules:          cfg.Rules,
@@ -1638,6 +1677,13 @@ func New(cfg Config) *Server {
 		repoReadiness:       cfg.RepoReadiness,
 		repoEvals:           cfg.RepoEvals,
 		repoHotspots:        cfg.RepoHotspots,
+		version:             cfg.Version,
+		dispatch:            cfg.Dispatch,
+		changes:             cfg.Changes,
+		changeReview:        cfg.ChangeReview,
+		github:              cfg.GitHubPRs,
+		playbooks:           cfg.Playbooks,
+		steeringPhrases:     cfg.SteeringPhrases,
 	}
 	if s.clientErrors == nil {
 		s.clientErrors = DefaultClientErrorLimiter
@@ -1647,6 +1693,9 @@ func New(cfg Config) *Server {
 	// wraps the authenticated sub-router. Must be registered before routes()
 	// per chi's "middleware before routes" rule.
 	s.router.Use(securityHeadersMiddleware)
+	// #231: the CORS allow-list, ahead of auth so a listed origin's
+	// preflight (which carries no token) is answered.
+	s.router.Use(cors.Middleware(cfg.AllowedOrigins))
 	// CORE-162: DNS-rebinding guard, ahead of every route (SPA, static files,
 	// /api, SSE). Unauthenticated mode only — see hostGuard for why token
 	// mode does not need it.
@@ -1678,6 +1727,13 @@ func (s *Server) Notify() {
 	s.bc.notify()
 }
 
+// DashboardHandler serves the embedded dashboard (static files, index.html
+// fallback) behind the daemon's hardening headers, for the hub (#228),
+// which serves the same bundle on its own listener.
+func DashboardHandler() http.Handler {
+	return securityHeadersMiddleware(spaHandler())
+}
+
 func spaHandler() http.Handler {
 	fs := spaFS()
 	fileServer := http.FileServer(fs)
@@ -1686,6 +1742,16 @@ func spaHandler() http.Handler {
 		// and a stale copy would load old bundles after a binary rebuild.
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		// #231: the web app manifest and the service worker are not hashed,
+		// so they must be revalidated too; the manifest's type is not in
+		// every system's MIME table.
+		switch r.URL.Path {
+		case "/manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
+			w.Header().Set("Cache-Control", "no-cache")
+		case "/sw.js":
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		f, err := fs.Open(r.URL.Path)
 		if err != nil {
@@ -1734,20 +1800,27 @@ func (s *Server) routes() {
 		// Use r.Group to create a sub-router so middleware is applied only to
 		// authenticated routes without violating chi's "middleware before routes" rule.
 		r.Group(func(r chi.Router) {
-			if s.apiToken != "" {
-				r.Use(s.bearerAuthMiddleware)
-			} else {
-				// server.allow_unauthenticated: no bearer check, so refuse
-				// cross-site state-changing requests instead (CORE-041).
-				r.Use(crossOriginGuardMiddleware)
-			}
+			s.useAuth(r)
 
+			r.Get("/whoami", s.handleWhoami) // #214
+			r.Get("/tokens", s.handleListTokens)
+			r.Post("/tokens", s.handleCreateToken)
+			r.Delete("/tokens/{id}", s.handleRevokeToken)
+			r.Post("/tokens/{id}/rotate", s.handleRotateToken)
 			r.Get("/state", s.handleState)
-			r.Get("/history", s.handleHistory)                               // #186
-			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions) // #186
-			r.Get("/repo/readiness", s.handleRepoReadiness)                  // #200
-			r.Get("/repo/evals", s.handleRepoEvals)                          // #201
-			r.Get("/repo/hotspots", s.handleRepoHotspots)                    // #201
+			r.Get("/summary", s.handleSummary)                                     // #212: ETag'd poll target for supervisors
+			r.Get("/route-scopes", s.handleRouteScopes)                            // #228: the hub's proxy reads it
+			r.Get("/feed", s.handleFeed)                                           // #213: the event feed, by cursor
+			r.Post("/dispatch/pause", s.handlePauseDispatch)                       // #213
+			r.Post("/dispatch/resume", s.handleResumeDispatch)                     // #213
+			r.Get("/history", s.handleHistory)                                     // #186
+			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions)       // #186
+			r.Get("/repo/readiness", s.handleRepoReadiness)                        // #200
+			r.Get("/repo/evals", s.handleRepoEvals)                                // #201
+			r.Get("/repo/hotspots", s.handleRepoHotspots)                          // #201
+			r.Post("/repo/readiness/verify-skill-issue", s.handleVerifySkillIssue) // #218
+			r.Get("/playbooks", s.handleListPlaybooks)                             // #218
+			r.Get("/steering/phrases", s.handleSteeringPhrases)                    // #218
 			r.Get("/events", s.handleEvents)
 			r.Get("/sessions", s.handleListSessions)
 			r.Post("/sessions/{id}/message", s.handleSessionMessage)
@@ -1762,6 +1835,12 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
+			r.Get("/issues/{identifier}/context", s.handleIssueContext)           // #215
+			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
+			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
@@ -1838,6 +1917,7 @@ func (s *Server) routes() {
 			r.Put("/rules/{layer}", s.handleSaveRules)
 			// Memory page (#202).
 			r.Get("/memory", s.handleListMemory)
+			r.Get("/memory/recall", s.handleRecallMemory) // #216
 			r.Post("/memory", s.handleCreateMemory)
 			r.Put("/memory/{id}", s.handleUpdateMemory)
 			r.Delete("/memory/{id}", s.handleDeleteMemory)
@@ -1845,6 +1925,10 @@ func (s *Server) routes() {
 			r.Post("/memory/{id}/promote", s.handlePromoteMemory)
 			r.Post("/memory/{id}/approve", s.handleApproveLesson) // #203
 			r.Post("/memory/{id}/reject", s.handleRejectLesson)   // #203
+			// #217: lesson to rule, enforcement suggestions.
+			r.Post("/memory/{id}/promote-to-rule", s.handlePromoteLessonToRule)
+			r.Post("/memory/{id}/enforcement/accept", s.handleAcceptLessonEnforcement)
+			r.Post("/memory/{id}/enforcement/dismiss", s.handleDismissLessonEnforcement)
 			r.Get("/skills/inventory", s.handleSkillsInventory)
 			r.Post("/skills/scan", s.handleSkillsScan)
 			r.Get("/skills/issues", s.handleSkillsIssues)
@@ -1866,17 +1950,30 @@ func (s *Server) routes() {
 	// bearer token in token mode, and the CSRF guard (plus the root Host
 	// guard) in unauthenticated mode — never in the unauthenticated set.
 	s.router.Group(func(r chi.Router) {
-		if s.apiToken != "" {
-			r.Use(s.bearerAuthMiddleware)
-		} else {
-			r.Use(crossOriginGuardMiddleware)
-		}
+		s.useAuth(r)
 		r.Get("/metrics", s.handleMetrics)
 	})
 
 	// React SPA: serves all non-API paths from the embedded web/dist.
 	// Falls back to index.html so React Router client-side routing works.
 	s.router.Handle("/*", spaHandler())
+}
+
+// useAuth installs the authentication and scope middlewares of an
+// authenticated group (#214): the bearer check in token mode; in
+// server.allow_unauthenticated mode the CSRF guard (CORE-041) and an admin
+// principal for every caller. scopeMiddleware then enforces routeScopes in
+// both modes.
+func (s *Server) useAuth(r chi.Router) {
+	if s.apiToken != "" {
+		r.Use(s.bearerAuthMiddleware)
+	} else {
+		// server.allow_unauthenticated: no bearer check, so refuse
+		// cross-site state-changing requests instead (CORE-041).
+		r.Use(crossOriginGuardMiddleware)
+		r.Use(unauthenticatedAdminMiddleware)
+	}
+	r.Use(scopeMiddleware)
 }
 
 // handleMetrics serves the injected Prometheus handler, or 404 when
@@ -1892,24 +1989,4 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 // handleHealth returns a lightweight 200 OK for load balancer probes.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// bearerAuthMiddleware rejects requests that do not carry a valid
-// "Authorization: Bearer <token>" header matching s.apiToken.
-func (s *Server) bearerAuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		auth := r.Header.Get("Authorization")
-		presented := strings.TrimPrefix(auth, prefix)
-		// subtle.ConstantTimeCompare requires equal-length inputs to run in
-		// constant time and returns 0 (not a panic) for a length mismatch, so
-		// it is safe to call directly on the raw byte slices without a
-		// length pre-check that would itself leak length via early return.
-		match := subtle.ConstantTimeCompare([]byte(presented), []byte(s.apiToken)) == 1
-		if !strings.HasPrefix(auth, prefix) || !match {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

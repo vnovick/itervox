@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import Settings from '../index';
+import { useItervoxStore } from '../../../store/itervoxStore';
+import { makeSnapshot } from '../../../test/fixtures/snapshots';
+
+vi.mock('../AccessCard', () => ({
+  AccessCard: () => <div data-testid="access-card" />,
+}));
 
 const workspaceCardMock = vi.fn(() => <div data-testid="workspace-card" />);
 const dependenciesCardMock = vi.fn(() => <div data-testid="dependencies-card" />);
@@ -95,6 +101,7 @@ describe('Settings page', () => {
   beforeEach(() => {
     workspaceCardMock.mockClear();
     dependenciesCardMock.mockClear();
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'admin' }) });
   });
 
   it('passes the live autoReview flag through to WorkspaceCard', () => {
@@ -160,5 +167,36 @@ describe('Settings page', () => {
       'href',
       '/repo#capabilities',
     );
+  });
+
+  // #214 — scope-aware hiding.
+  it('shows Access and every settings card to an admin', () => {
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.getByRole('region', { name: 'Access' })).toContainElement(
+      screen.getByTestId('access-card'),
+    );
+    expect(screen.getByTestId('general-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-scope-notice')).not.toBeInTheDocument();
+    expect(screen.getByText('Reset all workspaces')).toBeInTheDocument();
+  });
+
+  it('hides settings, Access and workspace reset from an operator but keeps Clear all logs', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'operator' }) });
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.getByTestId('settings-scope-notice')).toHaveTextContent('operator scope');
+    expect(screen.queryByTestId('access-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('general-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('schema-settings-card')).not.toBeInTheDocument();
+    expect(screen.getByText('Clear all logs')).toBeInTheDocument();
+    expect(screen.queryByText('Reset all workspaces')).not.toBeInTheDocument();
+  });
+
+  it('shows a viewer no controls at all', () => {
+    useItervoxStore.setState({ snapshot: makeSnapshot({ callerScope: 'viewer' }) });
+    render(<Settings />, { wrapper: MemoryRouter });
+    expect(screen.getByTestId('settings-scope-notice')).toHaveTextContent('viewer scope');
+    expect(screen.queryByTestId('access-card')).not.toBeInTheDocument();
+    expect(screen.queryByText('Clear all logs')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });

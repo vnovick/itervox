@@ -11,10 +11,15 @@ import { apiRequest } from '../auth/apiRequest';
 import { UnauthorizedError } from '../auth/UnauthorizedError';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
+import { RULES_KEY } from './rules';
 import {
+  LessonEnforceResultSchema,
+  LessonRuleResultSchema,
   MemoryEntrySchema,
   MemoryPromoteResultSchema,
   MemoryViewSchema,
+  type LessonEnforceResult,
+  type LessonRuleResult,
   type MemoryEntry,
   type MemoryPromoteResult,
   type MemoryScope,
@@ -259,6 +264,105 @@ export function useRejectLesson() {
     onError: (err, _id, ctx) => {
       opt.rollback(ctx);
       reportError('Lesson not rejected', err);
+    },
+    onSettled: () => {
+      opt.settle();
+    },
+  });
+}
+
+/** #217 — promote an approved lesson to a rule in a rules layer. */
+export interface PromoteLessonToRuleInput {
+  id: string;
+  layer: 'user' | 'project';
+  severity: 'must' | 'should';
+}
+
+export function usePromoteLessonToRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      layer,
+      severity,
+    }: PromoteLessonToRuleInput): Promise<LessonRuleResult> => {
+      const { data } = await apiRequest(
+        `/api/v1/memory/${encodeURIComponent(id)}/promote-to-rule`,
+        { op: 'lesson promote to rule', method: 'POST', json: { layer, severity } },
+      );
+      return LessonRuleResultSchema.parse(data);
+    },
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: MEMORY_KEY });
+      void qc.invalidateQueries({ queryKey: RULES_KEY });
+      useToastStore
+        .getState()
+        .addToast(
+          `Rule ${res.rule.id} added to the ${res.layer} layer; the lesson is archived`,
+          'success',
+        );
+    },
+    onError: (err) => {
+      reportError('Lesson not promoted to a rule', err);
+    },
+  });
+}
+
+/** #217 — accept a lesson's enforcement suggestion: creates an Enforce: issue. */
+export function useAcceptEnforcement() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string): Promise<LessonEnforceResult> => {
+      const { data } = await apiRequest(
+        `/api/v1/memory/${encodeURIComponent(id)}/enforcement/accept`,
+        { op: 'lesson enforcement accept', method: 'POST' },
+      );
+      return LessonEnforceResultSchema.parse(data);
+    },
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: MEMORY_KEY });
+      useToastStore
+        .getState()
+        .addToast(`Created ${res.issue.identifier}: ${res.issue.title}`, 'success');
+    },
+    onError: (err) => {
+      reportError('Enforcement issue not created', err);
+    },
+  });
+}
+
+/** #217 — dismiss a lesson's enforcement suggestion. */
+export function useDismissEnforcement() {
+  const opt = useOptimisticMemory();
+  return useMutation({
+    mutationFn: async (id: string): Promise<MemoryEntry> => {
+      const { data } = await apiRequest(
+        `/api/v1/memory/${encodeURIComponent(id)}/enforcement/dismiss`,
+        { op: 'lesson enforcement dismiss', method: 'POST' },
+      );
+      return MemoryEntrySchema.parse(data);
+    },
+    onMutate: (id) =>
+      opt.apply((v) => {
+        if (!v) return v;
+        return {
+          ...v,
+          entries: v.entries.map((e) =>
+            e.id === id && e.lesson?.enforcement
+              ? {
+                  ...e,
+                  lesson: {
+                    ...e.lesson,
+                    enforcement: { ...e.lesson.enforcement, status: 'dismissed' as const },
+                  },
+                }
+              : e,
+          ),
+        };
+      }),
+    onError: (err, _id, ctx) => {
+      opt.rollback(ctx);
+      reportError('Suggestion not dismissed', err);
     },
     onSettled: () => {
       opt.settle();

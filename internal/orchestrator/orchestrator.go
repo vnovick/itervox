@@ -92,6 +92,13 @@ type Orchestrator struct {
 	// stray late write lands in the SAME test's (already-read, harmless)
 	// buffer rather than a different test's.
 	Logger *slog.Logger
+	// RevertScan, when set, lists the PRs the base branch reverted (#217):
+	// cmd/itervox supplies #201's revert detection, read through
+	// internal/gitexec. The orchestrator runs it off the event loop every
+	// revertScanEvery while lessons are on and proposes a reverted_pr
+	// lesson for each reverted agent PR. Must be set before Run (same
+	// visibility rule as OnStateChange).
+	RevertScan func(ctx context.Context) ([]RevertedPR, error)
 
 	snapMu     sync.RWMutex
 	lastSnap   State
@@ -150,17 +157,35 @@ type Orchestrator struct {
 	// owned by the single event-loop State.
 	automationQueueMu   sync.RWMutex
 	automationQueueFile string // optional path for persisting AutomationQueue across restarts
+	// lastAutomationQueueSave is the queue state last handed to the ledger
+	// (a private deep copy) and automationQueueEncodes counts the encodes;
+	// storeSnap skips an unchanged queue by it (#210). Event loop only.
+	lastAutomationQueueSave *automationQueueSave
+	automationQueueEncodes  int
+	// eventLeftStateUnchanged is set by handleEvent for an event that did
+	// not change State (a discovery pass that found nothing new); Run then
+	// skips that turn's storeSnap and its dashboard notify (#210). Event
+	// loop only.
+	eventLeftStateUnchanged bool
 
 	// depsOverridesMu guards depsOverridesFile only. State.DepsOverrides
 	// itself remains owned by the single event-loop State.
 	// unified-dependency-graph Task 6.
 	depsOverridesMu   sync.RWMutex
 	depsOverridesFile string // optional path for persisting DepsOverrides across restarts
+	// playbookOverridesFile persists State.PlaybookOverrides (#218); guarded
+	// by depsOverridesMu like depsOverridesFile, set before Run.
+	playbookOverridesFile string
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string
 	// deferredStateMovesFile persists State.DeferredStateMoves (#177).
 	deferredStateMovesFile string
+	// feedFile persists State.Feed / FeedSeq (feed.jsonl) and
+	// dispatchPauseFile persists State.DispatchPaused (dispatch_paused.json)
+	// (#213). Set before Run; read-only afterwards.
+	feedFile          string
+	dispatchPauseFile string
 	// prEventsFile persists State.ManagedPRs, PREventDispatched and
 	// PREventBaselines (#173).
 	prEventsFile string

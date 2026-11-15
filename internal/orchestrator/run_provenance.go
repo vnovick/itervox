@@ -48,7 +48,9 @@ type PromptParts struct {
 	Instructions string `json:"instructions,omitempty"`
 	Rules        string `json:"rules,omitempty"`
 	// Memory is the digest of the run's `## Memory` block (#202).
-	Memory   string `json:"memory,omitempty"`
+	Memory string `json:"memory,omitempty"`
+	// Playbook is the digest of the run's `## Playbook` block (#218).
+	Playbook string `json:"playbook,omitempty"`
 	Template string `json:"template,omitempty"`
 }
 
@@ -57,6 +59,8 @@ type promptComponents struct {
 	soul, instructions, template string
 	rules                        rules.Set
 	memory                       memory.Selection
+	// playbook is the run's `## Playbook` block (#218), "" for none.
+	playbook string
 }
 
 // writeField writes a length-prefixed field: an 8-byte big-endian length,
@@ -140,16 +144,19 @@ type digestField struct {
 // digest returns the run's prompt-version digest (64 hex chars) and its
 // per-component digests. The digest is SHA-256 over a versioned,
 // length-prefixed concatenation of SOUL.md, INSTRUCTIONS.md, the canonical
-// rule set, the canonical memory selection (#202) and the prompt template
-// source, in that order. The memory field is written only when the run has
-// memory, so a run without any keeps the digest it had before memory
-// existed.
+// rule set, the canonical memory selection (#202), the playbook block (#218)
+// and the prompt template source, in that order. The memory and playbook
+// fields are written only when the run has them, so a run without either
+// keeps the digest it had before they existed.
 func (c promptComponents) digest() (string, PromptParts) {
 	soul, instructions, template := []byte(c.soul), []byte(c.instructions), []byte(c.template)
-	ruleBytes, memBytes := canonicalRules(c.rules), canonicalMemory(c.memory)
+	ruleBytes, memBytes, pbBytes := canonicalRules(c.rules), canonicalMemory(c.memory), []byte(c.playbook)
 	fields := []digestField{{"soul", soul}, {"instructions", instructions}, {"rules", ruleBytes}}
 	if len(memBytes) > 0 {
 		fields = append(fields, digestField{"memory", memBytes})
+	}
+	if len(pbBytes) > 0 {
+		fields = append(fields, digestField{"playbook", pbBytes})
 	}
 	fields = append(fields, digestField{"template", template})
 	h := sha256.New()
@@ -163,6 +170,7 @@ func (c promptComponents) digest() (string, PromptParts) {
 		Instructions: partDigest(instructions),
 		Rules:        partDigest(ruleBytes),
 		Memory:       partDigest(memBytes),
+		Playbook:     partDigest(pbBytes),
 		Template:     partDigest(template),
 	}
 }
@@ -173,23 +181,24 @@ func (c promptComponents) digest() (string, PromptParts) {
 // body — or agent.reviewer_prompt for a reviewer run when one is
 // configured. Event loop only (startRun); Profiles and ReviewerProfile are
 // cfgMu fields.
-func (o *Orchestrator) runPromptComponents(entry *RunEntry, set rules.Set, mem memory.Selection) promptComponents {
+func (o *Orchestrator) runPromptComponents(entry *RunEntry, set rules.Set, mem memory.Selection, pb string) promptComponents {
 	if o == nil || o.cfg == nil || entry == nil {
-		return promptComponents{rules: set, memory: mem}
+		return promptComponents{rules: set, memory: mem, playbook: pb}
 	}
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
-	return profilePromptComponents(o.cfg, entry.ProfileName, entry.Kind == "reviewer", set, mem)
+	return profilePromptComponents(o.cfg, entry.ProfileName, entry.Kind == "reviewer", set, mem, pb)
 }
 
 // profilePromptComponents is what a run of profile is prompted with under
-// cfg: its SOUL.md and INSTRUCTIONS.md, the resolved rules and memory, and the
+// cfg: its SOUL.md and INSTRUCTIONS.md, the resolved rules and memory, its
+// playbook block (#218, "" for none), and the
 // WORKFLOW.md body — or agent.reviewer_prompt for a reviewer when one is
 // configured. startRun (via runPromptComponents, under cfgMu) and
 // ComposeEvalPrompt (#201, a loaded config nobody else holds) share it, so
 // an eval and a dispatched run of one prompt version get one digest.
-func profilePromptComponents(cfg *config.Config, profile string, reviewerRun bool, set rules.Set, mem memory.Selection) promptComponents {
-	c := promptComponents{rules: set, memory: mem, template: cfg.PromptTemplate}
+func profilePromptComponents(cfg *config.Config, profile string, reviewerRun bool, set rules.Set, mem memory.Selection, pb string) promptComponents {
+	c := promptComponents{rules: set, memory: mem, playbook: pb, template: cfg.PromptTemplate}
 	if p, ok := cfg.Agent.Profiles[profile]; ok && profile != "" {
 		c.soul, c.instructions = p.Soul, p.Instructions
 	}

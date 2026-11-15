@@ -13,6 +13,7 @@ export function LessonEvidence({ entry }: { entry: MemoryEntry }) {
     ['Situation', l?.situation],
     ['Went wrong', l?.wentWrong],
     ['Worked', l?.worked],
+    ['Verified by', l?.verification],
     ['Issue', src?.issue],
     ['Runs', src?.runIds?.join(', ')],
     ['Confidence', l ? confidenceLabel(l.confidence) : undefined],

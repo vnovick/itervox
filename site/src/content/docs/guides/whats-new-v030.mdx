@@ -1,0 +1,212 @@
+---
+title: What's new in v0.3 (upgrading from v0.2.1)
+description: Everything from v0.2.2 to v0.3.0 in one place — the hub, your phone, Slack, change review, one settings format, itervox watch, guardrails on by default, the Mac app — and the steps to upgrade from v0.2.1.
+sidebar:
+  order: 1
+---
+
+v0.3 is the sum of the releases from v0.2.2 to v0.3.0. This page lists what
+each brought, links to its guide, and ends with the [upgrade steps from
+v0.2.1](#upgrading-from-v021). The [CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md)
+has every entry, release by release, including each release's upgrade notes.
+
+## The headlines
+
+### One URL for every project: the hub
+
+The first daemon started on a machine also serves the **hub** on
+`127.0.0.1:8089`: one dashboard, one scoped API proxy and one merged event
+feed for every project on the machine, with its own hub tokens
+(`itervox token create --hub`). Notifications can be routed per project,
+batched into digests, snoozed, and shown as desktop notifications.
+→ [The hub](/guides/hub/)
+
+### Your phone
+
+The hub serves the dashboard as a web app you can install on your phone.
+Pair it with a QR code, turn on push notifications, and answer agents,
+approve held commands, steer and pause from there — on your LAN, over
+Tailscale or through your own tunnel.
+→ [Your phone](/guides/phone/)
+
+### Slack
+
+Agent questions, guardrail approvals and failures can go to Slack through a
+Slack app you create yourself (Socket Mode, so nothing needs to reach your
+machine from outside). Reply, approve and steer from the thread.
+→ [Slack](/guides/slack/)
+
+### Review an agent's changes
+
+An issue's **Changes** tab shows the agent's diff. Click a line number (or
+shift-click for a range) to leave a comment for the running agent or on the
+pull request, review the pull request from the issue, and open a file in
+your editor. The **Now** panel at the top of the issue's **Details** tab
+shows what the current run is doing.
+→ [Review changes](/guides/change-review/), [Now & Changes](/guides/now-and-changes/)
+
+### One settings format
+
+`tracker`, `hooks`, `dependencies` and `automations` joined `agent`,
+`polling`, `server`, `workspace` and `hub` as layered JSONC settings:
+`~/.itervox/settings.jsonc` (your defaults), `.itervox/settings.jsonc`
+(the project's, committed) and `.itervox/settings.local.jsonc` (yours, not
+committed), all described by one published schema. `WORKFLOW.md` keeps the
+prompt. Front-matter settings still work but are deprecated, and
+`itervox init --update` moves them. A hand edit of any settings file now
+reloads the daemon, like an edit of `WORKFLOW.md`.
+→ [Moving settings out of WORKFLOW.md](/guides/settings-migration/),
+[Settings files](/configuration/#settings-files-jsonc-layers)
+
+### `itervox watch` replaces the terminal UI
+
+The daemon always runs headless. `itervox watch` is a live terminal panel
+over a running daemon: capacity, one lane per running issue, the event
+feed, and every question or approval waiting for you with the exact
+`itervox reply …` or `itervox approve …` command to answer it. It never
+changes the terminal mode, so it works over SSH, in tmux and in a pipe
+(`--json`). `itervox logs -f`, `pause`, `resume`, `dispatch` and `workers`
+cover the rest. The Bubbletea terminal UI is gone, and `--tui` now fails.
+→ [Working from the terminal](/guides/terminal/), [CLI reference](/cli/#itervox-watch--a-live-terminal-panel)
+
+### Guardrails, on by default
+
+Agents Itervox starts may push only to their issue branch (no pushes to
+`main`, `master`, `develop` or the base branch, no tags, no force pushes or
+branch deletions), never merge their own pull request, and wait for your
+approval before deploy and publish commands such as `vercel --prod`,
+`kubectl apply`, `terraform apply` or `npm publish`.
+→ [Guardrails](/guides/guardrails/)
+
+### The Mac app
+
+A menu-bar app lists every project's daemon, starts and stops them, notifies
+you when an agent needs input, and opens each dashboard without a terminal.
+It reaches daemons on a VM or another machine over IAP or SSH tunnels, uses
+the hub when one runs, and updates itself. Every dashboard window has a
+**project rail** to switch projects (⌘1…⌘9). Install it from the DMG, or with
+Homebrew: `brew install --cask vnovick/tap/itervox-app`. The app carries its
+own `itervox` daemon; `brew install vnovick/tap/itervox` stays the
+command-line tool, so install one or the other.
+→ [Mac app](/guides/mac-app/)
+
+## Also new
+
+**Agents and runs**
+
+- **Memory and lessons** — private and project-shared memory entries,
+  lessons proposed from your corrections and from failed-then-fixed runs,
+  with a review queue. → [Memory](/guides/memory/)
+- **Playbooks, a decision log and steering phrases** — a playbook per task
+  type (bug fix, feature, refactor, …) in every matching run's prompt.
+  → [Playbooks](/guides/playbooks/)
+- **Rules** — short instructions written once in layered JSONC files and
+  added to every run, with a Rules editor. → [Rules](/configuration/#rules-layered-jsonc)
+- **Sessions panel** — tabs over running agent sessions with a composer,
+  sessions you started by hand, and sessions in tmux. → [Sessions panel](/guides/sessions/)
+- **Cross-review preset** — Claude writes, Codex reviews (or the other way
+  round), with read-only reviewers and their verdicts on the issue.
+  → [Cross-review preset](/guides/cross-review/)
+- **Done needs evidence** — `require_evidence` on a profile.
+  → [Configuration](/configuration/#done-needs-evidence)
+- **Per-issue budgets and a cost report** — `agent.budget.*` and
+  `itervox report costs`. → [Per-issue budgets](/configuration/#per-issue-budgets)
+- **Backend health and fallback** — what happens when Claude or Codex hits
+  its usage limit. → [Backend health and fallback](/guides/backend-health/)
+- **Stacked pull requests** — start a dependent on its in-review blocker's
+  branch. → [Stacked pull requests](/guides/stacked-prs/)
+- **An MCP server** — `itervox mcp` gives Claude Code or Codex your board and
+  memory. → [MCP server](/guides/mcp/)
+
+**Trackers**
+
+- **Local issues** — `tracker.kind: local` keeps issues as Markdown files in
+  your repository, with optional two-way sync to Linear or GitHub.
+  → [Local issues](/guides/local-issues/)
+- **Tracker store, incremental pulls and webhooks** — the board is served
+  from a local copy of the tracker, every agent start re-checks its issue
+  first, and Linear or GitHub webhooks can push changes.
+  → [Tracker webhooks](/guides/tracker-webhooks/), [`tracker` reference](/configuration/#tracker)
+- **Tracker filter and Linear scope** — groups of conditions with AND, OR and
+  NOT; Linear project, assignee and labels combined.
+  → [Tracker filter](/configuration/#tracker-filter), [Linear setup](/guides/linear-setup/)
+- **GitHub** — `/itervox` comment commands, state-label checks in
+  `itervox doctor` (and `--fix`), an agent-ready issue template, and
+  PR-event automation triggers. → [GitHub Issues](/guides/github-issues/),
+  [Automations](/guides/automations/)
+
+**Operating**
+
+- **Pause all dispatch and an event feed** → [Pause dispatch & event feed](/guides/pause-and-feed/)
+- **Token scopes** (viewer, operator, admin) and rotation without a restart
+  → [Security & access tokens](/guides/security/)
+- **Repo Analysis** — skills inventory, usage and cost, prompt versions,
+  readiness checks, eval results and failure hotspots on one page.
+  → [Repo Analysis](/guides/repo-analysis/)
+- **Getting started faster** — `itervox quickstart`, `itervox demo` and
+  starter templates for `itervox init --template`.
+  → [Getting Started](/getting-started/), [CLI reference](/cli/#starter-templates)
+- **A Settings page from the config schema**, `itervox config`, `itervox import`
+  and `itervox export --symphony`. → [CLI reference](/cli/#itervox-config--settings-and-where-they-come-from)
+
+## Upgrading from v0.2.1
+
+Your `WORKFLOW.md` keeps loading as it is (`itervox_schema_version: 2`, no
+schema bump). Most changes need nothing from you; the steps below cover the
+ones that might.
+
+1. **Install the new version.** `brew upgrade itervox`, or download the
+   release. The Mac app updates itself.
+2. **Remove `--tui`** from unit files, scripts and aliases. `itervox --tui`
+   now prints a pointer to `itervox watch` and exits with code 2, so a
+   service that still passes it fails to start. Watch with `itervox watch`
+   from another shell instead.
+3. **Check the configuration.** Run `itervox doctor`. It prints a
+   `deprecated:` line for every front-matter key that now belongs in a
+   settings file, and a `WARNING:` for a key set in both places.
+4. **Move the settings and pick up the new defaults.** Preview, then run:
+
+   ```bash
+   itervox init --update --workflow WORKFLOW.md --dry-run
+   itervox init --update --workflow WORKFLOW.md
+   ```
+
+   It writes `WORKFLOW.md.bak` first, moves the layered sections to
+   `.itervox/settings.jsonc` (comments kept, the merged configuration
+   checked to be unchanged), writes the `guardrails:` block with its
+   defaults, and adds the starter playbooks under `.itervox/playbooks/`
+   (never over a file you have). Commit `.itervox/settings.jsonc`; keep
+   `.itervox/settings.local.jsonc` and `.itervox/.env` out of git.
+   → [Moving settings out of WORKFLOW.md](/guides/settings-migration/)
+5. **Review the guardrails against your prompts.** A prompt that tells agents
+   to rebase and force-push, or to push a second branch, now gets a refusal
+   that says what to do instead. Set `guardrails.allow_force_push: true`, or
+   `guardrails.enabled: false`, to keep the old behaviour. Deploy and publish
+   commands wait for your approval (`itervox approve <issue>`, the dashboard,
+   your phone or Slack). Guarded agents no longer see `ITERVOX_API_TOKEN`.
+   → [Guardrails](/guides/guardrails/)
+6. **Decide about the hub.** The first daemon on the machine now also
+   listens on `127.0.0.1:8089` (loopback only; every hub route but its health
+   probe needs a hub token). To keep the old behaviour, start daemons with
+   `--no-hub` or set `hub.enabled: false`, for example in
+   `~/.itervox/settings.jsonc`. → [The hub](/guides/hub/#opting-out)
+7. **Know the other new defaults.**
+   - **Playbooks** are on: a run whose issue matches a task type gets that
+     playbook in its prompt. Opt out with `agent.playbooks.enabled: false`,
+     by deleting the files, or with **None** on an issue.
+     → [Playbooks](/guides/playbooks/)
+   - **The tracker store** is on for Linear and GitHub: the first start
+     after the upgrade makes one full pull and writes
+     `.itervox/tracker_store.json`, and a change made in the tracker reaches
+     the board within `tracker.store.sync_interval_ms` (1 minute by default)
+     unless webhooks are on. Set `tracker.store.enabled: false` to poll
+     directly. → [`tracker` reference](/configuration/#tracker)
+   - **Shared bare clones** (`workspace.worktree: true` with a `clone_url`)
+     are migrated to `refs/remotes/origin/*` the first time a worktree is
+     created. Nothing is deleted or moved, and nothing needs doing;
+     `itervox doctor` shows each clone's refspec and last fetch.
+8. **Restart and watch.** Start the daemon, then `itervox watch` (or open
+   the dashboard) and check that work is dispatched as before.
+
+Every upgrade note, with the release that introduced it, is in the
+[CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md).

@@ -215,6 +215,13 @@ func Parse(raw []byte, scope Scope) ([]Entry, error) {
 			if err := onlyKeys(l, lessonKeys, at+".lesson."); err != nil {
 				return nil, err
 			}
+			for key, allowed := range map[string][]string{"enforcement": enforcementKeys, "rule": ruleLinkKeys} {
+				if sub, ok := l[key].(map[string]any); ok {
+					if err := onlyKeys(sub, allowed, at+".lesson."+key+"."); err != nil {
+						return nil, err
+					}
+				}
+			}
 		}
 		b, _ := json.Marshal(m)
 		var e Entry

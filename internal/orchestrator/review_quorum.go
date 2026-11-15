@@ -303,6 +303,7 @@ func (o *Orchestrator) recordSingleReview(state *State, identifier, profile stri
 	v := finishedVerdict(profile, verdict, err, now)
 	state.ReviewVerdicts[identifier] = []ReviewVerdict{v}
 	state.ReviewOutcomes[identifier] = EvaluateReviewQuorum(state.ReviewVerdicts[identifier], o.cfg.Agent.ReviewQuorum)
+	o.emitVerdictFeed(state, identifier, profile, true) // #213
 	// A chain marker left by a multi-reviewer config before a reload is not
 	// a review in progress.
 	delete(state.ReviewChainIndex, identifier)
@@ -336,6 +337,7 @@ func (o *Orchestrator) advanceReviewChainForIssue(
 		&state, issue.Identifier, finishedProfile, verdict, verdictErr,
 		chain, o.cfg.Agent.ReviewQuorum, now,
 	)
+	o.emitVerdictFeed(&state, issue.Identifier, finishedProfile, done) // #213
 	if !done {
 		slog.Info("orchestrator: review chain advancing",
 			"identifier", issue.Identifier, "finished", finishedProfile, "next", next)

@@ -140,6 +140,11 @@ export const RunningRowSchema = z.object({
   // #157 — the rule set the run was given; absent when no rule applied.
   rulesHash: z.string().optional(),
   ruleIds: z.array(z.string()).optional(),
+  // #240 — issue title, resolved profile (absent for the default) and the
+  // run's estimated cost (absent until the backend reports one).
+  title: z.string().optional(),
+  profile: z.string().optional(),
+  costUsdEstimated: z.number().optional(),
 });
 
 // #186 — per-component digests of a run's prompt version (hashes only).
@@ -148,6 +153,7 @@ export const PromptPartsSchema = z.object({
   instructions: z.string().optional(),
   rules: z.string().optional(),
   memory: z.string().optional(), // #202 — absent when the run had no memory block
+  playbook: z.string().optional(), // #218 — absent when the run had no playbook
   template: z.string().optional(),
 });
 
@@ -196,6 +202,8 @@ export const HistoryRowSchema = z.object({
   // template. Opaque; the dashboard shows the first 12 characters.
   promptDigest: z.string().optional(),
   promptParts: PromptPartsSchema.optional(),
+  // #218 — the task-type playbook the run was given; absent when none.
+  playbook: z.string().optional(),
   // Operator messages delivered to the run (redacted, bounded).
   steers: z.array(RunSteerSchema).optional(),
   steersDropped: z.number().optional(),
@@ -452,6 +460,9 @@ export const InputRequiredEntrySchema = z.object({
   // can render a "Stale" badge + age tooltip without re-parsing queuedAt.
   stale: z.boolean().optional(),
   ageMinutes: z.number().optional(),
+  // #240 — a guardrail approval request (#204): "approve" runs the held
+  // command once, any other reply rejects it.
+  guardrailApproval: z.boolean().optional(),
 });
 
 export const AutomationQueueBackpressureSchema = z.object({
@@ -804,6 +815,14 @@ export const AutoSwitchRowSchema = z.object({
   switchedAt: optionalTimeString,
 });
 
+// #213 — StateSnapshot.dispatchPaused: why and until when nothing new starts.
+export const DispatchPauseRowSchema = z.object({
+  reason: z.string().optional(),
+  until: z.string().optional(),
+  pausedAt: z.string(),
+});
+export type DispatchPauseRow = z.infer<typeof DispatchPauseRowSchema>;
+
 export const StateSnapshotSchema = z.object({
   generatedAt: z.string(),
   pollIntervalMs: z.number().optional(), // omitempty — matches Go StateSnapshot.PollIntervalMs
@@ -899,6 +918,10 @@ export const StateSnapshotSchema = z.object({
   // depsRefreshDegradedCount is how many dependency-audit rows are past the
   // orchestrator's consecutive-failure threshold.
   depsRefreshDegradedCount: optionalSafeInt,
+  // #210 — only nodes that are an endpoint of at least one edge are sent
+  // (Go: cmd/itervox dependencyGraphRows); an edgeless audited issue lives in
+  // dependencyAudit only. The daemon no longer serializes candidateSeen,
+  // which this schema never declared.
   dependencyGraphNodes: z.array(DependencyGraphNodeSchema).optional(),
   dependencyGraphEdges: z.array(DependencyGraphEdgeSchema).optional(),
   // v0.2.0 todolist6 — gates the dashboard "Analyze dependencies" button.
@@ -945,6 +968,16 @@ export const StateSnapshotSchema = z.object({
   // CORE-175 — optional daemon features the dashboard may use; an absent
   // entry hides the matching UI (older daemons omit the whole field).
   capabilities: z.array(z.string()).optional(),
+  // #213 — the daemon-wide dispatch pause: null while dispatch runs, absent
+  // on daemons predating it. feedSeq is the newest event-feed seq
+  // (GET /api/v1/feed?since=).
+  dispatchPaused: DispatchPauseRowSchema.nullable().optional(),
+  feedSeq: z.number().optional(),
+  // #214 — the requesting token's scope (viewer | operator | admin), set per
+  // caller by GET /state and /events. Absent on daemons predating scopes,
+  // which treat every caller as admin. A string, not an enum, so a future
+  // scope never fails the whole snapshot parse (auth/scope.ts normalises).
+  callerScope: z.string().optional(),
   // CORE-175 — per-issue failure acknowledgements (event-loop state): the
   // attention inbox hides worker_failed/stalled entries with occurredAt <= upTo.
   failureAcks: z.array(z.object({ identifier: z.string(), upTo: z.string() })).optional(),
@@ -1077,6 +1110,11 @@ export const TrackerIssueSchema = z.object({
   // CORE-055 — set when agentProfile/agentBackend come from an automatic
   // switch rather than an operator pin.
   autoSwitch: AutoSwitchRowSchema.optional(),
+  // #218 — the playbook the issue's next (or current) run gets, how it was
+  // chosen, and the operator's override ('none' or a name; absent: auto).
+  playbook: z.string().optional(),
+  playbookSource: z.string().optional(),
+  playbookOverride: z.string().optional(),
 });
 
 // Inferred TypeScript types — re-exported from itervox.ts for backward compatibility.
@@ -1567,8 +1605,46 @@ export const MemoryRunRefSchema = z.object({
   finishedAt: z.string(),
 });
 
-// #203 — a lesson's review record (memory.Lesson).
-export const LESSON_TRIGGERS = ['input_reply', 'steering', 'failed_then_succeeded'] as const;
+// #203 — a lesson's review record (memory.Lesson); #217 adds three triggers.
+export const LESSON_TRIGGERS = [
+  'input_reply',
+  'steering',
+  'failed_then_succeeded',
+  'reviewer_ask',
+  'reverted_pr',
+  'recipe',
+] as const;
+
+// #217 — the enforcement Itervox suggests for a lesson seen enough times.
+export const ENFORCEMENT_KINDS = ['lint', 'type', 'test', 'docs', 'rule'] as const;
+export const ENFORCEMENT_STATUSES = ['suggested', 'accepted', 'dismissed'] as const;
+
+export const LessonEnforcementSchema = z.object({
+  kind: tolerantEnum('memory.lesson.enforcement.kind', ENFORCEMENT_KINDS, 'rule'),
+  status: tolerantEnum('memory.lesson.enforcement.status', ENFORCEMENT_STATUSES, 'dismissed'),
+  title: z.string().optional(),
+  draft: z.string(),
+  draftedBy: z.string().optional(),
+  suggestedAt: z.string().optional(),
+  decidedAt: z.string().optional(),
+  issue: z.string().optional(),
+  issueUrl: z.string().optional(),
+});
+
+// #217 — where a lesson promoted to a rule went.
+export const LessonRuleLinkSchema = z.object({
+  layer: z.string(),
+  id: z.string(),
+  at: z.string().optional(),
+});
+
+// #217 — how runs used a lesson.
+export const LessonAnalyticsSchema = z.object({
+  applied: z.number(),
+  runs: z.number(),
+  succeeded: z.number(),
+  failed: z.number(),
+});
 
 export const MemoryLessonSchema = z.object({
   trigger: tolerantEnum('memory.lesson.trigger', LESSON_TRIGGERS, 'input_reply'),
@@ -1580,6 +1656,9 @@ export const MemoryLessonSchema = z.object({
   evidence: z.number().optional(),
   draftedBy: z.string().optional(),
   approvedAt: z.string().optional(),
+  verification: z.string().optional(),
+  rule: LessonRuleLinkSchema.optional(),
+  enforcement: LessonEnforcementSchema.optional(),
 });
 
 export const MemoryEntrySchema = z.object({
@@ -1603,8 +1682,10 @@ export const MemoryEntrySchema = z.object({
     .transform((v) => v ?? []),
   // #203 — lessons: the review record and the "not helping" flag.
   lesson: MemoryLessonSchema.optional(),
-  notHelping: z.enum(['unused', 'failing']).optional(),
+  notHelping: z.enum(['unused', 'failing', 'enforced']).optional(),
   notHelpingReason: z.string().optional(),
+  // #217 — lessons: how runs used it.
+  analytics: LessonAnalyticsSchema.optional(),
 });
 
 export const MemoryFileSchema = z.object({
@@ -1626,6 +1707,7 @@ export const MemoryLessonsViewSchema = z.object({
   rateWindowHours: z.number(),
   staleAfterRuns: z.number(),
   rejected: z.number(),
+  enforceThreshold: z.number().optional(), // #217
 });
 
 export const MemoryViewSchema = z.object({
@@ -1645,6 +1727,20 @@ export const MemoryPromoteResultSchema = z.object({
   diffNote: z.string().optional(),
 });
 
+// #217 — POST /api/v1/memory/{id}/promote-to-rule.
+export const LessonRuleResultSchema = z.object({
+  entry: MemoryEntrySchema,
+  layer: z.string(),
+  path: z.string(),
+  rule: z.object({ id: z.string(), severity: z.string(), text: z.string() }),
+});
+
+// #217 — POST /api/v1/memory/{id}/enforcement/accept.
+export const LessonEnforceResultSchema = z.object({
+  entry: MemoryEntrySchema,
+  issue: z.object({ identifier: z.string(), title: z.string(), url: z.string().optional() }),
+});
+
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 export type MemoryScope = (typeof MEMORY_SCOPES)[number];
@@ -1652,6 +1748,10 @@ export type MemoryEntry = z.infer<typeof MemoryEntrySchema>;
 export type MemoryView = z.infer<typeof MemoryViewSchema>;
 export type MemoryPromoteResult = z.infer<typeof MemoryPromoteResultSchema>;
 export type MemoryLessonsView = z.infer<typeof MemoryLessonsViewSchema>;
+export type LessonEnforcement = z.infer<typeof LessonEnforcementSchema>;
+export type LessonAnalytics = z.infer<typeof LessonAnalyticsSchema>;
+export type LessonRuleResult = z.infer<typeof LessonRuleResultSchema>;
+export type LessonEnforceResult = z.infer<typeof LessonEnforceResultSchema>;
 
 // ─── Settings layers and schema (#158) ───────────────────────────────────────
 // Mirrors internal/server/settings_layers.go and the JSON Schema published at
@@ -1890,3 +1990,351 @@ export type RepoEvalsResponse = z.infer<typeof RepoEvalsResponseSchema>;
 export type RepoHotspotRun = z.infer<typeof RepoHotspotRunSchema>;
 export type RepoHotspotRow = z.infer<typeof RepoHotspotRowSchema>;
 export type RepoHotspotsResponse = z.infer<typeof RepoHotspotsResponseSchema>;
+
+// #214 — stored API tokens (Settings → Access). The API never returns a
+// hash; a secret appears only in the create and rotate answers.
+export const ApiTokenSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  scope: z.string(),
+  created: z.string(),
+  lastUsed: z.string().optional(),
+  expires: z.string().optional(),
+  expired: z.boolean().optional(),
+});
+export type ApiToken = z.infer<typeof ApiTokenSchema>;
+
+export const ApiTokenListSchema = z.object({ tokens: z.array(ApiTokenSchema) });
+
+export const ApiTokenSecretSchema = z.object({ token: ApiTokenSchema, secret: z.string() });
+export type ApiTokenSecret = z.infer<typeof ApiTokenSecretSchema>;
+
+// #215 — the run context (GET /api/v1/issues/{identifier}/context) and the
+// worktree diff (GET /api/v1/issues/{identifier}/diff). Every text field is
+// redacted server-side; the run context never carries tool output.
+export const DiffFileSchema = z.object({
+  path: z.string(),
+  status: z.string(),
+  additions: z.number(),
+  deletions: z.number(),
+  binary: z.boolean().optional(),
+});
+export type DiffFile = z.infer<typeof DiffFileSchema>;
+
+export const RunContextRunSchema = z.object({
+  runId: z.string(),
+  live: z.boolean(),
+  kind: z.string().optional(),
+  profile: z.string().optional(),
+  backend: z.string().optional(),
+  startedAt: z.string().optional(),
+  finishedAt: z.string().optional(),
+  outcome: z.string().optional(),
+  updatedAt: z.string().optional(),
+  baseBranch: z.string().optional(),
+  currentStep: z.string().optional(),
+  lastToolCall: z
+    .object({ name: z.string(), target: z.string().optional(), at: z.string().optional() })
+    .optional(),
+  toolCalls: z.number().default(0),
+  turnCount: z.number().default(0),
+  inputTokens: z.number().default(0),
+  outputTokens: z.number().default(0),
+  totalTokens: z.number().default(0),
+  pendingInput: z.string().optional(),
+  pendingApproval: z.boolean().optional(),
+  queuedSteers: z.number().default(0),
+  steers: z
+    .array(z.object({ text: z.string(), at: z.string(), delivery: z.string().optional() }))
+    .nullish()
+    .transform((v) => v ?? []),
+  guardrailBlocks: z.number().default(0),
+  lastGuardrailKind: z.string().optional(),
+  playbook: z.string().optional(), // #218
+});
+export type RunContextRun = z.infer<typeof RunContextRunSchema>;
+
+export const RunContextResponseSchema = z.object({
+  identifier: z.string(),
+  run: RunContextRunSchema.nullable(),
+  changedFiles: z
+    .array(DiffFileSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  changedFilesError: z.string().optional(),
+  handoffs: z
+    .array(z.object({ title: z.string(), path: z.string(), partial: z.boolean().optional() }))
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type RunContextResponse = z.infer<typeof RunContextResponseSchema>;
+
+export const DiffResponseSchema = z.object({
+  identifier: z.string(),
+  base: z.string(),
+  mergeBase: z.string(),
+  files: z.array(DiffFileSchema),
+  truncated: z.boolean().optional(),
+  hunksAllowed: z.boolean(),
+  // #238 — what was diffed ("worktree" | "pr"), what ?source= may ask for,
+  // the PR, why the PR's files could not be read, and the worktree's path
+  // on the daemon's host (open-in-editor links).
+  source: z.string().optional(),
+  sources: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  prUrl: z.string().optional(),
+  headSha: z.string().optional(),
+  prError: z.string().optional(),
+  worktreePath: z.string().optional(),
+});
+export type DiffResponse = z.infer<typeof DiffResponseSchema>;
+
+export const FileDiffResponseSchema = z.object({
+  identifier: z.string(),
+  base: z.string(),
+  file: DiffFileSchema,
+  patch: z.string(),
+  truncated: z.boolean().optional(),
+  bytes: z.number(),
+  maxBytes: z.number(),
+  source: z.string().optional(), // #238
+});
+export type FileDiffResponse = z.infer<typeof FileDiffResponseSchema>;
+
+// #238 — change review: a line comment sent to the running agent or posted
+// on the PR, and an operator's PR review (one GitHub review, never a merge).
+export const ReviewCommentResultSchema = z.object({
+  destination: z.enum(['agent', 'pr']),
+  runId: z.string().optional(),
+  prUrl: z.string().optional(),
+  url: z.string().optional(),
+});
+export type ReviewCommentResult = z.infer<typeof ReviewCommentResultSchema>;
+
+export const PrReviewResultSchema = z.object({
+  prUrl: z.string(),
+  id: z.number(),
+  url: z.string().optional(),
+  event: z.string(),
+  comments: z.number(),
+  merged: z.boolean(),
+  mergePolicy: z.object({
+    mergesFromHere: z.boolean(),
+    blockLabels: z
+      .array(z.string())
+      .nullish()
+      .transform((v) => v ?? []),
+    quorum: ReviewOutcomeSchema.nullish(),
+  }),
+});
+export type PrReviewResult = z.infer<typeof PrReviewResultSchema>;
+
+// #218 — task-type playbooks, decision logs, steering phrases and the
+// verify-skill issue. Fetched on demand, never on the SSE frame.
+export const PlaybookRowSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  keywords: stringList,
+  requireEvidence: stringList,
+});
+export type PlaybookRow = z.infer<typeof PlaybookRowSchema>;
+
+export const PlaybooksResponseSchema = z.object({
+  enabled: z.boolean().default(true),
+  playbooks: z
+    .array(PlaybookRowSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type PlaybooksResponse = z.infer<typeof PlaybooksResponseSchema>;
+
+export const DecisionRowSchema = z.object({
+  time: z.string().optional(),
+  at: z.string().optional(),
+  decision: z.string(),
+  why: z.string().optional(),
+  alternative: z.string().optional(),
+});
+export type DecisionRow = z.infer<typeof DecisionRowSchema>;
+
+export const DecisionRunSchema = z.object({
+  path: z.string(),
+  runTimestamp: z.string().optional(),
+  role: z.string().optional(),
+  decisions: z
+    .array(DecisionRowSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  truncated: z.boolean().optional(),
+  skipped: z.number().optional(),
+});
+export type DecisionRun = z.infer<typeof DecisionRunSchema>;
+
+export const DecisionsResponseSchema = z.object({
+  identifier: z.string(),
+  runs: z
+    .array(DecisionRunSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type DecisionsResponse = z.infer<typeof DecisionsResponseSchema>;
+
+export const SteeringPhraseSchema = z.object({ label: z.string(), message: z.string() });
+export type SteeringPhrase = z.infer<typeof SteeringPhraseSchema>;
+
+export const SteeringPhrasesResponseSchema = z.object({
+  phrases: z
+    .array(SteeringPhraseSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+
+export const VerifySkillIssueResultSchema = z.object({
+  identifier: z.string().optional(),
+  url: z.string().optional(),
+});
+export type VerifySkillIssueResult = z.infer<typeof VerifySkillIssueResultSchema>;
+
+// #228 — GET /hub/api/v1/projects (internal/hub api.go ProjectsResponse).
+// `summary` is the member's own GET /api/v1/summary, passed through.
+export const HubMemberSummarySchema = z.object({
+  projectName: z.string().optional(),
+  paused: z.boolean().optional(),
+  counts: z
+    .object({
+      running: z.number().optional(),
+      retrying: z.number().optional(),
+      paused: z.number().optional(),
+      inputRequired: z.number().optional(),
+      recentFailures: z.number().optional(), // #231 the phone's attention list
+    })
+    .optional(),
+});
+export type HubMemberSummary = z.infer<typeof HubMemberSummarySchema>;
+
+export const HubProjectSchema = z.object({
+  name: z.string(),
+  workflow: z.string(),
+  projectDir: z.string(),
+  pid: z.number(),
+  url: z.string(),
+  version: z.string(),
+  startedAt: z.string(),
+  health: z.string(),
+  error: z.string().optional(),
+  proxied: z.boolean(),
+  proxyError: z.string().optional(),
+  capabilities: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  summary: HubMemberSummarySchema.nullish(),
+});
+export type HubProject = z.infer<typeof HubProjectSchema>;
+
+export const HubProjectsResponseSchema = z.object({
+  hub: z.object({
+    version: z.string(),
+    pid: z.number(),
+    url: z.string(),
+    startedAt: z.string(),
+    headSeq: z.number(),
+  }),
+  projects: z
+    .array(HubProjectSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type HubProjectsResponse = z.infer<typeof HubProjectsResponseSchema>;
+
+// #229 — GET/PUT /hub/api/v1/notifications (internal/hub notify_api.go
+// NotificationsResponse; the settings are notifications.json, schema at
+// site/public/schema/notifications.schema.json).
+const HubChannelRoutesSchema = z.record(z.string(), z.array(z.string()));
+export const HubNotificationSettingsSchema = z.object({
+  $schema: z.string().optional(),
+  version: z.number(),
+  digest_interval_minutes: z.number(),
+  channels: z.record(z.string(), z.object({ enabled: z.boolean() })),
+  defaults: HubChannelRoutesSchema,
+  projects: z.record(
+    z.string(),
+    z.object({
+      routes: HubChannelRoutesSchema.optional(),
+      snooze_until: z.string().optional(),
+    }),
+  ),
+});
+export type HubNotificationSettings = z.infer<typeof HubNotificationSettingsSchema>;
+
+export const HubNotificationsResponseSchema = z.object({
+  settings: HubNotificationSettingsSchema,
+  kinds: z.array(z.object({ name: z.string(), urgent: z.boolean() })),
+  channels: z.array(z.object({ name: z.string(), available: z.boolean() })),
+  projects: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type HubNotificationsResponse = z.infer<typeof HubNotificationsResponseSchema>;
+
+// #231 — phones: push devices (GET /hub/api/v1/push/devices, internal/hub
+// push.go PushDeviceRow), paired devices (GET /hub/api/v1/devices,
+// pairing.go DeviceRow), a pairing code and its exchange.
+export const HubPushDeviceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  service: z.string(),
+  tokenId: z.string(),
+  created: z.string(),
+});
+export type HubPushDevice = z.infer<typeof HubPushDeviceSchema>;
+export const HubPushDevicesResponseSchema = z.object({
+  devices: z
+    .array(HubPushDeviceSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+
+export const HubDeviceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  created: z.string(),
+  lastUsed: z.string().optional(),
+  pushDevices: z.number().default(0),
+});
+export type HubDevice = z.infer<typeof HubDeviceSchema>;
+export const HubDevicesResponseSchema = z.object({
+  devices: z
+    .array(HubDeviceSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+
+export const HubPairingSchema = z.object({
+  code: z.string(),
+  expiresAt: z.string(),
+  path: z.string(),
+});
+export type HubPairing = z.infer<typeof HubPairingSchema>;
+
+export const HubPairingExchangeSchema = z.object({
+  token: z.string().min(1),
+  device: HubDeviceSchema,
+});
+
+// The slice of a member's GET /api/v1/state the phone's needs-attention
+// list reads through the hub proxy (the rest of the snapshot is ignored).
+export const HubAttentionStateSchema = z.object({
+  inputRequired: z
+    .array(InputRequiredEntrySchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  recentFailures: z
+    .array(FailureRowSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type HubAttentionState = z.infer<typeof HubAttentionStateSchema>;

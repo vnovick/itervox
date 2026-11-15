@@ -113,9 +113,12 @@ func TestProcProcessesReadsCwdAndOpenFiles(t *testing.T) {
 }
 
 func TestParsePSAndLsof(t *testing.T) {
-	procs := parsePS([]byte("  1     0 /sbin/launchd\n 42  7 /usr/local/bin/claude --resume abc\n 99 1 ps -x\nbogus\n"), 99)
-	if len(procs) != 2 || procs[1].PID != 42 || procs[1].PPID != 7 || procs[1].Name != "claude" || procs[1].Args[2] != "abc" {
+	procs := parsePS([]byte("  1     0 3-01:02:03 /sbin/launchd\n 42  7    01:05 /usr/local/bin/claude --resume abc\n 99 1 00:00 ps -x\n 50 1 x:y node\nbogus\n"), 99)
+	if len(procs) != 3 || procs[1].PID != 42 || procs[1].PPID != 7 || procs[1].Name != "claude" || procs[1].Args[2] != "abc" {
 		t.Fatalf("parsePS = %+v", procs)
+	}
+	if procs[0].elapsed != 73*time.Hour+2*time.Minute+3*time.Second || procs[1].elapsed != 65*time.Second || procs[2].elapsed != -1 {
+		t.Fatalf("elapsed = %v %v %v", procs[0].elapsed, procs[1].elapsed, procs[2].elapsed)
 	}
 	cwd, files := parseLsof([]byte("p42\nfcwd\ntDIR\nn/work/app\nftxt\ntREG\nn/usr/local/bin/claude\nf7w\ntREG\nn/Users/u/.claude/projects/x/s.jsonl\nf8u\ntIPv4\nnlocalhost:1\n"))
 	if cwd != "/work/app" || len(files) != 2 || files[1] != "/Users/u/.claude/projects/x/s.jsonl" {

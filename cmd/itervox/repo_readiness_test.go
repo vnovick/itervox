@@ -137,6 +137,7 @@ func TestRepoReadinessReusesDoctorChecks(t *testing.T) {
 		{readinessSchemaVersion, server.RepoReadinessPass},
 		{readinessGitignore, server.RepoReadinessWarn},
 		{readinessInstructions, server.RepoReadinessWarn},
+		{readinessVerifySkill, server.RepoReadinessWarn},
 		{readinessBareFetch, server.RepoReadinessPass},
 		{readinessProfileRefs, server.RepoReadinessWarn},
 		{readinessTracker, server.RepoReadinessFail},
@@ -152,7 +153,7 @@ func TestRepoReadinessReusesDoctorChecks(t *testing.T) {
 	}
 	assert.Contains(t, body.Checks[1].Detail, "!.itervox/agents/**")
 	assert.Contains(t, body.Checks[2].Detail, "AGENTS.md")
-	assert.Contains(t, body.Checks[4].Detail, "ghost-reviewer")
+	assert.Contains(t, body.Checks[5].Detail, "ghost-reviewer")
 
 	out := renderDoctorReport(report)
 	assert.Contains(t, out, "repo readiness:")
