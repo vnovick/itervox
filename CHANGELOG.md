@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Signed checks in the dashboard.** The issue panel has a read-only **Signed checks** section, read from `GET /api/v1/issues/{identifier}/attestations` (viewer scope): each run's checks with their name, ok/failed and exit code (or timed out), duration, short tree hash and whether the record verifies (the reason when it does not), the run's seal status and the signing key id. An issue with no records shows an empty state; a daemon that does not serve signed checks shows nothing.
+
 ## [0.3.3] — 2026-11-15
 
 ### Added
