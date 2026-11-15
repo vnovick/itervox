@@ -831,6 +831,15 @@ type State struct {
 	// for the next batch to do, so pendingBlockersResolvedStates skips the
 	// FetchIssuesByStates call entirely. v0.2.0 audit P1-2.
 	LastBlockersResolvedAuditSeq int64
+	// LastBlockersResolvedScanAt is when the dependency refresh last launched
+	// the blockers_resolved states scan (FetchIssuesByStates over the states
+	// the automations can fire in). The scan also runs once per
+	// dependency_audit_refresh_interval_ms, not only when the transition seq
+	// moves: an issue outside the candidate (active) states — Backlog — only
+	// enters DependencyAudit through it, and without a row it can never make
+	// the blocked → unblocked transition that advances the seq. Event-loop
+	// state, session-scoped, not persisted (zero = scan on the first tick).
+	LastBlockersResolvedScanAt time.Time
 	// DepsRefreshInFlight is the single-flight latch for the off-loop
 	// dependency-refresh worker. At most one batch is tracked as live: after
 	// a watchdog fire (reclaimStuckDependencyRefresh) the abandoned batch's

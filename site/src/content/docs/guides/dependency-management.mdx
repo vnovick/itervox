@@ -62,7 +62,7 @@ Audit rows record:
 
 When an issue moves from blocked or unknown-with-blockers to unblocked, Itervox records a `blockers_resolved` transition version.
 
-The audit is not startup-only. On each poll and manual refresh, the event loop refreshes known audit rows, including rows for issues outside active states and outside `blockers_resolved` source filters. If tracker data changes and a blocker becomes terminal, the next refresh updates the audit row, Deps graph, automation queue eligibility, and any matching `blockers_resolved` transition.
+The audit is not startup-only. On each poll and manual refresh, the event loop refreshes known audit rows, including rows for issues outside active states and outside `blockers_resolved` source filters. If tracker data changes and a blocker becomes terminal, the next refresh updates the audit row, Deps graph, automation queue eligibility, and any matching `blockers_resolved` transition. A row for an issue outside the active states (a Backlog issue) exists only once something audited it: with a `blockers_resolved` automation configured, the refresh lists the issues in the states that rule can fire in once per `agent.dependency_audit_refresh_interval_ms` and audits them, so a blocked Backlog issue is recorded and its unblock fires the rule (see [`blockers_resolved`](/guides/automations/#blockers_resolved)).
 
 ## Safe unblock automation
 
