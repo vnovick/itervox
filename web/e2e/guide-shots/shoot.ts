@@ -65,6 +65,17 @@ async function clipFor(page: Page, target: Locator, pad: number) {
   await target.evaluate((el) => {
     const fits = el.getBoundingClientRect().height < window.innerHeight;
     el.scrollIntoView({ block: fits ? 'center' : 'start', inline: 'nearest' });
+    // A region inside a dialog (the glass issue panel) would show the
+    // dashboard through it: hide everything but the dialog and its
+    // ancestors (the scrim too), so only the page background shows.
+    const dialog = el.closest('[role="dialog"]');
+    for (let node: Element | null = dialog; node && node !== document.body; ) {
+      const parent: Element | null = node.parentElement;
+      for (const sib of Array.from(parent?.children ?? [])) {
+        if (sib !== node) (sib as HTMLElement).style.visibility = 'hidden';
+      }
+      node = parent;
+    }
   });
   await page.waitForTimeout(100);
   const box = await target.boundingBox();
