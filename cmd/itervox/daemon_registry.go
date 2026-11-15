@@ -246,27 +246,35 @@ func readDaemonRegistry(dir string) []daemonRecord {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
+		if rec, ok := readDaemonRegistryFile(filepath.Join(dir, e.Name())); ok {
+			out = append(out, rec)
 		}
-		var rec daemonRecord
-		if json.Unmarshal(data, &rec) != nil {
-			_ = os.Remove(path)
-			continue
-		}
-		switch daemonPIDOwnership(rec.PID, rec.Workflow) {
-		case pidStale:
-			_ = os.Remove(path)
-			continue
-		case pidUnknown:
-			continue
-		}
-		rec.Source = "registry"
-		out = append(out, rec)
 	}
 	return out
+}
+
+// readDaemonRegistryFile reads one registry record: false when it is
+// missing, unreadable, or not a live daemon (an unparsable or stale record
+// is removed).
+func readDaemonRegistryFile(path string) (daemonRecord, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return daemonRecord{}, false
+	}
+	var rec daemonRecord
+	if json.Unmarshal(data, &rec) != nil {
+		_ = os.Remove(path)
+		return daemonRecord{}, false
+	}
+	switch daemonPIDOwnership(rec.PID, rec.Workflow) {
+	case pidStale:
+		_ = os.Remove(path)
+		return daemonRecord{}, false
+	case pidUnknown:
+		return daemonRecord{}, false
+	}
+	rec.Source = "registry"
+	return rec, true
 }
 
 // scannedDaemonRecord describes a daemon found by process scan that has no
@@ -320,7 +328,8 @@ func hostPortFromURL(u string) (string, int, bool) {
 }
 
 // collectDaemons lists every running daemon on the host: the registry first,
-// then process-scan finds the registry does not cover. Sorted by workflow
+// then process-scan finds the registry does not cover (a scanned pid whose
+// record appeared meanwhile is reported from that record). Sorted by workflow
 // path, then pid, so the output is stable.
 func collectDaemons(registryDir string, scan func() []int, cwd func(int) string) []daemonRecord {
 	out := readDaemonRegistry(registryDir)
@@ -328,9 +337,18 @@ func collectDaemons(registryDir string, scan func() []int, cwd func(int) string)
 		if slices.ContainsFunc(out, func(r daemonRecord) bool { return r.PID == pid }) {
 			continue
 		}
-		if rec, ok := scannedDaemonRecord(pid, cwd); ok {
-			out = append(out, rec)
+		rec, ok := scannedDaemonRecord(pid, cwd)
+		if !ok {
+			continue
 		}
+		// A daemon that started since the registry was read: its record
+		// is written before its dashboard_url, so one found here with a
+		// port has a record by now. Read it rather than report the daemon
+		// as a pre-registry one with an unknown token.
+		if reg, ok := readDaemonRegistryFile(filepath.Join(registryDir, strconv.Itoa(pid)+".json")); ok {
+			rec = reg
+		}
+		out = append(out, rec)
 	}
 	slices.SortFunc(out, func(a, b daemonRecord) int {
 		if c := strings.Compare(a.Workflow, b.Workflow); c != 0 {

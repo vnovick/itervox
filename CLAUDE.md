@@ -249,6 +249,21 @@ only the event loop mutates them.
   (a name or `none`). Event-loop state set only through
   `SetPlaybookOverride` → `EventSetPlaybookOverride`, persisted to
   `.itervox/playbook_overrides.json` by the ledger writer.
+- The operator's per-issue profile overrides (`issueProfiles`, set by
+  `SetIssueProfile`) are NOT `State`: an `issueProfilesMu`-guarded map with
+  each override's set time, persisted to `.itervox/issue_profiles.json` by
+  the ledger writer (`ledgerIssueProfiles`) and loaded by
+  `SetIssueProfilesFile` in every generation, so they survive a reload and a
+  restart. An automatic switch in `State.IssueProfiles`/`IssueBackends`
+  (`rate_limited` `switch_to_profile`, `backend_fallback`) recorded after
+  the override supersedes it until reverted (`autoSwitchSupersedes`, used by
+  `issueProfileForDispatch` and `Snapshot`); the switch never writes
+  `issueProfiles`.
+- `DismissedInputQuestions` records the question (tracker comment id/key,
+  else a context digest) each dismiss-input dismissed, so `admitClaimRead`
+  does not rehydrate an input-required entry from that same comment again; a
+  new question still blocks. Event-loop state, persisted as `dismissed` in
+  `input_required.json`, pruned when the issue turns terminal, bounded (500).
 - `PendingRestacks` holds dependents whose blockers landed while they were
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked

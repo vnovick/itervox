@@ -55,6 +55,7 @@ func (s State) Clone() State {
 	c.DiscardingIdentifiers = maps.Clone(s.DiscardingIdentifiers)
 	c.InputRequiredIssues = copyInputRequiredMap(s.InputRequiredIssues)
 	c.PendingInputResumes = copyPendingInputResumeMap(s.PendingInputResumes)
+	c.DismissedInputQuestions = maps.Clone(s.DismissedInputQuestions)
 	c.AutomationQueue = copyAutomationQueueMap(s.AutomationQueue)
 	c.AutomationQueueOrder = append([]string(nil), s.AutomationQueueOrder...)
 	c.ReviewVerdicts = copyReviewVerdictsMap(s.ReviewVerdicts)

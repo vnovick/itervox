@@ -275,6 +275,7 @@ func pruneTerminalRuntimeLedgers(state *State, terminalIdentifiers map[string]st
 	pruneMap(state.PRMergedDispatched, identOfPROpened, keep)
 	pruneManagedPRs(state, keep)                          // #173
 	pruneMap(state.BackendLimitedHolds, identOfKey, keep) // CORE-053
+	pruneMap(state.DismissedInputQuestions, identOfKey, keep)
 	counts := LedgerJanitorCounts{
 		InputRequired: pruneMap(state.InputRequiredIssues, identOfKey, keep),
 		Retry:         pruneMap(state.RetryAttempts, identOfRetry, keep),

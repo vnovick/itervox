@@ -126,6 +126,7 @@ func TestLastReplyCheckAtSurvivesDiskRoundTrip(t *testing.T) {
 			"ENG-2": {IssueID: "id2", Identifier: "ENG-2", QueuedAt: checked}, // never checked
 		},
 		map[string]*PendingInputResumeEntry{},
+		nil,
 	)
 
 	restored := o.loadInputRequiredFromDisk(State{

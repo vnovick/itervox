@@ -741,6 +741,15 @@ type State struct {
 	// in the tracker, but have not yet been durably consumed by a resumed
 	// worker. Key: identifier.
 	PendingInputResumes map[string]*PendingInputResumeEntry
+	// DismissedInputQuestions records, per issue identifier, the question
+	// the operator dismissed (POST /issues/{id}/dismiss-input). The
+	// input-required recovery (admitClaimRead → recoverInputRequired) does
+	// not rehydrate an entry from that same tracker comment again, so a
+	// dismissal sticks when the issue returns to an active state; a NEW
+	// question (another comment) still blocks. Event-loop state, persisted
+	// in input_required.json (`dismissed`), pruned when the issue turns
+	// terminal and bounded to maxDismissedInputQuestions.
+	DismissedInputQuestions map[string]DismissedInputQuestion
 	// AutomationQueue tracks automation triggers that could not start immediately.
 	// Key: stable queue key from automationQueueKey.
 	AutomationQueue map[string]*AutomationQueueEntry
@@ -1136,6 +1145,7 @@ func NewState(cfg *config.Config) State {
 		IssueStatusHistory:          make(map[string][]IssueStatusChange),
 		DiscardingIdentifiers:       make(map[string]DiscardMarker),
 		InputRequiredIssues:         make(map[string]*InputRequiredEntry),
+		DismissedInputQuestions:     make(map[string]DismissedInputQuestion),
 		PendingInputResumes:         make(map[string]*PendingInputResumeEntry),
 		AutomationQueue:             make(map[string]*AutomationQueueEntry),
 		AutomationQueueOrder:        []string{},

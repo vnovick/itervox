@@ -555,19 +555,22 @@ func main() {
 		// run. Doctor / `itervox status` rely on these files being either
 		// fresh or absent to give accurate "is it alive" verdicts.
 		defer removePIDFile(*workflowPath)
-		defer removeDashboardURLFile(*workflowPath)
 		defer removeHeartbeatFile(*workflowPath)
-		defer removeDaemonRegistryEntry() // runs first: never outlive daemon.pid
-		defer stopHub()                   // #228: hand the hub over before the record goes
+		defer removeDaemonRegistryEntry() // never outlive daemon.pid
+		// dashboard_url goes before the registry record, the reverse of
+		// startup: a process scan never sees this pid with a port but no
+		// record (a pre-registry daemon with an unknown token).
+		defer removeDashboardURLFile(*workflowPath)
+		defer stopHub() // #228: hand the hub over before the record goes
 		// os.Exit skips the defers above, so every fatalExit path — a failed
 		// rebind, an invalid config on the first iteration — used to leave
 		// these files behind and make doctor report a daemon that had died.
 		// Same cleanup, reachable from fatalExit. See exit.go's onFatalExit.
 		onFatalExit = func() {
-			removePIDFile(*workflowPath)
 			removeDashboardURLFile(*workflowPath)
-			removeHeartbeatFile(*workflowPath)
 			removeDaemonRegistryEntry()
+			removeHeartbeatFile(*workflowPath)
+			removePIDFile(*workflowPath)
 		}
 	}
 
@@ -874,6 +877,9 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
 	orch.SetPushLanesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "push_lanes.json"))                 // guardrails.lanes
 	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
+	// Per-issue profile overrides: loaded by every generation, so they survive
+	// a WORKFLOW.md / settings reload as well as a restart.
+	orch.SetIssueProfilesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "issue_profiles.json"))
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
@@ -968,11 +974,6 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	var srvDone <-chan error
 	var actionTokenStore *agentactions.Store
 	{
-		// Persist the bound URL for Vite's dev proxy and for `itervox doctor`.
-		dashboardURL := "http://" + actualAddr + "/"
-		if err := writeDashboardURLFile(workflowPath, dashboardURL); err != nil {
-			slog.Warn("itervox: failed to write dashboard URL file", "error", err)
-		}
 		// Secure-by-default, regardless of bind address (#48): if no token is
 		// set and the user hasn't explicitly opted out via
 		// server.allow_unauthenticated, auto-generate an ephemeral token and
@@ -1021,6 +1022,16 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			})
 		}
 		writeDaemonRegistryEntry(newDaemonRecord(workflowPath, actualAddr, filepath.Dir(logFile), os.Getenv("ITERVOX_API_TOKEN"), tokenGenerated, supervisorTokenActive))
+		// Persist the bound URL for Vite's dev proxy and for `itervox doctor`.
+		// Written LAST, after the token file and the registry record: a
+		// process scan (`status --all`) that finds this pid with a port but
+		// no record reports a pre-registry daemon with an unknown token and
+		// no token_file, which made the desktop's "Add remote" ask for a
+		// token that was about to be readable.
+		dashboardURL := "http://" + actualAddr + "/"
+		if err := writeDashboardURLFile(workflowPath, dashboardURL); err != nil {
+			slog.Warn("itervox: failed to write dashboard URL file", "error", err)
+		}
 	}
 	if actualAddr != "" {
 		actionTokenStore = agentactions.NewStore()

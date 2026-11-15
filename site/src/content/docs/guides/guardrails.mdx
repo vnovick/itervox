@@ -20,7 +20,8 @@ refuse those operations, or hold them for a human:
 | push to `main`, `master`, `develop`, the base branch or any other branch | refused |
 | push a tag | refused |
 | force-push or delete its issue branch | refused, unless `guardrails.allow_force_push` |
-| `git push --no-verify` (or an abbreviation git accepts, such as `--no-verif`), `git -c core.hooksPath=…`, or a config include (`git -c include.path=…`) | refused (it would skip the guardrail hook) |
+| `git push --no-verify` (or an abbreviation git accepts, such as `--no-verif`), `git -c core.hooksPath=…`, or a config include (`git -c include.path=…`) | refused (it would skip the guardrail hook), except a `core.hooksPath` override on a [read-only git command](#read-only-git-commands-may-override-the-hooks-path) |
+| `git -c core.hooksPath=/dev/null ls-files …` and the other [read-only git commands](#read-only-git-commands-may-override-the-hooks-path) | allowed; the override is dropped, so git still sees the guardrail hooks |
 | `gh pr merge`, `glab mr merge`, a merge through `gh api` / `glab api` | refused |
 | `git merge` while the default branch is checked out | refused |
 | a command in `guardrails.approval_commands` (`vercel --prod`, `kubectl apply`, …) | waits for a human; runs once on approve |
@@ -47,6 +48,38 @@ For a tmux session started with **New session**, the issue branch is the branch
 checked out in the session's folder when it starts; on `main` (or another
 protected branch) there is none, and the agent may only push a new branch it
 creates.
+
+## Read-only git commands may override the hooks path
+
+Some agents disable hooks for their own read-only git calls — Claude Code runs
+`git -c core.hooksPath=/dev/null … ls-files --error-unmatch -- …`. A git
+command that runs no hook cannot skip one, so the shim lets a `core.hooksPath`
+override (`-c core.hooksPath=…` or `--config-env core.hooksPath=…`) through
+when the git command is exactly one of these builtins:
+
+`blame`, `cat-file`, `check-attr`, `check-ignore`, `check-ref-format`,
+`cherry`, `count-objects`, `diff-files`, `diff-index`, `diff-tree`,
+`for-each-ref`, `grep`, `log`, `ls-files`, `ls-tree`, `merge-base`,
+`name-rev`, `rev-list`, `rev-parse`, `shortlog`, `show`, `show-branch`,
+`show-ref`, `var`, `version`
+
+Each reads the repository without writing the index or a ref, so git runs no
+hook for it. An alias cannot stand in for one: git ignores an alias that has a
+builtin's name. The shim drops the override before it runs git, so git, and
+any program it starts (a pager, an external diff), still sees the guardrail
+hooks.
+
+Everything else with a hooks-path override stays refused as `hook_bypass`:
+
+- any other git command, including `commit`, `push`, `merge`, `rebase`, `am`,
+  `checkout`, `switch`, `pull`, `fetch` — and `status`, `diff` and
+  `describe --dirty`, which run the `post-index-change` hook when they refresh
+  the index;
+- a `-c alias.…`, `-c include.path=…` or `-c includeIf.….path=…` on the same
+  command line;
+- a global option the shim does not recognise exactly (git does not accept
+  abbreviations either), and `--exec-path`, `--help`, `--super-prefix` or
+  `--list-cmds`.
 
 ## Approving a deploy
 
@@ -438,7 +471,7 @@ For each tool call the hook answers:
 
 | The agent's tool call | Hook answer |
 |---|---|
-| a Bash command the guardrails refuse (`gh pr merge`, `git push --no-verify`, `git -c core.hooksPath=…`, `git merge` on the default branch, a push to a protected branch, a tag push, a force push or remote branch deletion unless `allow_force_push`) | **deny**, with the refusal's reason |
+| a Bash command the guardrails refuse (`gh pr merge`, `git push --no-verify`, `git -c core.hooksPath=…` other than on a [read-only git command](#read-only-git-commands-may-override-the-hooks-path), `git merge` on the default branch, a push to a protected branch, a tag push, a force push or remote branch deletion unless `allow_force_push`) | **deny**, with the refusal's reason |
 | a Bash command in `approval_commands` (an [environment-scoped](#environment-scoped-rules) entry only when the session's environment, or the command's own `VAR=value` prefix, matches) | **ask**: you confirm it in the agent's permission prompt |
 | an edit (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) of a [`guardrails.lanes.human`](#lanes) file | **ask**: "pipeline file: an agent may change what CI checks, not how" |
 | anything else | no answer: the agent's own permission rules decide |

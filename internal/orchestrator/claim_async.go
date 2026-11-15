@@ -158,7 +158,16 @@ func (o *Orchestrator) admitClaimRead(ctx context.Context, state *State, issue d
 	// comment, restore the issue to InputRequiredIssues instead of dispatching
 	// a fresh worker. This recovers from daemon restarts / state loss.
 	// #252: `itervox run --answer/--approve` brings the answer itself.
-	if entry := recoverInputRequired(issue, detailed); entry != nil && !o.oneShotAnswers() {
+	var dismissed *DismissedInputQuestion
+	if d, ok := state.DismissedInputQuestions[issue.Identifier]; ok {
+		dismissed = &d
+	}
+	if entry := recoverInputRequired(issue, detailed, dismissed); entry != nil && !o.oneShotAnswers() {
+		// The tracker comment carries no profile: record the issue's
+		// effective one (operator override, else an automatic switch) so the
+		// resume runs it. A reviewer's question cannot be told apart here;
+		// the rehydrated entry continues as a worker.
+		entry.ProfileName = o.enabledProfileOrEmpty(o.issueProfileForDispatch(*state, issue.Identifier))
 		state.InputRequiredIssues[issue.Identifier] = entry
 		// Recovery path: no live RunEntry — the previous worker is gone
 		// (daemon restart / state loss). B1 self-reentry guard does not
