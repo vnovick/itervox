@@ -1,6 +1,7 @@
 import {
   Bot,
   Brain,
+  Crosshair,
   FolderGit2,
   LayoutDashboard,
   Logs,
@@ -21,6 +22,10 @@ function iconProps(className?: string): LucideProps {
 
 export function DashboardIcon({ className }: { className?: string }) {
   return <LayoutDashboard {...iconProps(className)} />;
+}
+
+export function FocusIcon({ className }: { className?: string }) {
+  return <Crosshair {...iconProps(className)} />;
 }
 
 export function TimelineIcon({ className }: { className?: string }) {

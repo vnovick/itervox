@@ -249,7 +249,7 @@ describe('tokens.contrast', () => {
       });
 
       it('every header status pill tone (PILL_TONE_CLASS) meets 4.5:1 on the glass top bar and on cards', () => {
-        const source: string = readFileSync(resolve(SRC, 'layout/AppHeader.tsx'), 'utf8');
+        const source: string = readFileSync(resolve(SRC, 'layout/StatusPills.tsx'), 'utf8');
         const map = /PILL_TONE_CLASS[^{]*\{([^}]+)\}/.exec(source)?.[1] ?? '';
         const tones = [...map.matchAll(/'pill-([\w-]+)'/g)].map((m) => m[1]);
         expect(tones.sort()).toEqual(['accent', 'danger', 'neutral', 'ok', 'warn']);
