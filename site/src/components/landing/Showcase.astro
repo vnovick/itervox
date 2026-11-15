@@ -1,0 +1,41 @@
+---
+import Shot from './Shot.astro';
+import type { ShotName } from '../../data/screenshots';
+
+const pair: { name: ShotName; title: string; body: string; href: string; alt: string }[] = [
+  { name: 'steer-the-run', title: 'Steer a run while it works', body: 'See the current step and changed files, send the agent a message, review the diff.', href: '/guides/now-and-changes/', alt: 'Issue detail of a running issue: the current step, changed files, steering box and status history' },
+  { name: 'dependency-graph', title: 'See what blocks what', body: 'Tracker relations and inferred edges in one graph, with a per-issue override.', href: '/guides/dashboard-deps/', alt: 'Dependency graph with tracker and inferred blocker edges between issues' },
+];
+---
+<section class="wrap section">
+  <div class="section-head">
+    <div>
+      <span class="num">03 — DASHBOARD</span>
+      <h2 class="h2">Full visibility into every agent</h2>
+    </div>
+    <p class="lead">A real-time board, issue inspector and dependency graph — and <code>itervox watch</code> for the same view in a terminal.</p>
+  </div>
+  <div class="glass window">
+    <Shot name="kanban-board" alt="Kanban board with Backlog, Todo, In Progress, In Review and Done columns; each card shows its profile, backend and run state" />
+  </div>
+  <div class="grid-2 pair">
+    {pair.map((p) => (
+      <figure class="glass figure">
+        <div class="shotbox"><Shot name={p.name} alt={p.alt} sizes="(max-width: 820px) 100vw, 580px" /></div>
+        <figcaption>
+          <strong class="h3"><a href={p.href}>{p.title}</a></strong>
+          <span class="body">{p.body}</span>
+        </figcaption>
+      </figure>
+    ))}
+  </div>
+</section>
+
+<style>
+  .lead code {
+    font-size: 0.9em;
+  }
+  .pair {
+    margin-top: 20px;
+  }
+</style>

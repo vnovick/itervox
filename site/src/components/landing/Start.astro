@@ -1,0 +1,84 @@
+---
+const cards = [
+  { eyebrow: 'Try it', cmd: 'itervox demo', body: 'Issues run, ask for input, fail and retry, go to review and finish — in about a minute.', href: '/cli/#itervox-demo--try-it-in-30-seconds' },
+  { eyebrow: 'Run it', cmd: 'itervox quickstart', body: 'Detects your tracker and agent, writes WORKFLOW.md, checks everything, starts the daemon.', href: '/getting-started/#quickstart-one-command' },
+];
+---
+<section class="wrap section">
+  <div class="start-head">
+    <span class="num">07 — START</span>
+    <h2 class="display start-title">Ready in two commands</h2>
+    <p class="lead">Try a throwaway board with a scripted agent — no tracker account, API keys or agent CLI needed. Then point it at your repository.</p>
+  </div>
+  <div class="grid-3 start-cards">
+    {cards.map((c) => (
+      <a class="glass start-card" href={c.href}>
+        <span class="eyebrow">{c.eyebrow}</span>
+        <code class="start-cmd">{c.cmd}</code>
+        <span class="body">{c.body}</span>
+      </a>
+    ))}
+    <a class="glass start-card" href="/getting-started/">
+      <span class="eyebrow">Read it</span>
+      <span class="start-docs">Documentation →</span>
+      <span class="body">Configuration, CLI, API reference and guides for every backend and tracker.</span>
+    </a>
+  </div>
+</section>
+
+<style>
+  .start-head {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    text-align: center;
+  }
+  .start-title {
+    font-size: clamp(38px, 6vw, 80px);
+  }
+  .start-head .lead {
+    max-width: 600px;
+  }
+  .start-cards {
+    margin-top: 48px;
+  }
+  .start-card {
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .start-card:hover {
+    color: var(--text);
+    border-color: var(--hairline);
+  }
+  .start-cmd {
+    font-size: 24px;
+    font-weight: 500;
+  }
+  .start-docs {
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+  @media (max-width: 820px) {
+    .start-head {
+      align-items: flex-start;
+      text-align: left;
+    }
+    .start-cards {
+      margin-top: 28px;
+      gap: 14px;
+    }
+    .start-card {
+      padding: 22px;
+    }
+    .start-cmd,
+    .start-docs {
+      font-size: 20px;
+    }
+  }
+</style>

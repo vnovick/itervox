@@ -1,0 +1,64 @@
+---
+// Icon paths are 24x24 stroke glyphs drawn for this page.
+const features = [
+  { icon: '<rect x="3" y="4" width="7" height="7" rx="2"/><rect x="14" y="4" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>', title: 'Concurrent agents', body: 'Run up to N agents in parallel with per-state concurrency limits. Scale from 1 to 50+ without config changes.' },
+  { icon: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>', title: 'Retry queue', body: 'Failed runs retry with exponential backoff — 10s, 20s, 40s, capped at 5 minutes. Stalled workers are killed and retried.' },
+  { icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', title: 'Input required', body: 'Agents can ask you a question. It is posted to the tracker; reply from Linear, GitHub or the dashboard and the run resumes.' },
+  { icon: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>', title: 'Pause & resume', body: 'Free a slot now; resume later and the agent continues the same session from exactly where it stopped.' },
+  { icon: '<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>', title: 'Automations', body: 'Trigger helper runs on cron, new comments, state changes, failed runs, opened or merged PRs, rate limits and resolved blockers.' },
+  { icon: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v3a3 3 0 0 0 3 3h6"/>', title: 'Dependency-aware dispatch', body: "Tracker blockers gate dispatch, inferred edges soft-gate it, and a dependent can stack on its blocker's branch while that one is in review." },
+  { icon: '<path d="M12 3 4 7v6c0 4 3.5 7 8 8 4.5-1 8-4 8-8V7z"/>', title: 'Scoped daemon actions', body: 'Profiles opt into comment, review, create issue, move state or provide input — a short-lived per-run grant, not blanket access.' },
+  { icon: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>', title: 'Configure without restarts', body: 'Concurrency, profiles, tracker states and more are live-editable from the dashboard and persist to your settings files.' },
+  { icon: '<rect x="2" y="4" width="20" height="7" rx="2"/><rect x="2" y="13" width="20" height="7" rx="2"/><path d="M6 7.5h.01M6 16.5h.01"/>', title: 'Scale across machines', body: 'Route agents to SSH worker hosts with live load bars in the host pool. The same wrapper runs every backend remotely.' },
+];
+---
+<section id="features" class="wrap section">
+  <div class="section-head">
+    <div>
+      <span class="num">02 — ORCHESTRATION</span>
+      <h2 class="h2">Built for autonomous agents at scale</h2>
+      <p class="lead">Autonomous, not unsupervised. Agents do the work; you stay in control at every checkpoint.</p>
+    </div>
+  </div>
+  <div class="grid-3 features">
+    {features.map((f) => (
+      <article class="glass-card feature">
+        <span class="ficon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" set:html={f.icon} />
+        </span>
+        <h3 class="h3">{f.title}</h3>
+        <p class="body">{f.body}</p>
+      </article>
+    ))}
+  </div>
+</section>
+
+<style>
+  .features {
+    gap: 16px;
+  }
+  .feature {
+    padding: 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .feature .h3 {
+    font-size: 17px;
+  }
+  .ficon {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+  @media (max-width: 820px) {
+    .feature {
+      padding: 20px;
+    }
+  }
+</style>
