@@ -40,7 +40,7 @@ func watchNoReload(t *testing.T, path string) func() int32 {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = watchConfigFiles(ctx, path, cfg, func() { fired.Add(1) }, configWatchOptions{})
+		_ = watchConfigFiles(ctx, path, cfg, func([]string) { fired.Add(1) }, configWatchOptions{})
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 	return func() int32 {
@@ -204,7 +204,7 @@ func TestSettingsSavesDuringTurnDoNotReload(t *testing.T) {
 	waitFor(t, 20*time.Second, "the in-flight turn finished", func() bool { return countLines(p.finishedPath) >= 1 })
 	time.Sleep(2 * time.Second) // past the watcher's poll + debounce after the last save
 	stderr := readTrim(t, stderrPath)
-	assert.NotContains(t, stderr, "reload: WORKFLOW.md changed", "a settings save must not reload")
+	assert.NotContains(t, stderr, "changed — draining in-flight turns", "a settings save must not reload (WORKFLOW.md or a settings file)")
 	data, err := os.ReadFile(p.Workflow)
 	require.NoError(t, err)
 	assert.Contains(t, readString(t, config.ProjectSettingsPath(p.Workflow)), "Doing", "#239: the states are saved to the settings file")

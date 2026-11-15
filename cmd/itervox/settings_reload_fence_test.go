@@ -130,7 +130,7 @@ func TestEditBetweenLoadAndWatchReloads(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = watchConfigFiles(ctx, path, cfg, func() { reloads.Add(1) }, configWatchOptions{})
+		_ = watchConfigFiles(ctx, path, cfg, func([]string) { reloads.Add(1) }, configWatchOptions{})
 	}()
 	t.Cleanup(func() {
 		cancel()

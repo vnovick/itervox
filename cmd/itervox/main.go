@@ -319,6 +319,9 @@ func main() {
 		case "status":
 			runStatus(os.Args[2:])
 			return
+		case "open":
+			runOpen(os.Args[2:])
+			return
 		case "doctor":
 			runDoctor(os.Args[2:])
 			return
@@ -691,7 +694,7 @@ func main() {
 		// operator edit (self-writes are suppressed by CORE-116) to the loop
 		// below, which drains before reloading instead of cancelling turns.
 		dc := newDrainControl()
-		reloadReq := make(chan struct{}, 1)
+		reloadReq := make(chan []string, 1) // the changed files
 
 		// Watch WORKFLOW.md and the settings files (#245); request a
 		// drain-then-reload on a change that loads. An edit that does not
@@ -701,11 +704,16 @@ func main() {
 			// Baselines = the bytes cfg was parsed from, not the watcher's
 			// own first readings: an edit between the load above and this
 			// start still reloads (M1-close C2).
-			onChange := func() {
+			onChange := func(changed []string) {
+				// The only sender: a pending request is merged with this
+				// one, so the drain names every file that changed. The
+				// reload re-reads all of them either way.
 				select {
-				case reloadReq <- struct{}{}:
-				default: // a reload is already pending; it re-reads the files
+				case pending := <-reloadReq:
+					changed = mergeChangedFiles(pending, changed)
+				default:
 				}
+				reloadReq <- changed
 			}
 			if err := watchConfigFiles(runCtx, *workflowPath, cfg, onChange, configWatchOptions{}); err != nil && runCtx.Err() == nil {
 				slog.Warn("workflow watcher stopped", "error", err)
@@ -727,9 +735,9 @@ func main() {
 				return // top-level shutdown already in progress
 			}
 			runErr = err
-		case <-reloadReq:
+		case changed := <-reloadReq:
 			var shutdown bool
-			runErr, shutdown = reloadDrain(ctx, dc, *shutdownGrace, sigCh, runDone, runCancel, cancel)
+			runErr, shutdown = reloadDrain(ctx, dc, changedConfigFilesLabel(*workflowPath, changed), *shutdownGrace, sigCh, runDone, runCancel, cancel)
 			if shutdown {
 				return
 			}

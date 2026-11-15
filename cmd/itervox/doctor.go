@@ -162,6 +162,11 @@ type DoctorReport struct {
 	// non-empty URL means the daemon died after writing the file.
 	DashboardURL          string
 	DashboardURLReachable bool
+	// APIToken says where the dashboard's API token comes from — the file
+	// an auto-generated token is written to, ITERVOX_API_TOKEN, or none —
+	// so an operator on the login screen knows what to paste. Never the
+	// token itself.
+	APIToken string
 	// GitignoreMissingLines reports missing required lines in .itervox/.gitignore,
 	// if the file exists but is incomplete.
 	GitignoreMissingLines []string
@@ -265,6 +270,43 @@ func runDoctorFix(workflowPath string, assumeYes bool, in io.Reader, out io.Writ
 	return renderDoctorReport(report), doctorExitCode(report)
 }
 
+// doctorPortHolder names the process listening on a port and its pid ("", 0
+// when the port is free or lsof is missing): the port-collision check's
+// probe. Tests replace it (TestMain), so no test depends on whether this
+// machine's port 8090 is held by a running itervox daemon or hub.
+var doctorPortHolder = describePortHolderWithPID
+
+// doctorAPITokenSource describes where the dashboard's API token is, the way
+// the daemon picks it (ensureAPIToken): ITERVOX_API_TOKEN when set (the
+// environment, or .itervox/.env, which main loads first), none with
+// server.allow_unauthenticated, else the auto-generated token's file — the
+// project daemon's registry token_file, or <default logs dir>/api-token.
+func doctorAPITokenSource(workflowPath string, cfg *config.Config) string {
+	if os.Getenv("ITERVOX_API_TOKEN") != "" {
+		return "ITERVOX_API_TOKEN (set in the environment or .itervox/.env)"
+	}
+	if cfg != nil && cfg.Server.AllowUnauthenticatedLAN {
+		return "none (server.allow_unauthenticated: true — the dashboard needs no token)"
+	}
+	path := ""
+	if dir, err := daemonRegistryDir(); err == nil {
+		projectDir, _ := resolveProjectDir(workflowPath)
+		for _, rec := range readDaemonRegistry(dir) {
+			if rec.TokenFile != "" && pathEquals(rec.ProjectDir, projectDir) {
+				path = rec.TokenFile
+				break
+			}
+		}
+	}
+	if path == "" {
+		path = filepath.Join(defaultLogsDir(workflowPath), apiTokenFileName)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "auto-generated when the daemon starts, written to " + path + " (mode 0600; not there yet)"
+	}
+	return "auto-generated, in " + path + " (mode 0600)"
+}
+
 // collectDoctorReport runs every check and returns the report with the
 // loaded config (nil when the workflow did not load).
 func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
@@ -334,7 +376,7 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 	// exit 1 from `itervox doctor` on a perfectly good setup.
 	if cfg != nil && cfg.Server.Port != nil {
 		port := *cfg.Server.Port
-		holder, holderPID := describePortHolderWithPID(port)
+		holder, holderPID := doctorPortHolder(port)
 		ownPID, _, _, pidErr := readPIDFile(workflowPath)
 		selfHeld := pidErr == nil && holderPID != 0 && holderPID == ownPID
 		if holder != "" && !selfHeld {
@@ -376,6 +418,7 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 			report.DashboardURLReachable = probeDashboardHealth(report.DashboardURL)
 		}
 	}
+	report.APIToken = doctorAPITokenSource(workflowPath, cfg)
 
 	// Gitignore completeness check: verify that .itervox/.gitignore contains
 	// all required lines. If the file exists but is incomplete (e.g., after a
@@ -572,6 +615,9 @@ func renderDoctorReport(r DoctorReport) string {
 		} else {
 			fmt.Fprintf(&b, "dashboard URL: %s (NOT reachable — daemon may have died after writing this file)\n", r.DashboardURL)
 		}
+	}
+	if r.APIToken != "" {
+		fmt.Fprintf(&b, "API token: %s — `itervox open` opens the dashboard logged in\n", r.APIToken)
 	}
 	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
 	renderBareFetchCheck(&b, r.BareFetch)

@@ -536,9 +536,13 @@ front-matter key is reported as a conflict.
 - **Migration**: `itervox init --update` moves the layered front-matter keys
   to `.itervox/settings.jsonc` (WORKFLOW.md.bak first, YAML comments carried as
   `//` comments, refused if the merged config would change; `--dry-run`).
-- The `cfgMu` allowlist and reload behaviour did not change: the Live tracker
-  state, failed-state and analysis-mode settings apply through their existing
-  setters; the watcher still watches only WORKFLOW.md.
+- The `cfgMu` allowlist did not change: the Live tracker state, failed-state
+  and analysis-mode settings apply through their existing setters. The config
+  watcher (`watchConfigFiles`, `cmd/itervox/config_watch.go`, #245) watches
+  WORKFLOW.md and the user, project and local settings files
+  (`cfg.SettingsFiles`, present or not; the user file is off under
+  `ITERVOX_USER_SETTINGS=off`) as one set: a daemon self-write never reloads,
+  and a hand edit to any of them that loads drains and reloads.
 
 ### `itervox run` is the same orchestrator in one-shot mode
 
