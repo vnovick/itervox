@@ -5,6 +5,9 @@ sidebar:
   order: 10
 ---
 
+import GuideFlow from '../../../components/GuideFlow.astro';
+import GuideShot from '../../../components/GuideShot.astro';
+
 Agents run with their backend's own permissions in Itervox's worktrees and in
 the tmux sessions you start with **New session**. Without limits, an agent can
 `git push --force`, push to `main`, merge its own pull request or run a deploy.
@@ -57,6 +60,11 @@ Reply `approve` (or `yes`, `ok`, `allow`) to run it **once**; any other reply
 rejects it, and the agent is told your reply as the reason (so
 `no, deploy to staging first` is useful). Dismissing the request rejects it
 too. The run keeps going while it waits — nothing is paused or resumed.
+
+<GuideFlow title="Answer an approval">
+  <GuideShot name="guides/guardrails/01-approval-in-inbox" alt="Needs attention row for DEMO-4: Agent wants to run vercel --prod, opened for reply, with the text no, deploy to staging first in the reply box" caption="The request waits in Needs attention. Reply approve to run the command once, or anything else to refuse it with a reason." />
+  <GuideShot name="guides/guardrails/02-approval-in-issue" alt="The issue's Now panel: the build passed, the last tool call is Bash vercel --prod, and Waiting for approval: Agent wants to run vercel --prod" caption="The issue's Now panel shows the command the run is waiting on." />
+</GuideFlow>
 
 - An agent cannot answer its own request: `itervox action provide-input` is
   ignored for it, and the guarded agent's environment has no
@@ -194,6 +202,13 @@ through once (new commits ask again); any other reply, or dismissing it,
 refuses the push, and the agent is told your reply. The agent cannot answer
 its own request. Tmux sessions have no approval channel: the push is
 refused and the agent is told to ask you.
+
+<GuideFlow title="Approve a held push from your phone (through the hub)">
+  <GuideShot name="guides/guardrails/03-phone-hub-list" alt="The hub on a phone: Needs you, one card for DEMO-1 in web-app labelled Pipeline change, changes .github/workflows/ci.yml (+1), with an Answer button" caption="The hub's phone page lists the held push with its first file." />
+  <GuideShot name="guides/guardrails/04-phone-approval-card" alt="The DEMO-1 page on a phone: Waiting for your approval, the pipeline change with .github/workflows/ci.yml and Makefile, Approve and Reject buttons, and the run's Now panel below" caption="Answer opens the issue: the files the push changes sit right above Approve and Reject." />
+</GuideFlow>
+
+See [Your phone](/guides/phone/) to set the phone up.
 
 **Merge policy.** Pushes that the hook lets through in the `human` or
 `second_opinion` lane are recorded for the issue (kept across restarts in

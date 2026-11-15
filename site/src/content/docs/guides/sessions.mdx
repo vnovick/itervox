@@ -5,9 +5,13 @@ sidebar:
   order: 3
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 The dashboard's **Sessions** page (`/sessions`, in the sidebar) shows every agent session the daemon is running, one tab per session, with its live transcript and a composer. The [Mac app's Sessions window](/guides/desktop-app/#sessions-window) lists the sessions of every daemon you have — local and remote — and opens each one here.
 
 A **session** is an agent CLI session, identified by the CLI's own session ID (Claude Code's session, Codex's thread), not by the issue: a run that resumes the same session keeps its tab. In the first seconds of a run, before the CLI has reported its ID, the session is addressed by itervox's run ID.
+
+<GuideShot name="itervox-sessions" alt="The Sessions panel: a list of sessions with one waiting for input, and a tmux session's live screen with key buttons and a message box" caption="The Sessions panel: one tab per agent session, with its transcript and a box to reply or message it." />
 
 ## Tabs
 

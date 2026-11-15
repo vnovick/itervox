@@ -5,6 +5,9 @@ sidebar:
   order: 14
 ---
 
+import GuideFlow from '../../../components/GuideFlow.astro';
+import GuideShot from '../../../components/GuideShot.astro';
+
 An agent is asked to fix a red build. The quickest way to green is to edit the
 pipeline instead of the code: `continue-on-error: true` on the CI test step.
 `scripts/pipeline-guard-demo.sh` plays that story twice, on the same
@@ -100,6 +103,17 @@ pipeline-guard-demo: signed check records (GET /api/v1/issues/DEMO-1/attestation
 
 It ends by running `itervox attest verify` on both runs' record files. Each
 prints `ok` for the check and its seal, and `all 2 records verify`.
+
+In the dashboard, the guarded part looks like this. The screenshots use
+sample data captured against the dashboard's mocked API, not a demo run, so
+the check there is `make test` rather than `go test`:
+
+<GuideFlow title="The guarded part in the dashboard">
+  <GuideShot name="guides/lanes/01-needs-attention" alt="Needs attention row for DEMO-1: Pipeline change, the agent wants to push changes to .github/workflows/ci.yml and Makefile" caption="The push that edits the CI workflow is held as a Pipeline change." />
+  <GuideShot name="guides/lanes/04-reject-with-reason" alt="The reply box with: Rejected: fix the code, not the pipeline. The CI config stays as it is." caption="The operator rejects it with a reason." />
+  <GuideShot name="guides/signed-checks/01-run-held" alt="Agent needs your input: Signed checks failed, test exited with code 1, and a reply asking for a fix in cart.go" caption="The daemon's own test run fails, signed, and holds the run; the operator asks for a code fix." />
+  <GuideShot name="guides/signed-checks/03-failing-then-passing" alt="Signed checks: the first run's test failed with exit 1, the second run's checks passed with exit 0, all verified" caption="The fix passes the signed check on the new tree." />
+</GuideFlow>
 
 ## Options
 

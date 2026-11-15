@@ -3,6 +3,8 @@ title: The itervox hub (one URL for every project)
 description: The first daemon on a machine serves one dashboard, one scoped API proxy and one merged event feed for every project on it.
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 Every project runs its own daemon, with its own port and token. The **hub**
 (v0.2.9, #228) gives you one place for all of them: one URL for your browser
 or phone, one token, one merged event feed. It is free and open source and
@@ -11,6 +13,8 @@ runs on your own machine; nothing in it phones home.
 There is nothing to install. **The first daemon started on a machine becomes
 the hub**; every daemon started after it registers with it. When the hub's
 daemon stops, the next live daemon takes over within a few seconds.
+
+<GuideShot name="itervox-hub" alt="The hub page: three projects (acme-backend, acme-web, acme-docs), each with its version, running and needs-input counts and an Open dashboard button" caption="The hub lists every project on the machine, with what each one needs from you." />
 
 ## Quick start
 

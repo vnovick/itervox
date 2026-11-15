@@ -380,6 +380,16 @@ e2e: build
 qa-current-ui:
 	cd web && pnpm test:ui-current
 
+# Regenerate the docs guides' screenshots (dark + light WebP) into
+# site/public/screenshots/guides/<guide>/ from web/e2e/guide-shots/*.spec.ts,
+# route-mocked like qa-current-ui. Needs `pnpm install` in web/ and site/
+# (sharp comes with the site's Astro). GUIDE=<name> captures one guide;
+# PW_CHROMIUM_PATH picks a Chromium other than Playwright's own.
+# See web/e2e/guide-shots/README.md. Not part of verify.
+.PHONY: guide-shots
+guide-shots:
+	cd web && pnpm guide-shots $(GUIDE)
+
 # Alias for the real-daemon Lane-3 specs. Same prerequisites as `make e2e`.
 .PHONY: qa-daemon
 qa-daemon: e2e

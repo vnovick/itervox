@@ -3,6 +3,8 @@ title: System visibility — what each run costs and does
 description: Per-run CPU, memory, processes, disk I/O and connections; an activity audit of the commands, files and connections of every run; machine load, memory and low-disk warnings.
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 Itervox already knows every agent run's process group: it starts each agent
 turn and each hook in its own group (and, on Windows, its own Job Object).
 System visibility watches those groups and answers three questions without
@@ -18,6 +20,8 @@ opening a terminal:
 
 Everything is on by default. Nothing here leaves the machine except through
 the daemon's own API.
+
+<GuideShot name="itervox-system-visibility" alt="An issue in full view: the Now panel with CPU, memory, processes and disk written, the run's commands, and the Activity audit with commands, files and connections" caption="A run's resource use and activity audit in the issue view." />
 
 ## Per-run resources
 

@@ -5,6 +5,9 @@ sidebar:
   order: 11
 ---
 
+import GuideFlow from '../../../components/GuideFlow.astro';
+import GuideShot from '../../../components/GuideShot.astro';
+
 An agent asked to fix a red build has two ways to make it green. It can fix
 the code, or it can add `continue-on-error: true` to
 `.github/workflows/ci.yml`. To git, both are an ordinary push to the issue
@@ -119,6 +122,14 @@ comment, with the files it changes (up to ten, then "and N more"):
 
 While the push waits, the run's idle timeout is suspended, so the agent is not
 failed for being quiet. `agent.turn_timeout_ms` still bounds the wait.
+
+<GuideFlow title="A pipeline change, from the held push to the code fix">
+  <GuideShot name="guides/lanes/01-needs-attention" alt="Needs attention panel with one row: DEMO-1, Pipeline change: the agent wants to push changes to .github/workflows/ci.yml, awaiting reply, with Reply and Open buttons" caption="The held push appears in Needs attention on the dashboard, with the files and the git command." />
+  <GuideShot name="guides/lanes/02-issue-now-panel" alt="The issue's Now panel: the agent is pushing the branch, Waiting for approval, a Pipeline change badge listing .github/workflows/ci.yml and Makefile, and the changed files" caption="The issue's Now panel says what the run waits for and lists the pipeline files." />
+  <GuideShot name="guides/lanes/03-approve" alt="The Needs-attention row opened for reply: the Pipeline change notice with its two files, and the reply box containing approve" caption="Reply approve to let this one push through. Itervox still will not merge the pull request." />
+  <GuideShot name="guides/lanes/04-reject-with-reason" alt="The same reply box with the text: Rejected: fix the code, not the pipeline. The CI config stays as it is." caption="Or reject it with a reason. The agent is told your reply." />
+  <GuideShot name="guides/lanes/05-agent-fixes-the-code" alt="The Now panel after the rejection: the agent is fixing the total in cart.go and leaving the CI config as it is; changed files are cart.go and cart_test.go" caption="The agent fixes the code instead. A push that only changes code takes the auto lane and goes through." />
+</GuideFlow>
 
 ## Merging: merge_pr refuses
 

@@ -3,6 +3,8 @@ title: Watch a run — Now and Changes
 description: See what a running agent is doing and review what it has changed, from the issue detail view or the API.
 ---
 
+import GuideShot from '../../../components/GuideShot.astro';
+
 Two views on the issue detail panel, added in v0.2.8 (#215), answer the
 questions you otherwise dig through the log stream for: *what is the agent
 doing right now?* and *what has it changed?*
@@ -34,6 +36,8 @@ run's context at most once a second, from the stream it already parses for
 the log; text is redacted with the same rules as the logs (API keys, bearer
 tokens, `NAME_TOKEN=…` assignments, URL credentials) before it leaves the
 worker.
+
+<GuideShot name="itervox-steer-the-run" alt="An issue panel's Details tab: the Now panel of a running issue with its last tool call and changed files, and the Steer the run box" caption="The Now panel of a running issue, with the box to steer the run." />
 
 ## Changes
 

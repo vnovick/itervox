@@ -1,0 +1,114 @@
+---
+// A theme-paired screenshot for the docs: <name>-dark and <name>-light
+// (.webp, else .png) under public/screenshots/. Both are rendered; the
+// .only-dark / .only-light rules in glass.css hide the one that does not
+// match the page theme (a hidden lazy image is never fetched). Sizes come
+// from the files themselves; images are taken at device scale 2, so they are
+// shown at most at half their pixel width. Each image links to the full-size
+// file.
+//
+//   <GuideShot name="guides/lanes/01-needs-attention" alt="…" caption="…" />
+//   <GuideShot name="itervox-sessions" alt="…">Caption with **markdown**.</GuideShot>
+//
+// Inside <GuideFlow>, figures are numbered 1, 2, 3… unless `step` is set.
+// Captures: web/e2e/guide-shots/README.md.
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { publicImageSize } from '../lib/imageSize';
+
+interface Props {
+  /** Path under /screenshots/ without the theme suffix and extension. */
+  name: string;
+  alt: string;
+  /** Step number shown before the caption (default: the flow's own count). */
+  step?: number | string;
+  caption?: string;
+  eager?: boolean;
+}
+const { name, alt, step, caption, eager = false } = Astro.props;
+
+function src(theme: 'dark' | 'light') {
+  for (const ext of ['webp', 'png']) {
+    const p = `/screenshots/${name}-${theme}.${ext}`;
+    if (existsSync(join(process.cwd(), 'public', p))) return p;
+  }
+  throw new Error(`GuideShot: no /screenshots/${name}-${theme}.webp or .png in site/public`);
+}
+const themes = (['dark', 'light'] as const).map((theme) => {
+  const path = src(theme);
+  const [width, height] = publicImageSize(path);
+  return { theme, path, width, height };
+});
+const loading = eager ? 'eager' : 'lazy';
+const slotted = Astro.slots.has('default');
+const hasCaption = Boolean(caption) || slotted;
+---
+<figure class="guide-shot not-content">
+  {themes.map(({ theme, path, width, height }) => (
+    <a class={`guide-shot-frame only-${theme}`} href={path} style={`max-width: ${Math.round(width / 2)}px`}>
+      <img src={path} alt={alt} width={width} height={height} loading={loading} decoding="async" />
+    </a>
+  ))}
+  {hasCaption && (
+    <figcaption>
+      <span class="guide-shot-step">{step ?? ''}</span>
+      {caption}
+      {slotted && <slot />}
+    </figcaption>
+  )}
+</figure>
+
+<style is:global>
+  .guide-shot {
+    margin: 1.5rem 0;
+  }
+  .guide-shot-frame {
+    display: block;
+    border: 1px solid var(--sl-color-hairline);
+    border-radius: 14px;
+    overflow: hidden;
+    line-height: 0;
+  }
+  .guide-shot-frame img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .guide-shot figcaption {
+    margin-top: 0.6rem;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+    line-height: 1.5;
+  }
+  .guide-shot figcaption p {
+    display: inline;
+    margin: 0;
+  }
+  .guide-shot-step:empty {
+    display: none;
+  }
+  .guide-shot-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    height: 1.5rem;
+    margin-right: 0.5rem;
+    padding: 0 0.4rem;
+    border-radius: 999px;
+    background: var(--sl-color-accent);
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 650;
+    vertical-align: 0.05em;
+  }
+  .guide-flow .guide-shot {
+    counter-increment: guide-step;
+  }
+  .guide-flow .guide-shot-step:empty {
+    display: inline-flex;
+  }
+  .guide-flow .guide-shot-step:empty::before {
+    content: counter(guide-step);
+  }
+</style>
