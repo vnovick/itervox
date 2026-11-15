@@ -148,6 +148,15 @@ func runPrePush(p Policy, args, env []string, stdin io.Reader, stdout, stderr io
 	if len(args) > 0 {
 		remote = args[0] // the remote's name; never the URL, which may carry credentials
 	}
+	if p.PatchOut && len(updates) > 0 {
+		// push: daemon: the shims refuse `git push`; this catches a git
+		// run by its absolute path. The daemon's own push goes through
+		// gitexec, which never sees this hook.
+		d := patchOutRefusal("git push")
+		_, _ = fmt.Fprintln(stderr, d.message)
+		newClient(p).report(Event{Kind: d.kind, Tool: "git push", Command: displayCommand("git", []string{"push", remote})})
+		return 1
+	}
 	violations, adopt := p.CheckPush(updates, repo)
 	if len(violations) > 0 {
 		for _, v := range violations {

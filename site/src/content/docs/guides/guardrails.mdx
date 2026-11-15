@@ -205,8 +205,10 @@ Recent failures (kind `guardrail`) and counted in
 `itervox_guardrail_blocks_total{kind}` — `branch`, `force_push`, `delete`,
 `tag`, `hook_bypass`, `self_merge`, `approval_rejected`,
 `approval_unavailable`, `lane_human` (a pipeline push refused with no one
-to approve it, or left unanswered) and `lane_rejected` (a pipeline push a
-human rejected or dismissed). An approved pipeline push and a refused
+to approve it, or left unanswered), `lane_rejected` (a pipeline push a
+human rejected or dismissed) and `patch_out` (an agent of a `push: daemon`
+profile tried to push or to open or change a pull request; see
+[Patches only](/guides/safety/#patches-only-the-daemon-pushes)). An approved pipeline push and a refused
 `merge_pr` are logged and written to the issue's log.
 
 ## How it works

@@ -78,6 +78,46 @@ func writeTree(ctx context.Context, dir, index string, excludes []string) (strin
 	return git("write-tree")
 }
 
+// CommitTreeHash returns the git tree id of commit rev in dir with excludes
+// left out, comparable with TreeHash: for a clean working tree checked out
+// at rev the two are equal. The daemon's own push (push: daemon) compares
+// it with a run's seal, so it pushes only a commit whose tree the signed
+// checks ran on. Like TreeHash it uses a private index and never touches
+// the user's.
+func CommitTreeHash(ctx context.Context, dir, rev string, excludes []string) (string, error) {
+	if dir == "" || rev == "" {
+		return "", fmt.Errorf("attest: commit tree hash needs a directory and a revision")
+	}
+	tmp, err := os.MkdirTemp("", "itervox-attest-index-")
+	if err != nil {
+		return "", fmt.Errorf("attest: temp index: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	index := filepath.Join(tmp, "index")
+	git := func(args ...string) (string, error) {
+		cmd := gitexec.Command(ctx, dir, args...)
+		cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+index)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("attest: git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	if _, err := git("read-tree", rev+"^{tree}"); err != nil {
+		return "", err
+	}
+	if len(excludes) > 0 {
+		args := []string{"rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"}
+		for _, ex := range excludes {
+			args = append(args, ":/"+strings.TrimPrefix(ex, "/"))
+		}
+		if _, err := git(args...); err != nil {
+			return "", err
+		}
+	}
+	return git("write-tree")
+}
+
 // userIndexPath is the absolute path of dir's own index file ("" when
 // there is none yet, or dir is not a git work tree).
 func userIndexPath(ctx context.Context, dir string) string {

@@ -77,9 +77,69 @@ From strongest to weakest:
    changes nothing.
 4. **Guardrails** (on by default). They refuse force-pushes, pushes to other
    branches and self-merges, and hold deploy commands for your approval. See
-   [Guardrails](/guides/guardrails/).
+   [Guardrails](/guides/guardrails/). With `push: daemon` the agent cannot
+   push at all; see [Patches only](#patches-only-the-daemon-pushes).
 5. **Your repository's own rules.** For example, `PreToolUse` deny hooks, branch
    protection and required CI. See [Agent permissions](/guides/agent-permissions/).
+
+## Patches only: the daemon pushes
+
+By default an agent's worktree has git and the daemon's credentials, and the
+agent pushes its branch and opens the pull request itself. Guardrails steer
+those pushes, but the agent holds the ability. With `push: daemon` on a
+profile (or `agent.push: daemon` for all of them), the agent only emits
+commits, and Itervox is the referee that publishes them:
+
+```yaml
+guardrails:
+  enabled: true          # required; the default
+agent:
+  profiles:
+    coder:
+      command: claude
+      push: daemon       # patches only
+      isolation: process # recommended: also hides credential files
+      verify:
+        - { name: test, run: go test ./... }
+```
+
+- **The agent has no push ability.** Its environment carries no
+  `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `LINEAR_API_KEY` or other forge
+  token, nor any variable holding the tracker key, and no `SSH_AUTH_SOCK` or
+  askpass helper. They are removed again after the login shell's profile ran.
+  git sees no credential helper, and `gh` and `glab` an empty configuration
+  directory.
+- **Its push commands are refused.** The shims refuse `git push`,
+  `gh pr create`, `gh pr merge`, `gh pr edit` and other commands that publish
+  or change a pull request, and `gh api` / `glab api` writes, with "this
+  profile emits patches; the daemon pushes after its checks". The pre-push
+  hook refuses a push from a `git` run by its absolute path. Each refusal is
+  counted as `patch_out` in `itervox_guardrail_blocks_total`.
+- **The daemon pushes after its checks.** When the run succeeds, and after
+  `hooks.after_run_required`, the signed checks (`verify`) and the file part
+  of `require_evidence`, Itervox pushes the branch itself with its own
+  credentials and opens the pull request. The `ci` evidence check needs that
+  pull request, so it still gates the move to `completion_state` afterwards.
+- **Only what was checked is pushed.** With `verify`, the commit Itervox
+  pushes must have the tree the signed checks ran on. If it does not (the
+  agent left uncommitted changes, or something changed the tree after the
+  checks), nothing is pushed and the run waits for input with "the tree
+  changed after the checks".
+- **The lanes still apply.** Itervox classifies its own push into
+  [`guardrails.lanes`](/guides/guardrails/) like an agent's. A human-lane
+  change waits for your approval exactly like an agent's held push (a
+  "Pipeline change" input request); a second-opinion change is pushed and
+  recorded for merge policy.
+
+A push Itervox refuses, or that fails, ends the run waiting for input with
+the reason; reply to resume, and the checks and the push run again when the
+run ends. Limits: `push: daemon` needs `guardrails.enabled` and refuses
+`agent.ssh_hosts` (both checked at load); a run whose guardrails cannot be
+prepared does not start; automation runs that skip the issue lifecycle and
+read-only reviewers publish nothing; and the pull request is opened with
+`gh`, so on GitLab the daemon pushes but does not open a merge request.
+Without `isolation: process` an agent can still read a credential file by
+its path; see [Process isolation](/guides/isolation/#patches-only-the-daemon-pushes).
 
 ## Keep secrets out of reach
 

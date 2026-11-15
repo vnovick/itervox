@@ -173,7 +173,7 @@ func TmuxSend(kind string) {
 // GuardrailBlock counts one agent operation a guardrail refused (#204) by
 // kind (internal/guardrails Kinds: branch, force_push, delete, tag,
 // hook_bypass, self_merge, approval_rejected, approval_unavailable,
-// lane_human, lane_rejected). The caller passes only known kinds.
+// lane_human, lane_rejected, patch_out). The caller passes only known kinds.
 func GuardrailBlock(kind string) {
 	guardrailBlocks.get(kind).Add(1)
 }

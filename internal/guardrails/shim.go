@@ -48,9 +48,19 @@ func (p Policy) decide(tool string, args []string, cwd string, branchOf func(dir
 	case "git":
 		d = p.decideGit(args, cwd, branchOf)
 	case "gh":
-		d = decideMergeCLI(args, "pr", "gh pr merge")
+		if p.PatchOut {
+			d = decidePatchOutCLI("gh", args, ghPatchOutWrites)
+		}
+		if d.act == actForward {
+			d = decideMergeCLI(args, "pr", "gh pr merge")
+		}
 	case "glab":
-		d = decideMergeCLI(args, "mr", "glab mr merge")
+		if p.PatchOut {
+			d = decidePatchOutCLI("glab", args, glabPatchOutWrites)
+		}
+		if d.act == actForward {
+			d = decideMergeCLI(args, "mr", "glab mr merge")
+		}
 	}
 	if d.act != actForward {
 		return d
@@ -107,8 +117,11 @@ func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) s
 	}
 	sub, rest := args[i], args[i+1:]
 	switch sub {
-	case "push":
-		if slices.Contains(rest, "--no-verify") {
+	case "push", "send-pack", "http-push":
+		if p.PatchOut {
+			return patchOutRefusal("git " + sub)
+		}
+		if sub == "push" && slices.Contains(rest, "--no-verify") {
 			return bypass
 		}
 	case "merge":

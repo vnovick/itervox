@@ -74,6 +74,7 @@ func runVerifyWorker(t *testing.T, selfEvidence string, verify []config.VerifyCh
 	}, 12*time.Second, 20*time.Millisecond, "the run must either move the issue or hold it")
 	require.NotEmpty(t, runner.prompts)
 	assert.Contains(t, runner.prompts[0], "- signed checks: `test`", "the agent is told Itervox runs the check")
+	assert.NotContains(t, runner.prompts[0], "## Publishing (patches only)", "no push mode: no patches-only block")
 	return orch, mt, store, signer.PublicKey()
 }
 
