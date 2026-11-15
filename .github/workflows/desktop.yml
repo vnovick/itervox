@@ -83,6 +83,12 @@ jobs:
       - name: Test
         run: make desktop-test
 
+      # The cached target/ can hold an earlier version's bundles (the cache
+      # key ignores the app version), and the checks below glob one file.
+      - name: Drop bundles from a cached earlier build
+        shell: bash
+        run: rm -rf desktop/src-tauri/target/release/bundle
+
       - name: Build the unsigned app
         run: make desktop
 
@@ -167,6 +173,12 @@ jobs:
       # a real daemon built for this runner.
       - name: Test
         run: make desktop-test
+
+      # The cached target/ can hold an earlier version's bundles (the cache
+      # key ignores the app version), and the checks below glob one file.
+      - name: Drop bundles from a cached earlier build
+        shell: bash
+        run: rm -rf desktop/src-tauri/target/release/bundle
 
       - name: Build the unsigned AppImage and .deb
         run: make desktop
@@ -266,6 +278,12 @@ jobs:
           version="$(sed -n 's/^TAURI_CLI_VERSION := //p' Makefile)"
           cargo tauri --version 2>/dev/null | grep -qx "tauri-cli $version" \
             || cargo install tauri-cli --version "$version" --locked
+
+      # The cached target/ can hold an earlier version's bundles (the cache
+      # key ignores the app version), and the checks below glob one file.
+      - name: Drop bundles from a cached earlier build
+        shell: bash
+        run: rm -rf desktop/src-tauri/target/release/bundle
 
       - name: Build the unsigned MSI and NSIS installers
         working-directory: desktop/src-tauri
