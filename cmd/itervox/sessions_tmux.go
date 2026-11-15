@@ -65,6 +65,9 @@ type tmuxSessions struct {
 	// the sandbox mechanism, nil meaning agent.DetectIsolation.
 	isolation       string
 	isolationDetect func() (agent.IsolationMechanism, error)
+	// stopWait is how long a graceful stop waits for the CLI to quit on
+	// its interrupt (<= 0: defaultStopWait).
+	stopWait time.Duration
 }
 
 func (t *tmuxSessions) tmux() tmuxctl.Client { return t.detect.client }
@@ -301,11 +304,12 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*tmuxctl.DefaultTimeout)
 	defer cancel()
+	guarded := false
 	if t.guard != nil { // #204: shims and the pre-push hook, as for dispatched runs
 		if prefix, gerr := t.guard.prepare(ctx, s.ID, cwd); gerr != nil {
 			slog.Warn("guardrails: cannot prepare a tmux session; it starts unguarded", "session_id", s.ID, "error", gerr)
 		} else {
-			command = prefix + command
+			command, guarded = prefix+command, true
 		}
 	}
 	if command, err = agent.IsolateShellCommand(iso, command); err != nil { // #258
@@ -319,6 +323,7 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 		t.guard.release(s.ID)
 		return orchestrator.AgentSession{}, fmt.Errorf("cmd/itervox: tmux new-session: %w", err)
 	}
+	t.tagSession(ctx, s, guarded)
 	slog.Info("sessions: tmux session started", "session_id", s.ID, "backend", s.Backend, "cwd", cwd,
 		"profile", s.Profile, "prompt_bytes", len(req.Prompt), "isolation", cmp.Or(iso.Name(), config.IsolationNone))
 	return orchestrator.AgentSession{ID: s.ID, Owner: orchestrator.SessionOwnerItervox, Kind: orchestrator.SessionKindTmux,
@@ -333,9 +338,11 @@ func (t *tmuxSessions) sessionIsolation(profile config.AgentProfile, cwd string)
 		agent.RunIsolationInputs(cwd, t.workspaceRoot, t.projectRoot, profile), t.isolationDetect)
 }
 
-// kill kills one of itervox's tmux sessions.
+// kill kills one of itervox's tmux sessions at once (DELETE, the same as
+// a force stop).
 func (t *tmuxSessions) kill(id string) error {
-	if _, ok := t.orch.FindTmuxSession(id); !ok {
+	own, ok := t.orch.FindTmuxSession(id)
+	if !ok {
 		if _, ext := t.orch.TranscriptSession(id); ext {
 			return server.ErrSessionNotOwned
 		}
@@ -344,15 +351,7 @@ func (t *tmuxSessions) kill(id string) error {
 	if !t.detect.refresh().Available {
 		return t.unavailable()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), tmuxctl.DefaultTimeout)
-	defer cancel()
-	if err := t.tmux().KillSession(ctx, id); err != nil && !errors.Is(err, tmuxctl.ErrNoSuchPane) {
-		return fmt.Errorf("cmd/itervox: tmux kill-session: %w", err)
-	}
-	t.orch.EndTmuxSession(id)
-	t.guard.release(id) // #204
-	slog.Info("sessions: tmux session killed", "session_id", id)
-	return nil
+	return t.killOwned(own, stopModeForce)
 }
 
 // options lists what "New session" offers: the project root, then the

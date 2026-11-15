@@ -78,7 +78,7 @@ func sessionRows(sessions []orchestrator.AgentSession) []server.SessionRow {
 			Status: s.Status, StartedAt: timePtr(s.StartedAt), QueuedAt: timePtr(s.QueuedAt),
 			TurnCount: s.TurnCount, LastEvent: s.LastEvent, InputContext: s.InputContext,
 			Steering: s.Steering, Cwd: s.Cwd, UpdatedAt: timePtr(s.UpdatedAt),
-			InUseReason: s.InUseReason,
+			InUseReason: s.InUseReason, PID: s.PID, Adopted: s.Adopted, GuardrailsStale: s.GuardrailsStale,
 		}
 		for _, m := range s.Messages {
 			row.Messages = append(row.Messages, sessionMessageRow(m))
@@ -158,6 +158,12 @@ func (c sessionsClient) StartSession(req server.NewSessionRequest) (server.Sessi
 // KillSession kills a tmux session itervox started.
 func (c sessionsClient) KillSession(id string) error { return c.tmux.kill(id) }
 
+// StopSession stops a session gracefully (or kills it, force) — see
+// sessions_stop.go.
+func (c sessionsClient) StopSession(id string, force bool) (server.SessionStopResult, error) {
+	return c.tmux.stop(id, force)
+}
+
 // tmuxCarry holds itervox's tmux sessions across a WORKFLOW.md reload.
 var tmuxCarry struct {
 	mu   sync.Mutex
@@ -194,7 +200,7 @@ func wireSessions(orch *orchestrator.Orchestrator, cfg *config.Config, workflowP
 	if demo {
 		return t
 	}
-	src := sessionSource{detect: t.detect}
+	src := sessionSource{detect: t.detect, project: project}
 	if cfg.Sessions.External {
 		src.scanner = &extsessions.Scanner{Options: externalSessionOptions(cfg, workflowPath)}
 	}

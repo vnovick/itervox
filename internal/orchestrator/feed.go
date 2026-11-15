@@ -49,6 +49,11 @@ const (
 	// and an operator's PR review. Never the comment text.
 	FeedReviewCommentPosted         = "review_comment_posted"
 	FeedPRReviewSubmittedByOperator = "pr_review_submitted_by_operator"
+	// An operator stopped an agent session from the Sessions panel: the
+	// identifier is the session id, the outcome "stopped" (the CLI quit
+	// on its interrupt), "killed" (tmux kill-session) or "interrupted"
+	// (keys sent to a hand-started session that is still running).
+	FeedSessionStopped = "session_stopped"
 )
 
 // FeedCap and FeedMaxAge bound the feed: the newest FeedCap events, none

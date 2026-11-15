@@ -72,6 +72,11 @@ func (w *watcher) eventText(ev server.FeedEvent) (line, command string) {
 		}
 	case "dispatch_resumed":
 		what = "dispatch resumed"
+	case "session_stopped":
+		what = "session stopped"
+		if pl.Outcome != "" {
+			what += ": " + pl.Outcome
+		}
 	}
 	what = redactLine(what)
 	if who != "" && ev.Kind != "dispatch_paused" && ev.Kind != "dispatch_resumed" {

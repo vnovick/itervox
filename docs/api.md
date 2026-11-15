@@ -2226,6 +2226,9 @@ by hand come last, most recently written first.
 | `tmuxPane` | The tmux pane the session runs in, `{"id": "%3", "label": "work:0.0"}`; `null` when none. |
 | `controllable` | The panel may show its screen and type into it ([Sessions in tmux](#sessions-in-tmux)): a session itervox started in tmux, or a hand-started one in a matched pane with `sessions.tmux_control`, while tmux is installed. |
 | `attachCommand` | A session itervox started in tmux: the command that attaches a terminal to it. |
+| `adopted` | A session itervox started in tmux in a previous daemon process, re-adopted after the restart (name `itervox-<id>` and tmux option `@itervox-project` equal to this project's directory). |
+| `guardrailsStale` | An adopted session whose guardrails were prepared by the previous daemon process: its pushes that `guardrails.lanes` must report are refused until it is restarted. |
+| `pid` | A running session started by hand: its CLI process, when known. |
 | `startedAt` / `queuedAt` | When the run started / when it started waiting for input. |
 | `inputContext` | The agent's question while it waits. |
 | `steering` | Running sessions: `live` (a message is written into the running turn — local Claude with `agent.live_steering`) or `resume` (delivered as the prompt of the next turn, which resumes the session). |
@@ -2364,13 +2367,25 @@ says, and does not count toward `max_concurrent_agents`.
 | `409` | `tmux_unavailable` | `tmux` is not installed |
 | `429` | `too_many_sessions` | 8 tmux sessions itervox started are running |
 
-These sessions are runtime state carried across `WORKFLOW.md` reloads; after
-a daemon restart they keep running in tmux but are listed as sessions started
-by hand.
+These sessions are runtime state carried across `WORKFLOW.md` reloads. After
+a daemon restart the new daemon re-adopts each one named `itervox-<id>` whose
+tmux option `@itervox-project` is its project directory (never by name
+alone), up to 8: `adopted: true`, plus `guardrailsStale: true` when its
+guardrails came from the previous daemon process.
+
+#### `POST /api/v1/sessions/{id}/stop`
+
+Stops a session (admin), body `{"force": false}` (optional). A tmux session
+itervox started (or re-adopted): the CLI's interrupt (Claude Code `C-c`
+twice, Codex `C-c`), a wait of up to 5 s, then `tmux kill-session` if it is
+still there; `force: true` kills at once. A hand-started session in a
+controllable pane: the interrupt keys only, never `kill-session`, and
+`force` is `403 not_owned`. Any other hand-started session:
+`403 not_controllable`. `200 {"id": "…", "outcome": "stopped"|"killed"|"interrupted"}`.
 
 #### `DELETE /api/v1/sessions/{id}`
 
-Kills a tmux session itervox started (`tmux kill-session`). `200 {"ok": true}`;
+The same as a force stop: kills a tmux session itervox started (`tmux kill-session`). `200 {"ok": true}`;
 `403 not_owned` for any other session; `404 not_found` for an unknown id;
 `409 tmux_unavailable` without tmux.
 

@@ -5,7 +5,7 @@ import React from 'react';
 import { useSendSessionMessage, useSessions } from '../sessions';
 import {
   SCREEN_REFETCH_MS,
-  useKillSession,
+  useStopSession,
   useSendSessionKey,
   useSessionScreen,
   useStartSession,
@@ -160,19 +160,37 @@ describe('tmux session queries (#178)', () => {
     expect(useToastStore.getState().toasts[0]?.message).toContain('brew install tmux');
   });
 
-  it('DELETEs a session to kill it', async () => {
-    mockAuthedFetch.mockResolvedValueOnce(json({ ok: true }));
-    const { result } = renderHook(() => useKillSession(), { wrapper });
+  it('POSTs a stop, passing force, and toasts what happened', async () => {
+    mockAuthedFetch.mockResolvedValueOnce(json({ id: 'itervox-abc123', outcome: 'killed' }));
+    const { result } = renderHook(() => useStopSession(), { wrapper });
     act(() => {
-      result.current.mutate('itervox-abc123');
+      result.current.mutate({ id: 'itervox-abc123', force: true });
     });
     await waitFor(() => {
       expect(result.current.isSuccess).toBe(true);
     });
     expect(mockAuthedFetch).toHaveBeenCalledWith(
-      '/api/v1/sessions/itervox-abc123',
-      expect.objectContaining({ method: 'DELETE' }),
+      '/api/v1/sessions/itervox-abc123/stop',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ force: true }) }),
     );
+    expect(result.current.data?.outcome).toBe('killed');
+    expect(useToastStore.getState().toasts.at(-1)?.message).toBe(
+      'Session killed (tmux kill-session).',
+    );
+  });
+
+  it('toasts a refused stop with the daemon message', async () => {
+    mockAuthedFetch.mockResolvedValueOnce(
+      json({ error: { code: 'not_controllable', message: 'not in a tmux pane' } }, 403),
+    );
+    const { result } = renderHook(() => useStopSession(), { wrapper });
+    act(() => {
+      result.current.mutate({ id: 'hand-1', force: false });
+    });
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    expect(useToastStore.getState().toasts.at(-1)?.message).toContain('Session not stopped');
   });
 
   it('reads the tmux status and New session options from GET /api/v1/sessions', async () => {

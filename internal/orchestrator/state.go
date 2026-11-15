@@ -1049,8 +1049,14 @@ type State struct {
 	// panel ("New session", #178), keyed by tmux session name. Event-loop
 	// state (sessions_tmux.go): reserved, started and ended by events, panes
 	// attached and ended sessions dropped by each discovery pass.
-	// Session-scoped, carried across WORKFLOW.md reloads, not persisted.
+	// Session-scoped, carried across WORKFLOW.md reloads, not persisted;
+	// a restarted daemon re-adopts its sessions from their tmux tags
+	// (ExternalScan.TmuxOwned).
 	TmuxSessions map[string]*TmuxSession
+	// TmuxSessionsEnded remembers, for tmuxEndedMemory, when itervox
+	// stopped each tmux session, so a discovery pass taken before the stop
+	// does not re-adopt it. Event-loop state, session-scoped.
+	TmuxSessionsEnded map[string]time.Time
 
 	// LessonCorrections holds, per issue identifier, the human corrections
 	// (input-required replies, delivered steering messages) seen since the
