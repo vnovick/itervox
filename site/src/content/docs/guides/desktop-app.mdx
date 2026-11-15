@@ -37,7 +37,9 @@ The release workflow (`.github/workflows/desktop-release.yml`) signs the Mac app
 | Release file | Signed | On first open |
 |---|---|---|
 | `Itervox_<version>_universal.dmg` | Developer ID, notarized and stapled | Opens without a Gatekeeper warning |
-| `Itervox_<version>_universal-unsigned.dmg` | No | Gatekeeper blocks it; see [Opening an unsigned build](#opening-an-unsigned-build) |
+| `Itervox_<version>_universal-unsigned.dmg` | Ad hoc only (no developer identity) | Gatekeeper blocks it; see [Opening an unsigned build](#opening-an-unsigned-build) |
+
+An unsigned build is still signed *ad hoc*, with no developer identity, so its bundle is sealed: macOS treats a downloaded copy as coming from an unidentified developer and offers **Open Anyway**, rather than reporting it as damaged.
 
 The standalone command-line zip on the release follows the same rule: `itervox_<version>_darwin_universal.zip` is signed and notarized, `itervox_<version>_darwin_universal-unsigned.zip` is not.
 
@@ -75,7 +77,7 @@ The app updates itself only when **both** of these hold:
 - it is a **signed** release, and
 - that release published an **updater manifest** (`latest.json`, with an update archive signed by the release's updater key), and the app was built with the matching public key in `plugins.updater.pubkey` of `desktop/src-tauri/tauri.conf.json`.
 
-The workflow publishes the manifest only for a signed build with an updater key. That public key is empty in the repository today, so the app's menu shows **Updates off: this build has no update key** and never checks. Download new versions by hand: quit the app, install the new disk image over the old one in **Applications** (or run `brew upgrade --cask --greedy itervox-app` once the cask exists), and **Restart** each project to move its daemon to the new version. Running daemons keep running through the reinstall on the version they were started with.
+The workflow publishes the manifest only for a signed build with an updater key. The app carries the project's updater public key (since 0.3.3), so it checks for updates, but an unsigned release publishes no manifest: until a signed release is published there is nothing to install, and the menu reports the last check as failed. Until then, download new versions by hand: quit the app, install the new disk image over the old one in **Applications** (or run `brew upgrade --cask --greedy itervox-app` once the cask exists), and **Restart** each project to move its daemon to the new version. Running daemons keep running through the reinstall on the version they were started with.
 
 When a release does carry both, the app checks for a new release 10 seconds after it starts and every 6 hours; **Check for Updates…** in the menu checks at once. When one is available the menu shows **Update available — Install and Restart** with the new version; choosing it downloads the update, checks its signature, replaces the app and relaunches it.
 
@@ -333,7 +335,9 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 - **See what the app sees.** Quit it and run `ITERVOX_DESKTOP_DEBUG=1 /Applications/Itervox.app/Contents/MacOS/itervox-desktop` in a terminal: every refresh prints each project's state and every notification.
 - **Keychain prompt after a rebuild.** A build from source gets a new code signature on every build, so macOS may ask once whether the new build may read the tokens it stored. Choose **Always Allow**. Signed releases keep their identity across updates.
 - **"Itervox" cannot be opened**, or macOS says it cannot check it for malicious software. The app is unsigned: an `-unsigned` release file, a CI build, or a build from source copied from another Mac. Right-click → **Open** no longer works on macOS 15 and later; use **System Settings → Privacy & Security → Open Anyway**, or remove the quarantine flag with `xattr -dr com.apple.quarantine /Applications/Itervox.app`, as described (with its caution) in [Opening an unsigned build](#opening-an-unsigned-build). To check whether a copy is a signed release, run `spctl --assess --type execute -vv /Applications/Itervox.app`: a signed, notarized build prints `source=Notarized Developer ID`.
-- **The menu says "Updates off: this build has no update key".** The app was built without an updater public key, so it never checks for updates. Install new versions by hand ([Updates](#updates)).
+- **The menu says "Last update check failed" on an unsigned release.** The app checks for an update manifest that only a signed release publishes, so the check finds none. Nothing is wrong with the app; install new versions by hand until a signed release is out ([Updates](#updates)).
+- **The menu says "Updates off: this build has no update key".** The app was built from a `tauri.conf.json` with no updater public key (a fork, or a build before 0.3.3), so it never checks for updates. Install new versions by hand ([Updates](#updates)).
+- **macOS says "Itervox" is damaged and can't be opened.** A build from before 0.3.3 that was not signed at all reads as damaged once downloaded. Remove the quarantine flag with `xattr` as in [Opening an unsigned build](#opening-an-unsigned-build), or install a newer release.
 - **Update failed.** The menu shows the reason and offers **Install and Restart** again. An app outside `/Applications` that you cannot write to (another user's, or a read-only volume) cannot replace itself; move it to `/Applications`. **Last update check failed** usually means the Mac is offline; the next check runs on schedule.
 - **A project says token required.** Its daemon was started outside the app with a pinned `ITERVOX_API_TOKEN`. Stop it and start it from the app.
 - **A remote keeps reconnecting.** The daemon's line in the remote's submenu shows the last error from `ssh` or `gcloud`; the full output is in `~/Library/Logs/dev.itervox.desktop/tunnels/`. Run the transport's command from the table above in a terminal to see the prompt or error it hits — typically an unknown host key, a key that needs a passphrase not in `ssh-agent`, or `gcloud auth login` having expired.
