@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tracker polling no longer resets the stall timeout.** Every poll that found a running issue still in an active state (or an automation run, a reviewer on the completion state, or an in-place review continuation) stamped the run's last-activity time with the poll time. `agent.stall_timeout_ms` measures silence against that time, so an agent that produced no output was never stopped while the tracker kept polling. Only agent activity (worker updates) and an answered guardrail approval restart the stall clock now; the dashboard's "last event" time likewise reflects the agent, not the poll.
+
 ## [0.3.3] — 2026-11-15
 
 ### Added
