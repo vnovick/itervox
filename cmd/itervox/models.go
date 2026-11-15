@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -73,23 +75,18 @@ func runModelsList(args []string) {
 func runModelsRefresh(args []string) {
 	fs := flag.NewFlagSet("models refresh", flag.ExitOnError)
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md")
-	backend := fs.String("backend", "all", "claude | codex | all")
+	backend := fs.String("backend", "all", "claude | codex | opencode | all")
 	dryRun := fs.Bool("dry-run", false, "print discovered models; do not write")
 	_ = fs.Parse(args)
 
-	discovered := map[string][]agent.ModelOption{}
-	switch *backend {
-	case "claude":
-		discovered["claude"] = agent.ListClaudeModels()
-	case "codex":
-		discovered["codex"] = agent.ListCodexModels()
-	case "all", "":
-		discovered["claude"] = agent.ListClaudeModels()
-		discovered["codex"] = agent.ListCodexModels()
-	default:
-		fmt.Fprintf(os.Stderr, "itervox models refresh: invalid --backend %q (claude|codex|all)\n", *backend)
+	if *backend == "" {
+		*backend = "all"
+	}
+	if !IsAcceptedModelBackend(*backend) {
+		fmt.Fprintf(os.Stderr, "itervox models refresh: invalid --backend %q (%s)\n", *backend, strings.Join(modelBackendsAccepted(), "|"))
 		fatalExit(2)
 	}
+	discovered := discoverModels(*backend)
 
 	for be, opts := range discovered {
 		fmt.Printf("%s: %d model(s)\n", be, len(opts))
@@ -111,8 +108,9 @@ func runModelsRefresh(args []string) {
 }
 
 // readAvailableModels parses just the agent.available_models block from a
-// WORKFLOW.md without invoking the full config loader. Returns the empty
-// map when the field is absent.
+// WORKFLOW.md, with the settings layers merged over it (#239), without
+// invoking the full config loader. Returns the empty map when the field is
+// absent.
 func readAvailableModels(workflowPath string) (map[string][]agent.ModelOption, error) {
 	data, err := os.ReadFile(workflowPath)
 	if err != nil {
@@ -125,6 +123,10 @@ func readAvailableModels(workflowPath string) (map[string][]agent.ModelOption, e
 	var doc map[string]any
 	if err := yaml.Unmarshal([]byte(front), &doc); err != nil {
 		return nil, fmt.Errorf("parse front matter: %w", err)
+	}
+	// #239: a settings file may set agent.available_models, and wins.
+	if merged, _, err := config.MergedFrontMatter(workflowPath); err == nil {
+		doc = merged
 	}
 	out := map[string][]agent.ModelOption{}
 	a, _ := doc["agent"].(map[string]any)
@@ -173,6 +175,13 @@ func readAvailableModels(workflowPath string) (map[string][]agent.ModelOption, e
 // (`itervox models refresh`) runs in its own process, whose self-write
 // registry the daemon never sees, so a running daemon still reloads for it.
 func mergeAvailableModelsIntoWorkflow(workflowPath string, discovered map[string][]agent.ModelOption) (map[string][]agent.ModelOption, error) {
+	// #239: a settings file wins over WORKFLOW.md, so when one sets
+	// agent.available_models (the dashboard's Settings page saves it there)
+	// the refresh merges into that file; a WORKFLOW.md write would be
+	// shadowed by it.
+	if layer := availableModelsLayer(workflowPath); layer != "" {
+		return mergeAvailableModelsIntoSettings(layer, discovered)
+	}
 	var merged map[string][]agent.ModelOption
 	err := workflow.ApplyAndWriteFrontMatter(workflowPath, func(frontLines []string) ([]string, error) {
 		var err error
@@ -248,8 +257,33 @@ func mergeAvailableModelsFront(frontLines []string, discovered map[string][]agen
 // understands. Kept narrow so the HTTP handler and the CLI share the same
 // validation surface.
 func modelBackendsAccepted() []string {
-	return []string{"claude", "codex", "all"}
+	return []string{"claude", "codex", "opencode", "all"}
 }
+
+// discoverModels lists the models of backend ("claude", "codex",
+// "opencode" or "all"), shared by `itervox models refresh` and the
+// dashboard's refresh. Claude and Codex fall back to built-in lists;
+// OpenCode's comes from `opencode models` and is left out of "all" when
+// that finds none (the CLI is not installed), so a refresh never blanks a
+// hand-written opencode list.
+func discoverModels(backend string) map[string][]agent.ModelOption {
+	discovered := map[string][]agent.ModelOption{}
+	if backend == "claude" || backend == "all" {
+		discovered["claude"] = agent.ListClaudeModels()
+	}
+	if backend == "codex" || backend == "all" {
+		discovered["codex"] = agent.ListCodexModels()
+	}
+	if backend == "opencode" || backend == "all" {
+		if list := listOpenCodeModels(); len(list) > 0 || backend == "opencode" {
+			discovered["opencode"] = list
+		}
+	}
+	return discovered
+}
+
+// listOpenCodeModels is agent.ListOpenCodeModels; a var for tests.
+var listOpenCodeModels = agent.ListOpenCodeModels
 
 // IsAcceptedModelBackend reports whether s is one of the recognised
 // --backend values. Exposed for the HTTP refresh handler.
@@ -260,4 +294,62 @@ func IsAcceptedModelBackend(s string) bool {
 		}
 	}
 	return false
+}
+
+// availableModelsLayer is the highest settings file that sets
+// agent.available_models, "" when none does.
+func availableModelsLayer(workflowPath string) string {
+	names := slices.Clone(config.SettingsLayerNames)
+	slices.Reverse(names)
+	for _, name := range names {
+		path := config.SettingsLayerPath(workflowPath, name)
+		if path == "" {
+			continue
+		}
+		if data, err := config.ReadSettingsFile(path); err == nil && config.SettingsDataSets(data, "agent.available_models") {
+			return path
+		}
+	}
+	return ""
+}
+
+// mergeAvailableModelsIntoSettings is mergeAvailableModelsIntoWorkflow for a
+// settings file: refreshed backends replace their list, the others keep
+// theirs, and the file keeps its comments (config.SetSetting).
+func mergeAvailableModelsIntoSettings(path string, discovered map[string][]agent.ModelOption) (map[string][]agent.ModelOption, error) {
+	data, err := config.ReadSettingsFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("models: %w", err)
+	}
+	merged := map[string][]agent.ModelOption{}
+	agentSection, _ := data["agent"].(map[string]any)
+	existing, _ := agentSection["available_models"].(map[string]any)
+	for backend, raw := range existing {
+		list, _ := raw.([]any)
+		for _, entry := range list {
+			m, _ := entry.(map[string]any)
+			id, _ := m["id"].(string)
+			label, _ := m["label"].(string)
+			if id != "" {
+				merged[backend] = append(merged[backend], agent.ModelOption{ID: id, Label: label})
+			}
+		}
+	}
+	maps.Copy(merged, discovered)
+	value := map[string]any{}
+	for backend, opts := range merged {
+		entries := make([]any, 0, len(opts))
+		for _, m := range opts {
+			entry := map[string]any{"id": m.ID}
+			if m.Label != "" {
+				entry["label"] = m.Label
+			}
+			entries = append(entries, entry)
+		}
+		value[backend] = entries
+	}
+	if err := config.SetSetting(path, "agent.available_models", value); err != nil {
+		return nil, fmt.Errorf("models: update %s: %w", path, err)
+	}
+	return merged, nil
 }

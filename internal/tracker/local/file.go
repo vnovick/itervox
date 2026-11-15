@@ -61,8 +61,14 @@ type issueFile struct {
 	Branch    string
 	Created   *time.Time
 	Updated   *time.Time
-	Extra     map[string]any // unknown front matter keys, kept on rewrite
-	Body      string         // the description
+	// Remote is the linked remote issue's identifier (#118: `remote: ENG-42`
+	// or `remote: "#42"`), set by the local issue sync.
+	Remote string
+	Extra  map[string]any // unknown front matter keys, kept on rewrite
+	// front is the front matter as read from disk, without the --- lines;
+	// render edits it in place (frontmatter.go). Empty for a new file.
+	front string
+	Body  string // the description
 	// CommentsPreamble is text between `## Comments` and the first comment.
 	CommentsPreamble string
 	Comments         []fileComment
@@ -76,7 +82,7 @@ type fileComment struct {
 
 // knownKeys are the front matter keys issueFile reads.
 var knownKeys = map[string]bool{"title": true, "state": true, "priority": true, "labels": true,
-	"blocked_by": true, "branch": true, "created": true, "updated": true}
+	"blocked_by": true, "branch": true, "created": true, "updated": true, "remote": true}
 
 // parseIssueFile parses an issue file. Any problem is an error naming it;
 // the caller keeps the last good version.
@@ -100,7 +106,7 @@ func parseIssueFile(data []byte) (issueFile, error) {
 	if err := yaml.Unmarshal([]byte(front), &raw); err != nil {
 		return issueFile{}, fmt.Errorf("front matter: %w", err)
 	}
-	f := issueFile{Extra: map[string]any{}}
+	f := issueFile{Extra: map[string]any{}, front: front}
 	for k, v := range raw {
 		if !knownKeys[k] {
 			f.Extra[k] = v
@@ -128,6 +134,8 @@ func parseIssueFile(data []byte) (issueFile, error) {
 		return issueFile{}, err
 	}
 	f.Branch, _ = stringKey(raw, "branch")
+	f.Remote, _ = stringKey(raw, "remote")
+	f.Remote = strings.TrimSpace(f.Remote)
 	if f.Created, err = timeKey(raw, "created"); err != nil {
 		return issueFile{}, err
 	}
@@ -310,10 +318,23 @@ func descriptionText(body string, hasComments bool) string {
 	return body
 }
 
-// render serialises f in the canonical layout.
+// render serialises f: its front matter edited in place when it was read
+// from disk (frontmatter.go), otherwise in the canonical layout.
 func (f issueFile) render() []byte {
 	var b bytes.Buffer
 	b.WriteString("---\n")
+	if front, ok := f.patchFront(); ok {
+		b.WriteString(front)
+	} else {
+		f.renderFront(&b)
+	}
+	b.WriteString("---\n")
+	f.renderBody(&b)
+	return b.Bytes()
+}
+
+// renderFront writes f's front matter in the canonical layout.
+func (f issueFile) renderFront(b *bytes.Buffer) {
 	writeKV := func(key string, v any) {
 		node := map[string]any{key: v}
 		out, _ := yaml.Marshal(node)
@@ -339,6 +360,9 @@ func (f issueFile) render() []byte {
 	if f.Updated != nil {
 		b.WriteString("updated: " + f.Updated.UTC().Format(time.RFC3339) + "\n")
 	}
+	if f.Remote != "" {
+		writeKV("remote", f.Remote)
+	}
 	keys := make([]string, 0, len(f.Extra))
 	for k := range f.Extra {
 		keys = append(keys, k)
@@ -347,7 +371,10 @@ func (f issueFile) render() []byte {
 	for _, k := range keys {
 		writeKV(k, f.Extra[k])
 	}
-	b.WriteString("---\n")
+}
+
+// renderBody writes the description and the comments.
+func (f issueFile) renderBody(b *bytes.Buffer) {
 	if f.Body != "" {
 		b.WriteString("\n" + descriptionText(f.Body, len(f.Comments) > 0) + "\n")
 	}
@@ -358,10 +385,9 @@ func (f issueFile) render() []byte {
 		}
 		for _, c := range f.Comments {
 			author := strings.TrimSpace(strings.ReplaceAll(c.Author, "\n", " "))
-			fmt.Fprintf(&b, "\n### %s — %s\n\n%s\n", c.At.UTC().Format(time.RFC3339), author, escapeStructure(c.Body))
+			fmt.Fprintf(b, "\n### %s — %s\n\n%s\n", c.At.UTC().Format(time.RFC3339), author, escapeStructure(c.Body))
 		}
 	}
-	return b.Bytes()
 }
 
 // flowList renders `key: ["a", "b"]`. The sequence is marshalled whole,

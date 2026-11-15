@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type KeyboardEvent } from 'react';
 
 type DepsAnalysisMode = 'auto' | 'manual';
 
@@ -41,52 +41,65 @@ export function DependenciesCard({ mode, onSetMode }: DependenciesCardProps) {
     if (!ok) setError('Failed to update dependency analysis mode. Please try again.');
   };
 
+  const current = OPTIONS.find((o) => o.value === mode) ?? OPTIONS[0];
+  // Arrow keys move the choice, as in a native radio group.
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const n = OPTIONS.length;
+    const to =
+      e.key === 'ArrowRight' || e.key === 'ArrowDown'
+        ? (index + 1) % n
+        : e.key === 'ArrowLeft' || e.key === 'ArrowUp'
+          ? (index - 1 + n) % n
+          : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    document.getElementById(`deps-mode-${OPTIONS[to].value}`)?.focus();
+    void handleChange(OPTIONS[to].value);
+  };
+
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Dependencies</h2>
+    <div className="space-y-2">
+      {/* The shared segmented control, as a radio group (one of two modes). */}
+      <div
+        data-testid="deps-analysis-mode"
+        role="radiogroup"
+        aria-label="Dependency analysis mode"
+        aria-describedby="deps-mode-help"
+        className="segmented"
+      >
+        {OPTIONS.map((opt, i) => {
+          const checked = mode === opt.value;
+          return (
+            <button
+              key={opt.value}
+              id={`deps-mode-${opt.value}`}
+              type="button"
+              role="radio"
+              aria-checked={checked}
+              title={opt.description}
+              tabIndex={checked ? 0 : -1}
+              disabled={saving}
+              className="min-h-8 px-4 text-sm disabled:cursor-wait"
+              onClick={() => {
+                void handleChange(opt.value);
+              }}
+              onKeyDown={(e) => {
+                onKeyDown(e, i);
+              }}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
       </div>
-      <div className="px-5 py-5">
-        <div
-          data-testid="deps-analysis-mode"
-          role="radiogroup"
-          aria-label="Dependency analysis mode"
-          className="space-y-3"
-        >
-          {OPTIONS.map((opt) => (
-            <label key={opt.value} className="flex cursor-pointer items-start gap-3">
-              <span
-                aria-hidden="true"
-                className="border-theme-line relative mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
-              >
-                {mode === opt.value && <span className="bg-theme-accent h-2 w-2 rounded-full" />}
-              </span>
-              <input
-                type="radio"
-                name="deps-analysis-mode"
-                className="sr-only"
-                aria-label={opt.label}
-                checked={mode === opt.value}
-                disabled={saving}
-                onChange={() => {
-                  void handleChange(opt.value);
-                }}
-              />
-              <div>
-                <span className="text-theme-text block text-sm font-medium">{opt.label}</span>
-                <span className="text-theme-text-secondary mt-0.5 block text-xs">
-                  {opt.description}
-                </span>
-              </div>
-            </label>
-          ))}
-        </div>
-        {error && (
-          <span role="alert" className="text-theme-danger-text mt-2 block text-xs">
-            {error}
-          </span>
-        )}
-      </div>
+      <p id="deps-mode-help" className="field-help">
+        {current.description}
+      </p>
+      {error && (
+        <span role="alert" className="text-theme-danger-text block text-xs">
+          {error}
+        </span>
+      )}
     </div>
   );
 }

@@ -397,7 +397,9 @@ func TestWorkerExitedRateLimitedAutoSwitchSkipsFailedStateAndQueuesSwitchProfile
 		"default":  {Command: "claude"},
 		"fallback": {Command: "codex"},
 	}
-	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	issue := automationIssue("In Progress")
+	// The tracker has the issue: the recovery run's claim check reads it (#116).
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 	o := &Orchestrator{
 		cfg:           cfg,
 		tracker:       mt,
@@ -413,7 +415,6 @@ func TestWorkerExitedRateLimitedAutoSwitchSkipsFailedStateAndQueuesSwitchProfile
 		AutoResume:      true,
 	}})
 
-	issue := automationIssue("In Progress")
 	attempt := 1
 	run := &RunEntry{
 		Issue:        issue,

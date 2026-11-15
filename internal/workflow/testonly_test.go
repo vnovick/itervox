@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"log/slog"
+	"time"
 )
 
 // SetMaxConcurrentAgents queues an update to the `max_concurrent_agents`
@@ -58,18 +59,44 @@ func PatchProfilesBlock(path string, profiles map[string]ProfileEntry) error {
 // write is NOT registered as a self-write, so the watcher reloads after it
 // exactly as it would for an operator edit.
 func WriteAndReload(path string, mutators ...Mutator) error {
-	return applyAndWrite(path, false, mutators)
+	return applyAndWrite(path, false, false, mutators)
 }
 
-// PatchTrackerStates atomically rewrites tracker.active_states,
-// tracker.terminal_states, and tracker.completion_state inside the YAML front
-// matter. Missing keys are inserted inside the tracker block.
-//
-// Routed through ApplyAndWriteFrontMatter (CORE-006) so it is serialized by
-// editMu with every other WORKFLOW.md writer instead of racing them with a
-// bare read-modify-write.
+// The per-field patchers below were production code until #158 replaced them
+// with the generic SetFrontMatterKeys / MutateSetKey. Their tests are kept
+// (concurrency, lock, CORE-125 and indentation coverage) and now exercise the
+// generic writer through these thin test-only wrappers.
+
+// PatchTrackerStates sets tracker.active_states, tracker.terminal_states and
+// tracker.completion_state in one write.
 func PatchTrackerStates(path string, active, terminal []string, completion string) error {
 	return ApplyAndWriteFrontMatter(path, MutateTrackerStates(active, terminal, completion))
+}
+
+// MutateTrackerStates is the Mutator form of PatchTrackerStates.
+func MutateTrackerStates(active, terminal []string, completion string) Mutator {
+	return MutateSetKeys(
+		KeyValue{Key: "tracker.active_states", Value: active},
+		KeyValue{Key: "tracker.terminal_states", Value: terminal},
+		KeyValue{Key: "tracker.completion_state", Value: completion},
+	)
+}
+
+// PatchTrackerFailedState sets tracker.failed_state; "" removes it.
+func PatchTrackerFailedState(path, state string) error {
+	return SetFrontMatterKeys(path, KeyValue{Key: "tracker.failed_state", Value: emptyAsNil(state)})
+}
+
+// PatchDependenciesStringField sets dependencies.<key>; "" removes it.
+func PatchDependenciesStringField(path, key, value string) error {
+	return ApplyAndWriteFrontMatter(path, MutateSetKey("dependencies."+key, emptyAsNil(value)))
+}
+
+func emptyAsNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // Watch monitors path for changes by polling every second with a stamp of
@@ -96,4 +123,34 @@ func Watch(ctx context.Context, path string, onChange func()) error {
 		slog.Warn("workflow watcher: initial stat failed", "path", path, "error", err)
 	}
 	return watch(ctx, path, first.hash, first, false, onChange)
+}
+
+// WatchFrom is Watch with an explicit baseline: loaded is the sha256 of the
+// bytes the running config was built from (Workflow.ContentHash, via
+// config.Config.WorkflowHash). A first reading that differs from it is a
+// change pending from the start, judged at settle time like any other: a
+// chain of this process's own writes on top of loaded is suppressed, and
+// anything else — an operator edit that landed between config.Load and this
+// call — reloads (M1-close C2). Without it, such an edit became the
+// watcher's baseline and was never reloaded, so the running config silently
+// differed from WORKFLOW.md.
+//
+// The first reading takes no lock: the loaded hash, not the reading, is the
+// baseline, so there is no window left for a lock to close.
+//
+// Test-only since #245: the daemon watches WORKFLOW.md and its settings
+// files together with FileSetWatch (cmd/itervox watchConfigFiles); WatchFrom
+// is FileSetWatch over WORKFLOW.md alone, which the single-file watcher
+// tests below still drive.
+func WatchFrom(ctx context.Context, path string, loaded [32]byte, onChange func()) error {
+	return FileSetWatch{Files: []WatchedFile{{Path: path, Loaded: loaded}}}.Run(ctx, func([]string) { onChange() })
+}
+
+// watch is the single-file watcher Watch (testonly_test.go) runs: baseline
+// is its own first reading, so the registry check WatchFrom makes on its
+// first reading is skipped (checkRegistry false).
+func watch(ctx context.Context, path string, baseline [32]byte, current fileStamp, checkRegistry bool, onChange func()) error {
+	st := &watchedState{WatchedFile: WatchedFile{Path: path, Loaded: baseline}, settled: baseline, current: current}
+	st.dirty = current.hash != baseline || (checkRegistry && firstReadingSuspect(path, baseline, current.hash, time.Now()))
+	return FileSetWatch{}.loop(ctx, []*watchedState{st}, func([]string) { onChange() })
 }

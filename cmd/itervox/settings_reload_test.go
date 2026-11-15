@@ -15,7 +15,6 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
-	"github.com/vnovick/itervox/internal/workflow"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -65,12 +64,12 @@ func (p tempWorkspaceProvider) ResolvePath(identifier string) string {
 }
 
 // TestSettingsSaveDoesNotCancelRunContext (CORE-116) wires the daemon's
-// reload chain the way main() does — workflow.WatchFrom(runCtx, path,
-// cfg.WorkflowHash, runCancel)
-// alongside orch.Run(runCtx) — with a real config.Load'ed WORKFLOW.md, a
+// reload chain the way main() does — watchConfigFiles(runCtx, path, cfg,
+// runCancel, ...) (workflow.WatchFrom before #245) alongside orch.Run(runCtx) — with a real config.Load'ed WORKFLOW.md, a
 // real Orchestrator and the real orchestratorAdapter, and an agent turn held
 // in flight by a fake runner. A dashboard settings save (SetWorkers →
-// PatchIntField) must leave runCtx alive and the turn running after the
+// persistSettings: .itervox/settings.jsonc, then the key's removal from
+// WORKFLOW.md) must leave runCtx alive and the turn running after the
 // production poll + debounce + 2 s, with the value live through the cfgMu
 // getter. The positive control then makes an operator edit and asserts the
 // same wiring DOES reload, so the negative result is not a dead watcher.
@@ -111,7 +110,7 @@ You are working on {{ issue.identifier }}.
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		_ = workflow.WatchFrom(runCtx, path, cfg.WorkflowHash, runCancel)
+		_ = watchConfigFiles(runCtx, path, cfg, runCancel, configWatchOptions{})
 	}()
 	runDone := make(chan struct{})
 	go func() {
@@ -139,13 +138,23 @@ You are working on {{ issue.identifier }}.
 		"a dashboard settings save cancelled the run context — every in-flight agent turn is killed")
 	require.False(t, runner.wasCancelled(), "the in-flight agent turn was cancelled by a settings save")
 	require.Equal(t, 4, orch.MaxWorkers(), "the saved value must be live through the cfgMu getter")
+	// #129: the save went to .itervox/settings.jsonc and moved the key out
+	// of WORKFLOW.md; that WORKFLOW.md write is the self-write the watcher
+	// must not reload for.
 	saved, err := os.ReadFile(path)
 	require.NoError(t, err)
-	require.Contains(t, string(saved), "max_concurrent_agents: 4")
+	require.NotContains(t, string(saved), "max_concurrent_agents", "the save must move the key out of WORKFLOW.md")
+	jsonc, err := os.ReadFile(config.ProjectSettingsPath(path))
+	require.NoError(t, err)
+	require.Contains(t, string(jsonc), `"max_concurrent_agents": 4`)
 
-	// Positive control: an operator edit through the same wiring reloads.
+	// Positive control: an operator edit through the same wiring reloads,
+	// and the reloaded config still has the value from the settings file.
 	require.NoError(t, os.WriteFile(path,
-		[]byte(strings.Replace(string(saved), "max_concurrent_agents: 4", "max_concurrent_agents: 6", 1)), 0o644))
+		[]byte(strings.Replace(string(saved), "interval_ms: 50", "interval_ms: 60", 1)), 0o644))
 	require.Eventually(t, func() bool { return runCtx.Err() != nil },
 		8*time.Second, 50*time.Millisecond, "an operator edit must still reload")
+	reloaded, err := config.Load(path)
+	require.NoError(t, err)
+	require.Equal(t, 4, reloaded.Agent.MaxConcurrentAgents, "a reload must pick up the value saved to the settings file")
 }

@@ -724,6 +724,8 @@ agent:
       command: claude
       soul_file: .itervox/agents/deps-analyzer/SOUL.md
       instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md
+guardrails:
+  enabled: true
 ---
 
 Body.
@@ -1486,8 +1488,12 @@ Prompt.
 	assert.Contains(t, string(updated), "enabled: false")
 	assert.Contains(t, string(updated), "soul_file: .itervox/agents/input-responder/SOUL.md")
 	assert.Contains(t, string(updated), "instructions_file: .itervox/agents/input-responder/INSTRUCTIONS.md")
-	assert.Contains(t, string(updated), "- id: input-responder\n    enabled: false\n    profile: input-responder")
-	assert.Contains(t, string(updated), "- id: reviewer-nightly\n    enabled: true\n    profile: reviewer")
+	// #239: the automations the save changed move to the settings file.
+	assert.NotContains(t, string(updated), "- id: input-responder")
+	assert.Equal(t, []any{
+		map[string]any{"id": "input-responder", "enabled": false, "profile": "input-responder"},
+		map[string]any{"id": "reviewer-nightly", "enabled": true, "profile": "reviewer"},
+	}, settingsAutomationsHead(t, workflowPath))
 	assert.NotContains(t, string(updated), "reviewer_profile:")
 	assert.NotContains(t, string(updated), "auto_review: true")
 	assertFileContent(t, filepath.Join(dir, ".itervox", "agents", "input-responder", "SOUL.md"), "# input-responder SOUL")
@@ -1724,8 +1730,15 @@ Prompt.
 
 	updated, readErr := os.ReadFile(workflowPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(updated), `reviewer_profile: "review-bot"`)
-	assert.Contains(t, string(updated), "profile: review-bot")
+	// #129: the reviewer keys follow SetReviewerConfig to the project
+	// settings file; the profiles stay in WORKFLOW.md.
+	assert.NotContains(t, string(updated), "reviewer_profile:")
+	settingsFile, settingsErr := os.ReadFile(config.ProjectSettingsPath(workflowPath))
+	require.NoError(t, settingsErr)
+	assert.Contains(t, string(settingsFile), `"reviewer_profile": "review-bot"`)
+	assert.Contains(t, string(settingsFile), `"auto_review": true`)
+	// #239: the renamed automation is saved to the settings file.
+	assert.Contains(t, string(settingsFile), `"profile": "review-bot"`)
 	assert.Contains(t, string(updated), "soul_file: .itervox/agents/review-bot/SOUL.md")
 	assert.Contains(t, string(updated), "instructions_file: .itervox/agents/review-bot/INSTRUCTIONS.md")
 	assert.NotContains(t, string(updated), "profile: reviewer")
@@ -1873,7 +1886,9 @@ Prompt.
 	assert.NotContains(t, string(updated), "reviewer_profile:")
 	assert.NotContains(t, string(updated), "auto_review: true")
 	assert.NotContains(t, string(updated), "- id: reviewer-nightly")
-	assert.Contains(t, string(updated), "- id: qa-nightly")
+	// #239: the automations the delete changed move to the settings file.
+	assert.NotContains(t, string(updated), "- id: qa-nightly")
+	assert.Equal(t, []any{map[string]any{"id": "qa-nightly", "enabled": true, "profile": "qa"}}, settingsAutomationsHead(t, workflowPath))
 	assert.Contains(t, string(updated), "soul_file: .itervox/agents/qa/SOUL.md")
 	assert.Contains(t, string(updated), "instructions_file: .itervox/agents/qa/INSTRUCTIONS.md")
 
@@ -1918,10 +1933,19 @@ Prompt.
 	err = adapter.SetReviewerConfig("reviewer", true)
 
 	require.NoError(t, err)
+	// #129: a layered key is saved to .itervox/settings.jsonc, and WORKFLOW.md
+	// (which did not set it) is left alone.
 	updated, readErr := os.ReadFile(workflowPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(updated), `reviewer_profile: "reviewer"`)
-	assert.Contains(t, string(updated), "auto_review: true")
+	assert.Equal(t, content, string(updated))
+	settingsFile, settingsErr := os.ReadFile(config.ProjectSettingsPath(workflowPath))
+	require.NoError(t, settingsErr)
+	assert.Contains(t, string(settingsFile), `"reviewer_profile": "reviewer"`)
+	assert.Contains(t, string(settingsFile), `"auto_review": true`)
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, "reviewer", reloaded.Agent.ReviewerProfile)
+	assert.True(t, reloaded.Agent.AutoReview)
 }
 
 func TestReloadPlanForRunExit(t *testing.T) {
@@ -2425,4 +2449,34 @@ func assertFileContent(t *testing.T, path, want string) {
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, want, string(got))
+}
+
+// #129: dashboard saves move a setting from WORKFLOW.md into
+// .itervox/settings.jsonc, so that file must be committable like WORKFLOW.md:
+// with a root .gitignore that hides .itervox/, init's carve-outs and its
+// .itervox/.gitignore leave it tracked, while runtime JSON stays ignored.
+func TestProjectSettingsFileIsNotGitignored(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".itervox/\n"), 0o644))
+	require.NoError(t, finalizeItervoxGitignore(filepath.Join(dir, ".itervox")))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "settings.jsonc"), []byte("{}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".itervox", "tracker_store.json"), []byte("{}\n"), 0o644))
+	assert.False(t, gitPathIgnored(t, dir, ".itervox/settings.jsonc"), "the project settings file is committable")
+	assert.True(t, gitPathIgnored(t, dir, ".itervox/tracker_store.json"), "runtime state stays ignored")
+}
+
+// settingsAutomationsHead is the project settings file's automations list,
+// each entry cut to its id, enabled and profile (#239).
+func settingsAutomationsHead(t *testing.T, workflowPath string) []any {
+	t.Helper()
+	data, err := config.ReadSettingsFile(config.ProjectSettingsPath(workflowPath))
+	require.NoError(t, err)
+	list, _ := data["automations"].([]any)
+	out := make([]any, 0, len(list))
+	for _, e := range list {
+		m := e.(map[string]any)
+		out = append(out, map[string]any{"id": m["id"], "enabled": m["enabled"], "profile": m["profile"]})
+	}
+	return out
 }

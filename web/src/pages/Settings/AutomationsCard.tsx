@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { AutomationDef } from '../../types/schemas';
 import type { SettingsError } from '../../auth/SettingsError';
-import { Card } from '../../components/ui/Card/Card';
+import { Button } from '../../components/ui/button';
 import { AutomationFormModal } from './automations/AutomationFormModal';
 import { AutomationRow } from './automations/AutomationRow';
 import { SuggestedAutomationCard } from './automations/SuggestedAutomationCard';
@@ -158,39 +158,42 @@ export function AutomationsCard({
 
   return (
     <>
-      <Card variant="elevated" padding="none" className="overflow-hidden">
-        <Card.Header className="bg-theme-panel-strong mb-0 flex items-center justify-between gap-4 px-5 py-4">
-          <div>
-            <h2 className="text-theme-text text-sm font-semibold">Automations</h2>
-            <p className="text-theme-text-secondary mt-0.5 text-xs">
+      <section
+        aria-labelledby="automations-card-heading"
+        className="glass-panel flex flex-col gap-2.5 rounded-[26px] px-5 py-[18px]"
+      >
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="mr-auto">
+            <h2 id="automations-card-heading" className="text-theme-text text-base font-semibold">
+              Automations
+            </h2>
+            <p className="text-theme-text-secondary text-[13px]">
               Cron and event-driven helper rules layered on top of your agent profiles.
             </p>
           </div>
-          <button
+          <Button
+            variant="primary"
+            size="lg"
+            pill
             onClick={openAddModal}
             disabled={availableProfiles.length === 0}
-            className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium whitespace-nowrap text-white transition-colors hover:opacity-90 disabled:opacity-50"
           >
             Add Automation
-          </button>
-        </Card.Header>
+          </Button>
+        </div>
 
         {availableProfiles.length === 0 && (
-          <div className="px-5 py-4">
-            <p className="text-theme-danger-text text-xs">
-              Create at least one agent profile before adding automations.
-            </p>
-          </div>
+          <p className="text-theme-danger-text text-xs">
+            Create at least one agent profile before adding automations.
+          </p>
         )}
 
         {automationList.length === 0 ? (
-          <div className="px-5 py-8">
-            <div className="border-theme-line bg-theme-bg-soft rounded-[var(--radius-sm)] border border-dashed px-4 py-6 text-center">
-              <p className="text-theme-muted text-xs">No automations configured.</p>
-            </div>
+          <div className="glass-card px-4 py-6 text-center">
+            <p className="text-theme-muted text-xs">No automations configured.</p>
           </div>
         ) : (
-          <div>
+          <div className="flex flex-col gap-2.5">
             {automationList.map((automation, index) => (
               <AutomationRow
                 key={automation.id}
@@ -207,11 +210,11 @@ export function AutomationsCard({
         )}
 
         {suggestedToShow.length > 0 && (
-          <Card.Footer className="mt-0 px-5 py-4">
-            <p className="text-theme-muted mb-3 text-[11px] font-medium tracking-wider uppercase">
+          <div className="mt-2">
+            <h3 className="text-theme-text-secondary mb-2 text-[13px] font-semibold">
               Start From A Template
-            </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            </h3>
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
               {suggestedToShow.map((suggestion) => (
                 <SuggestedAutomationCard
                   key={suggestion.id}
@@ -221,9 +224,9 @@ export function AutomationsCard({
                 />
               ))}
             </div>
-          </Card.Footer>
+          </div>
         )}
-      </Card>
+      </section>
 
       {status && (
         <p

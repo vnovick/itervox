@@ -4,9 +4,10 @@
 //
 // The directory is the source of truth. Every call rescans it, re-reading
 // only files whose size or modification time changed, so edits made in an
-// editor are picked up on the next poll without a restart. A file that does
-// not parse is reported (Problems, and a log line when it changes) and its
-// last good version keeps being served; it is never fatal.
+// editor are picked up without a restart; Watch (#133) also wakes the
+// orchestrator as soon as a file changes instead of at the next poll. A file
+// that does not parse is reported (Problems, and a log line when it changes)
+// and its last good version keeps being served; it is never fatal.
 package local
 
 import (
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,6 +62,18 @@ type Tracker struct {
 	active   []string
 	terminal []string
 	entries  map[string]*entry // identifier → entry
+	// changes counts rescans that found a file changed outside Itervox
+	// (added, edited or removed); Watch wakes the orchestrator when it moves
+	// (#133). Itervox's own writes record their stamp and do not count.
+	changes uint64
+	// watched is set while Watch holds a healthy watch on the directory:
+	// reads are then served from the entries the watch keeps current, and
+	// only writes rescan first (#133).
+	watched bool
+	// scanErr is the last directory scan's error, nil after a good scan. A
+	// watch serves reads from the entries only while it is nil: a directory
+	// that cannot be read is reported, never served as current.
+	scanErr error
 }
 
 type entry struct {
@@ -118,7 +132,7 @@ func (t *Tracker) Problems() []Problem {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var out []Problem
-	if err := t.refreshLocked(); err != nil {
+	if err := t.syncLocked(); err != nil {
 		out = append(out, Problem{Path: t.dir, Err: err.Error()})
 	}
 	for _, e := range t.entries {
@@ -138,13 +152,20 @@ func (t *Tracker) refreshLocked() error {
 	dirEntries, err := os.ReadDir(t.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if len(t.entries) > 0 {
+				t.changes++ // the directory, and every issue in it, is gone
+			}
 			t.entries = map[string]*entry{}
+			t.scanErr = nil
 			return nil
 		}
 		slog.Warn("local tracker: cannot read the issues directory", "dir", t.dir, "error", err)
-		return fmt.Errorf("local tracker: read %s: %w", t.dir, err)
+		t.scanErr = fmt.Errorf("local tracker: read %s: %w", t.dir, err)
+		return t.scanErr
 	}
+	t.scanErr = nil
 	seen := map[string]bool{}
+	changed := false
 	for _, de := range dirEntries {
 		name := de.Name()
 		if de.IsDir() || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".md") {
@@ -169,15 +190,32 @@ func (t *Tracker) refreshLocked() error {
 			e = &entry{path: path}
 			t.entries[ident] = e
 		}
+		// A racy re-read of an unchanged stamp is not a change.
+		changed = changed || e.stamp != st
 		e.stamp = st
 		t.readLocked(e)
 	}
 	for ident := range t.entries {
 		if !seen[ident] {
 			delete(t.entries, ident)
+			changed = true
 		}
 	}
+	if changed {
+		t.changes++
+	}
 	return nil
+}
+
+// syncLocked brings the entries up to date before a read: a rescan, unless
+// a healthy watch keeps them current. A watch is healthy only while the last
+// scan succeeded; otherwise the read rescans and returns the error. Caller
+// holds mu.
+func (t *Tracker) syncLocked() error {
+	if t.watched && t.scanErr == nil {
+		return nil
+	}
+	return t.refreshLocked()
 }
 
 // readLocked reads and parses e's file. On failure the last good version
@@ -225,11 +263,13 @@ func (t *Tracker) issueLocked(ident string) (domain.Issue, bool) {
 	return is, true
 }
 
-// sortedIdentifiersLocked orders issues by prefix, then number.
-func (t *Tracker) sortedIdentifiersLocked() []string {
+// sortedIdentifiersLocked orders the parsed issues keep accepts by prefix,
+// then number. keep sees the identifier and the file's state, so callers
+// filter before the issues are sorted and converted (#210).
+func (t *Tracker) sortedIdentifiersLocked(keep func(ident, state string) bool) []string {
 	ids := make([]string, 0, len(t.entries))
 	for id, e := range t.entries {
-		if e.good {
+		if e.good && keep(id, e.file.State) {
 			ids = append(ids, id)
 		}
 	}
@@ -259,15 +299,19 @@ func matchesState(state string, states []string) bool {
 	return false
 }
 
-func (t *Tracker) issuesWhere(keep func(domain.Issue) bool) ([]domain.Issue, error) {
+// issuesWhere returns the issues keep accepts, in identifier order. keep
+// is asked about each file's identifier (the issue's ID) and state before
+// anything is converted, so a poll for a few active issues no longer builds
+// and sorts every issue on the board (#210).
+func (t *Tracker) issuesWhere(keep func(ident, state string) bool) ([]domain.Issue, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.refreshLocked(); err != nil {
+	if err := t.syncLocked(); err != nil {
 		return nil, err
 	}
-	var out []domain.Issue
-	for _, id := range t.sortedIdentifiersLocked() {
-		if is, ok := t.issueLocked(id); ok && keep(is) {
+	var out []domain.Issue // nil when nothing matches, as before
+	for _, id := range t.sortedIdentifiersLocked(keep) {
+		if is, ok := t.issueLocked(id); ok {
 			out = append(out, is)
 		}
 	}
@@ -279,7 +323,7 @@ func (t *Tracker) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error
 	t.mu.Lock()
 	active := append([]string{}, t.active...)
 	t.mu.Unlock()
-	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, active) })
+	return t.issuesWhere(func(_, state string) bool { return matchesState(state, active) })
 }
 
 // FetchIssuesByStates returns the issues in any of stateNames.
@@ -287,7 +331,7 @@ func (t *Tracker) FetchIssuesByStates(_ context.Context, stateNames []string) ([
 	if len(stateNames) == 0 {
 		return []domain.Issue{}, nil
 	}
-	return t.issuesWhere(func(is domain.Issue) bool { return matchesState(is.State, stateNames) })
+	return t.issuesWhere(func(_, state string) bool { return matchesState(state, stateNames) })
 }
 
 // FetchIssueStatesByIDs returns the issues with the given IDs; unknown IDs
@@ -300,7 +344,7 @@ func (t *Tracker) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) ([
 	for _, id := range issueIDs {
 		want[id] = true
 	}
-	return t.issuesWhere(func(is domain.Issue) bool { return want[is.ID] })
+	return t.issuesWhere(func(ident, _ string) bool { return want[ident] }) // a local issue's ID is its identifier
 }
 
 // FetchIssueDetailsByIDs is FetchIssueStatesByIDs: comments are always
@@ -313,7 +357,7 @@ func (t *Tracker) FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string)
 func (t *Tracker) FetchIssueDetail(_ context.Context, issueID string) (*domain.Issue, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.refreshLocked(); err != nil {
+	if err := t.syncLocked(); err != nil {
 		return nil, err
 	}
 	is, ok := t.issueLocked(issueID)
@@ -365,8 +409,12 @@ func (t *Tracker) writeLocked(e *entry, f issueFile) error {
 	if err := os.MkdirAll(t.dir, 0o755); err != nil {
 		return fmt.Errorf("local tracker: %w", err)
 	}
-	if err := atomicfs.WriteFile(e.path, f.render(), 0o644); err != nil {
+	data := f.render()
+	if err := atomicfs.WriteFile(e.path, data, 0o644); err != nil {
 		return fmt.Errorf("local tracker: write %s: %w", e.path, err)
+	}
+	if again, err := parseIssueFile(data); err == nil {
+		f = again // what is on disk now, including the front matter it edits next
 	}
 	e.file, e.good, e.problem = f, true, ""
 	e.readAt = time.Now() // compared with file mtimes, so the wall clock
@@ -423,15 +471,41 @@ func (t *Tracker) FindCommentByKey(ctx context.Context, issueID, key string) (*d
 	return nil, false, nil
 }
 
-// CreateIssue writes a new issue file with the next free number.
-func (t *Tracker) CreateIssue(_ context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
-	if strings.TrimSpace(title) == "" {
+// CreateIssue writes a new issue file with the next free number. in.Labels
+// go to its labels front matter and, with in.BlockedBySource, the source
+// issue to its blocked_by front matter.
+func (t *Tracker) CreateIssue(_ context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	if strings.TrimSpace(in.Title) == "" {
 		return nil, fmt.Errorf("local tracker: an issue needs a title")
+	}
+	f := issueFile{Title: strings.TrimSpace(in.Title), State: in.State, Body: strings.TrimSpace(in.Body)}
+	for _, l := range in.Labels {
+		if l = strings.TrimSpace(l); l != "" && !slices.ContainsFunc(f.Labels, func(have string) bool { return strings.EqualFold(have, l) }) {
+			f.Labels = append(f.Labels, l)
+		}
+	}
+	if in.BlockedBySource {
+		source := strings.TrimSpace(sourceIssueID)
+		if source == "" {
+			return nil, fmt.Errorf("local tracker: blocked_by_source needs a source issue")
+		}
+		f.BlockedBy = []string{source}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.refreshLocked(); err != nil {
+	ident, err := t.createLocked(f)
+	if err != nil {
 		return nil, err
+	}
+	is, _ := t.issueLocked(ident)
+	return &is, nil
+}
+
+// createLocked writes f as a new issue with the next free number for the
+// prefix, stamping created and updated. Caller holds mu.
+func (t *Tracker) createLocked(f issueFile) (string, error) {
+	if err := t.refreshLocked(); err != nil {
+		return "", err
 	}
 	next := 1
 	for id := range t.entries {
@@ -441,18 +515,19 @@ func (t *Tracker) CreateIssue(_ context.Context, _ string, title, body, stateNam
 	}
 	ident := fmt.Sprintf("%s-%d", t.prefix, next)
 	now := t.now().UTC().Truncate(time.Second)
-	f := issueFile{Title: strings.TrimSpace(title), State: stateName, Body: strings.TrimSpace(body),
-		Created: &now, Updated: &now, Extra: map[string]any{}}
+	f.Created, f.Updated = &now, &now
+	if f.Extra == nil {
+		f.Extra = map[string]any{}
+	}
 	e := &entry{path: filepath.Join(t.dir, ident+".md")}
 	if _, err := os.Stat(e.path); err == nil {
-		return nil, fmt.Errorf("local tracker: %s already exists", e.path)
+		return "", fmt.Errorf("local tracker: %s already exists", e.path)
 	}
 	if err := t.writeLocked(e, f); err != nil {
-		return nil, err
+		return "", err
 	}
 	t.entries[ident] = e
-	is, _ := t.issueLocked(ident)
-	return &is, nil
+	return ident, nil
 }
 
 // WriteIssue writes a new issue file for identifier (used to seed examples

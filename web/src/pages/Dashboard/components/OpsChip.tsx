@@ -32,12 +32,13 @@ export function OpsChip({
   // it and stay static spans.
   to?: To;
 }) {
-  const className = `inline-flex min-h-9 flex-shrink-0 items-center rounded-[var(--radius-sm)] px-2.5 py-1 text-[12px] font-medium whitespace-nowrap ${
+  // A glass chip; warnings colour the text, dangers also tint the chip.
+  const className = `inline-flex min-h-9 flex-shrink-0 items-center rounded-full px-3.5 py-1 text-[13px] whitespace-nowrap ${
     danger
-      ? 'bg-theme-danger-soft text-theme-danger-text'
+      ? 'bg-theme-danger-soft text-theme-danger-text border-theme-danger-soft border font-medium'
       : warning
-        ? 'bg-theme-warning-soft text-theme-warning-text'
-        : 'bg-theme-bg-soft text-theme-text-secondary'
+        ? 'glass-chip text-theme-warning-text font-medium'
+        : 'glass-chip text-theme-text'
   }`;
   const common = {
     title,

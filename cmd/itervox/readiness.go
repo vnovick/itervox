@@ -27,7 +27,8 @@ func readinessSignals(r orchestrator.Readiness, startedAt time.Time, adapter str
 		ConsecutivePollFailures: r.ConsecutivePollFailures,
 		PollFailureThreshold:    r.PollFailureThreshold,
 		ConfigInvalid:           configInvalid != nil,
-		Draining:                r.Draining, // CORE-057
+		Draining:                r.Draining,     // CORE-057
+		PollDegraded:            r.PollDegraded, // #187
 	}
 	if until, open := tracker.SharedRateLimitGate().OpenUntil(adapter); open {
 		u := until.UTC()

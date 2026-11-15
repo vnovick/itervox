@@ -91,8 +91,13 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
 		// Not edited by the dashboard: carried over from the saved profile
 		// so a dashboard save does not strip them from WORKFLOW.md.
-		PermissionMode:  existingProfile.PermissionMode,
-		RequireEvidence: existingProfile.RequireEvidence,
+		PermissionMode:    existingProfile.PermissionMode,
+		RequireEvidence:   existingProfile.RequireEvidence,
+		CreateIssueLabels: existingProfile.CreateIssueLabels,
+		// #258: likewise the sandbox settings.
+		Isolation:           existingProfile.Isolation,
+		IsolationExtraWrite: existingProfile.IsolationExtraWrite,
+		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {
@@ -136,8 +141,9 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		reviewerChanged = true
 	}
 
-	// Persist profiles + automations + reviewer config in a SINGLE atomic
-	// rewrite of WORKFLOW.md. Previously this issued up to four sequential
+	// Persist profiles + automations + reviewer config in ONE save: a single
+	// atomic rewrite of WORKFLOW.md (the profiles block), after the settings
+	// file write it is transactional with (persistSettings, #239). Previously this issued up to four sequential
 	// writes; a SIGKILL or atomicfs failure between them could leave the file
 	// referencing a renamed profile that the profiles block had not yet been
 	// updated to declare. ApplyAndWriteFrontMatter composes mutators against one
@@ -145,15 +151,13 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 	mutators := []workflow.Mutator{
 		workflow.MutateProfilesBlock(profilesToEntries(finalProfiles)),
 	}
+	var saved []setting
 	if automationsChanged {
-		mutators = append(mutators, workflow.MutateAutomationsBlock(
-			automationconfig.DefinitionsFromConfigs(automations),
-		))
+		// #239: automations live in the settings file; they ride in the
+		// same save as the profiles block.
+		saved = append(saved, setting{Key: "automations", Value: automationsSetting(automationconfig.DefinitionsFromConfigs(automations))})
 	}
-	if reviewerChanged {
-		mutators = append(mutators, workflow.MutateReviewerConfig(reviewerProfile, autoReview))
-	}
-	if err := workflow.ApplyAndWriteFrontMatter(a.workflowPath, mutators...); err != nil {
+	if err := persistProfileSave(a.workflowPath, mutators, saved, reviewerChanged, reviewerProfile, autoReview); err != nil {
 		return err
 	}
 	a.orch.SetProfilesCfg(finalProfiles)
@@ -259,15 +263,13 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	mutators := []workflow.Mutator{
 		workflow.MutateProfilesBlock(profilesToEntries(profiles)),
 	}
+	var saved []setting
 	if automationsChanged {
-		mutators = append(mutators, workflow.MutateAutomationsBlock(
-			automationconfig.DefinitionsFromConfigs(automations),
-		))
+		// #239: automations live in the settings file; they ride in the
+		// same save as the profiles block.
+		saved = append(saved, setting{Key: "automations", Value: automationsSetting(automationconfig.DefinitionsFromConfigs(automations))})
 	}
-	if reviewerChanged {
-		mutators = append(mutators, workflow.MutateReviewerConfig(reviewerProfile, autoReview))
-	}
-	if err := workflow.ApplyAndWriteFrontMatter(a.workflowPath, mutators...); err != nil {
+	if err := persistProfileSave(a.workflowPath, mutators, saved, reviewerChanged, reviewerProfile, autoReview); err != nil {
 		return err
 	}
 	a.orch.SetProfilesCfg(profiles)
@@ -284,4 +286,23 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	}
 	a.notify()
 	return nil
+}
+
+// persistProfileSave writes a profile save: the profiles block stays in
+// WORKFLOW.md (the profile editor's home), and the settings the save also
+// changes — the automations it renamed or disabled (#239) and the reviewer
+// it cleared or renamed — go to the settings file through persistSettings,
+// with the profiles rewrite riding in persistSettings' one WORKFLOW.md write.
+// Writing the reviewer into WORKFLOW.md instead (MutateReviewerConfig removes
+// the keys to clear them) would let a reviewer the dashboard saved to the
+// settings file show through again at the next load, naming a profile that
+// no longer exists.
+func persistProfileSave(path string, mutators []workflow.Mutator, saved []setting, reviewerChanged bool, reviewerProfile string, autoReview bool) error {
+	if reviewerChanged {
+		saved = append(saved, reviewerSettings(reviewerProfile, autoReview)...)
+	}
+	if len(saved) > 0 {
+		return persistSettings(path, saved, mutators...)
+	}
+	return workflow.ApplyAndWriteFrontMatter(path, mutators...)
 }

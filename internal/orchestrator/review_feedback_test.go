@@ -153,13 +153,3 @@ func TestReviewerBaselineSurvivesARetry(t *testing.T) {
 	_, err := os.Stat(reviewerBaselinePath(ws, "ENG-1", "reviewer"))
 	assert.True(t, os.IsNotExist(err))
 }
-
-// TestOperatorProfileClearsReviewerInjection (#79): an operator setting a
-// profile replaces a pending reviewer injection, so the next run is not
-// treated as a read-only reviewer.
-func TestOperatorProfileClearsReviewerInjection(t *testing.T) {
-	o := &Orchestrator{issueProfiles: map[string]string{"ENG-1": "reviewer"}, reviewerInjectedProfiles: map[string]struct{}{"ENG-1": {}}}
-	require.True(t, o.isReviewerInjected("ENG-1"))
-	o.SetIssueProfile("ENG-1", "implementer")
-	assert.False(t, o.isReviewerInjected("ENG-1"))
-}

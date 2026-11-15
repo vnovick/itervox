@@ -49,7 +49,7 @@ Then ask Claude Code to "deploy itervox to GCP" (or AWS, or Azure). The skill fe
 
 # 2. On the VM: install deps, itervox, the systemd unit and the data disk
 #    (provision.sh prints the stable --data-disk path for your cloud)
-sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.2.3 \
+sudo ./bootstrap.sh --repo git@github.com:you/yourproject.git --version v0.3.1 \
   --data-disk /dev/disk/by-id/google-itervox-data
 
 # 3. Fill in secrets, re-run the read-only deploy doctor until it reports no [fail], start
@@ -209,9 +209,8 @@ liveness — see [below](#official-container-image).
 
 ## Running under systemd
 
-`itervox` starts a Bubbletea TUI when run interactively. Headless this is fine:
-a TTY-ownership guard detects the absence of a controlling terminal, logs
-`statusui: refusing to start TUI`, and the daemon continues. No flag needed.
+`itervox` always runs headless: there is no terminal UI (it was removed in
+v0.3), so no flag is needed. Watch it from a shell with `itervox watch`.
 
 A few unit settings are load-bearing and worth understanding before you edit
 them:
@@ -226,8 +225,7 @@ them:
 - **`RequiresMountsFor=/srv/itervox`** — the service account's HOME
   (`/srv/itervox/home`) and the checkout live on the data disk; the unit never
   starts on an unmounted directory.
-- **`StandardInput=null`** — gives the TUI guard the "no terminal" signal it
-  needs to fall back to headless cleanly.
+- **`StandardInput=null`** — the daemon reads nothing from stdin.
 - **Deliberately modest hardening.** Agents run arbitrary project build and test
   commands inside git worktrees, so `ProtectSystem=strict`, `ReadOnlyPaths`, or
   `PrivateDevices` break them in ways that are tedious to diagnose. The unit
@@ -241,8 +239,7 @@ sinks — the rotating file and stderr, hence journald — emit redacted JSON
 instead of logfmt, and your cloud metrics and alerts can query fields rather
 than regex unstructured text.
 
-When there is no controlling terminal — which is always the case under systemd —
-the daemon **fans logs out to both stderr and the rotating file**, so
+The daemon **fans logs out to both stderr and the rotating file**, so
 `journalctl -u itervox` keeps working for the whole run, not just the startup
 banner (the tokenised dashboard URL is withheld from it — see Dashboard
 authentication above). The file sink is at:
@@ -253,8 +250,8 @@ authentication above). The file sink is at:
 
 (or `~/.itervox/logs/workflow/<project>/itervox.log` when no `project_slug` is set)
 
-Tail either one. Interactive runs send logs to the file only, so the TUI is not
-fighting the log stream for the terminal.
+Tail either one, or run `itervox watch` on the VM for a live panel of the
+agents.
 :::
 
 `deploy/monitoring/` has a `heartbeat-metrics.sh` that parses

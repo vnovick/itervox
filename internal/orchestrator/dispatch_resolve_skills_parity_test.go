@@ -23,8 +23,9 @@ func TestSkillsProfileBackendMatchesDispatchResolver(t *testing.T) {
 		"OPENAI_API_KEY=x codex exec", "CODEX_HOME=/x claude",
 		config.BackendHintPrefix + "codex ./wrap", config.BackendHintPrefix + "claude codex",
 		config.BackendHintPrefix + "gemini ./wrap", " codex", "codex ", "Codex",
+		"opencode --model a/b", "/opt/bin/cursor-agent", config.BackendHintPrefix + "custom ./wrap",
 	}
-	backends := []string{"", "claude", "codex", " codex", "codex ", "Codex", "gemini"}
+	backends := []string{"", "claude", "codex", " codex", "codex ", "Codex", "gemini", "opencode", "cursor", "custom"}
 	checked := 0
 	for _, dc := range commands {
 		for _, db := range backends {
@@ -35,8 +36,8 @@ func TestSkillsProfileBackendMatchesDispatchResolver(t *testing.T) {
 						DefaultCommand: dc, DefaultBackend: db, Profile: &profile,
 					})
 					want := "claude"
-					if agent.BackendFromCommand(target.RunnerCommand) == "codex" {
-						want = "codex"
+					if b := agent.BackendFromCommand(target.RunnerCommand); config.IsSupportedBackend(b) {
+						want = b
 					}
 					got := skills.ProfileBackend(profile, skills.RefBackendDefaults{Command: dc, Backend: db})
 					if got != want {

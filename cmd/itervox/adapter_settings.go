@@ -13,17 +13,21 @@ import (
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
-	"github.com/vnovick/itervox/internal/workflow"
 )
 
 // adapter_settings.go houses the settings/config-mutating methods of
 // orchestratorAdapter. Extracted from main.go (G-12, gaps_280426_2) so the
 // entry-point file stays under its size-budget cap. All methods follow the
 // persist-then-mutate convention enforced by adapter_convention_test.go, and
-// every setter that writes WORKFLOW.md holds beginSettingsSave for the whole
-// write-then-apply so the file and memory cannot diverge (V4).
+// every setter that writes its settings holds beginSettingsSave for the whole
+// write-then-apply so the files and memory cannot diverge (V4).
+//
+// Where a save goes (#129, #239): keys in the layered sections (agent,
+// automations, dependencies, hooks, hub, polling, server, tracker, workspace)
+// go to the settings file through persistSettings, which also moves the key
+// out of WORKFLOW.md. Only the file-backed profiles stay in WORKFLOW.md.
 
-// SetWorkers persists max_concurrent_agents to WORKFLOW.md FIRST, then
+// SetWorkers persists agent.max_concurrent_agents FIRST, then
 // applies the change to the orchestrator. Persist-then-mutate matches the
 // convention used by every other setter in this adapter (UpsertProfile,
 // SetAutomations, etc.) — without it, an HTTP 200 could be returned while
@@ -36,7 +40,7 @@ func (a *orchestratorAdapter) SetWorkers(n int) error {
 	}
 	defer unlock()
 	clamped := max(1, min(n, 50))
-	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", clamped); err != nil {
+	if err := persistMaxWorkers(a.workflowPath, clamped); err != nil {
 		return fmt.Errorf("persist max_concurrent_agents: %w", err)
 	}
 	a.orch.SetMaxWorkers(clamped)
@@ -51,7 +55,7 @@ func (a *orchestratorAdapter) BumpWorkers(delta int) (int, error) {
 	defer unlock()
 	current := a.orch.MaxWorkers()
 	next := max(1, min(current+delta, 50))
-	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", next); err != nil {
+	if err := persistMaxWorkers(a.workflowPath, next); err != nil {
 		return 0, fmt.Errorf("persist max_concurrent_agents: %w", err)
 	}
 	a.orch.SetMaxWorkers(next)
@@ -151,7 +155,9 @@ func (a *orchestratorAdapter) SetAutomations(automations []server.AutomationDef)
 	if err := config.ValidateAutomationsWithDefaults(compiled, a.orch.ProfilesCfg(), a.cfg.Agent.Command); err != nil {
 		return err
 	}
-	if err := workflow.PatchAutomationsBlock(a.workflowPath, automations); err != nil {
+	// #239: automations is a layered section; the list goes to the settings
+	// file and leaves WORKFLOW.md (with the legacy schedules block).
+	if err := persistSettings(a.workflowPath, []setting{{Key: "automations", Value: automationsSetting(automations)}}); err != nil {
 		return err
 	}
 	// no rollback needed: SetAutomationsCfg is infallible (slice assignment under cfgMu).
@@ -199,20 +205,20 @@ func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
 	if err := config.ValidateAutoClearAutoReview(enabled, reviewerProfile, autoReview); err != nil {
 		return err
 	}
-	if err := workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", enabled); err != nil {
+	if err := persistSettings(a.workflowPath, []setting{{Key: "workspace.auto_clear", Value: enabled}}); err != nil {
 		return err
 	}
 	runSettingsBeforeApply("workspace.auto_clear")
 	if err := a.orch.SetAutoClearWorkspaceCfg(enabled); err != nil {
 		return rollbackSettingsWrite("workspace.auto_clear", err, func() error {
-			return workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", prevEnabled)
+			return persistSettings(a.workflowPath, []setting{{Key: "workspace.auto_clear", Value: prevEnabled}})
 		})
 	}
 	a.notify()
 	return nil
 }
 
-// SetDepsAnalysisMode persists dependencies.analysis_mode to WORKFLOW.md and
+// SetDepsAnalysisMode persists dependencies.analysis_mode to the settings file (#239) and
 // then updates the running config, rolling the file back if the runtime
 // update is rejected — same two-phase shape as SetAutoClearWorkspace.
 func (a *orchestratorAdapter) SetDepsAnalysisMode(mode string) error {
@@ -225,12 +231,12 @@ func (a *orchestratorAdapter) SetDepsAnalysisMode(mode string) error {
 		return err
 	}
 	prev := a.orch.DepsAnalysisModeCfg()
-	if err := workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", mode); err != nil {
+	if err := persistDepsAnalysisMode(a.workflowPath, mode); err != nil {
 		return err
 	}
 	if err := a.orch.SetDepsAnalysisModeCfg(mode); err != nil {
 		return rollbackSettingsWrite("dependencies.analysis_mode", err, func() error {
-			return workflow.PatchDependenciesStringField(a.workflowPath, "analysis_mode", prev)
+			return persistDepsAnalysisMode(a.workflowPath, prev)
 		})
 	}
 	a.notify()
@@ -278,7 +284,7 @@ func (a *orchestratorAdapter) AddSSHHost(host, description string) error {
 	// T-30/T-40: one atomic write covering both `ssh_hosts` and
 	// `ssh_host_descriptions`. The previous two-Patch* sequence had a torn-write
 	// window on SIGKILL between the two writes.
-	if err := workflow.NewDoc(a.workflowPath).SetSSHHosts(hosts, descs).Save(); err != nil {
+	if err := persistSSHHosts(a.workflowPath, hosts, descs); err != nil {
 		return err
 	}
 	// no rollback needed: AddSSHHostCfg is infallible (slice append + map assignment under cfgMu).
@@ -302,7 +308,7 @@ func (a *orchestratorAdapter) RemoveSSHHost(host string) error {
 	}
 	delete(descs, host)
 	// T-30/T-40: atomic cascade — same rationale as AddSSHHost above.
-	if err := workflow.NewDoc(a.workflowPath).SetSSHHosts(nextHosts, descs).Save(); err != nil {
+	if err := persistSSHHosts(a.workflowPath, nextHosts, descs); err != nil {
 		return err
 	}
 	// no rollback needed: RemoveSSHHostCfg is infallible (slice rebuild + map delete under cfgMu).
@@ -317,7 +323,7 @@ func (a *orchestratorAdapter) SetDispatchStrategy(strategy string) error {
 		return lockErr
 	}
 	defer unlock()
-	if err := workflow.PatchAgentStringField(a.workflowPath, "dispatch_strategy", strategy); err != nil {
+	if err := persistSettings(a.workflowPath, []setting{{Key: "agent.dispatch_strategy", Value: strategy}}); err != nil {
 		return err
 	}
 	// no rollback needed: SetDispatchStrategyCfg is infallible (string assignment under cfgMu).
@@ -328,6 +334,12 @@ func (a *orchestratorAdapter) SetDispatchStrategy(strategy string) error {
 
 func (a *orchestratorAdapter) ProvideInput(identifier, message string) error {
 	return mapIssueControlErr(a.orch.ProvideInput(identifier, message))
+}
+
+// ProvideInputVia implements server.InputViaProvider (#230): a human reply
+// that arrived through Slack.
+func (a *orchestratorAdapter) ProvideInputVia(identifier, message, via string) error {
+	return mapIssueControlErr(a.orch.ProvideInputVia(identifier, message, via))
 }
 
 func (a *orchestratorAdapter) DismissInput(identifier string) error {
@@ -344,7 +356,7 @@ func (a *orchestratorAdapter) SetInlineInput(enabled bool) error {
 		return lockErr
 	}
 	defer unlock()
-	if err := workflow.PatchAgentBoolField(a.workflowPath, "inline_input", enabled); err != nil {
+	if err := persistSettings(a.workflowPath, []setting{{Key: "agent.inline_input", Value: enabled}}); err != nil {
 		return err
 	}
 	a.orch.SetInlineInputCfg(enabled)

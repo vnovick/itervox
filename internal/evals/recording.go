@@ -11,7 +11,14 @@ import (
 // LoadRecording reads a recording.jsonl file from a scenario directory and
 // flattens it into action / comment slices the judges can inspect.
 func LoadRecording(scenario Scenario) (Recording, error) {
-	path := RecordingPath(scenario)
+	return LoadRecordingFile(RecordingPath(scenario))
+}
+
+// LoadRecordingFile reads any recording-format file (a promoted fixture, a
+// candidate, or a live run's output). A live recording's "meta" line only
+// contributes its prompt digest (#201); "result" lines and unknown events
+// are skipped, so a live recording replays in recorded mode unchanged.
+func LoadRecordingFile(path string) (Recording, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -30,14 +37,17 @@ func LoadRecording(scenario Scenario) (Recording, error) {
 			continue
 		}
 		var event struct {
-			Event  string `json:"event"`
-			Action string `json:"action"`
-			Body   string `json:"body"`
+			Event        string `json:"event"`
+			Action       string `json:"action"`
+			Body         string `json:"body"`
+			PromptDigest string `json:"prompt_digest"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
 		switch event.Event {
+		case "meta":
+			rec.PromptDigest = event.PromptDigest
 		case "action":
 			rec.Actions = append(rec.Actions, event.Action)
 		case "comment":
@@ -58,12 +68,8 @@ func EvaluateScenario(scenario Scenario) ScenarioVerdict {
 		verdict.Stale = true
 		return verdict
 	}
-	if scenario.Expect.RequiredActionCalls == nil &&
-		scenario.Expect.MarkerPhrases == nil &&
-		scenario.Expect.ForbiddenActions == nil {
-		// expected.yaml not yet populated for this fixture. Load it.
-		_ = readExpectedYAML(scenario.Dir, &scenario.Expect)
-	}
+	// expected.yaml not yet populated for this fixture? Load it.
+	scenario = withExpectation(scenario)
 	// gaps_11 G-4 — surface stale recordings instead of silently trusting
 	// them: a recording older than its source files still passes the judges,
 	// but the verdict carries Stale=true so Report.Format flags it with
@@ -75,6 +81,9 @@ func EvaluateScenario(scenario Scenario) ScenarioVerdict {
 		fileMtimeUnix(filepath.Join(scenario.Dir, "INSTRUCTIONS.md")))
 	verdict.Deterministic = JudgeDeterministic(scenario, recording)
 	verdict.Structural = JudgeStructural(scenario, recording)
+	if d := recording.PromptDigest; d != "" {
+		verdict.PromptDigest, verdict.DigestSource = d, DigestSourceRecording
+	}
 	return verdict
 }
 
@@ -112,6 +121,8 @@ func readExpectedYAML(dir string, into *ScenarioExpect) error {
 				into.ForbiddenActions = append(into.ForbiddenActions, value)
 			case "marker_phrases":
 				into.MarkerPhrases = append(into.MarkerPhrases, value)
+			case "forbidden_phrases":
+				into.ForbiddenPhrases = append(into.ForbiddenPhrases, value)
 			case "blocked_labels":
 				into.BlockedLabels = append(into.BlockedLabels, value)
 			}

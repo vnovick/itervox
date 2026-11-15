@@ -156,26 +156,36 @@ func TestReconcileKeepsReviewerOnTerminalCompletionState(t *testing.T) {
 	}
 }
 
-// TestReconcileLeavesARunWhoseExitIsPending: a worker that moved its issue
-// to a terminal completion_state and has already sent its exit is left to
-// that exit. Stopping it first made its success exit find no Running entry,
-// so no review started. A run without a pending exit is still stopped.
-func TestReconcileLeavesARunWhoseExitIsPending(t *testing.T) {
-	for _, pending := range []bool{true, false} {
+// TestReconcileNeverStopsAFinishingRun: a run in the finishing phase (its
+// worker moved the issue to a terminal completion_state, or is sending its
+// exit) is left to its own exit, by tracker reconciliation and by stall
+// detection alike (#125). Stopping it first made its success exit find no
+// Running entry, so no review started. A run that is not finishing is still
+// stopped.
+func TestReconcileNeverStopsAFinishingRun(t *testing.T) {
+	for _, finishing := range []bool{true, false} {
 		cfg := cfgWithStall(300000)
 		state := orchestrator.NewState(cfg)
 		now := time.Now()
 		state.Running["id1"] = runningEntry("id1", "In Progress", &now)
-		if pending {
-			state.ExitPending = map[string]bool{"id1": true}
+		stale := now.Add(-time.Hour) // long past the stall timeout
+		state.Running["id2"] = runningEntry("id2", "In Progress", &stale)
+		if finishing {
+			state.Running["id1"].Phase = orchestrator.RunFinishing
+			state.Running["id2"].Phase = orchestrator.RunFinishing
 		}
-		mt := tracker.NewMemoryTracker([]domain.Issue{makeIssue("id1", "ENG-1", "Done", nil, nil)},
-			cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+		mt := tracker.NewMemoryTracker([]domain.Issue{
+			makeIssue("id1", "ENG-1", "Done", nil, nil),
+			makeIssue("id2", "ENG-2", "In Progress", nil, nil),
+		}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 		events := make(chan orchestrator.OrchestratorEvent, 10)
 
+		state = orchestrator.ReconcileStalls(state, cfg, now, events, nil)
 		state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
-		_, still := state.Running["id1"]
-		assert.Equal(t, pending, still, "exit pending: %v", pending)
-		assert.Equal(t, pending, len(events) == 0, "no reconcile exit for a run whose own exit is pending")
+		_, tracked := state.Running["id1"]
+		assert.Equal(t, finishing, tracked, "terminal issue, finishing: %v", finishing)
+		_, stalled := state.Running["id2"]
+		assert.Equal(t, finishing, stalled, "stalled run, finishing: %v", finishing)
+		assert.Equal(t, finishing, len(events) == 0, "no reconcile exit for a finishing run")
 	}
 }

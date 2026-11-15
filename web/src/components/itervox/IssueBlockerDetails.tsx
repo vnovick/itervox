@@ -33,7 +33,7 @@ export function IssueBlockerDetails({ issue, attention }: IssueBlockerDetailsPro
 
       {issue.ineligibleReason && (
         <div>
-          <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Not dispatchable</h4>
+          <h4 className="field-label mb-1.5">Not dispatchable</h4>
           {/* CORE-080 — same label table as the card/row chip; the raw
               machine reason stays visible here for debugging. */}
           <p
@@ -50,7 +50,7 @@ export function IssueBlockerDetails({ issue, attention }: IssueBlockerDetailsPro
 
       {blockers.length > 0 && (
         <div>
-          <h4 className="mb-1 text-xs font-medium tracking-wider uppercase">Blocked by</h4>
+          <h4 className="field-label mb-1.5">Blocked by</h4>
           <div className="flex flex-wrap gap-1.5">
             {blockers.map((blocker) => (
               <span

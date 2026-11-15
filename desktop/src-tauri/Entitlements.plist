@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened-runtime entitlements of Itervox.app (#130). The app is not
+     sandboxed: it spawns the bundled itervox daemon (Contents/MacOS/itervox),
+     reads daemons' token files, and opens dashboards served over loopback.
+     The network keys document that it is an HTTP client (daemon APIs, the
+     update check) and that the daemons it starts serve HTTP. No JIT, no
+     unsigned executable memory, no library-validation exception: none are
+     needed (WKWebView runs its JIT out of process). -->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>

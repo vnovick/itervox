@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent_test
 
 // M1-B2 regression tests for the SSH-hosted agent and sublog paths:

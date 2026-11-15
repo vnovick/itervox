@@ -29,12 +29,9 @@ import (
 // (localPromptRedirect), so a login profile that reads stdin sees
 // /dev/null as before and cannot eat the prompt. `< path` is the same in
 // sh, bash, zsh, dash, ksh and fish. SSH turns: see remotePromptRedirect.
-
-// localPromptRedirect is appended to the local login-shell command: the
-// CLI's stdin is the prompt file passed as fd 3 (setPromptFD3). /dev/fd/N
-// exists on Linux and macOS; on Linux opening it reopens the unlinked file
-// through /proc, on macOS it dups the descriptor (offset 0 either way).
-const localPromptRedirect = " < /dev/fd/3"
+// Windows cannot pass a descriptor beyond stdio to a child (exec rejects
+// ExtraFiles there), so its Git Bash login shell gets the prompt on stdin
+// with no redirect (prompt_stdin_windows.go).
 
 // localPromptRedirectFor returns localPromptRedirect when the turn has a
 // prompt file, and nothing otherwise (a bare claude resume).
@@ -53,13 +50,9 @@ func localPromptRedirectFor(f *os.File) string {
 // pipe) needs no writer goroutine and never blocks, whether or not the
 // agent reads it.
 func promptFile(prompt string) (*os.File, error) {
-	f, err := os.CreateTemp("", "itervox-prompt-*")
+	f, err := unlinkedTempFile()
 	if err != nil {
-		return nil, fmt.Errorf("agent: prompt file: %w", err)
-	}
-	if err := os.Remove(f.Name()); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("agent: prompt file: unlink: %w", err)
+		return nil, err
 	}
 	if _, err := io.WriteString(f, prompt); err != nil {
 		_ = f.Close()
@@ -85,13 +78,5 @@ func closePromptFile(f *os.File) {
 func setPromptStdin(cmd *exec.Cmd, f *os.File) {
 	if f != nil {
 		cmd.Stdin = f
-	}
-}
-
-// setPromptFD3 passes f to the login shell as fd 3 (ExtraFiles[0]), for
-// localPromptRedirect; stdin stays /dev/null.
-func setPromptFD3(cmd *exec.Cmd, f *os.File) {
-	if f != nil {
-		cmd.ExtraFiles = []*os.File{f}
 	}
 }

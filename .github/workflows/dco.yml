@@ -1,0 +1,64 @@
+name: DCO
+
+# Developer Certificate of Origin check for EXTERNAL contributions. Every
+# non-merge commit in the pull request must carry a `Signed-off-by:` line whose
+# email equals the commit author email (`git commit -s`). The check is the
+# repo's own scripts/check-dco.sh (tested by `make dco-test`), not a
+# third-party action. See DCO and CONTRIBUTING.md#developer-certificate-of-origin-dco.
+#
+# Scope — the job runs only when BOTH hold:
+#   1. the PR comes from a fork: head repo != this repo. Maintainer branches
+#      pushed to vnovick/itervox itself (including the stacked release PRs,
+#      whose commits carry no Signed-off-by) are skipped;
+#   2. the PR author is not allowlisted: vnovick, claude, or any `*[bot]`
+#      account (dependabot[bot], github-actions[bot], ...). Same allowlist as
+#      the CLA workflow (cla.yml).
+# A skipped job reports "Skipped", which GitHub treats as passing for a
+# required status check, so in-repo PRs never turn red because of it.
+#
+# Fork-safe by construction: `pull_request` (never `pull_request_target`),
+# a read-only token, no secrets. The PR's commits are checked out only to be
+# read by `git log`; nothing from the PR is executed — the script itself comes
+# from the base branch.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    name: DCO sign-off
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository
+      && !contains(fromJSON('["vnovick", "claude"]'), github.event.pull_request.user.login)
+      && !endsWith(github.event.pull_request.user.login, '[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out base branch (trusted script)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Fetch PR commits (data only, never executed)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Signed-off-by on every commit
+        working-directory: pr
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash "$GITHUB_WORKSPACE/base/scripts/check-dco.sh" "$BASE_SHA" "$HEAD_SHA"

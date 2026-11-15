@@ -1,0 +1,9 @@
+node_modules/
+.itervox/
+!.itervox/
+!.itervox/agents/
+!.itervox/agents/**
+!.itervox/handoff/
+!.itervox/handoff/**
+WORKFLOW.md.bak
+.WORKFLOW.md.lock

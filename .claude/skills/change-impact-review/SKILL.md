@@ -60,7 +60,7 @@ itervox has two independent representations of many types: Go structs in `intern
 List every test file that needs updating:
 - Go: `grep -rn "TheSymbol" --include="*_test.go"`
 - TS: `grep -rn "schemaName" web/src/**/__tests__/`
-- TUI golden snapshots: `internal/statusui/` may need regenerating via `make tui-golden`
+- Terminal commands: `itervox watch` (`cmd/itervox/watch*.go`) decodes `/api/v1/state`, the feed and the run context; its tests are `cmd/itervox/watch_test.go`
 - Tracker adapter tests under `internal/tracker/`
 
 ### 5. Orchestrator impact

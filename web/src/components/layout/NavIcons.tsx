@@ -1,8 +1,12 @@
 import {
   Bot,
+  Brain,
+  FolderGit2,
   LayoutDashboard,
   Logs,
+  MessagesSquare,
   type LucideProps,
+  ScrollText,
   Settings,
   TimerReset,
   Workflow,
@@ -37,4 +41,20 @@ export function AutomationsIcon({ className }: { className?: string }) {
 
 export function SettingsIcon({ className }: { className?: string }) {
   return <Settings {...iconProps(className)} />;
+}
+
+export function SessionsIcon({ className }: { className?: string }) {
+  return <MessagesSquare {...iconProps(className)} />;
+}
+
+export function RulesIcon({ className }: { className?: string }) {
+  return <ScrollText {...iconProps(className)} />;
+}
+
+export function RepoIcon({ className }: { className?: string }) {
+  return <FolderGit2 {...iconProps(className)} />;
+}
+
+export function MemoryIcon({ className }: { className?: string }) {
+  return <Brain {...iconProps(className)} />;
 }

@@ -198,7 +198,7 @@ func TestTildeExpansionOnWorkspaceRoot(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	home, _ := os.UserHomeDir()
-	assert.Equal(t, home+"/itervox_ws", cfg.Workspace.Root)
+	assert.Equal(t, filepath.Join(home, "itervox_ws"), cfg.Workspace.Root)
 }
 
 func TestAgentCommandNotTildeExpanded(t *testing.T) {
@@ -224,6 +224,26 @@ func TestMaxRetriesZeroMeansUnlimited(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, 0, cfg.Agent.MaxRetries)
+}
+
+func TestAgentBudget(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want config.BudgetConfig
+	}{
+		{"absent means no limit", "", config.BudgetConfig{}},
+		{"tokens and cost", "agent:\n  budget:\n    tokens: 500000\n    cost_usd: 2.5\n", config.BudgetConfig{Tokens: 500000, CostUSD: 2.5}},
+		{"negative is no limit", "agent:\n  budget:\n    tokens: -1\n    cost_usd: -3\n", config.BudgetConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(workflowWithContent(t, minimal(tc.yaml)))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Agent.Budget)
+			assert.Equal(t, tc.want != config.BudgetConfig{}, cfg.Agent.Budget.Enabled())
+		})
+	}
 }
 
 func TestDefaultAutomationQueueLength(t *testing.T) {
@@ -290,13 +310,62 @@ func TestTrackerOutboxExplicitTrue(t *testing.T) {
 func TestTrackerStoreConfig(t *testing.T) {
 	cfg, err := config.Load(workflowWithContent(t, minimal("")))
 	require.NoError(t, err)
-	assert.False(t, cfg.Tracker.Store.Enabled)
+	assert.True(t, cfg.Tracker.Store.Enabled, "#132: on by default")
 	assert.Equal(t, 60000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 3600000, cfg.Tracker.Store.FullSyncIntervalMs, "#114: a full pull hourly by default")
 
-	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n")))
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n    sync_interval_ms: 120000\n    full_sync_interval_ms: 900000\n")))
 	require.NoError(t, err)
 	assert.True(t, cfg.Tracker.Store.Enabled)
 	assert.Equal(t, 120000, cfg.Tracker.Store.SyncIntervalMs)
+	assert.Equal(t, 900000, cfg.Tracker.Store.FullSyncIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: false\n")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Store.Enabled, "the opt-out")
+}
+
+// TestAutomationPollIntervalConfigRoundTrip pins polling.automation_interval_ms
+// (#155): 15s when absent, the configured value when set, and the default
+// again for zero or a negative value (positiveIntField).
+func TestAutomationPollIntervalConfigRoundTrip(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Equal(t, 15000, cfg.Polling.AutomationIntervalMs)
+	assert.Equal(t, config.DefaultAutomationPollIntervalMs, cfg.Polling.AutomationIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("polling:\n  interval_ms: 30000\n  automation_interval_ms: 120000\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 120000, cfg.Polling.AutomationIntervalMs)
+	assert.Equal(t, 30000, cfg.Polling.IntervalMs, "the candidate poll keeps its own interval")
+
+	for _, v := range []string{"0", "-5"} {
+		cfg, err = config.Load(workflowWithContent(t, minimal("polling:\n  automation_interval_ms: "+v+"\n")))
+		require.NoError(t, err)
+		assert.Equal(t, 15000, cfg.Polling.AutomationIntervalMs, "non-positive %s falls back to the default", v)
+	}
+}
+
+// TestTrackerPushIntervalConfigRoundTrip pins tracker.push_interval_ms
+// (#115): 10s when absent, the configured value when set, an explicit 0
+// kept (batching off), and the default again for a negative value.
+func TestTrackerPushIntervalConfigRoundTrip(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.Equal(t, 10000, cfg.Tracker.PushIntervalMs)
+	assert.Equal(t, config.DefaultTrackerPushIntervalMs, cfg.Tracker.PushIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  push_interval_ms: 30000\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 30000, cfg.Tracker.PushIntervalMs)
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  push_interval_ms: 0\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 0, cfg.Tracker.PushIntervalMs, "an explicit 0 turns batching off")
+
+	cfg, err = config.Load(workflowWithContent(t, minimal("  push_interval_ms: -5\n")))
+	require.NoError(t, err)
+	assert.Equal(t, 10000, cfg.Tracker.PushIntervalMs, "a negative value falls back to the default")
 }
 
 func TestMaxConcurrentAgentsByStateNormalized(t *testing.T) {
@@ -507,7 +576,7 @@ Prompt.
 
 	_, err := config.Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), ".itervox/agents/implementer/INSTRUCTIONS.md")
+	assert.Contains(t, err.Error(), filepath.FromSlash(".itervox/agents/implementer/INSTRUCTIONS.md"))
 }
 
 func TestSchema2ProfileValidatesFilesBeforeCommand(t *testing.T) {
@@ -532,7 +601,7 @@ Prompt.
 
 	_, err := config.Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), ".itervox/agents/implementer/SOUL.md")
+	assert.Contains(t, err.Error(), filepath.FromSlash(".itervox/agents/implementer/SOUL.md"))
 }
 
 func TestSchema2ProfileRejectsInlinePrompt(t *testing.T) {
@@ -701,6 +770,32 @@ func TestAgentProfileCreateIssueStateField(t *testing.T) {
 	require.NotNil(t, cfg.Agent.Profiles)
 	assert.Equal(t, []string{"create_issue"}, cfg.Agent.Profiles["triage"].AllowedActions)
 	assert.Equal(t, "Todo", cfg.Agent.Profiles["triage"].CreateIssueState)
+}
+
+// TestAgentProfileCreateIssueLabelsField (#253): create_issue_labels round-
+// trips from WORKFLOW.md (trimmed, blanks and case-insensitive duplicates
+// dropped, first spelling and order kept) and is empty when absent.
+func TestAgentProfileCreateIssueLabelsField(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    splitter:
+      command: claude
+      allowed_actions: [create_issue]
+      create_issue_state: Todo
+      create_issue_labels:
+        - repo:web
+        - " needs-design "
+        - Repo:Web
+        - ""
+    plain:
+      command: claude
+      allowed_actions: [create_issue]
+      create_issue_state: Todo
+`)
+	cfg, err := config.Load(workflowWithContent(t, content))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"repo:web", "needs-design"}, cfg.Agent.Profiles["splitter"].CreateIssueLabels)
+	assert.Empty(t, cfg.Agent.Profiles["plain"].CreateIssueLabels, "absent key: no labels allowed")
 }
 
 func TestAgentProfileEnabledField(t *testing.T) {
@@ -1769,4 +1864,31 @@ func TestCommentCommandsConfig(t *testing.T) {
 	err = config.ValidateDispatch(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tracker.comment_commands is only supported with tracker.kind: github")
+}
+
+// TestTrackerWebhooksConfig (#131): off by default; on, it needs the store
+// (on by default since #132) and a secret, which resolves from the environment.
+func TestTrackerWebhooksConfig(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.False(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, 600000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	t.Setenv("ITERVOX_TEST_WEBHOOK_SECRET", "s3cret-0123456789abcdef")
+	cfg, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_WEBHOOK_SECRET\n    safety_net_interval_ms: 900000\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Webhooks.Enabled)
+	assert.Equal(t, "s3cret-0123456789abcdef", cfg.Tracker.Webhooks.Secret)
+	assert.Equal(t, 900000, cfg.Tracker.Webhooks.SafetyNetIntervalMs)
+
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: false\n  webhooks:\n    enabled: true\n    secret: x\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks needs tracker.store.enabled")
+	// #132: the store is on by default, so webhooks need no store block.
+	cfg, err = config.Load(workflowWithContent(t, minimal("  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_WEBHOOK_SECRET\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Tracker.Webhooks.Enabled)
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: $ITERVOX_TEST_UNSET_SECRET\n")))
+	assert.ErrorContains(t, err, "tracker.webhooks.secret is empty")
+	_, err = config.Load(workflowWithContent(t, minimal("  store:\n    enabled: true\n  webhooks:\n    enabled: true\n    secret: short\n")))
+	assert.ErrorContains(t, err, "shorter than 16 characters")
 }

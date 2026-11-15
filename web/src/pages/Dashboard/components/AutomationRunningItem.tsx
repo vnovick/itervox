@@ -17,21 +17,17 @@ export function AutomationRunningItem({
   return (
     <div
       data-testid={`automation-running-card-${row.identifier}`}
-      className="grid gap-2 px-4 py-3 lg:grid-cols-[1.1fr_0.8fr_1.1fr_0.9fr_0.7fr] lg:items-center lg:gap-3"
+      className="grid gap-2 px-2.5 py-2.5 text-[13px] lg:grid-cols-[1.1fr_0.8fr_1.1fr_0.9fr_0.7fr] lg:items-center lg:gap-3"
     >
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold">
+          <span className="text-theme-text min-w-0 truncate text-[13px] font-medium">
             {row.automationId ?? '—'}
           </span>
-          <span className="bg-theme-success-soft text-theme-success-text rounded px-1.5 py-0.5 text-[10px] font-medium">
-            running
-          </span>
+          <span className="tag pill-ok">running</span>
         </div>
       </div>
-      <div className="text-theme-text-secondary font-mono text-[11px]">
-        {row.triggerType ?? '—'}
-      </div>
+      <div className="text-theme-text text-[13px]">{row.triggerType ?? '—'}</div>
       <div className="min-w-0">
         <button
           type="button"
@@ -39,7 +35,7 @@ export function AutomationRunningItem({
           onClick={() => {
             onSelectIssue(row.identifier);
           }}
-          className="text-theme-text hover:text-theme-accent-text min-w-0 truncate font-mono text-xs font-semibold"
+          className="text-theme-text hover:text-theme-text min-w-0 truncate text-[13px] font-medium"
         >
           {row.identifier}
         </button>
@@ -47,8 +43,8 @@ export function AutomationRunningItem({
           {row.state}
         </div>
       </div>
-      <div className="text-theme-text-secondary text-xs">{row.backend ?? '—'}</div>
-      <div className="text-theme-muted font-mono text-[11px]" title={row.startedAt}>
+      <div className="text-theme-text-secondary">{row.backend ?? '—'}</div>
+      <div className="text-theme-text-secondary" title={row.startedAt}>
         {queuedAge(row.startedAt)}
       </div>
     </div>

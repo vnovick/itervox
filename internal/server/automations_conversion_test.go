@@ -68,7 +68,7 @@ func TestWriteAutomationValidationErrorMapsRateLimitPolicyFields(t *testing.T) {
 		},
 		{
 			name:  "switch backend",
-			err:   `automation "rl": policy.switch_to_backend must be empty, "claude", or "codex"`,
+			err:   `automation "rl": policy.switch_to_backend must be empty or one of claude, codex, opencode, cursor or custom`,
 			field: "switchToBackend",
 		},
 		{

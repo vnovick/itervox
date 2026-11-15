@@ -1,4 +1,11 @@
-import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Outlet,
+  Navigate,
+  useLocation,
+} from 'react-router';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useItervoxSSE } from './hooks/useItervoxSSE';
 import {
@@ -15,6 +22,10 @@ import {
   AutomationsIcon,
   DashboardIcon,
   LogsIcon,
+  MemoryIcon,
+  RepoIcon,
+  RulesIcon,
+  SessionsIcon,
   SettingsIcon,
   TimelineIcon,
 } from './components/layout/NavIcons';
@@ -24,17 +35,31 @@ import { useDialogLayer } from './components/ui/dialog/useDialogLayer';
 import { useMultiTabWarning } from './hooks/useMultiTabWarning';
 import { useAttentionCount } from './hooks/useOperatorQueue';
 import { useIssueUrlSync } from './hooks/useUrlState';
+import { inputRequiredRowState } from './utils/inputRequired';
 
 import { PageLoader } from './components/common/PageLoader';
 import { CommandPaletteHost } from './components/itervox/CommandPaletteHost';
 import { AttentionNotifier } from './components/itervox/AttentionNotifier';
+import { getApiContext, routerBasename } from './auth/apiBase';
+import { isEmbeddedLanding, useEmbedded, useEmbeddedNavigateHook } from './hooks/useEmbeddedShell';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
+const Sessions = lazy(() => import('./pages/Sessions'));
 const Timeline = lazy(() => import('./pages/Timeline'));
 const Agents = lazy(() => import('./pages/Agents'));
 const Automations = lazy(() => import('./pages/Automations'));
+const Rules = lazy(() => import('./pages/Rules'));
+const RepoAnalysis = lazy(() => import('./pages/Repo'));
+const Memory = lazy(() => import('./pages/Memory'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
+// The issue view (one issue: what its agent is doing, and its changes).
+const Focus = lazy(() => import('./pages/Focus'));
+const HubPage = lazy(() => import('./pages/Hub'));
+// #231 — the phone layout: the hub's /hub/m and one issue at
+// /hub/p/{project}/m/{issue}.
+const HubMobilePage = lazy(() => import('./pages/HubMobile'));
+const MobileIssuePage = lazy(() => import('./pages/MobileIssue'));
 
 /** Tailwind's `md` breakpoint (the drawer is `md:hidden`). */
 const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
@@ -42,33 +67,59 @@ const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
 const NAV_ITEMS = [
   { to: '/', icon: <DashboardIcon />, label: 'Dashboard' },
   { to: '/timeline', icon: <TimelineIcon />, label: 'Timeline' },
+  { to: '/sessions', icon: <SessionsIcon />, label: 'Sessions' },
   { to: '/logs', icon: <LogsIcon />, label: 'Logs' },
   { to: '/agents', icon: <AgentsIcon />, label: 'Agents' },
   { to: '/automations', icon: <AutomationsIcon />, label: 'Automations' },
+  { to: '/rules', icon: <RulesIcon />, label: 'Rules' },
+  { to: '/repo', icon: <RepoIcon />, label: 'Repo Analysis' },
+  { to: '/memory', icon: <MemoryIcon />, label: 'Memory' },
   { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
-function SidebarContent() {
+function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   // CORE-078 — same count as the attention inbox and the page title.
   const attention = useAttentionCount();
+  // #178 — sessions waiting for input badge the Sessions tab.
+  const waitingSessions = useItervoxStore(
+    (s) =>
+      s.snapshot?.inputRequired?.filter((r) => inputRequiredRowState(r) === 'input_required')
+        .length ?? 0,
+  );
+  // #203 — proposed lessons waiting for review badge the Memory item.
+  const proposedLessons = useItervoxStore((s) => s.snapshot?.proposedLessons ?? 0);
+  const badgeFor = (to: string): number =>
+    to === '/'
+      ? attention
+      : to === '/sessions'
+        ? waitingSessions
+        : to === '/memory'
+          ? proposedLessons
+          : 0;
   return (
     <>
-      {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
-          aligns with the dashboard content row in the main column. */}
-      <nav className="flex flex-1 flex-col gap-1">
+      <div className="flex items-center gap-2.5 px-2.5 pt-1 pb-[18px]">
+        <span aria-hidden="true" className="brand-tile" />
+        <span className="text-theme-text text-[17px] font-bold tracking-[-0.01em]">Itervox</span>
+      </div>
+      <nav className="flex flex-col gap-0.5">
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             icon={item.icon}
             label={item.label}
-            badge={item.to === '/' ? attention : 0}
+            badge={badgeFor(item.to)}
+            badgeLabel={item.to === '/memory' ? 'lessons to review' : undefined}
+            onNavigate={onNavigate}
           />
         ))}
       </nav>
 
-      {/* Theme toggle pinned to bottom */}
-      <ThemeToggle />
+      {/* Theme toggle pinned to the bottom */}
+      <div className="mt-auto pt-6">
+        <ThemeToggle />
+      </div>
     </>
   );
 }
@@ -77,6 +128,9 @@ function SidebarContent() {
 // mobile nav drawer's `inert` behavior without needing to also mount the SSE
 // hooks, routes and query client that the default App export wires up.
 export function AppShell() {
+  // Embedded in the desktop app: no sidebar or drawer (the app has its
+  // project rail and a Go menu); the top bar carries the navigation.
+  const embedded = useEmbedded();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
 
@@ -110,10 +164,23 @@ export function AppShell() {
     lockScroll: false,
   });
 
+  if (embedded) {
+    return (
+      <div className="min-h-screen" data-shell="embedded">
+        <main className="flex min-w-0 flex-col px-3 pb-6 md:px-4">
+          <AppHeader />
+          <div className="min-w-0 flex-1 pt-4">
+            <Outlet />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen">
-      {/* Desktop sidebar — hidden on mobile */}
-      <aside className="bg-theme-bg-soft border-theme-line fixed top-0 bottom-0 left-0 z-40 hidden w-16 flex-col items-center gap-2 border-r py-4 md:flex">
+    <div className="min-h-screen md:pl-[232px]">
+      {/* Desktop sidebar: a labelled glass column, inset from the window. */}
+      <aside className="glass-shell fixed top-4 bottom-4 left-4 z-40 hidden w-[200px] flex-col overflow-y-auto px-2.5 py-4 md:flex">
         <SidebarContent />
       </aside>
 
@@ -133,8 +200,7 @@ export function AppShell() {
         }`}
       >
         <div
-          className="absolute inset-0"
-          style={{ background: 'rgba(0,0,0,0.5)' }}
+          className="glass-scrim absolute inset-0 backdrop-blur-[10px] backdrop-brightness-[.85]"
           aria-label="Close navigation"
           role="button"
           tabIndex={0}
@@ -144,21 +210,22 @@ export function AppShell() {
           }}
         />
         <aside
-          className={`bg-theme-bg-soft border-theme-line absolute top-0 bottom-0 left-0 flex w-16 flex-col items-center gap-2 border-r py-4 transition-transform duration-200 ${
-            mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
+          data-testid="mobile-drawer-panel"
+          className={`glass-sheet absolute top-2.5 bottom-2.5 left-2.5 flex w-[250px] max-w-[calc(100vw-40px)] flex-col overflow-y-auto px-2.5 py-5 transition-transform duration-200 [&_.nav-item]:min-h-12 [&_.nav-item]:gap-3 [&_.nav-item]:text-[15px] ${
+            mobileNavOpen ? 'translate-x-0' : '-translate-x-[110%]'
           }`}
         >
-          <SidebarContent />
+          <SidebarContent onNavigate={closeMobileNav} />
         </aside>
       </div>
 
-      <main className="flex min-w-0 flex-1 flex-col md:ml-16">
+      <main className="flex min-w-0 flex-col px-3 pb-6 md:pr-4 md:pl-0">
         <AppHeader
           onMenuClick={() => {
             setMobileNavOpen(true);
           }}
         />
-        <div className="flex-1 p-3 md:p-6">
+        <div className="min-w-0 flex-1 pt-4">
           <Outlet />
         </div>
       </main>
@@ -173,16 +240,43 @@ export { buildSnapshotInvalidationFingerprint };
 // CORE-087 — the route table, exported so a test can render it without the
 // SSE hooks. The catch-all 404 is inside AppShell so it keeps the sidebar and
 // header navigation.
+/**
+ * The board, except on an embedded window's first load of "/" (nothing else
+ * asked for in the URL), which lands on the issue view instead.
+ */
+function BoardIndex() {
+  const location = useLocation();
+  if (isEmbeddedLanding(location)) return <Navigate to="/focus" replace />;
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <PageErrorBoundary>
+        <Dashboard />
+      </PageErrorBoundary>
+    </Suspense>
+  );
+}
+
 export function AppRouteTable() {
   return (
     <Routes>
+      <Route
+        path="/m/:identifier"
+        element={
+          <Suspense fallback={<PageLoader />}>
+            <PageErrorBoundary>
+              <MobileIssuePage />
+            </PageErrorBoundary>
+          </Suspense>
+        }
+      />
       <Route element={<AppShell />}>
+        <Route index element={<BoardIndex />} />
         <Route
-          index
+          path="/focus/:identifier?"
           element={
             <Suspense fallback={<PageLoader />}>
               <PageErrorBoundary>
-                <Dashboard />
+                <Focus />
               </PageErrorBoundary>
             </Suspense>
           }
@@ -203,6 +297,16 @@ export function AppRouteTable() {
             <Suspense fallback={<PageLoader />}>
               <PageErrorBoundary>
                 <Logs />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/sessions"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Sessions />
               </PageErrorBoundary>
             </Suspense>
           }
@@ -238,6 +342,36 @@ export function AppRouteTable() {
           }
         />
         <Route
+          path="/rules"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Rules />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/memory"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Memory />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/repo"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <RepoAnalysis />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
           path="*"
           element={
             <Suspense fallback={<PageLoader />}>
@@ -259,6 +393,8 @@ function AppWithSSE() {
   useMultiTabWarning();
   // CORE-079 — ?issue= <-> the global IssueDetailSlide selection.
   useIssueUrlSync();
+  // Embedded: window.__itervoxNavigate for the desktop app's Go menu.
+  useEmbeddedNavigateHook();
 
   const refreshSnapshot = useItervoxStore((s) => s.refreshSnapshot);
   useEffect(() => {
@@ -277,8 +413,20 @@ function AppWithSSE() {
 }
 
 export default function App() {
+  // #228 — /hub/ is the hub's project switcher; /hub/p/{project}/ is that
+  // project's unchanged dashboard over the hub's proxied API.
+  // #231 — /hub/m is the phone layout (the installed web app's start page).
+  const ctx = getApiContext();
+  if (ctx.mode === 'hub') {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        {ctx.view === 'mobile' ? <HubMobilePage /> : <HubPage />}
+        <Toast />
+      </Suspense>
+    );
+  }
   return (
-    <Router>
+    <Router basename={routerBasename() || undefined}>
       <AppWithSSE />
     </Router>
   );

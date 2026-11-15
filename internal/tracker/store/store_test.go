@@ -170,7 +170,7 @@ func TestStoreWritesApplyAtOnce(t *testing.T) {
 	require.NoError(t, tr.UpdateIssueState(ctx, "1", "Done"))
 	require.NoError(t, tr.UpdateIssueState(ctx, "2", "Todo"))
 	require.NoError(t, tr.SetIssueBranch(ctx, "2", "eng-2-fix"))
-	created, err := tr.CreateIssue(ctx, "2", "Follow-up", "body", "Todo")
+	created, err := tr.CreateIssue(ctx, "2", tracker.NewIssue{Title: "Follow-up", Body: "body", State: "Todo"})
 	require.NoError(t, err)
 
 	cands, err := tr.FetchCandidateIssues(ctx)
@@ -391,7 +391,7 @@ func TestStoreDoesNotSaveBeforeTheFirstPull(t *testing.T) {
 	require.NoError(t, err)
 	_, err = tr.FetchCandidateIssues(t.Context())
 	require.ErrorIs(t, err, errDown)
-	_, err = tr.CreateIssue(t.Context(), "1", "Follow-up", "", "Todo")
+	_, err = tr.CreateIssue(t.Context(), "1", tracker.NewIssue{Title: "Follow-up", State: "Todo"})
 	require.NoError(t, err)
 
 	assert.NoFileExists(t, filepath.Join(dir, "tracker_store.json"))

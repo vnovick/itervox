@@ -1,4 +1,10 @@
-import type { HistoryRow, IssueLogEntry, RunningRow } from '../../../types/schemas';
+import type {
+  HistoryRow,
+  IssueLogEntry,
+  PromptParts,
+  RunningRow,
+  RunSteer,
+} from '../../../types/schemas';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -21,6 +27,16 @@ export interface NormalisedSession {
   // filters on the presence of automationId for its automation chip.
   automationId?: string;
   triggerType?: string;
+  // #186 — run provenance, history rows only.
+  runId?: string;
+  profileName?: string;
+  promptDigest?: string;
+  promptParts?: PromptParts;
+  steers?: RunSteer[];
+  steersDropped?: number;
+  /** Review and continue — the run took an operator review (N comments). */
+  continuedFromReview?: boolean;
+  reviewComments?: number;
 }
 
 export function fromRunning(r: RunningRow): NormalisedSession {
@@ -50,6 +66,14 @@ export function fromHistory(h: HistoryRow): NormalisedSession {
     sessionId: h.sessionId,
     automationId: h.automationId,
     triggerType: h.triggerType,
+    runId: h.runId,
+    profileName: h.profileName,
+    promptDigest: h.promptDigest,
+    promptParts: h.promptParts,
+    steers: h.steers,
+    steersDropped: h.steersDropped,
+    continuedFromReview: h.continuedFromReview,
+    reviewComments: h.reviewComments,
   };
 }
 
@@ -149,22 +173,19 @@ export function filterByRun(logs: IssueLogEntry[], run: NormalisedSession | null
 
 // ─── Status dot style ─────────────────────────────────────────────────────────
 
-export function dotStyle(status: NormalisedSession['status']): React.CSSProperties {
+/** Status-dot tone for a run status; pair with `.status-dot`. */
+export function dotClass(status: NormalisedSession['status']): string {
   switch (status) {
     case 'live':
-      return {
-        background: 'var(--success)',
-        boxShadow: '0 0 0 4px rgba(34,197,94,0.2)',
-      };
+      return 'dot-ok animate-pulse';
     case 'succeeded':
-      return { background: 'var(--accent)' };
+      return 'bg-theme-accent';
     case 'failed':
-      return { background: 'var(--danger)' };
+      return 'dot-danger';
     case 'stalled':
-      return { background: 'var(--warning, #f59e0b)' };
     case 'input_required':
-      return { background: 'var(--warning, #f59e0b)', boxShadow: '0 0 0 4px rgba(245,158,11,0.2)' };
+      return 'dot-warn';
     default:
-      return { background: 'var(--muted)' };
+      return 'dot-idle';
   }
 }

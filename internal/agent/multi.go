@@ -34,7 +34,7 @@ func (m *MultiRunner) RunTurn(
 	backend, cleanedCommand := backendFromCommand(command)
 	cleanedPrompt := stripBackendHintFromPrompt(prompt)
 
-	if backend != "" && backend != "claude" && backend != "codex" {
+	if backend != "" && !config.IsSupportedBackend(backend) {
 		slog.Warn("multi-runner: unsupported backend, falling back to default",
 			"backend", backend, "command", cleanedCommand)
 	}

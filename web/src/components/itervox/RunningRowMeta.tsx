@@ -22,7 +22,7 @@ export function RunningRowMeta({
   return (
     <span
       data-testid={`running-row-meta-${row.identifier}`}
-      className="text-theme-muted flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px]"
+      className="text-theme-muted flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs"
     >
       <span title="Backend">{row.backend || '—'}</span>
       <span aria-hidden="true">@</span>
@@ -36,6 +36,15 @@ export function RunningRowMeta({
           <span aria-hidden="true">·</span>
           <span title="Profile">{profile}</span>
         </>
+      )}
+      {row.outOfScope && (
+        <span
+          data-testid={`running-row-out-of-scope-${row.identifier}`}
+          title="Left the tracker scope (reassigned or moved): this run finishes, no new run is dispatched"
+          className="text-theme-warning-text font-sans font-semibold"
+        >
+          out of scope
+        </span>
       )}
     </span>
   );

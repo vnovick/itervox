@@ -171,6 +171,9 @@ func ValidateDispatch(cfg *Config) error {
 	if err := ValidateWorkflowSchema(cfg); err != nil {
 		return err
 	}
+	if err := validatePlatform(cfg, hostGOOS); err != nil {
+		return err
+	}
 
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {
@@ -199,6 +202,11 @@ func ValidateDispatch(cfg *Config) error {
 	// Check 4: tracker.project_slug present (required for GitHub; optional for Linear)
 	if cfg.Tracker.Kind == "github" && cfg.Tracker.ProjectSlug == "" {
 		return fmt.Errorf("missing tracker.project_slug: required for GitHub (owner/repo)")
+	}
+	// Check 4b (#182): assignee, team and labels are Linear-only; any
+	// combination with project_slug is allowed (they AND).
+	if err := validateTrackerScope(cfg.Tracker); err != nil {
+		return err
 	}
 
 	// Check 5: agent.command present and non-empty
@@ -343,6 +351,8 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		case AutomationTriggerIssueMovedBacklog:
 		case AutomationTriggerRunFailed:
 		case AutomationTriggerPROpened, AutomationTriggerPRMerged:
+		case AutomationTriggerPRCheckCompleted, AutomationTriggerPRSynchronized,
+			AutomationTriggerPRReviewSubmitted, AutomationTriggerPRMergeableChanged:
 		case AutomationTriggerBlockersResolved:
 			moveToState := strings.TrimSpace(entry.Policy.MoveToState)
 			if moveToState != "" {
@@ -368,10 +378,8 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 			if !entry.Policy.AutoResume {
 				return fmt.Errorf("automation %q: rate_limited automations require policy.auto_switch: true or policy.auto_resume: true", id)
 			}
-			switch entry.Policy.SwitchToBackend {
-			case "", "claude", "codex":
-			default:
-				return fmt.Errorf("automation %q: policy.switch_to_backend must be empty, \"claude\", or \"codex\"", id)
+			if b := entry.Policy.SwitchToBackend; b != "" && !IsSupportedBackend(b) {
+				return fmt.Errorf("automation %q: policy.switch_to_backend must be empty or one of %s", id, SupportedBackendsText())
 			}
 			if err := validateSwitchBackendCommand(id, switchToProfile, switchProfile, entry.Policy.SwitchToBackend, defaultCommand); err != nil {
 				return err
@@ -416,6 +424,17 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		if entry.Filter.MaxAgeMinutes > 0 && triggerType != AutomationTriggerInputRequired {
 			return fmt.Errorf("automation %q filter.max_age_minutes is only meaningful on input_required triggers", id)
 		}
+		if entry.Filter.GroupsError != "" {
+			return fmt.Errorf("automation %q %s", id, entry.Filter.GroupsError)
+		}
+		if err := entry.Filter.Groups.Validate("filter.groups"); err != nil {
+			return fmt.Errorf("automation %q %w", id, err)
+		}
+		for _, g := range entry.Filter.Groups {
+			if strings.EqualFold(g.Assignee, "me") {
+				return fmt.Errorf("automation %q filter.groups: assignee \"me\" is not resolved in automation filters; use the user id (Linear) or login (GitHub)", id)
+			}
+		}
 		if entry.Filter.IdentifierRegex != "" {
 			if _, err := regexp.Compile(entry.Filter.IdentifierRegex); err != nil {
 				return fmt.Errorf("automation %q invalid identifier_regex: %w", id, err)
@@ -439,6 +458,49 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 			triggerType != AutomationTriggerTrackerComment {
 			return fmt.Errorf("automation %q: filter.body_contains and filter.body_regex are only meaningful on tracker_comment_added triggers", id)
 		}
+		if err := validatePREventFilter(id, triggerType, entry.Filter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatePREventFilter checks the #173 PR-event filters: each is only
+// meaningful on its own trigger, and the enumerated ones only take values
+// GitHub reports.
+func validatePREventFilter(id, triggerType string, f AutomationFilterConfig) error {
+	only := func(field, trigger string) error {
+		return fmt.Errorf("automation %q: filter.%s is only meaningful on %s triggers", id, field, trigger)
+	}
+	if (len(f.CheckNames) > 0 || len(f.Conclusions) > 0) && triggerType != AutomationTriggerPRCheckCompleted {
+		if len(f.CheckNames) > 0 {
+			return only("check_names", AutomationTriggerPRCheckCompleted)
+		}
+		return only("conclusions", AutomationTriggerPRCheckCompleted)
+	}
+	if (len(f.ReviewStates) > 0 || len(f.ReviewAuthors) > 0) && triggerType != AutomationTriggerPRReviewSubmitted {
+		if len(f.ReviewStates) > 0 {
+			return only("review_states", AutomationTriggerPRReviewSubmitted)
+		}
+		return only("review_authors", AutomationTriggerPRReviewSubmitted)
+	}
+	if len(f.MergeableStates) > 0 && triggerType != AutomationTriggerPRMergeableChanged {
+		return only("mergeable_states", AutomationTriggerPRMergeableChanged)
+	}
+	for _, set := range []struct {
+		field   string
+		values  []string
+		allowed []string
+	}{
+		{"conclusions", f.Conclusions, PRCheckConclusions},
+		{"review_states", f.ReviewStates, PRReviewStates},
+		{"mergeable_states", f.MergeableStates, PRMergeableStates},
+	} {
+		for _, v := range set.values {
+			if !slices.Contains(set.allowed, strings.ToLower(strings.TrimSpace(v))) {
+				return fmt.Errorf("automation %q: filter.%s value %q is not one of %s", id, set.field, v, strings.Join(set.allowed, ", "))
+			}
+		}
 	}
 	return nil
 }
@@ -459,7 +521,7 @@ func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]Agent
 	seen := make(map[string]struct{}, len(fb.Chain))
 	for _, b := range fb.Chain {
 		if !IsSupportedBackend(b) {
-			return fmt.Errorf("agent.backend_fallback.chain: unknown backend %q (must be claude or codex)", b)
+			return fmt.Errorf("agent.backend_fallback.chain: unknown backend %q (must be %s)", b, SupportedBackendsText())
 		}
 		if _, dup := seen[b]; dup {
 			return fmt.Errorf("agent.backend_fallback.chain: backend %q listed twice", b)
@@ -501,7 +563,7 @@ func ValidateBackendFallback(fb BackendFallbackConfig, profiles map[string]Agent
 			target := row[backend]
 			where := fmt.Sprintf("agent.backend_fallback.profile_map.%s.%s", source, backend)
 			if !IsSupportedBackend(backend) {
-				return fmt.Errorf("%s: backend key %q must be claude or codex", where, backend)
+				return fmt.Errorf("%s: backend key %q must be %s", where, backend, SupportedBackendsText())
 			}
 			profile, ok := profiles[target]
 			if !ok {

@@ -1,0 +1,12 @@
+{
+  "inFlight": true,
+  "startedAt": "2026-05-25T11:59:10Z",
+  "runningForMs": 50000,
+  "lastFinishedAt": "2026-05-25T11:58:00Z",
+  "lastDurationMs": 1200,
+  "slowAfterMs": 45000,
+  "slow": true,
+  "degraded": true,
+  "breakerOpenUntil": "2026-05-25T12:01:00Z",
+  "consecutiveTransportFailures": 3
+}

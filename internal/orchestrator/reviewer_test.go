@@ -394,7 +394,13 @@ func TestAutoReview_DoesNotTriggerForAutomationRuns(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 
 	assert.Equal(t, 1, countingRunner.CallCount(), "automation success should not dispatch reviewer")
-	assert.NotContains(t, logBuf.String(), "orchestrator: dispatching reviewer")
+	// The default logger is process-wide: an earlier test's orchestrator
+	// that is still stopping can log into it. Only lines from this test's
+	// automation dispatch on count.
+	logs := logBuf.String()
+	start := strings.Index(logs, "orchestrator: dispatching automation worker")
+	require.GreaterOrEqual(t, start, 0, "the automation dispatch is logged")
+	assert.NotContains(t, logs[start:], "orchestrator: dispatching reviewer")
 }
 
 func TestAutoReview_UsesSSHHostSelection(t *testing.T) {
@@ -697,8 +703,8 @@ func (t *noCandidateTracker) CreateComment(ctx context.Context, issueID, body st
 	return t.base.CreateComment(ctx, issueID, body)
 }
 
-func (t *noCandidateTracker) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
-	return t.base.CreateIssue(ctx, sourceIssueID, title, body, stateName)
+func (t *noCandidateTracker) CreateIssue(ctx context.Context, sourceIssueID string, in tracker.NewIssue) (*domain.Issue, error) {
+	return t.base.CreateIssue(ctx, sourceIssueID, in)
 }
 
 func (t *noCandidateTracker) UpdateIssueState(ctx context.Context, issueID, stateName string) error {

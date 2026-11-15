@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/logbuffer"
-	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // ReconcileStalls checks all running sessions for stall timeout violations.
@@ -52,6 +52,11 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 	}
 
 	for id, entry := range state.Running {
+		// A finishing run is wrapping up and about to deliver its own exit;
+		// killing it now would race that exit (#125).
+		if entry.observeFinishing() {
+			continue
+		}
 		var elapsed time.Duration
 		if entry.LastEventAt != nil {
 			elapsed = now.Sub(*entry.LastEventAt)
@@ -70,6 +75,7 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", msg))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			prevAttempt := 0
@@ -77,11 +83,15 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				prevAttempt = re.Attempt
 			}
 			state = ScheduleRetry(state, id, prevAttempt+1, entry.Issue.Identifier, "stall_timeout", now, BackoffMs(prevAttempt+1, cfg.Agent.MaxRetryBackoffMs))
+			if entry.Kind == "reviewer" {
+				retryAs(state, id, entry.ProfileName) // #127: the retry is the reviewer
+			}
 			// Include the RunEntry so handleEvent can record stall history.
 			// Claim and retry management have already been performed inline above;
 			// the event loop will see TerminalStalled and only call recordHistory.
 			stalledEntry := RunEntry{
 				Issue:          entry.Issue,
+				RunID:          entry.RunID,
 				StartedAt:      entry.StartedAt,
 				TurnCount:      entry.TurnCount,
 				TotalTokens:    entry.TotalTokens,
@@ -92,9 +102,20 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 				Backend:        entry.Backend,
 				ProfileName:    entry.ProfileName,
 				TerminalReason: TerminalStalled,
+				// #157/#186: the stalled run's history keeps what it ran with.
+				RulesHash:     entry.RulesHash,
+				RuleIDs:       entry.RuleIDs,
+				PromptDigest:  entry.PromptDigest,
+				PromptParts:   entry.PromptParts,
+				Playbook:      entry.Playbook,
+				Steers:        entry.Steers,
+				SteersDropped: entry.SteersDropped,
+				// The stalled run's history keeps the review it continued.
+				ContinuedFromReview: entry.ContinuedFromReview,
+				ReviewComments:      entry.ReviewComments,
 			}
 			select {
-			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunEntry: &stalledEntry}:
+			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunID: entry.RunID, RunEntry: &stalledEntry}:
 			case <-time.After(100 * time.Millisecond):
 				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
@@ -103,54 +124,59 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 	return state
 }
 
-// reconcileTrackerStates fetches current states for all running issues and
-// reconciles: terminal→cleanup, active→update snapshot, neither→stop no cleanup.
-// If the fetch fails, workers are kept and the error is logged.
-// The optional logBuf receives per-issue explanatory messages when workers are stopped.
+// runningRunIDs is the reconcile read's work order (#187): every running
+// issue's ID mapped to the run it belongs to, captured when the read starts.
+// applyTrackerStates later acts only on runs that are still the issue's
+// current one, so a run that ended or was replaced while the read was in
+// flight is never stopped on a state read taken before it started.
+func runningRunIDs(state State) map[string]string {
+	if len(state.Running) == 0 {
+		return nil
+	}
+	ids := make(map[string]string, len(state.Running))
+	for id, entry := range state.Running {
+		runID := ""
+		if entry != nil {
+			runID = entry.RunID
+		}
+		ids[id] = runID
+	}
+	return ids
+}
+
+// applyTrackerStates reconciles running workers against refreshed, the
+// tracker's current states for the issues in fetched (runningRunIDs at the
+// read's start): terminal→cleanup, active→update snapshot, neither→stop no
+// cleanup, absent→stop. Runs on the event loop with the state it has when
+// the read's result is applied; an issue whose run is no longer the one the
+// read was taken for is skipped (#187).
+// The optional buf receives per-issue explanatory messages when workers are stopped.
 // State.ActiveStates and State.TerminalStates are used for comparison; these are
 // snapshotted from cfg under cfgMu at the start of each tick, so no lock is needed here.
-//
-// pendingAfterFetch (when non-nil) rebuilds state.ExitPending once the tracker fetch has
-// returned. A worker marks its run before it moves the issue to the
-// completion state, so a fetch that sees the move also sees the mark only
-// if the marks are read after it: read before, a run finishing during the
-// fetch was stopped as if an operator had moved its issue.
-func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, cleanup CleanupWorker, pendingAfterFetch func(State) map[string]bool, logBuf ...*logbuffer.Buffer) State {
-	var buf *logbuffer.Buffer
-	if len(logBuf) > 0 {
-		buf = logBuf[0]
-	}
-	if len(state.Running) == 0 {
+func applyTrackerStates(state State, fetched map[string]string, refreshed []domain.Issue, events chan OrchestratorEvent, cleanup CleanupWorker, buf *logbuffer.Buffer) State {
+	if len(fetched) == 0 || len(state.Running) == 0 {
 		return state
 	}
-
-	ids := make([]string, 0, len(state.Running))
-	for id := range state.Running {
-		ids = append(ids, id)
-	}
-
-	refreshed, err := tr.FetchIssueStatesByIDs(ctx, ids)
-	if err != nil {
-		slog.Warn("reconciliation: tracker refresh failed, keeping workers", "error", err)
-		return state
-	}
-	if pendingAfterFetch != nil {
-		state.ExitPending = pendingAfterFetch(state)
-	}
-
 	byID := make(map[string]string, len(refreshed))
 	for _, issue := range refreshed {
 		byID[issue.ID] = issue.State
 	}
 
 	now := time.Now()
-	for id, entry := range state.Running {
-		// The worker already sent its exit; that exit settles the run. A
-		// worker that moved its issue to a terminal completion_state and
-		// finished was otherwise stopped here first, and its own success
-		// exit then found no Running entry, so no review was started and
-		// the workspace was cleared.
-		if state.ExitPending[id] {
+	for id, runID := range fetched {
+		entry := state.Running[id]
+		if entry == nil || entry.RunID != runID {
+			// The run the read was taken for ended (or was replaced) while
+			// the read was in flight; its exit already settled it.
+			continue
+		}
+		// A finishing run settles with its own exit (#125). A worker that
+		// moved its issue to a terminal completion_state and finished was
+		// otherwise stopped here first, and its own success exit then found
+		// no Running entry, so no review was started and the workspace was
+		// cleared. Checked after the fetch: the worker marks the run before
+		// it moves the issue, so a fetch that sees the move sees the mark.
+		if entry.observeFinishing() {
 			continue
 		}
 		refreshedState, found := byID[id]
@@ -161,10 +187,11 @@ func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", "worker: ⚠ issue no longer found in tracker — worker stopped"))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			select {
-			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id}:
+			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunID: entry.RunID}:
 			case <-time.After(100 * time.Millisecond):
 				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
@@ -185,6 +212,14 @@ func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 			entry.LastEventAt = &now
 			continue
 		}
+		// A run started to continue from an operator review without a
+		// tracker move runs outside the active states by design; only a
+		// terminal state other than completion_state stops it.
+		if entry.NoTrackerMove && inPlaceReviewRunContinues(refreshedState, state) {
+			entry.Issue.State = refreshedState
+			entry.LastEventAt = &now
+			continue
+		}
 		// A reviewer runs, by design, on an issue the implementer just moved to
 		// tracker.completion_state. That state may itself be terminal ("Done"),
 		// so it is checked before the terminal stop below; otherwise every
@@ -201,24 +236,21 @@ func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				buf.Add(entry.Issue.Identifier, makeBufLine("INFO", fmt.Sprintf("worker: issue moved to terminal state %q — worker stopped", refreshedState)))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			select {
 			case events <- OrchestratorEvent{
 				Type:    EventWorkerExited,
 				IssueID: id,
+				RunID:   entry.RunID,
 				RunEntry: &RunEntry{
 					Issue: entry.Issue,
-					// Kind MUST be carried through. The exit handler routes on
-					// it via runEligibleForAutoReview, which treats an empty
-					// Kind as "a plain worker finished" and queues an
-					// auto-review. Dropping it here meant a REVIEWER stopped
-					// by this very branch looked like a fresh worker success,
-					// so the handler dispatched another reviewer, which this
-					// branch stopped again — an unbounded re-dispatch loop
-					// that spawns agents (and burns tracker/API budget) for as
-					// long as the issue sits in a terminal state. Reproduced
-					// at 23-30 RunTurn calls per 1.5s against an expected 2.
+					RunID: entry.RunID,
+					// Kind is carried for the event's own consumers (history,
+					// automations). The exit handler identifies the run by
+					// its record (#127), which markRunStopped above flags so
+					// a stopped run's late success never starts a review.
 					Kind:           entry.Kind,
 					ProfileName:    entry.ProfileName,
 					BranchName:     entry.BranchName,
@@ -238,10 +270,11 @@ func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", fmt.Sprintf("worker: ⚠ issue state changed to %q (not in active_states) — worker stopped", refreshedState)))
 			}
 			cancelOrFallback(cleanup, entry.Issue.Identifier, entry.WorkerCancel)
+			markRunStopped(state, id, entry.RunID) // #127
 			delete(state.Running, id)
 			delete(state.Claimed, id)
 			select {
-			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id}:
+			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunID: entry.RunID}:
 			case <-time.After(100 * time.Millisecond):
 				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
@@ -255,24 +288,4 @@ func reconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 // issue to backlog or cancelling it) still stops the reviewer.
 func isReviewState(s string, state State) bool {
 	return state.CompletionState != "" && strings.EqualFold(s, state.CompletionState)
-}
-
-// pendingExits returns the Running IDs whose worker has sent its exit during
-// the current run (a mark older than the run's start belongs to an earlier
-// run whose exit was dropped, and is ignored).
-func (o *Orchestrator) pendingExits(state State) map[string]bool {
-	var out map[string]bool
-	for id, entry := range state.Running {
-		v, ok := o.exitsSent.Load(id)
-		if !ok {
-			continue
-		}
-		if at, _ := v.(time.Time); !at.Before(entry.StartedAt) {
-			if out == nil {
-				out = map[string]bool{}
-			}
-			out[id] = true
-		}
-	}
-	return out
 }

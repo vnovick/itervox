@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/vnovick/itervox/internal/procgroup"
 )
 
 // ModelOption represents an available model for a backend.
@@ -62,6 +65,17 @@ func openAIAPIBase() string {
 	return defaultOpenAIAPIBase
 }
 
+// modelsRequestTimeout bounds one model-discovery request end to end
+// (connect, headers and body). Each request also carries a 10 s context
+// deadline; the client timeout is the backstop that holds even for a caller
+// that passes a context without one, so a hung API never pins a goroutine
+// (#187: http.DefaultClient has no timeout at all).
+const modelsRequestTimeout = 15 * time.Second
+
+// modelsHTTPClient is the client model discovery uses. A var so tests can
+// substitute a shorter timeout.
+var modelsHTTPClient = &http.Client{Timeout: modelsRequestTimeout}
+
 // ListClaudeModels queries the Anthropic API for available models.
 // Falls back to DefaultClaudeModels if ANTHROPIC_API_KEY is not set or the API fails.
 func ListClaudeModels() []ModelOption {
@@ -80,7 +94,7 @@ func ListClaudeModels() []ModelOption {
 	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := modelsHTTPClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
 			_ = resp.Body.Close()
@@ -135,7 +149,7 @@ func ListCodexModels() []ModelOption {
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := modelsHTTPClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
 			_ = resp.Body.Close()
@@ -163,6 +177,48 @@ func ListCodexModels() []ModelOption {
 	}
 	if len(models) == 0 {
 		return DefaultCodexModels
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models
+}
+
+// openCodeModelsTimeout bounds `opencode models`.
+const openCodeModelsTimeout = 20 * time.Second
+
+// ListOpenCodeModels lists the models OpenCode can use, from
+// `opencode models` (one provider/model per line, the form --model takes).
+// It returns nil when the CLI is not installed, fails or lists nothing:
+// OpenCode's catalog depends on the providers the user configured, so
+// there is no built-in fallback list.
+func ListOpenCodeModels() []ModelOption {
+	bin, err := exec.LookPath("opencode")
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), openCodeModelsTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "models")
+	procgroup.Configure(cmd, 2*time.Second)
+	cmd.Env = itervoxAgentEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	return parseOpenCodeModels(string(out))
+}
+
+// parseOpenCodeModels reads `opencode models` output: one provider/model
+// per line; anything else (a banner, a blank line) is skipped.
+func parseOpenCodeModels(out string) []ModelOption {
+	var models []ModelOption
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		id := strings.TrimSpace(line)
+		if id == "" || strings.ContainsAny(id, " \t") || !strings.Contains(id, "/") || seen[id] {
+			continue
+		}
+		seen[id] = true
+		models = append(models, ModelOption{ID: id, Label: id})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models

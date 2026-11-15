@@ -35,6 +35,11 @@ const automationValues: AutomationFormValues = {
   switchToBackend: '',
   cooldownMinutes: '',
   moveToState: '',
+  checkNames: [],
+  conclusions: [],
+  reviewStates: [],
+  reviewAuthors: [],
+  mergeableStates: [],
 };
 
 type ModalFactory = (open: boolean, onClose: () => void) => ReactElement;

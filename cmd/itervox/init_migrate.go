@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +24,9 @@ type workflowMigrationResult struct {
 	BackupPath string
 	Profiles   []string
 	Warnings   []string
+	// AddedGuardrails: the workflow had no guardrails: block and one was
+	// written with the defaults (#204).
+	AddedGuardrails bool
 }
 
 // migrateWorkflowToSchema2 runs the whole read-modify-write of WORKFLOW.md
@@ -116,11 +120,22 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 	// Without --force the legacy reviewer_prompt yields a warning only, so
 	// the caller can decide whether to re-run with --force after reading the
 	// reviewer profile's INSTRUCTIONS.md.
+	// #204: workflows from before guardrails get the block written out with
+	// its defaults, so the operator sees (and can edit) what applies.
+	_, hasGuardrails := doc["guardrails"]
 	needsRewrite := inlinePromptSeen || (legacyReviewerPromptSeen && force) || needsDepsAnalyzerScaffold
 	if version == config.LatestWorkflowSchemaVersion && !needsRewrite {
 		if legacyReviewerPromptSeen {
 			result.Warnings = append(result.Warnings,
 				"agent.reviewer_prompt is a legacy field still consumed by worker.go (base Liquid template for reviewer runs). Re-run with --force to append it to the reviewer profile's INSTRUCTIONS.md and delete the inline field. NOTE: with --force the migrated content becomes an appended profile block instead of the base template — placeholders still resolve identically, but the prompt ordering changes (base falls back to DefaultReviewerPrompt). Review the appended section before the next reviewer run.")
+		}
+		if !hasGuardrails {
+			// Text append, not a re-encode: an up-to-date workflow keeps
+			// its formatting byte for byte apart from the new block.
+			if err := appendGuardrailsText(workflowPath, front, body); err != nil {
+				return result, err
+			}
+			result.AddedGuardrails = true
 		}
 		if err := patchRootGitignoreForAgents(filepath.Dir(workflowPath)); err != nil {
 			return result, err
@@ -220,6 +235,10 @@ func migrateWorkflowToSchema2Locked(workflowPath string, force bool, now time.Ti
 			agent["deps_analyzer_profile"] = initDepsAnalyzerProfileName
 			yamlNodeSet(agentNode, "deps_analyzer_profile", yamlStringNode(initDepsAnalyzerProfileName))
 		}
+	}
+	if !hasGuardrails {
+		appendGuardrailsBlock(rootNode)
+		result.AddedGuardrails = true
 	}
 	// v0.2.0 todolist5 — legacy `agent.reviewer_prompt` migration. Append the
 	// template into the reviewer profile's INSTRUCTIONS.md under a clearly
@@ -511,6 +530,14 @@ func firstYouAreSentence(text string) string {
 // LockFilePath had no production caller).
 var workflowLockGitignoreEntry = filepath.Base(workflow.LockFilePath("WORKFLOW.md"))
 
+// rulesLocalGitignoreEntry is the root .gitignore line that keeps the
+// project-local rules layer (#157) out of git.
+const rulesLocalGitignoreEntry = ".itervox/rules.local.json"
+
+// settingsLocalGitignoreEntry is the root .gitignore line that keeps the
+// project-local settings layer (#158) out of git.
+const settingsLocalGitignoreEntry = ".itervox/settings.local.jsonc"
+
 func patchRootGitignoreForAgents(projectDir string) error {
 	if projectDir == "" {
 		projectDir = "."
@@ -527,23 +554,33 @@ func patchRootGitignoreForAgents(projectDir string) error {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	changed := false
 	if rootGitignoreHidesAgents(text) {
-		needed := []string{
-			"!.itervox/",
-			"!.itervox/agents/",
-			"!.itervox/agents/**",
-			"!.itervox/handoff/",
-			"!.itervox/handoff/**",
+		// The agents/handoff carve-outs are shared with the #200 readiness
+		// check, which reports a .gitignore missing any of them.
+		needed := append(slices.Clone(agentsGitignoreCarveOuts),
 			// #85: local tracker issues are committed with the code by
 			// default; add .itervox/issues/ after these lines to keep them
 			// private.
 			"!.itervox/issues/",
 			"!.itervox/issues/**",
-		}
+			// #251: saved task templates are committed with the code.
+			"!.itervox/tasks/",
+			"!.itervox/tasks/**",
+			// #157: the project rules layer is committed with the code.
+			"!.itervox/rules.json",
+		)
 		for _, line := range needed {
 			if !containsLine(lines, line) {
 				lines = append(lines, line)
 				changed = true
 			}
+		}
+	}
+	// #157 — the project-local rules layer is the operator's own and is
+	// never committed (idempotent). After any carve-out above, so it wins.
+	for _, entry := range []string{rulesLocalGitignoreEntry, settingsLocalGitignoreEntry} {
+		if !containsLine(lines, entry) {
+			lines = append(lines, entry)
+			changed = true
 		}
 	}
 	// gaps_11 G-19 — migration backups written by `itervox init --update`

@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,23 +264,52 @@ func (m *MemoryTracker) FindCommentByKey(_ context.Context, issueID, key string)
 }
 
 // CreateIssue creates a new in-memory issue for tests and local/demo flows.
-func (m *MemoryTracker) CreateIssue(_ context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
+// It joins the source issue's project and team, its labels are stored
+// lower-cased, as the real adapters report them, and BlockedBySource adds
+// the source issue as a blocker, with the source's
+// identifier and state as they are at creation (a test tracker's snapshot).
+func (m *MemoryTracker) CreateIssue(_ context.Context, sourceIssueID string, in NewIssue) (*domain.Issue, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextIssueID++
 	id := "id-" + strconv.Itoa(m.nextIssueID)
 	identifier := "ENG-" + strconv.Itoa(m.nextIssueID)
 	var description *string
-	if strings.TrimSpace(body) != "" {
-		desc := body
+	if strings.TrimSpace(in.Body) != "" {
+		desc := in.Body
 		description = &desc
 	}
 	issue := domain.Issue{
 		ID:          id,
 		Identifier:  identifier,
-		Title:       title,
-		State:       stateName,
+		Title:       in.Title,
+		State:       in.State,
 		Description: description,
+	}
+	for _, l := range in.Labels {
+		if l = strings.ToLower(strings.TrimSpace(l)); l != "" && !slices.Contains(issue.Labels, l) {
+			issue.Labels = append(issue.Labels, l)
+		}
+	}
+	var source *domain.Issue
+	for i := range m.issues {
+		if m.issues[i].ID == sourceIssueID {
+			source = &m.issues[i]
+			break
+		}
+	}
+	if source != nil {
+		// Like Linear's follow-up: the source issue's project and team.
+		issue.ProjectSlug, issue.TeamID, issue.TeamKey = source.ProjectSlug, source.TeamID, source.TeamKey
+	}
+	if in.BlockedBySource {
+		srcID := sourceIssueID
+		ref := domain.BlockerRef{ID: &srcID}
+		if source != nil {
+			ident, st := source.Identifier, source.State
+			ref.Identifier, ref.State = &ident, &st
+		}
+		issue.BlockedBy = []domain.BlockerRef{ref}
 	}
 	m.issues = append(m.issues, issue)
 	cp := issue

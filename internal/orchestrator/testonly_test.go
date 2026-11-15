@@ -6,8 +6,6 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
-	"github.com/vnovick/itervox/internal/logbuffer"
-	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // IsRateLimitFailure reports whether an exhausted-retry terminal error
@@ -118,10 +116,4 @@ func (o *Orchestrator) dispatchMatchingRateLimitedAutomations(
 ) int {
 	return o.dispatchMatchingRateLimitedAutomationsNote(ctx, state, issue, now, failedProfile, failedBackend,
 		errorMessage, attempt, promptTokensTotal, completionTokensTotal, nil)
-}
-
-// ReconcileTrackerStates exposes reconcileTrackerStates, without the tick's
-// pending-exit hook, to the external orchestrator_test package.
-func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
-	return reconcileTrackerStates(ctx, state, tr, events, cleanup, nil, logBuf...)
 }

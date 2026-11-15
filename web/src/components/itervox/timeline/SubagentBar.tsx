@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { activateOnKey } from '../../../utils/activateOnKey';
 import type { SubagentSegment } from './types';
-import { SUB_BAR_HEIGHT, SUBAGENT_LABEL_WIDTH, subagentColor, TICK_MARK_STYLE } from './styles';
+import { ROW_GRID, ROW_META, ROW_TRACK, SUB_BAR_HEIGHT, subagentColor } from './styles';
 
 interface SubagentBarProps {
   segment: SubagentSegment;
@@ -35,37 +35,33 @@ export const SubagentBar = memo(function SubagentBar({
       tabIndex={0}
       aria-pressed={selected}
       aria-label={`Subagent ${segment.name} log`}
-      className="focus-visible:ring-theme-accent flex cursor-pointer items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:ring-2 focus-visible:outline-none"
-      style={{
-        paddingLeft: 24,
-        background: selected ? 'var(--purple-soft)' : 'transparent',
-      }}
+      className={`${ROW_GRID} focus-visible:ring-theme-accent hover:bg-theme-subtle cursor-pointer rounded-[var(--radius-sm)] py-1 transition-colors focus-visible:ring-2 focus-visible:outline-none ${
+        selected ? 'bg-theme-subtle' : ''
+      }`}
       onClick={onSelect}
       onKeyDown={activateOnKey(onSelect)}
     >
-      <span className="shrink-0 text-xs" style={{ color: colors.text }}>
+      <span aria-hidden="true" className={`text-center text-xs ${colors.text}`}>
         ↗
       </span>
 
       <span
-        className="shrink-0 truncate font-mono text-[11px]"
-        style={{ width: SUBAGENT_LABEL_WIDTH, color: colors.text }}
+        className={`min-w-0 truncate font-mono text-[11px] ${colors.text} ${selected ? 'font-semibold' : ''}`}
         title={segment.name}
       >
         {segment.name.slice(0, 8)}
       </span>
 
       <div
-        className="bg-theme-bg-soft relative flex-1 overflow-hidden rounded"
+        className={`${ROW_TRACK} bg-theme-subtle relative overflow-hidden rounded-full`}
         style={{ height: SUB_BAR_HEIGHT }}
       >
         {/* Subagent progress bar */}
         <div
-          className="absolute top-0 h-full rounded"
+          className={`absolute top-0 h-full rounded-full ${colors.bar}`}
           style={{
             left: `${String(barLeft * 100)}%`,
             width: `${String(barWidth * 100)}%`,
-            background: colors.bar,
           }}
         />
         {/* Action tick marks */}
@@ -77,16 +73,14 @@ export const SubagentBar = memo(function SubagentBar({
             return (
               <div
                 key={i}
-                className="absolute top-0 z-10 h-full w-px"
-                style={{ left: `${String(frac * 100)}%`, background: TICK_MARK_STYLE }}
+                className="bg-theme-hairline absolute top-0 z-10 h-full w-px"
+                style={{ left: `${String(frac * 100)}%` }}
               />
             );
           })}
       </div>
 
-      <span className="text-theme-text-secondary w-14 shrink-0 text-right text-[10px]">
-        {tokApprox}
-      </span>
+      <span className={`${ROW_META} text-theme-text-secondary text-[10px]`}>{tokApprox}</span>
     </div>
   );
 });

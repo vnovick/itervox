@@ -44,3 +44,21 @@ func TestReadinessPublishesReadShedding(t *testing.T) {
 	assert.True(t, r.LastPollOK)
 	assert.False(t, r.PollShedding)
 }
+
+// TestReadinessRecordsLastSuccessfulPollTime (#117): with no tracker store in
+// front, the sync status's last pull is the last successful candidate poll.
+// A failed or rate-limited poll keeps the previous success's time.
+func TestReadinessRecordsLastSuccessfulPollTime(t *testing.T) {
+	cfg := refreshTestCfg()
+	o := &Orchestrator{tracker: tracker.NewMemoryTracker(nil, nil, nil), events: make(chan OrchestratorEvent, 8), cfg: cfg}
+	state := NewState(cfg)
+	assert.True(t, o.Readiness().LastPollOKAt.IsZero(), "no poll yet")
+
+	_ = o.onTick(context.Background(), state)
+	okAt := o.Readiness().LastPollOKAt
+	assert.False(t, okAt.IsZero(), "a successful poll is stamped")
+
+	o.publishPollStatus(state, false, false)
+	o.publishPollStatus(state, false, true)
+	assert.Equal(t, okAt, o.Readiness().LastPollOKAt, "failures keep the last success's time")
+}

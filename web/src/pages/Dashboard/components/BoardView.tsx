@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { memo, useState, useMemo, useCallback } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -16,6 +16,7 @@ import IssueCard from '../../../components/itervox/IssueCard';
 import { BOARD_DND_ACCESSIBILITY } from '../../../components/itervox/BoardColumn/boardAnnouncements';
 import { columnKeyboardCoordinates } from '../../../components/itervox/BoardColumn/columnKeyboardCoordinates';
 import BoardColumn from '../../../components/itervox/BoardColumn';
+import { refocusHandleAfterDrop } from '../../../components/itervox/BoardColumn/refocusHandleAfterDrop';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import type { TrackerIssue, InputRequiredEntry } from '../../../types/schemas';
 import {
@@ -35,7 +36,11 @@ interface BoardViewProps {
   onProfileChange: (identifier: string, profile: string) => void;
 }
 
-export function BoardView({
+// #211 — memoised: the Dashboard page re-renders whenever any of the many
+// snapshot branches it selects changes (automation queue, failures, outbox…).
+// With stable props the board only re-renders for its own inputs: the issue
+// list, its callbacks, and the snapshot branches it selects below.
+export const BoardView = memo(function BoardView({
   issues,
   onSelect,
   onStateChange,
@@ -208,6 +213,8 @@ export function BoardView({
     const current = issues.find((i) => i.identifier === identifier);
     if (!current || current.state === newState) return;
     onStateChange(identifier, newState);
+    // A keyboard drop re-mounts the card in its new column; keep focus on it.
+    if (event.activatorEvent instanceof KeyboardEvent) refocusHandleAfterDrop(identifier);
   };
 
   if (!snapshotLoaded) {
@@ -222,8 +229,10 @@ export function BoardView({
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      {/* Horizontal scroll — same as Linear on all screen sizes */}
-      <div className="flex min-h-[200px] gap-3 overflow-x-auto pb-2">
+      {/* Horizontal scroll — same as Linear on all screen sizes. Columns snap
+          into place; on phones a column is ~4/5 of the width, so the next
+          one peeks in as the scroll hint instead of a card cut mid-word. */}
+      <div className="flex min-h-[200px] snap-x snap-proximity items-start gap-3 overflow-x-auto pb-2">
         {columns.map(([state, colIssues]) => (
           <BoardColumn
             key={state}
@@ -257,4 +266,4 @@ export function BoardView({
       </DragOverlay>
     </DndContext>
   );
-}
+});

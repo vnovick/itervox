@@ -47,6 +47,29 @@ type DetailBatcher interface {
 	FetchIssueDetailsByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error)
 }
 
+// ScopedFetcher is an optional interface implemented by remote adapters that
+// can read issues by ID and say which of them the tracker's scope (the
+// project filter, the repository) covers, without a list request (#131).
+// The result holds the in-scope issues that exist; an ID absent from it is
+// out of scope, deleted, or trashed.
+type ScopedFetcher interface {
+	FetchIssuesInScope(ctx context.Context, issueIDs []string) ([]domain.Issue, error)
+}
+
+// IncrementalFetcher is an optional interface implemented by remote
+// adapters that can list what changed since a time in one paginated request
+// (#114), so the tracker store pulls only changes between full pulls.
+//
+// FetchIssuesUpdatedSince returns the tracked issues updated at or after
+// since, in any state, and gone: the IDs among the updated issues that left
+// the tracked scope (deleted, archived, or no longer carrying a tracked
+// state). An issue absent from both is unchanged, or left the scope in a way
+// the tracker does not report as an update (moved to another project or
+// repository); the store's periodic full pull catches those.
+type IncrementalFetcher interface {
+	FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (changed []domain.Issue, gone []string, err error)
+}
+
 // IdempotentCommenter is an optional interface implemented by tracker
 // adapters that can post a comment under a caller-supplied idempotency key
 // and later answer whether a comment with that key exists. Callers should
@@ -92,6 +115,27 @@ type StateListSetter interface {
 	SetStateLists(active, terminal []string)
 }
 
+// NewIssue describes the follow-up issue Tracker.CreateIssue writes.
+type NewIssue struct {
+	// Title is the new issue's title (required).
+	Title string
+	// Body is the new issue's description.
+	Body string
+	// State is the tracker state (Linear workflow state, GitHub state label,
+	// local state) the issue is created in.
+	State string
+	// Labels are added to the new issue: Linear resolves each name among the
+	// source issue's team and workspace labels (an unknown name fails the
+	// create), GitHub adds them beside the state label, and the local tracker
+	// writes them to the issue file. Callers check them against an allow-list
+	// first; the adapters do not.
+	Labels []string
+	// BlockedBySource records the source issue as a blocker of the new one:
+	// a Linear "blocks" relation, the GitHub "Blocked by #N" body line, or
+	// the local tracker's blocked_by front matter.
+	BlockedBySource bool
+}
+
 // Tracker is the interface all tracker adapters must implement.
 type Tracker interface {
 	// FetchCandidateIssues returns issues in active states for the configured project.
@@ -112,7 +156,9 @@ type Tracker interface {
 
 	// CreateIssue creates a follow-up issue in the same tracker/project context as
 	// sourceIssueID and returns the created issue when the adapter can provide it.
-	CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error)
+	// in.Labels are applied to the new issue and in.BlockedBySource records
+	// sourceIssueID as its blocker, each the way the adapter reads them back.
+	CreateIssue(ctx context.Context, sourceIssueID string, in NewIssue) (*domain.Issue, error)
 
 	// UpdateIssueState transitions the issue to the named state.
 	// For Linear this resolves the state name to an ID; for GitHub it manages labels.

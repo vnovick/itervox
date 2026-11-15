@@ -1,11 +1,17 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useProjects } from '../../queries/projects';
+import { buttonClass } from '../../components/ui/button/buttonStyles';
 
 interface Props {
   activeFilter: string[] | undefined;
   onSetFilter: (slugs: string[] | null) => Promise<boolean>;
 }
 
+/**
+ * The project filter, for a tracker that reads by project but has no
+ * tracker filter (#198 — trackers with one get the group builder,
+ * TrackerFilterCard, instead).
+ */
 export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const { data: projects = [], isLoading, isError } = useProjects();
   const isDefaultMode = activeFilter === undefined;
@@ -20,8 +26,8 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const [selected, setSelected] = useState<Set<string>>(() => serverSet);
   const [saving, setSaving] = useState(false);
 
-  // Track which serverSet identity we last synced to so we only overwrite
-  // local edits when the server value actually changes, not on every render.
+  // Track which server values we last synced to so we only overwrite local
+  // edits when the server value actually changes, not on every render.
   const prevServerRef = useRef(serverSet);
   useEffect(() => {
     if (prevServerRef.current !== serverSet) {
@@ -29,7 +35,6 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
       setSelected(serverSet);
     }
   }, [serverSet]);
-
   const toggle = (slug: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -38,7 +43,6 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
       return next;
     });
   };
-
   const handleSave = async () => {
     setSaving(true);
     await onSetFilter([...selected]);
@@ -57,15 +61,15 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const allSelected = selected.size === 0;
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Project Filter</h2>
+    <div>
+      <div className="mb-4">
+        <h3 className="text-theme-text text-sm font-semibold">Project Filter</h3>
         <p className="text-theme-text-secondary mt-0.5 text-xs">
           Limit Itervox to specific Linear projects. Leave all unchecked to include every project.
         </p>
       </div>
 
-      <div className="space-y-4 px-5 py-5">
+      <div className="space-y-4">
         {isLoading && <p className="text-theme-muted text-sm">Loading projects…</p>}
 
         {isError && (
@@ -76,7 +80,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
 
         {!isLoading && !isError && (
           <>
-            <div className="space-y-2">
+            <fieldset className="space-y-2">
               <label className="flex cursor-pointer items-center gap-2.5">
                 <input
                   type="checkbox"
@@ -102,7 +106,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
                   <span className="text-theme-muted font-mono text-xs">{p.slug}</span>
                 </label>
               ))}
-            </div>
+            </fieldset>
 
             {isDefaultMode && (
               <p className="text-theme-muted text-xs">
@@ -114,7 +118,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+                className={buttonClass('primary', 'md', undefined, true)}
               >
                 {saving ? 'Saving…' : 'Save filter'}
               </button>
@@ -122,7 +126,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
                 <button
                   onClick={handleReset}
                   disabled={saving}
-                  className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-colors hover:opacity-80 disabled:opacity-50"
+                  className={buttonClass('secondary', 'md', undefined, true)}
                 >
                   Reset to default
                 </button>

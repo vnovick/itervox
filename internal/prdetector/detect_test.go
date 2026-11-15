@@ -124,7 +124,7 @@ func TestDetect_UsesLatestCommentURL(t *testing.T) {
 	// We use two different PR numbers: description has /pull/1, comment has /pull/2.
 	// Fake gh returns OPEN for any URL so whichever is checked first will win.
 	// The test verifies that the comment URL (/pull/2) is returned (last-write-wins).
-	out := `{"state":"OPEN","headRefName":"fix/latest","body":"from comment"}`
+	out := `{"state":"OPEN","headRefName":"fix/eng-3-latest","body":"from comment"}`
 	ghPath := fakeGH(t, out)
 	t.Setenv("PATH", filepath.Dir(ghPath)+":"+os.Getenv("PATH"))
 

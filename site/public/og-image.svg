@@ -1,26 +1,26 @@
 <svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1200" height="630" fill="#09090b"/>
-
-  <!-- Subtle glow effect behind wordmark -->
-  <ellipse cx="600" cy="280" rx="300" ry="40" fill="#6366f1" opacity="0.08"/>
-
-  <!-- Wordmark: ITER//VOX -->
-  <text x="600" y="300" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="96" font-weight="700" letter-spacing="4">
-    <tspan fill="#6366f1">ITER</tspan><tspan fill="#9678e3">//</tspan><tspan fill="#c9cde0">VOX</tspan>
-  </text>
-
-  <!-- Thin accent line -->
-  <line x1="420" y1="330" x2="780" y2="330" stroke="url(#lineGrad)" stroke-width="2" stroke-linecap="round"/>
   <defs>
-    <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#6366f1"/>
-      <stop offset="50%" stop-color="#9678e3"/>
-      <stop offset="100%" stop-color="#14b8a6"/>
-    </linearGradient>
+    <radialGradient id="g1" cx="0.12" cy="0.1" r="0.6"><stop offset="0" stop-color="#608cff" stop-opacity=".45"/><stop offset="1" stop-color="#608cff" stop-opacity="0"/></radialGradient>
+    <radialGradient id="g2" cx="0.92" cy="0.4" r="0.55"><stop offset="0" stop-color="#ff966e" stop-opacity=".32"/><stop offset="1" stop-color="#ff966e" stop-opacity="0"/></radialGradient>
+    <radialGradient id="g3" cx="0.5" cy="1" r="0.6"><stop offset="0" stop-color="#46c8aa" stop-opacity=".28"/><stop offset="1" stop-color="#46c8aa" stop-opacity="0"/></radialGradient>
+    <linearGradient id="vh-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f2430"/><stop offset="1" stop-color="#05090d"/></linearGradient>
+    <linearGradient id="vh-hex" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b9cbff"/><stop offset="1" stop-color="#3b6cf0"/></linearGradient>
+    <linearGradient id="vh-visor" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#7ff0de"/></linearGradient>
   </defs>
-
-  <!-- Tagline -->
-  <text x="600" y="380" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="24" font-weight="400" fill="#71717a">
-    Your codebase's journey, narrated by agents
-  </text>
+  <rect width="1200" height="630" fill="#080c17"/>
+  <rect width="1200" height="630" fill="url(#g1)"/>
+  <rect width="1200" height="630" fill="url(#g2)"/>
+  <rect width="1200" height="630" fill="url(#g3)"/>
+  <rect x="80" y="80" width="1040" height="470" rx="40" fill="#ffffff" fill-opacity=".06" stroke="#ffffff" stroke-opacity=".14"/>
+  <g transform="translate(150 175)">
+    <rect width="120" height="120" rx="27" fill="url(#vh-bg)" stroke="#ffffff" stroke-opacity=".18"/>
+    <g transform="translate(9 9) scale(1.6)">
+      <path d="M32 6 L54.5 19 L54.5 45 L32 58 L9.5 45 L9.5 19 Z" fill="none" stroke="url(#vh-hex)" stroke-width="6.5" stroke-linejoin="round"/>
+      <rect x="17" y="26.5" width="30" height="11" rx="5.5" fill="url(#vh-visor)"/>
+      <circle cx="39.5" cy="32" r="2.6" fill="#ffffff"/>
+    </g>
+  </g>
+  <text x="300" y="262" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="96" font-weight="700" letter-spacing="-3" fill="#e8edf7">itervox</text>
+  <text x="150" y="392" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="44" font-weight="700" letter-spacing="-1" fill="#e8edf7">Your codebase's journey, narrated by agents</text>
+  <text x="150" y="450" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="26" fill="#b4bfd3">Issues in Linear, GitHub or Markdown → coding agents in git worktrees → PRs.</text>
 </svg>

@@ -75,6 +75,17 @@ export const INSTRUCTION_TEMPLATES: readonly InstructionTemplate[] = [
 - Comment the next best step for a human or another agent.
 - If the issue should move back to backlog or Todo, do that explicitly.`,
   },
+  {
+    id: 'pr-fix-loop',
+    label: 'PR fix loop',
+    description: 'Fix review findings, red checks or a merge conflict on the PR Itervox opened.',
+    triggerTypes: ['pr_review_submitted', 'pr_check_completed', 'pr_mergeable_changed'],
+    instruction: `Work on {{ trigger.pr_url }} (branch {{ trigger.pr_branch }}, head {{ trigger.head_sha }}).
+
+- Read what fired: review by {{ trigger.review_author }} ({{ trigger.review_state }}), check {{ trigger.check_name }} ({{ trigger.check_conclusion }}), mergeable_state {{ trigger.mergeable_state }}.
+- Fix only what the review, the failing check or the conflict asks for, then push to the same branch.
+- If nothing actionable is left, comment that on the PR and stop.`,
+  },
 ];
 
 export function triggerDescription(triggerType: AutomationTriggerType): string {

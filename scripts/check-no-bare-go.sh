@@ -5,10 +5,13 @@
 #   (a) be a `go func(...) {` whose leading defers include
 #       RecoverGoroutine(...) (one-shot task: recover, log, count, reconcile
 #       via onPanic — internal/orchestrator/gosafe.go) or
-#       failFastOnPanic(...) (long-lived loop: log through slog, restore the
-#       terminal, re-panic — cmd/itervox/gosafe.go), or
+#       failFastOnPanic(...) (long-lived loop: log through slog, re-panic —
+#       cmd/itervox/gosafe.go), or
 #       recoverServerGoroutine(...) (internal/server's one-shot sibling of
 #       RecoverGoroutine; server must not import orchestrator), or
+#       recoverHubGoroutine(...) (internal/hub and internal/hub/slack: logs
+#       and counts the panic and ends only that hub goroutine, never the
+#       hosting daemon), or
 #   (b) appear on the reasoned ALLOWLIST below, with the exact number of
 #       occurrences expected in that file.
 # goSafe(&o.<wg>, ...) launches are not `go` statements at their call sites;
@@ -33,13 +36,15 @@ internal/orchestrator/automation.go|go o.runWorker(|1|runWorker defers its own r
 internal/orchestrator/event_loop.go|go o.runWorker(|3|runWorker defers its own recover (worker.go) and sends EventWorkerExited as its reconcile
 internal/orchestrator/dependency_refresh.go|go o.runDependencyRefresh(|1|runDependencyRefresh defers its own recover and still sends its result event
 internal/depsanalysis/job.go|go m.execute(|1|execute recovers the analyzer run and records the job's terminal state
+internal/sysmon/ebpf_linux.go|go tr.read(|1|precise-mode ring-buffer reader: read defers its own recover (logged with the stack; precise events stop, sampling continues) and close joins it; sysmon must not import orchestrator
 internal/logbuffer/diskwriter.go|go b.runWriter()|1|per-Buffer disk writer (M0-close fix-F): runWriter defers recoverWriter, which logs the panic with its stack, closes the writer and fails every queued/in-flight op so no caller waits forever; logbuffer must not import orchestrator
 internal/agent/claude.go|go func() {|1|readLines stdout scanner: stdlib-only reads, no callbacks; file holds staged CORE-001 work
+internal/agent/steer.go|go func() {|1|live-steering stdin writer (#178): writes stream-json lines into the pipe of the claude turn RunTurn started; recovers its own panic (logged, stdin closed) and is joined by RunTurn after cmd.Wait, which closes the write end and so unblocks it
 internal/agent/ssh.go|go func() {|1|remoteStdin payload writer (CORE-155): one io.WriteString into the ssh stdin pipe, no callbacks; joined by the caller after cmd.Wait, which closes that pipe and so unblocks it
 internal/agent/testdata/fakesshd/main.go|go func() {|2|test-only fake sshd (built by internal/agent TestMain, never linked into itervox): the stdin relay and the stdout/stderr relays, each one io.Copy between pipes; the process exits when the remote command is done
-internal/statusui/statusui.go|go func() {|2|bubbletea Program.Run catches panics and restores the terminal; the ctx->Quit forwarder has no failure mode; statusui must not import orchestrator
 cmd/itervox/demo.go|go demoOpenWhenReady(|1|demoOpenWhenReady defers RecoverGoroutine itself; a panic only loses the browser opening
 cmd/itervox/demo.go|go d.control(|1|demoRun.control defers RecoverGoroutine itself; a panic only stops the demo's stand-in operator
+internal/procgroup/procgroup_windows.go|go func() {|1|Windows Job Object watcher (#259): one WaitForSingleObject on the child, then release the job and close the handle; two syscalls, no callbacks; procgroup must not import orchestrator
 internal/tracker/github/client.go|go func(i int, it T) {|1|boundedDo fan-out joined by wg.Wait in the calling goroutine (event-loop tick); fail-fast like the event loop
 ALLOW
 )
@@ -70,7 +75,7 @@ function report(file, line, text) { printf "%s:%d: %s\n", file, line, text }
   line = $0
   t = trim(line)
   if (pending) {
-    if (t ~ /^defer[ \t]+(orchestrator\.)?(RecoverGoroutine|failFastOnPanic|recoverServerGoroutine)\(/) {
+    if (t ~ /^defer[ \t]+(orchestrator\.)?(RecoverGoroutine|failFastOnPanic|recoverServerGoroutine|recoverHubGoroutine)\(/) {
       pending = 0
     } else if (t == "" || t ~ /^\/\// || t ~ /^defer[ \t]/) {
       # keep scanning the leading defers / comments

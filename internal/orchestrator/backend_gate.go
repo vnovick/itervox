@@ -250,15 +250,6 @@ func (o *Orchestrator) operatorPinnedBackend(identifier string) string {
 	return o.issueBackends[identifier]
 }
 
-// isReviewerInjected reports whether the issue's next dispatch runs a
-// reviewer profile (reviewer dispatch installs the marker; retries keep it).
-func (o *Orchestrator) isReviewerInjected(identifier string) bool {
-	o.issueProfilesMu.RLock()
-	defer o.issueProfilesMu.RUnlock()
-	_, ok := o.reviewerInjectedProfiles[identifier]
-	return ok
-}
-
 // backendFallbackCovers reports whether agent.backend_fallback, not the
 // rate_limited automations, handles a limited run of identifier on
 // (profile, backend): fallback enabled, no operator pin, and some other

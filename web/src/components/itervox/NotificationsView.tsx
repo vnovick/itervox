@@ -11,28 +11,17 @@
 // - Click on a select-issue row dispatches onSelect(identifier). Click on a
 //   navigate row uses react-router useNavigate.
 
-import { useMemo } from 'react';
 import { useNavigate } from 'react-router';
-import { useItervoxStore } from '../../store/itervoxStore';
-import { useIssues } from '../../queries/issues';
-import { buildOperatorQueueItems, type OperatorQueueItem } from '../../lib/operatorQueue';
+import { useOperatorQueue } from '../../hooks/useOperatorQueue';
+import { operatorToneDotClass, type OperatorQueueItem } from '../../lib/operatorQueue';
 import { ReviewSourcePill } from './ReviewSourcePill';
-
-const EMPTY_ISSUES: never[] = [];
 
 interface NotificationsViewProps {
   onSelect: (identifier: string) => void;
 }
 
 export function NotificationsView({ onSelect }: NotificationsViewProps) {
-  const snapshot = useItervoxStore((s) => s.snapshot);
-  const issuesQuery = useIssues();
-  const issues = issuesQuery.data ?? EMPTY_ISSUES;
-
-  const queue = useMemo(() => {
-    if (!snapshot) return { groups: [], total: 0 };
-    return buildOperatorQueueItems(snapshot, issues);
-  }, [snapshot, issues]);
+  const queue = useOperatorQueue();
 
   const navigate = useNavigate();
 
@@ -46,10 +35,7 @@ export function NotificationsView({ onSelect }: NotificationsViewProps) {
 
   if (queue.total === 0) {
     return (
-      <div
-        data-testid="notifications-view"
-        className="border-theme-line bg-theme-bg-elevated rounded-[var(--radius-md)] border px-6 py-12 text-center"
-      >
+      <div data-testid="notifications-view" className="glass-card px-6 py-12 text-center">
         <p className="text-theme-text text-base font-semibold">All caught up</p>
         <p className="text-theme-text-secondary mt-1 text-sm">
           Nothing needs your attention right now.
@@ -59,16 +45,16 @@ export function NotificationsView({ onSelect }: NotificationsViewProps) {
   }
 
   return (
-    <div data-testid="notifications-view" className="space-y-6">
+    <div data-testid="notifications-view" className="space-y-4">
       {queue.groups.map((group) => (
         <section key={group.group} aria-labelledby={`notifications-group-${group.group}`}>
           <h2
             id={`notifications-group-${group.group}`}
-            className="mb-2 text-xs font-semibold tracking-widest uppercase"
+            className="text-theme-text-secondary mb-1.5 text-xs font-semibold"
           >
             {group.label} · {group.items.length}
           </h2>
-          <ul className="border-theme-line bg-theme-bg-elevated divide-theme-line divide-y rounded-[var(--radius-md)] border">
+          <ul className="space-y-2">
             {group.items.map((item) => (
               <li key={item.id}>
                 <button
@@ -76,27 +62,25 @@ export function NotificationsView({ onSelect }: NotificationsViewProps) {
                   onClick={() => {
                     handleClick(item);
                   }}
-                  className="hover:bg-theme-panel flex w-full items-center gap-3 px-4 py-3 text-left transition-colors"
+                  className="glass-card hover:bg-theme-panel-strong flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors"
                 >
                   <span
                     aria-hidden="true"
-                    className={`block h-8 w-1 rounded-full ${toneStripeClass(item.tone)}`}
+                    className={`status-dot ${operatorToneDotClass(item.tone)}`}
                   />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-theme-text font-mono text-sm font-medium">
-                        {item.title}
-                      </span>
-                      {item.reviewSource && <ReviewSourcePill source={item.reviewSource} />}
-                    </div>
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                    <span className="text-theme-text font-mono text-xs font-medium">
+                      {item.title}
+                    </span>
                     {item.subtitle && (
-                      <p className="text-theme-text-secondary mt-0.5 truncate text-xs">
+                      <span className="text-theme-text min-w-0 truncate text-sm font-medium">
                         {item.subtitle}
-                      </p>
+                      </span>
                     )}
+                    {item.reviewSource && <ReviewSourcePill source={item.reviewSource} />}
                   </div>
                   {item.meta && !item.reviewSource && (
-                    <span className="text-theme-text-secondary text-xs">{item.meta}</span>
+                    <span className="text-theme-muted text-xs">{item.meta}</span>
                   )}
                   <span className="text-theme-text-secondary" aria-hidden="true">
                     ›
@@ -109,16 +93,4 @@ export function NotificationsView({ onSelect }: NotificationsViewProps) {
       ))}
     </div>
   );
-}
-
-function toneStripeClass(tone: 'info' | 'warning' | 'danger'): string {
-  switch (tone) {
-    case 'danger':
-      return 'bg-theme-danger';
-    case 'warning':
-      return 'bg-amber-500';
-    case 'info':
-    default:
-      return 'bg-theme-accent';
-  }
 }

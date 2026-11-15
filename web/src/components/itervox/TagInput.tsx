@@ -1,12 +1,15 @@
 import { useId, useMemo, useState } from 'react';
+import { FIELD_CLASS } from '../ui/Input';
+import { buttonClass } from '../ui/button/buttonStyles';
+import { cn } from '../ui/cn';
 
 interface TagInputProps {
   chips: string[];
   onChange: (chips: string[]) => void;
-  /** Tailwind classes applied to each chip span. */
-  chipClassName: string;
-  /** Tailwind classes applied to the Add button. */
-  addButtonClassName: string;
+  /** Classes for each chip; defaults to the shared `.tag-chip`. */
+  chipClassName?: string;
+  /** Classes for the Add button; defaults to the secondary pill button. */
+  addButtonClassName?: string;
   /** Placeholder text for the inline add input. */
   placeholder?: string;
   /** Optional suggestion list shown as quick-add pills and input autocomplete. */
@@ -62,7 +65,11 @@ export function TagInput({
         {chips.map((chip) => (
           <span
             key={chip}
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${chipClassName}`}
+            className={
+              chipClassName === undefined
+                ? 'tag-chip px-2.5 py-1 text-[13px]'
+                : `inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${chipClassName}`
+            }
           >
             {chip}
             <button
@@ -95,7 +102,7 @@ export function TagInput({
             }
           }}
           placeholder={placeholder}
-          className="focus:border-theme-accent min-w-[11rem] flex-1 rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] px-3 py-2 text-xs text-[var(--text)] focus:outline-none"
+          className={cn(FIELD_CLASS, 'min-h-9 min-w-[11rem] flex-1 py-1.5 text-[13px]')}
         />
         {availableSuggestions.length > 0 && (
           <datalist id={datalistId}>
@@ -108,7 +115,11 @@ export function TagInput({
           type="button"
           onClick={add}
           disabled={inputValue.trim() === ''}
-          className={`rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${addButtonClassName}`}
+          className={
+            addButtonClassName === undefined
+              ? buttonClass('secondary', 'sm', undefined, true)
+              : `rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${addButtonClassName}`
+          }
         >
           Add
         </button>
@@ -125,7 +136,7 @@ export function TagInput({
                 onClick={() => {
                   onChange([...chips, suggestion]);
                 }}
-                className="border-theme-line bg-theme-panel text-theme-text-secondary hover:bg-theme-bg-soft rounded-full border px-2 py-0.5 text-[11px] transition-colors"
+                className="tag-chip text-theme-text-secondary hover:text-theme-text text-[11px]"
               >
                 {suggestion}
               </button>
