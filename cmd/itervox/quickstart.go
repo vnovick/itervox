@@ -150,7 +150,7 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 			return 1
 		}
 		_, _ = fmt.Fprintf(out, "itervox quickstart: tracker %s (%s), agent %s (%s)\n", det.Tracker, det.TrackerReason, det.Runner, det.RunnerReason)
-		if err := scaffoldWorkflow(workflowPath, dir, det.Tracker, det.Runner, "", out); err != nil {
+		if err := scaffoldWorkflow(workflowPath, dir, det.Tracker, det.Runner, initOptions{}, out); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 			return 1
 		}
@@ -161,6 +161,7 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		if err := finalizeItervoxGitignore(itervoxDir); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 		}
+		scaffoldPlaybooks(itervoxDir, "itervox quickstart", out) // #218
 		offerIssueTemplate(dir, det.Tracker, opts.Yes, reader, out)
 	}
 
@@ -264,6 +265,15 @@ func readQuickstartFrontMatter(workflowPath string) (quickstartFrontMatter, erro
 	}
 	if err := yaml.Unmarshal([]byte(front), &doc); err != nil {
 		return doc, fmt.Errorf("parse %s: %w", workflowPath, err)
+	}
+	// #239: tracker.kind may live in a settings file, which wins. The
+	// merge reads raw maps, so it works before the workflow is valid.
+	if merged, _, err := config.MergedFrontMatter(workflowPath); err == nil {
+		if tr, ok := merged["tracker"].(map[string]any); ok {
+			if kind, ok := tr["kind"].(string); ok {
+				doc.Tracker.Kind = kind
+			}
+		}
 	}
 	return doc, nil
 }

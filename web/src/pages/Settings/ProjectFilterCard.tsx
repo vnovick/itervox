@@ -6,6 +6,11 @@ interface Props {
   onSetFilter: (slugs: string[] | null) => Promise<boolean>;
 }
 
+/**
+ * The project filter, for a tracker that reads by project but has no
+ * tracker filter (#198 — trackers with one get the group builder,
+ * TrackerFilterCard, instead).
+ */
 export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const { data: projects = [], isLoading, isError } = useProjects();
   const isDefaultMode = activeFilter === undefined;
@@ -20,8 +25,8 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const [selected, setSelected] = useState<Set<string>>(() => serverSet);
   const [saving, setSaving] = useState(false);
 
-  // Track which serverSet identity we last synced to so we only overwrite
-  // local edits when the server value actually changes, not on every render.
+  // Track which server values we last synced to so we only overwrite local
+  // edits when the server value actually changes, not on every render.
   const prevServerRef = useRef(serverSet);
   useEffect(() => {
     if (prevServerRef.current !== serverSet) {
@@ -29,7 +34,6 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
       setSelected(serverSet);
     }
   }, [serverSet]);
-
   const toggle = (slug: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -38,7 +42,6 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
       return next;
     });
   };
-
   const handleSave = async () => {
     setSaving(true);
     await onSetFilter([...selected]);
@@ -76,7 +79,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
 
         {!isLoading && !isError && (
           <>
-            <div className="space-y-2">
+            <fieldset className="space-y-2">
               <label className="flex cursor-pointer items-center gap-2.5">
                 <input
                   type="checkbox"
@@ -102,7 +105,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
                   <span className="text-theme-muted font-mono text-xs">{p.slug}</span>
                 </label>
               ))}
-            </div>
+            </fieldset>
 
             {isDefaultMode && (
               <p className="text-theme-muted text-xs">

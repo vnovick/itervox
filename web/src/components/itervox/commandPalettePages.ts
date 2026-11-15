@@ -5,5 +5,8 @@ export const PAGES: readonly { path: string; label: string; keys: string }[] = [
   { path: '/timeline', label: 'Timeline', keys: 'g t' },
   { path: '/agents', label: 'Agents', keys: 'g a' },
   { path: '/automations', label: 'Automations', keys: 'g u' },
+  { path: '/rules', label: 'Rules', keys: 'g r' },
+  { path: '/repo', label: 'Repo Analysis', keys: 'g p' },
+  { path: '/memory', label: 'Memory', keys: 'g m' },
   { path: '/settings', label: 'Settings', keys: 'g s' },
 ];

@@ -81,20 +81,23 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` — mirrors CI |
+| `make verify` | `web-deps` + `fmt` + `vet` + `lint-go` + `test` + `evals-fast` + `web-typecheck` + `web-lint` + `web-format` + `web-coverage` + `web-build` + `web-bundle-budget` + `web-spelling` + `size-budget` + `no-os-exit` + `verify-track-b-docs` + `check-changelog-split` + `deploy-test` + `dco-test` — mirrors CI |
 | `make evals-fast` | Deterministic recorded-mode profile evals suite (sub-second; no LLM API calls). Wired into `make verify` so a prompt-change that breaks recorded scenarios fails the build (P1.a) |
 | `make release-check` | Release preflight after committing release changes: `verify` + `govulncheck` + `goreleaser check` + GoReleaser hook dirty-worktree guard |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
 | `make test` | `go test -race ./cmd/... ./internal/... -count=1` |
 | `make coverage` | Run tests with coverage over `./cmd/... ./internal/...`; output `coverage.html` |
 | `make benchmark` | `go test -bench=. -benchmem ./cmd/... ./internal/...` |
-| `make tui-golden` | Regenerate catwalk golden files after intentional TUI render changes |
 | `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
 | `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
+| `make check-changelog-split` | Check that every entry of the pre-split `[Unreleased]` section (`testdata/changelog/unreleased-pre-split.txt`) appears exactly once in the `0.2.2`–`0.3.0` sections of `CHANGELOG.md`, and that none of those sections is empty (#246). Its own tests run in `make deploy-test` |
+| `make chaos` | Run the orchestrator and tracker tests over and over (`-race -count -cpu 1,2,4`) while busy loops saturate every CPU (#126). Takes tens of minutes, so it is not part of `verify`; CI runs it nightly and on a pull request labelled `ci:chaos`. Tune with `CHAOS_COUNT`, `CHAOS_RUN`, `CHAOS_PACKAGES`, `CHAOS_CPU`, `CHAOS_HOGS`, `CHAOS_TIMEOUT`, `CHAOS_OUT` (see `scripts/chaos.sh`) |
+| `make dco-test` | Shell test for `scripts/check-dco.sh`, the DCO sign-off check run on fork pull requests |
 | `make fmt` | `gofmt -l -w cmd internal` |
 | `make vet` | `go vet ./cmd/... ./internal/...` |
 | `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
 | `make web-build` | `pnpm build` in `web/` |
+| `make web-bundle-budget` | `pnpm bundle:budget` in `web/`: fails when total, initial-load or per-chunk JavaScript in `internal/server/web/dist` passes its cap in `web/scripts/checkBundleBudget.mjs`, when the Dashboard chunk contains `@xyflow/react`, or when any chunk contains antd or `react-js-cron` (#211). Run after `web-build` |
 | `make web-test` | `pnpm test` in `web/` |
 | `make web-coverage` | `pnpm test:coverage` in `web/` |
 | `make web-spelling` | Guard against the legacy `Symphony` brand name leaking into user-visible TS/TSX strings |
@@ -111,6 +114,17 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 > **Release preflight:** `make release-check` is intentionally stricter than `make verify`. It requires `govulncheck` and GoReleaser to be installed, reruns the release hooks (`go mod tidy` and web build), then fails if tracked files or the index are dirty. Use it after the release-prep diff is committed, not as the everyday edit loop.
 
 > **Release checks:** before tagging, run the checks in [docs/release-checks.md](docs/release-checks.md): a self-hosted issue run and a cloud deploy smoke test (manual `Release acceptance` workflow; they need real accounts), and confirm the upgrade test is green.
+
+> **Release secrets:** a `vX.Y.Z` tag runs `release.yml` (GoReleaser) and then `desktop-release.yml` (the Mac app), which read these repository secrets. Only the maintainer's release needs them; contributors and users never need an Apple ID — a build from source (`make desktop`) is not quarantined and opens without signing.
+>
+> | Secret | Used for |
+> |---|---|
+> | `HOMEBREW_TAP_GITHUB_TOKEN` | Writing to `vnovick/homebrew-tap`: the CLI formula (GoReleaser) and the app's cask `Casks/itervox-app.rb` (`desktop/scripts/homebrew-cask.sh`) |
+> | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | Signing the app, the disk image and the CLI with the Developer ID certificate |
+> | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_API_PRIVATE_KEY` (or `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) | Notarization |
+> | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Signing the updater archive behind `latest.json` |
+>
+> Without the Apple secrets the Mac build is unsigned, publishes no `latest.json` and does not touch the cask; with only some of them set the job fails. How to create each one: [docs/release-mac.md](docs/release-mac.md#one-time-setup).
 
 > **Go package scope:** repo-owned Go workflows intentionally use `./cmd/... ./internal/...`. A raw `go test ./...` can traverse generated Go fixtures under `web/node_modules` after `pnpm install`, so use `make test`, `make coverage`, or the explicit package list above.
 
@@ -136,7 +150,6 @@ itervox/
 │   ├── prdetector/       # Detects PR URLs in agent output
 │   ├── prompt/           # Liquid template rendering
 │   ├── server/           # HTTP API, SSE, embedded web/dist (chi router)
-│   ├── statusui/         # Bubbletea terminal dashboard
 │   ├── templates/        # WORKFLOW.md scaffolding + bundled prompt templates (e.g. human_input.md)
 │   ├── tracker/          # Tracker interface + adapters
 │   │   ├── tracker.go    # Tracker interface
@@ -174,8 +187,6 @@ orchestrator (single-goroutine state machine — imports agent, config, domain,
 app (EnrichIssue business logic — imports domain, tracker)
 
 server (HTTP API — imports domain, config)
-
-statusui (Bubbletea TUI — imports domain)
 
 templates (WORKFLOW.md scaffolding + bundled prompts)
 
@@ -251,35 +262,15 @@ go test -race ./cmd/... ./internal/...           # with race detector (required 
 go test -v ./internal/orchestrator/...           # verbose
 ```
 
-### TUI tests (`internal/statusui`)
+### Terminal command tests (`itervox watch`)
 
-The status UI package uses two complementary testing strategies:
-
-#### Pure-function and model-state tests
-
-Whitebox unit tests cover pure helpers (`wrapText`, `fmtDuration`, `truncate`, `extractPRLink`, `buildNavItems`, …). Interactive model-state tests use [`charmbracelet/x/exp/teatest`](https://pkg.go.dev/github.com/charmbracelet/x/exp/teatest) to drive the full `Update→View` pipeline:
-
-```go
-tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
-tm.Send(tickMsg(time.Now()))
-tm.Quit()
-final := tm.FinalModel(t, teatest.WithFinalTimeout(2*time.Second)).(Model)
-assert.Len(t, final.sessions, 1)
-```
-
-#### Golden-file tests (catwalk)
-
-Render-path tests use [`knz/catwalk`](https://github.com/knz/catwalk) — a data-driven framework that records `View()` output into golden files under `internal/statusui/testdata/` (`catwalk_details`, `catwalk_picker`, `catwalk_profile_picker`, `catwalk_split`). Each test file contains an input sequence followed by the expected rendered output.
-
-**Regenerating golden files** after an intentional TUI change:
-
-```bash
-make tui-golden                               # preferred
-# or directly:
-go test ./internal/statusui/... -args -rewrite
-```
-
-Review the diff in `internal/statusui/testdata/` — it is the exact render change — and commit alongside your code change. The catwalk tests run in the `pre-push` hook, so unintentional renders fail before they reach CI.
+`itervox watch` and the quick actions (`cmd/itervox/client_commands.go`,
+`watch.go`, `watch_render.go`) are tested against a fake daemon
+(`newFakeDaemon` in `client_commands_test.go`, `fakeFeed` in `watch_test.go`)
+that records every request. Assert on the printed text or JSON lines, never on
+golden files. `TestWatchNeverChangesTerminalMode` (Linux) runs watch on a real
+pseudo-terminal and checks the terminal's mode and stdin are untouched — any
+change that puts a terminal into raw mode or reads stdin fails it.
 
 ### Frontend tests
 
@@ -322,7 +313,7 @@ These are skipped (not silently passed) in CI without credentials.
 
 ```bash
 cd web
-pnpm lint          # ESLint
+pnpm lint          # ESLint + outline guard + no-whole-snapshot-selector guard (#211)
 pnpm format:check  # Prettier (check only)
 pnpm format        # Prettier (write)
 ```
@@ -469,6 +460,71 @@ test(workspace): cover symlink escape rejection
 chore: rename binary to itervox
 ```
 
+### Developer Certificate of Origin (DCO)
+
+Every commit in a pull request must be signed off under the
+[Developer Certificate of Origin 1.1](DCO). The sign-off is your statement that
+you wrote the change, or otherwise have the right to submit it under the
+project's license. Add it with `-s`:
+
+```bash
+git commit -s -m "fix(orchestrator): cap backoff at max_retry_backoff_ms"
+```
+
+which appends a trailer using your `git config user.name` and `user.email`:
+
+```
+Signed-off-by: Ada Contributor <ada@example.com>
+```
+
+The email in the sign-off must match the commit's author email. To sign off
+commits already on your branch (for example after the DCO check failed):
+
+```bash
+git rebase --signoff origin/main     # adds the trailer to every commit since main
+git push --force-with-lease
+```
+
+For only the last commit, `git commit --amend --no-edit -s` works too. Merge
+commits are not checked. Run the same check locally with
+`bash scripts/check-dco.sh origin/main HEAD`.
+
+### Contributor License Agreement (CLA)
+
+In addition to the DCO sign-off, external contributors sign the
+[Itervox Individual Contributor License Agreement](CLA.md) once.
+
+- **What it is.** A license, not a transfer: you keep the copyright in your
+  work and grant the project owner, Novick Labs LTD, a broad, perpetual
+  copyright and patent license to use it, including the right to sublicense it and to distribute it
+  under licenses other than Apache-2.0.
+- **Why.** Itervox is Apache-2.0 today. The project may adopt an open-core
+  model in which some future parts are released under a different license
+  (for example a source-available license such as FSL-1.1-ALv2, or a
+  commercial one). The CLA makes sure contributed code can be used in all
+  editions without tracking down every contributor later. The DCO alone does
+  not grant that.
+- **How to sign.** On your first pull request, a bot comments with a link to
+  the CLA. Read it, then post this comment on the pull request, exactly:
+
+  ```
+  I have read the CLA Document and I hereby sign the CLA
+  ```
+
+  Your signature is recorded once (in `signatures/cla.json` on the
+  `cla-signatures` branch) and covers all your future contributions. Comment
+  `recheck` to re-run the check.
+- **Contributing for your employer?** If your employer may own what you write,
+  ask them to sign the [Corporate CLA](CLA-CORPORATE.md) (a signed PDF emailed
+  to vlad@novicklabs.com; the steps are in the document) and list you on its
+  Schedule A.
+
+**Who is checked.** Both the DCO and the CLA checks run only on pull requests
+opened from a fork. They are skipped for branches pushed to `vnovick/itervox`
+itself (maintainer and release branches) and for the allowlisted accounts
+`vnovick`, `claude` and any `*[bot]` account (Dependabot, GitHub Actions).
+The workflows are `.github/workflows/dco.yml` and `.github/workflows/cla.yml`.
+
 ### Pull request checklist
 
 - [ ] `make verify` passes locally
@@ -476,6 +532,7 @@ chore: rename binary to itervox
 - [ ] No API tokens or secrets in the diff
 - [ ] Exported symbols have doc comments
 - [ ] PR description explains the **why**, not just the **what**
+- [ ] Every commit is signed off (`git commit -s`) and, for external contributors, the CLA is signed
 
 ---
 

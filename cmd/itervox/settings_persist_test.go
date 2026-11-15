@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,9 @@ import (
 
 	"github.com/vnovick/itervox/internal/agent/agenttest"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -142,29 +146,154 @@ func TestDashboardSaveWritesTheProjectSettingsFile(t *testing.T) {
 	})
 }
 
-// TestDashboardSaveOfNonLayeredKeyStaysInWorkflow (#129): tracker.* and
-// dependencies.* are not layered, so their saves still write WORKFLOW.md and
-// neither create nor touch the project settings file.
-func TestDashboardSaveOfNonLayeredKeyStaysInWorkflow(t *testing.T) {
+// TestDashboardSaveOfTrackerAndDependenciesKeysMovesThemToSettings (#239,
+// replaces #129's TestDashboardSaveOfNonLayeredKeyStaysInWorkflow): tracker.*
+// and dependencies.* are layered now, so the dedicated saves write the
+// project settings file — keeping its comments — and move the keys out of
+// WORKFLOW.md, as every other layered save does.
+func TestDashboardSaveOfTrackerAndDependenciesKeysMovesThemToSettings(t *testing.T) {
 	t.Run("no settings file", func(t *testing.T) {
 		adapter, path := newPersistTestAdapter(t, persistFixture, "")
 		require.NoError(t, adapter.SetFailedState("Cancelled"))
-		require.NoError(t, adapter.SetDepsAnalysisMode("auto"))
+		require.NoError(t, adapter.SetDepsAnalysisMode("manual"))
+		require.NoError(t, adapter.UpdateTrackerStates([]string{"Todo"}, []string{"Done"}, "Done"))
 
 		wf := readString(t, path)
-		assert.Contains(t, wf, `failed_state: "Cancelled"`)
-		assert.Contains(t, wf, "analysis_mode")
-		_, err := os.Stat(config.ProjectSettingsPath(path))
-		assert.ErrorIs(t, err, os.ErrNotExist, "a non-layered save must not create .itervox/settings.jsonc")
+		assert.NotContains(t, wf, "active_states:", "the saved keys leave WORKFLOW.md")
+		assert.Contains(t, wf, "  kind: linear", "the keys the save did not touch stay")
+		assert.Contains(t, wf, "# Team workflow — comments and key order must survive a dashboard save.")
+		data, err := config.ReadSettingsFile(config.ProjectSettingsPath(path))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{
+			"failed_state": "Cancelled", "active_states": []any{"Todo"}, "terminal_states": []any{"Done"}, "completion_state": "Done",
+		}, data["tracker"])
+		assert.Equal(t, map[string]any{"analysis_mode": "manual"}, data["dependencies"])
+		cfg, err := config.Load(path)
+		require.NoError(t, err)
+		assert.Equal(t, "Cancelled", cfg.Tracker.FailedState)
+		assert.Equal(t, "manual", cfg.Dependencies.AnalysisMode)
+		assert.Equal(t, []string{"Todo"}, cfg.Tracker.ActiveStates)
+		assert.Equal(t, "Cancelled", adapter.orch.FailedStateCfg())
 	})
 
-	t.Run("existing settings file", func(t *testing.T) {
+	t.Run("existing settings file keeps its comments", func(t *testing.T) {
 		adapter, path := newPersistTestAdapter(t, persistFixture, persistSettingsFixture)
 		require.NoError(t, adapter.SetFailedState("Cancelled"))
 
-		assert.Contains(t, readString(t, path), `failed_state: "Cancelled"`)
-		assert.Equal(t, persistSettingsFixture, readString(t, config.ProjectSettingsPath(path)),
-			"a non-layered save must not modify .itervox/settings.jsonc")
+		jsonc := readString(t, config.ProjectSettingsPath(path))
+		assert.Contains(t, jsonc, "// Project settings — this header comment must survive.")
+		assert.Contains(t, jsonc, "// trailing comment")
+		assert.Regexp(t, `"failed_state":\s+"Cancelled"`, jsonc)
+	})
+}
+
+// TestSettingsSaveForTrackerWritesChosenLayer (#239): a save of tracker
+// settings writes the settings layer the operator picks — on the Settings
+// page by its layer tab (user, project or local), and through the dedicated
+// tracker endpoints the layer that already holds the keys (local when it
+// sets them, else project) — through the one comment-preserving writer. The
+// keys leave WORKFLOW.md (never for a user-layer save), the chosen project or
+// local file's value is the one in effect (a user-file value stays under the
+// project's front matter), and the Live state lists reach the running daemon
+// through their cfgMu setters with no reload.
+func TestSettingsSaveForTrackerWritesChosenLayer(t *testing.T) {
+	for _, layer := range config.SettingsLayerNames {
+		t.Run("settings page "+layer, func(t *testing.T) {
+			t.Setenv(config.UserSettingsEnv, filepath.Join(t.TempDir(), "home", "settings.jsonc"))
+			a, wf := newPersistTestAdapter(t, persistFixture, "")
+			mt := tracker.NewMemoryTracker([]domain.Issue{{ID: "1", Identifier: "ENG-1", State: "Doing"}}, []string{"Todo"}, []string{"Done"})
+			a.tr = mt
+			chosen := config.SettingsLayerPath(wf, layer)
+			require.NoError(t, os.MkdirAll(filepath.Dir(chosen), 0o755))
+			require.NoError(t, os.WriteFile(chosen, []byte("// my "+layer+" notes\n{}\n"), 0o644))
+			srv := settingsLayersServer(t, a)
+			view := getSettingsLayers(t, srv)
+
+			rec := rulesRequest(t, srv, http.MethodPut, "/api/v1/settings/layers/"+layer, map[string]any{
+				"baseVersion": layerVersion(view, layer),
+				"values": map[string]any{
+					"tracker.active_states": []string{"Todo", "Doing"}, "tracker.completion_state": "Review",
+					"tracker.push_interval_ms": 0,
+				},
+			})
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			var res server.SettingsLayerSaveResult
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+			assert.Equal(t, layer, res.Layer)
+			if layer == config.LayerUser {
+				// The user file holds personal defaults: the project's own
+				// front matter (active_states) still wins over it.
+				assert.Equal(t, map[string]string{"tracker.active_states": config.LayerWorkflow}, res.Shadowed)
+				assert.Equal(t, []string{"tracker.completion_state"}, res.Applied, "only the key no higher layer sets changes")
+			} else {
+				assert.ElementsMatch(t, []string{"tracker.active_states", "tracker.completion_state"}, res.Applied, "Live keys apply at once")
+				assert.Empty(t, res.Shadowed, "no layer wins over the chosen one")
+			}
+			assert.Equal(t, []string{"tracker.push_interval_ms"}, res.RestartRequired)
+
+			text := readString(t, chosen)
+			assert.Contains(t, text, "// my "+layer+" notes", "the file keeps its comments")
+			data, err := config.ReadSettingsFile(chosen)
+			require.NoError(t, err)
+			assert.Equal(t, []any{"Todo", "Doing"}, data["tracker"].(map[string]any)["active_states"])
+			for _, other := range config.SettingsLayerNames {
+				if other != layer {
+					_, err := os.Stat(config.SettingsLayerPath(wf, other))
+					assert.ErrorIs(t, err, os.ErrNotExist, "only the chosen layer is written (%s)", other)
+				}
+			}
+			if layer == config.LayerUser {
+				assert.Equal(t, persistFixture, readString(t, wf), "a user save never edits the project's WORKFLOW.md")
+			} else {
+				assert.NotContains(t, readString(t, wf), "active_states:", "a project or local save moves the key out of WORKFLOW.md")
+			}
+
+			active, _, completion := a.orch.TrackerStatesCfg()
+			assert.Equal(t, "Review", completion, "applied through the cfgMu setter")
+			assert.Equal(t, layer, explainKey(t, wf, "tracker.completion_state").Layer, "the chosen layer is in effect")
+			if layer == config.LayerUser {
+				assert.Equal(t, config.LayerWorkflow, explainKey(t, wf, "tracker.active_states").Layer)
+				assert.Equal(t, []string{"Todo", "In Progress"}, active, "the front matter's list stays in effect")
+				return
+			}
+			assert.Equal(t, layer, explainKey(t, wf, "tracker.active_states").Layer)
+			assert.Equal(t, []string{"Todo", "Doing"}, active)
+			got, err := mt.FetchCandidateIssues(t.Context())
+			require.NoError(t, err)
+			assert.Len(t, got, 1, "the tracker client sees the new active_states without a reload")
+		})
+	}
+
+	t.Run("dedicated endpoint writes the layer that holds the keys", func(t *testing.T) {
+		a, wf := newPersistTestAdapter(t, persistFixture, "")
+		local := config.LocalSettingsPath(wf)
+		require.NoError(t, os.MkdirAll(filepath.Dir(local), 0o755))
+		require.NoError(t, os.WriteFile(local, []byte("// mine\n{\"tracker\": {\"active_states\": [\"Todo\"]}}\n"), 0o644))
+
+		require.NoError(t, a.UpdateTrackerStates([]string{"Todo", "Doing"}, []string{"Done"}, ""))
+		data, err := config.ReadSettingsFile(local)
+		require.NoError(t, err)
+		assert.Equal(t, []any{"Todo", "Doing"}, data["tracker"].(map[string]any)["active_states"], "the local file the operator chose")
+		assert.Contains(t, readString(t, local), "// mine")
+		_, err = os.Stat(config.ProjectSettingsPath(wf))
+		assert.ErrorIs(t, err, os.ErrNotExist, "a project-file write would be shadowed by the local one")
+		cfg, err := config.Load(wf)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"Todo", "Doing"}, cfg.Tracker.ActiveStates)
+	})
+
+	t.Run("an inline secret is refused", func(t *testing.T) {
+		a, wf := newPersistTestAdapter(t, persistFixture, "")
+		srv := settingsLayersServer(t, a)
+		view := getSettingsLayers(t, srv)
+		rec := rulesRequest(t, srv, http.MethodPut, "/api/v1/settings/layers/project", map[string]any{
+			"baseVersion": layerVersion(view, config.LayerProject),
+			"values":      map[string]any{"tracker.api_key": "inline-fixture-value"},
+		})
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.NotContains(t, rec.Body.String(), "inline-fixture-value")
+		_, err := os.Stat(config.ProjectSettingsPath(wf))
+		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
 }
 

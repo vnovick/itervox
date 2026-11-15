@@ -1,5 +1,6 @@
 import { useDroppable } from '@dnd-kit/core';
 import DraggableCard from './BoardColumn/DraggableCard';
+import { ColumnCardList } from './BoardColumn/ColumnCardList';
 import { columnSubtitle } from './BoardColumn/columnSubtitle';
 import type { TrackerIssue } from '../../types/schemas';
 import type { ProfileDef } from '../../types/schemas';
@@ -291,6 +292,7 @@ export default function BoardColumn({
   return (
     <div
       ref={setNodeRef}
+      data-board-column={state}
       className="border-theme-line bg-theme-bg-soft relative flex max-h-[85vh] w-[280px] min-w-[280px] flex-shrink-0 flex-col overflow-hidden rounded-[var(--radius-md)] border transition-colors duration-200"
       style={color && isOver ? { borderColor: `${color.accent}44` } : undefined}
     >
@@ -322,9 +324,11 @@ export default function BoardColumn({
         />
       )}
 
-      {/* Issue cards */}
-      <div className="flex-1 space-y-2 overflow-y-auto px-3 pb-3">
-        {issues.map((issue) => (
+      {/* Issue cards — windowed above BOARD_VIRTUALIZE_THRESHOLD (#211) */}
+      <ColumnCardList
+        issues={issues}
+        draggingId={draggingId}
+        renderCard={(issue) => (
           <DraggableCard
             key={issue.identifier}
             issue={issue}
@@ -344,8 +348,8 @@ export default function BoardColumn({
             onProfileChange={onProfileChange}
             onDispatch={onDispatch}
           />
-        ))}
-      </div>
+        )}
+      />
     </div>
   );
 }

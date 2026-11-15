@@ -58,6 +58,8 @@ func replayInputRequiredAutomations(
 	now time.Time,
 ) inputRequiredReplayState {
 	snap := orch.Snapshot()
+	// #204: a guardrail approval is for a human, never an automation.
+	snap.InputRequiredIssues = withoutGuardrailApprovals(snap.InputRequiredIssues)
 	if automationProducersPaused(snap) {
 		slog.Warn("automation: input-required replay paused by automation queue backpressure")
 		return prev
@@ -336,6 +338,7 @@ func matchesReplayInputRequiredAutomation(issue domain.Issue, automation orchest
 				MatchMode: automation.MatchMode,
 				States:    automation.States,
 				LabelsAny: automation.LabelsAny,
+				Groups:    automation.Groups,
 			},
 		},
 		identifierRe:   automation.IdentifierRegex,

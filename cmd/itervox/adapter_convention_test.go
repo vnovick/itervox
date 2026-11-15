@@ -198,6 +198,10 @@ func isPersistCall(sel string) bool {
 		return true
 	case sel == "persistSwitchWindowHours":
 		return true
+	// #158: the generic writers — WORKFLOW.md keys outside the layered
+	// sections, and any settings layer file.
+	case sel == "workflow.SetFrontMatterKeys", sel == "persistDepsAnalysisMode", sel == "persistLayer":
+		return true
 	}
 	return false
 }

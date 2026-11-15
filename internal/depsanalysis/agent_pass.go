@@ -72,6 +72,10 @@ type AgentPassInput struct {
 	OnProgress    func(agent.TurnResult)
 	ReadTimeoutMs int
 	TurnTimeoutMs int
+	// RulesBlock is the `## Rules` block (#157) for the analyzer profile,
+	// read from the rules files when the job runs. It leads the prompt,
+	// ahead of the profile's SOUL.md and INSTRUCTIONS.md. Empty: no rules.
+	RulesBlock string
 }
 
 // RunAgentPass invokes the analyzer profile against the supplied issue set
@@ -88,7 +92,7 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 		return nil, fmt.Errorf("depsanalysis: profile %q has no command", input.ProfileName)
 	}
 
-	prompt := buildAnalyzerPrompt(input.Profile, input.ProfileName, input.Issues, input.TrackerEdges)
+	prompt := buildAnalyzerPrompt(input.Profile, input.RulesBlock, input.Issues, input.TrackerEdges)
 	var sessionID string
 	res, err := input.Runner.RunTurn(
 		ctx,
@@ -128,11 +132,16 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 	return edges, nil
 }
 
-// buildAnalyzerPrompt concatenates the profile SOUL + INSTRUCTIONS with the
-// issue list + tracker edges + output reminder. The SOUL/INSTRUCTIONS content
-// has already been loaded by config.parseAgentProfiles; we trust it here.
-func buildAnalyzerPrompt(profile config.AgentProfile, profileName string, issues []AnalyzerIssue, trackerEdges []TrackerEdge) string {
+// buildAnalyzerPrompt concatenates the rules block (#157) and the profile
+// SOUL + INSTRUCTIONS with the issue list + tracker edges + output reminder.
+// The SOUL/INSTRUCTIONS content has already been loaded by
+// config.parseAgentProfiles; we trust it here.
+func buildAnalyzerPrompt(profile config.AgentProfile, rulesBlock string, issues []AnalyzerIssue, trackerEdges []TrackerEdge) string {
 	var b strings.Builder
+	if rulesBlock != "" {
+		b.WriteString(rulesBlock)
+		b.WriteString("\n\n")
+	}
 	if profile.Soul != "" {
 		b.WriteString(profile.Soul)
 		b.WriteString("\n\n")
@@ -168,7 +177,6 @@ func buildAnalyzerPrompt(profile config.AgentProfile, profileName string, issues
 	b.WriteString("- ~0.9 when the issue text explicitly states the dependency (e.g. \"blocked by\", \"depends on\", \"requires\").\n")
 	b.WriteString("- ~0.6 when the relation is inferred from shared files or components mentioned across the issues.\n")
 	b.WriteString("- ~0.3 when the relation is only a thematic or topical similarity.\n")
-	_ = profileName
 	return b.String()
 }
 

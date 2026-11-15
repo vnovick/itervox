@@ -14,8 +14,10 @@ import (
 	"github.com/vnovick/itervox/internal/templates"
 )
 
-// generateWorkflow builds the WORKFLOW.md content from scanned repo info.
-func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath string) string {
+// generateWorkflowWith builds WORKFLOW.md for a starter template and preset
+// (#121, #79); the zero options give the standard scaffold.
+func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPath string, opts initOptions) string {
+	plan := planWorkflow(trackerKind, runner, opts)
 	var b strings.Builder
 
 	// ── frontmatter ───────────────────────────────────────────────────────────
@@ -44,13 +46,13 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 		writeLocalTrackerBlock(&b)
 	case "linear":
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
-		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
+		b.WriteString("  #                        Or pick projects in the web dashboard instead.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
 		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\", \"Duplicate\"]\n")
 		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")
 		b.WriteString("  #                                  # Set to \"\" to disable auto-transition.\n")
 		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
-		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown on the Kanban board; not auto-dispatched.\n")
 		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
 	default:
 		b.WriteString("  project_slug: " + slug + "\n")
@@ -69,7 +71,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 		b.WriteString("  #                               # MUST exist as a label in your repo.\n")
 		b.WriteString("  #                               # Set to \"\" to disable, or reuse an active label.\n")
 		b.WriteString("  completion_state: \"in-review\"  # Label applied when the agent finishes.\n")
-		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown on the Kanban board; not auto-dispatched.\n")
 		b.WriteString("  #                               # Must be an array — not a bare string.\n")
 		b.WriteString("  backlog_states: [\"backlog\"]\n")
 		b.WriteString("  # failed_state: \"backlog\"        # Label for issues that exhaust all retries.\n")
@@ -90,54 +92,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	b.WriteString("  turn_timeout_ms: 3600000\n")
 	b.WriteString("  read_timeout_ms: 120000\n")
 	b.WriteString("  stall_timeout_ms: 300000\n")
-	b.WriteString("  profiles:\n")
-	for _, profile := range initAgentProfileNames {
-		command, backend := initProfileCommand(runner)
-		b.WriteString("    " + profile + ":\n")
-		b.WriteString("      command: " + command + "\n")
-		if backend != "" {
-			b.WriteString("      backend: " + backend + "\n")
-		}
-		b.WriteString("      soul_file: .itervox/agents/" + profile + "/SOUL.md\n")
-		b.WriteString("      instructions_file: .itervox/agents/" + profile + "/INSTRUCTIONS.md\n")
-		switch profile {
-		case "reviewer":
-			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
-		case "input-responder":
-			b.WriteString("      allowed_actions: [comment, provide_input]\n")
-		case initDepsAnalyzerProfileName:
-			// Dependency analyzer is read-only with respect to the tracker;
-			// it has no allowed_actions.
-		default:
-			b.WriteString("      allowed_actions: [comment, comment_pr]\n")
-		}
-	}
-
-	// Reviewer prompt — used when a reviewer worker is dispatched (via auto_review or AI Review button).
-	// Uses the reviewer_prompt template instead of the main WORKFLOW.md body.
-	b.WriteString("  reviewer_profile: reviewer         # Profile used by the AI Review button and optional auto-review.\n")
-	b.WriteString("  deps_analyzer_profile: " + initDepsAnalyzerProfileName + "    # Profile used by the dashboard \"Analyze dependencies\" button. Empty disables the button.\n")
-	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Coexists with workspace.auto_clear as of v0.2.0 — the clear fires on terminal tracker state, after the reviewer also completes.\n")
-	b.WriteString("  # backend_fallback:                 # CORE-054: reroute when a backend hits its usage limit (docs/configuration.md).\n")
-	b.WriteString("  #   chain: [claude, codex]\n")
-	b.WriteString("  #   profile_map:                     # each target must exist, be enabled, and run that backend\n")
-	b.WriteString("  #     implementer: { codex: implementer-codex }\n")
-	b.WriteString("  #   switch_back: at_reset            # at_reset | on_success | manual\n")
-	b.WriteString("  #   min_dwell_minutes: 30\n")
-	b.WriteString("  reviewer_prompt: |\n")
-	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
-	b.WriteString("\n")
-	b.WriteString("    ## Your task\n")
-	b.WriteString("\n")
-	b.WriteString("    Review the change made for this issue. You are a read-only reviewer:\n")
-	b.WriteString("    do not edit files, commit, push or move the issue.\n")
-	b.WriteString("\n")
-	b.WriteString("    1. Read the \"Changes to Review\" block (the diff against the base branch) and the latest handoff\n")
-	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues\n")
-	b.WriteString("    3. Record your verdict as the \"Review Verdict (required)\" block describes: approve, or\n")
-	b.WriteString("       block with the reasons and line comments the implementer must address\n")
-	b.WriteString("\n")
-	b.WriteString("    Be concise. Focus on real bugs, not style preferences.\n")
+	writeAgentProfiles(&b, plan, runner)
 
 	// Write discovered models so the dashboard profile editor has suggestions.
 	if len(info.ClaudeModels) > 0 || len(info.CodexModels) > 0 {
@@ -197,29 +152,10 @@ func generateWorkflow(trackerKind, runner string, info repoInfo, workflowPath st
 	// just work. The actual bound URL is written to .itervox/dashboard_url
 	// (read by the Vite dev proxy) and surfaced in HEARTBEAT.md + the
 	// startup banner.
+	writeGuardrailsBlock(&b) // #204
 	b.WriteString("\nserver:\n  port: 0\n")
 
-	b.WriteString("\n# ── automations (optional) ────────────────────────────────────────────\n")
-	b.WriteString("# Cron and event-driven helper rules layered on top of your agent profiles.\n")
-	b.WriteString("# Trigger types: cron, input_required, tracker_comment_added, issue_entered_state,\n")
-	b.WriteString("#                issue_moved_to_backlog, run_failed, pr_opened, pr_merged,\n")
-	b.WriteString("#                rate_limited, blockers_resolved.\n")
-	b.WriteString("# Tip: an automation whose final output starts with [SILENT] posts no tracker\n")
-	b.WriteString("# comment (run stays in the dashboard logs) — use it for scan-and-found-nothing crons.\n")
-	b.WriteString("# Full reference: https://itervox.dev/guides/automations/\n")
-	b.WriteString("# automations:\n")
-	b.WriteString("#   - id: input-responder\n")
-	b.WriteString("#     enabled: true\n")
-	b.WriteString("#     profile: input-responder   # must match an entry under agent.profiles\n")
-	b.WriteString("#     trigger:\n")
-	b.WriteString("#       type: input_required\n")
-	b.WriteString("#     filter:\n")
-	b.WriteString("#       input_context_regex: \"continue|branch|which file|test command\"\n")
-	b.WriteString("#     policy:\n")
-	b.WriteString("#       auto_resume: true\n")
-	b.WriteString("#     instructions: |\n")
-	b.WriteString("#       Answer narrow, low-risk unblocker questions.\n")
-	b.WriteString("#       If the request is ambiguous, state the safest bounded assumption.\n")
+	writeAutomations(&b, plan)
 
 	b.WriteString("---\n\n")
 
@@ -366,8 +302,9 @@ func runInit(args []string) {
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
 	dir := fs.String("dir", ".", "directory to scan for repo metadata")
 	force := fs.Bool("force", false, "overwrite output file if it already exists")
-	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema")
-	templateName := fs.String("template", "minimal", "scaffold preset: minimal | full | rate-limit-fallback | pr-review | daily-qa")
+	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema and move its layered settings to .itervox/settings.jsonc")
+	dryRun := fs.Bool("dry-run", false, "for --update: print what would change (the new .itervox/settings.jsonc and the keys leaving WORKFLOW.md) and write nothing")
+	templateName := fs.String("template", "", templateFlagUsage())
 	// --server-port is opt-in for --update. When set (>= 0), the migration
 	// rewrites server.port in WORKFLOW.md. The recommended value for the
 	// "two itervox daemons in different repos" workflow is 0 (OS picks a
@@ -391,57 +328,16 @@ func runInit(args []string) {
 		fmt.Fprintf(os.Stderr, "itervox init: invalid --analyze %q (auto|always|never)\n", *analyzeMode)
 		fatalExit(2)
 	}
-	if !IsKnownTemplateName(*templateName) {
+	if *templateName != "" && !IsKnownTemplateName(*templateName) {
 		fmt.Fprintf(os.Stderr, "itervox init: unknown --template %q (valid: %s)\n", *templateName, strings.Join(KnownTemplateNames(), ", "))
 		fatalExit(2)
 	}
-	_ = *templateName // currently scaffolds the same default; future presets emit different blocks.
 
 	if *update {
 		warnIfDaemonRunning(*workflowPath, "`itervox init --update`")
-		result, err := migrateWorkflowToSchema2(*workflowPath, *force, time.Now().UTC())
-		if err != nil {
+		if err := initUpdate(*workflowPath, *force, *dryRun, *serverPort, time.Now().UTC(), os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
 			fatalExit(1)
-		}
-		if result.Changed {
-			fmt.Printf("itervox init --update: migrated %s to schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
-			// gaps_11 G-19 — tell the operator the .bak is disposable once
-			// the migration is confirmed, so stale backups don't linger.
-			fmt.Printf("itervox init --update: backup written to %s — review the migrated workflow, then remove the backup once the migration is confirmed\n", result.BackupPath)
-			if len(result.Profiles) > 0 {
-				fmt.Printf("itervox init --update: migrated profiles: %s\n", strings.Join(result.Profiles, ", "))
-			}
-		} else {
-			fmt.Printf("itervox init --update: %s already uses schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
-		}
-		if *serverPort >= 0 {
-			if err := rewriteServerPort(*workflowPath, *serverPort); err != nil {
-				fmt.Fprintf(os.Stderr, "itervox init --update: rewrite server.port: %v\n", err)
-				fatalExit(1)
-			}
-			fmt.Printf("itervox init --update: server.port set to %d in %s\n", *serverPort, *workflowPath)
-		}
-		for _, warning := range result.Warnings {
-			fmt.Fprintf(os.Stderr, "itervox init --update: warning: %s\n", warning)
-		}
-		// --update returns here, so anything an EXISTING project still needs
-		// must be done before this point. The .env stub is one of them: the
-		// fresh-init path below creates it, but a project migrating an old
-		// WORKFLOW.md never reaches that code, so `init --update` left the
-		// operator with `api_key: $LINEAR_API_KEY` and no file to define it
-		// in — the daemon then hard-failed startup with "missing
-		// tracker.api_key" and no indication of where to put it.
-		//
-		// The tracker kind comes from the migrated workflow, not --tracker,
-		// which is not required for --update.
-		updateDir := filepath.Join(filepath.Dir(*workflowPath), ".itervox")
-		ensureEnvStub(updateDir, trackerKindFromWorkflow(*workflowPath))
-		// The nested .itervox/.gitignore is self-healed on daemon startup,
-		// but write it now so the .env just created is covered before the
-		// operator's next `git add`.
-		if err := finalizeItervoxGitignore(updateDir); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
 		}
 		return
 	}
@@ -498,7 +394,7 @@ func runInit(args []string) {
 		*preset = offerCrossReviewPreset(*runner, stdinIsTerminal(), bufio.NewReader(os.Stdin), os.Stdout)
 	}
 
-	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, *preset, os.Stdout); err != nil {
+	if err := scaffoldWorkflow(*output, *dir, *trackerKind, *runner, initOptions{Template: *templateName, Preset: *preset}, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		fatalExit(1)
 	}
@@ -521,6 +417,7 @@ func runInit(args []string) {
 	if err := finalizeItervoxGitignore(envDir); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
 	}
+	scaffoldPlaybooks(envDir, "itervox init", os.Stdout) // #218
 
 	// #83 — after every file init needs is written, so an interrupted
 	// prompt never leaves a half-initialised project. Asked only on a
@@ -581,7 +478,7 @@ func runInit(args []string) {
 	if *trackerKind == "linear" {
 		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
 		nextStep++
-		fmt.Printf("  %d. Select a project via the TUI (press p) or the web dashboard\n", nextStep)
+		fmt.Printf("  %d. Select a project in the web dashboard\n", nextStep)
 		nextStep++
 	} else {
 		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
@@ -590,7 +487,7 @@ func runInit(args []string) {
 	// server.port: 0 above means the daemon binds an OS-assigned port, not
 	// the 8090 default — find the actual URL with one of these instead of
 	// guessing a port (CORE-022).
-	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url, press 'w' in the TUI to copy it, or run \"itervox doctor\"\n", nextStep)
+	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url or run \"itervox doctor\"\n", nextStep)
 	nextStep++
 	fmt.Printf("  %d. Run \"itervox doctor\" to validate agent commands, tracker credentials, and config before the first real dispatch\n", nextStep)
 }

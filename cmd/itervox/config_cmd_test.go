@@ -55,7 +55,11 @@ func TestConfigSetWritesTheProjectFileAndWarnsWhenAHigherLayerWins(t *testing.T)
 	data, err := config.ReadSettingsFile(config.ProjectSettingsPath(wf))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"agent": map[string]any{"max_turns": 4}}, data)
-	assert.Contains(t, errOut.String(), "the workflow layer also sets agent.max_turns (2), and it wins")
+	// #239: the settings file wins over WORKFLOW.md now; the copy left there is named.
+	assert.Contains(t, errOut.String(), "WORKFLOW.md's front matter also sets agent.max_turns; this file wins over it")
+	cfg, err := config.Load(wf)
+	require.NoError(t, err)
+	assert.Equal(t, 4, cfg.Agent.MaxTurns)
 
 	out.Reset()
 	errOut.Reset()
@@ -64,7 +68,7 @@ func TestConfigSetWritesTheProjectFileAndWarnsWhenAHigherLayerWins(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"polling": map[string]any{"interval_ms": 9000}}, data)
 	assert.Empty(t, errOut.String(), "nothing above the user layer sets it")
-	cfg, err := config.Load(wf)
+	cfg, err = config.Load(wf)
 	require.NoError(t, err)
 	assert.Equal(t, 9000, cfg.Polling.IntervalMs)
 }
@@ -92,7 +96,8 @@ func TestConfigSetRefusesAWrongTypeAndChangesNothing(t *testing.T) {
 	assert.Equal(t, original, string(got))
 
 	errOut.Reset()
-	assert.Equal(t, 1, configCmd([]string{"set", "tracker.kind", "github", "--workflow", wf}, &out, &errOut))
+	// #239: tracker is layered now; guardrails is not.
+	assert.Equal(t, 1, configCmd([]string{"set", "guardrails.enabled", "false", "--workflow", wf}, &out, &errOut))
 	assert.Contains(t, errOut.String(), "cannot be set in a settings file")
 
 	errOut.Reset()
@@ -114,4 +119,38 @@ func TestConfigUsage(t *testing.T) {
 	assert.Equal(t, 2, configCmd(nil, &out, &errOut))
 	assert.Equal(t, 2, configCmd([]string{"set", "agent.max_turns"}, &out, &errOut))
 	assert.Contains(t, errOut.String(), "usage: itervox config show")
+}
+
+// TestConfigSetLocalLayerWinsOverProject (#158): --local writes the
+// gitignored .itervox/settings.local.jsonc, which wins over the project file.
+func TestConfigSetLocalLayerWinsOverProject(t *testing.T) {
+	wf, _ := configProject(t, "", "")
+	var out, errOut bytes.Buffer
+	require.Equal(t, 0, configCmd([]string{"set", "agent.max_turns", "4", "--workflow", wf}, &out, &errOut), errOut.String())
+	require.Equal(t, 0, configCmd([]string{"set", "--local", "agent.max_turns", "6", "--workflow", wf}, &out, &errOut), errOut.String())
+	data, err := config.ReadSettingsFile(config.LocalSettingsPath(wf))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"agent": map[string]any{"max_turns": 6}}, data)
+	cfg, err := config.Load(wf)
+	require.NoError(t, err)
+	assert.Equal(t, 6, cfg.Agent.MaxTurns, "the local layer wins over the project layer")
+	ignore, err := os.ReadFile(filepath.Join(filepath.Dir(wf), ".itervox", ".gitignore"))
+	require.NoError(t, err)
+	assert.Contains(t, string(ignore), "/settings.local.jsonc")
+
+	errOut.Reset()
+	require.Equal(t, 0, configCmd([]string{"set", "agent.max_turns", "8", "--workflow", wf}, &out, &errOut))
+	assert.Contains(t, errOut.String(), "the local layer also sets agent.max_turns (6), and it wins")
+	assert.Equal(t, 2, configCmd([]string{"set", "--local", "--user", "agent.max_turns", "1", "--workflow", wf}, &out, &errOut))
+}
+
+// TestConfigSchemaPrintsPublishedSchema (#158): `itervox config schema`
+// prints the generated settings schema, the bytes `make settings-schema`
+// publishes.
+func TestConfigSchemaPrintsPublishedSchema(t *testing.T) {
+	var out, errOut bytes.Buffer
+	require.Equal(t, 0, configCmd([]string{"schema"}, &out, &errOut), errOut.String())
+	published, err := os.ReadFile(filepath.Join("..", "..", "site", "public", "schema", "settings.schema.json"))
+	require.NoError(t, err)
+	assert.Equal(t, string(published), out.String())
 }

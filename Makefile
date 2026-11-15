@@ -1,4 +1,4 @@
-.PHONY: all build verify chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-test web-coverage web-spelling coverage clean benchmark tui-golden size-budget no-os-exit no-bare-go deadcode e2e
+.PHONY: all build verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark settings-schema size-budget no-os-exit no-bare-go deadcode dco-test check-changelog-split e2e
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.10, even on machines where /usr/local/go is an older version.
@@ -32,13 +32,57 @@ build: web-deps web-build
 # internal/server/web/dist (gitignored), so on a fresh checkout every Go
 # compile step fails with "pattern web/dist: no matching files found" until
 # the frontend is built. Order is load-bearing — verify runs serially.
-verify: web-deps web-build fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs deploy-test
+verify: web-deps web-build web-bundle-budget fmt vet lint-go test evals-fast web-typecheck web-lint web-format web-coverage web-spelling size-budget no-os-exit no-bare-go deadcode verify-track-b-docs check-changelog-split deploy-test dco-test
 
 # evals-fast runs the deterministic recorded-mode evals suite. Sub-second
 # wall-clock; no API spend. Wired into `verify` so a prompt-change that
 # breaks recorded scenarios fails the build (P1.a).
 evals-fast:
-	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestReviewerEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport' ./internal/evals/...
+	go test -race -count=1 -run '^TestMergeBotEvalsRecordedMode_AllScenariosPass$$|^TestReviewerEvalsRecordedMode_AllScenariosPass$$|^TestJudge|^TestReport|^TestAbsenceCheckFailsWhenPhrasePresent$$' ./internal/evals/...
+
+# evals (#201) judges the same committed recordings through cmd/itervox-evals
+# and saves the report as JSON to $(EVALS_RESULTS_DIR)/<ISO8601>.json (the
+# newest 20 kept), which the dashboard's Repo Analysis -> Evals section
+# reads. evals-live and evals-record save their reports there too. Runtime
+# state: the directory carries its own .gitignore.
+EVALS_RESULTS_DIR ?= .itervox/evals
+
+evals:
+	go run ./cmd/itervox-evals recorded -results-dir '$(EVALS_RESULTS_DIR)'
+
+# Live evals (#189) run every scenario against a REAL agent CLI with the
+# profile's current SOUL.md / INSTRUCTIONS.md and resolved rules, and judge
+# the transcript with the recorded-mode judges. They spend tokens, so they are
+# NOT part of verify and refuse to start without ITERVOX_EVALS_LIVE=1:
+#
+#   ITERVOX_EVALS_LIVE=1 make evals-live                 # judge a live run (transcripts in a temp dir)
+#   ITERVOX_EVALS_LIVE=1 make evals-record               # re-record: writes recording.candidate.jsonl per fixture
+#   make evals-promote SCENARIO=reviewer/approves-with-marker   # after review; SCENARIO=all for every candidate
+#
+# Knobs: EVALS_PROFILE, EVALS_SCENARIO, EVALS_COMMAND (agent CLI to run),
+# EVALS_BACKEND (claude|codex), EVALS_WORKFLOW (eval your own project),
+# EVALS_MAX_TURNS, EVALS_MAX_TOKENS (per scenario), EVALS_MAX_COST_USD
+# (suite), EVALS_TIMEOUT (per scenario, e.g. 5m), FORCE=1 (promote a
+# candidate that fails its judges). See docs/evals.md.
+EVALS_WORKFLOW ?= internal/evals/project/WORKFLOW.md
+EVALS_MAX_TURNS ?= 12
+EVALS_MAX_TOKENS ?= 400000
+EVALS_MAX_COST_USD ?= 3
+EVALS_TIMEOUT ?= 5m
+EVALS_LIVE_FLAGS = -workflow '$(EVALS_WORKFLOW)' -results-dir '$(EVALS_RESULTS_DIR)' -max-turns $(EVALS_MAX_TURNS) -max-tokens $(EVALS_MAX_TOKENS) \
+	-max-cost-usd $(EVALS_MAX_COST_USD) -timeout $(EVALS_TIMEOUT) \
+	$(if $(EVALS_PROFILE),-profile '$(EVALS_PROFILE)') $(if $(EVALS_SCENARIO),-scenario '$(EVALS_SCENARIO)') \
+	$(if $(EVALS_COMMAND),-command '$(EVALS_COMMAND)') $(if $(EVALS_BACKEND),-backend '$(EVALS_BACKEND)')
+
+evals-live:
+	go run ./cmd/itervox-evals live $(EVALS_LIVE_FLAGS) $(if $(EVALS_OUT),-out '$(EVALS_OUT)')
+
+evals-record:
+	go run ./cmd/itervox-evals record $(EVALS_LIVE_FLAGS)
+
+evals-promote:
+	@if [ -z "$(SCENARIO)" ]; then echo "usage: make evals-promote SCENARIO=<profile>/<scenario>|all [FORCE=1]"; exit 2; fi
+	go run ./cmd/itervox-evals promote $(if $(FORCE),-force) $(if $(filter all,$(SCENARIO)),-all,$(SCENARIO))
 
 # Release preflight mirrors tag-time checks. Keep `verify` as the normal PR/local
 # edit gate; this target additionally requires release tooling and a clean tree.
@@ -60,6 +104,11 @@ release-hooks-clean:
 # Guard against new os.Exit() outside cmd/itervox/exit.go — see CLAUDE.md.
 no-os-exit:
 	@bash scripts/check-no-os-exit.sh
+
+# dco-test exercises scripts/check-dco.sh (the DCO sign-off check run by
+# .github/workflows/dco.yml) against throwaway git repos. Needs bash + git.
+dco-test:
+	@bash scripts/check-dco_test.sh
 
 # no-bare-go (CORE-008) fails on any production `go` statement that neither
 # defers orchestrator.RecoverGoroutine / failFastOnPanic nor appears on the
@@ -84,8 +133,6 @@ size-budget:
 	  "cmd/itervox/main.go 2000" \
 	  "cmd/itervox/adapter_settings.go 400" \
 	  "cmd/itervox/init.go 600" \
-	  "internal/statusui/model.go 3010" \
-	  "internal/statusui/keys.go 200" \
 	  "internal/server/handlers.go 1500" \
 	  "web/src/components/itervox/IssueDetailSlide.tsx 460" \
 	  "web/src/components/itervox/BoardColumn.tsx 360" \
@@ -140,9 +187,11 @@ clean:
 	rm -f itervox coverage.out coverage.html
 	go clean $(GO_PACKAGES)
 
-# Regenerate catwalk golden files after intentional TUI render changes.
-tui-golden:
-	go test ./internal/statusui/... -args -rewrite
+# Regenerate the published settings JSON Schema (#158) from the config
+# registry (internal/config/settings_fields.go). TestSettingsSchemaPublishedFileIsCurrent
+# fails when the published file is stale.
+settings-schema:
+	go generate ./cmd/itervox/
 
 # Run benchmarks with memory allocation stats.
 benchmark:
@@ -167,6 +216,12 @@ web-format:
 
 web-build:
 	cd web && pnpm build
+
+# #211 — caps on total / initial / per-chunk JS and forbidden dependencies in
+# the embedded dashboard build. Reads internal/server/web/dist, so it runs
+# after web-build (verify orders it that way).
+web-bundle-budget:
+	cd web && pnpm bundle:budget
 
 web-test:
 	cd web && pnpm test
@@ -204,20 +259,29 @@ verify-track-b-docs:
 		exit 1; \
 	fi
 
+# The per-release CHANGELOG split (#246) must keep every entry of the old
+# [Unreleased] section (testdata/changelog/unreleased-pre-split.txt) exactly
+# once in the 0.2.2-0.3.0 sections, and no release section may be empty.
+check-changelog-split:
+	@bash scripts/check-changelog-split.sh
+
 dev:
 	cd web && pnpm dev
 
 # Shell tests for the deploy/ scripts (CORE-061 fetch-secrets, CORE-062
 # bootstrap data disk + HOME relocation, CORE-107 upgrade rollback + cleanup
 # retention, CORE-113 heartbeat exporter, watchdog and alert-rule family
-# names). Cloud CLIs, curl, blkid/mount/mkfs and systemctl are stubbed on
+# names), and the CHANGELOG split check (#246). Cloud CLIs, curl,
+# blkid/mount/mkfs and systemctl are stubbed on
 # PATH; needs only bash, jq and python3 (the systemd EnvironmentFile parser port).
 .PHONY: deploy-test
 deploy-test:
 	bash scripts/chaos_test.sh
+	bash scripts/check-changelog-split_test.sh
 	bash deploy/lib/fetch-secrets_test.sh
 	bash deploy/bootstrap_test.sh
 	bash deploy/aws/provision_test.sh
+	bash deploy/gcp/provision_test.sh
 	bash deploy/docker/healthcheck_test.sh
 	bash deploy/upgrade_test.sh
 	bash deploy/cleanup_test.sh
@@ -294,3 +358,42 @@ qa-daemon: e2e
 .PHONY: qa-current
 qa-current: verify qa-current-ui qa-daemon
 	@echo "qa-current: full existing-functionality baseline passed"
+
+# ── Mac app (#128) ───────────────────────────────────────────────────────
+# A Tauri v2 menu-bar shell in desktop/ that bundles the daemon as a sidecar
+# (see site/src/content/docs/mac-app.mdx). Needs a Rust toolchain; `make
+# desktop` additionally needs macOS (Xcode Command Line Tools) and the Tauri
+# CLI, installed on first use at TAURI_CLI_VERSION. Not part of `make verify`,
+# which stays Rust-free; CI runs `desktop-test` and the unsigned bundle on a
+# macOS runner (.github/workflows/desktop.yml).
+DESKTOP_DIR := desktop/src-tauri
+TAURI_CLI_VERSION := 2.12.2
+HOST_TRIPLE = $(shell rustc -vV | sed -n 's/^host: //p')
+
+.PHONY: desktop desktop-sidecar desktop-sidecar-host desktop-test desktop-tauri-cli
+
+# Both macOS sidecars (arm64 + x86_64, plus a lipo'd universal one on a Mac).
+desktop-sidecar: web-deps web-build
+	bash desktop/scripts/build-sidecar.sh
+
+# The sidecar for this machine only (tests, Linux development).
+desktop-sidecar-host: web-deps web-build
+	bash desktop/scripts/build-sidecar.sh --host
+
+# Rust gates plus the end-to-end tests against the real daemon.
+desktop-test: desktop-sidecar-host
+	cd $(DESKTOP_DIR) && cargo fmt --check
+	cd $(DESKTOP_DIR) && cargo clippy --all-targets -- -D warnings
+	cd $(DESKTOP_DIR) && ITERVOX_E2E_REQUIRE=1 \
+	  ITERVOX_E2E_DAEMON=$(CURDIR)/$(DESKTOP_DIR)/binaries/itervox-$(HOST_TRIPLE) cargo test
+
+desktop-tauri-cli:
+	@cargo tauri --version 2>/dev/null | grep -qx 'tauri-cli $(TAURI_CLI_VERSION)' \
+	  || cargo install tauri-cli --version $(TAURI_CLI_VERSION) --locked
+
+# The unsigned app bundle for this Mac's architecture:
+# desktop/src-tauri/target/release/bundle/macos/Itervox.app (+ a .dmg).
+# Releases are signed and notarized by .github/workflows/desktop-release.yml
+# (#130, docs/release-mac.md).
+desktop: desktop-sidecar desktop-tauri-cli
+	cd $(DESKTOP_DIR) && cargo tauri build

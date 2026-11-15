@@ -108,6 +108,17 @@ func recordSelfWrite(path string, pre, post []byte) {
 	recordSelfWriteAt(canonicalPath(path), sha256.Sum256(pre), sha256.Sum256(post), time.Now())
 }
 
+// RecordSelfWrite registers a write this process made to a file the daemon
+// watches other than through this package's patchers (#245: the settings
+// files config.SetSettings and config.WriteJSONCFile write, and the restore
+// of one after a failed save). pre is what the writer read (preExists false:
+// the file did not exist), post what it left (postExists false: it removed
+// the file). Like recordSelfWrite, the caller serializes its writes to path
+// (the daemon's settings gate) and calls this after the write landed.
+func RecordSelfWrite(path string, pre []byte, preExists bool, post []byte, postExists bool) {
+	recordSelfWriteAt(canonicalPath(path), FileHash(pre, preExists), FileHash(post, postExists), time.Now())
+}
+
 func recordSelfWriteAt(path string, pre, post [32]byte, now time.Time) {
 	selfWrites.mu.Lock()
 	defer selfWrites.mu.Unlock()

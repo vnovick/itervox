@@ -44,6 +44,8 @@ go install github.com/vnovick/itervox/cmd/itervox@latest
 
 Pre-built binaries for macOS and Linux are available on the [latest release](https://github.com/vnovick/itervox/releases/latest).
 
+On a Mac you can install the menu bar app instead: `brew install --cask vnovick/tap/itervox-app`. It carries its own `itervox` daemon, so you need only one of the two; see the [Mac app guide](https://itervox.dev/guides/mac-app/#install).
+
 ### Authenticating the agent CLI
 
 Itervox shells out to `claude` or `codex` and does **not** manage agent credentials itself. Before running Itervox, authenticate the agent CLI once on every machine where it will execute (including any SSH worker hosts):
@@ -79,7 +81,7 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Retry queue** — failed agents auto-retry with exponential backoff (10s, 20s, 40s… capped at 5 min).
 - **Pause & resume** — free up a slot; resume later via `--resume` and continue the same session from exactly where it stopped.
 - **Input required** — agents can request human input. The preferred contract is the explicit `<!-- itervox:needs-input -->` marker, but Itervox also has a best-effort English-oriented fallback for successful final messages that end in a real blocking decision or confirmation prompt. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
-- **Automations** — trigger helper runs from ten event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
+- **Automations** — trigger helper runs from fourteen event types: `cron`, `input_required`, `tracker_comment_added` (with optional `body_contains` / `body_regex` filters), `issue_entered_state`, `issue_moved_to_backlog`, `run_failed`, `pr_opened`, `pr_merged`, the GitHub PR events on Itervox-managed PRs (`pr_check_completed`, `pr_synchronized`, `pr_review_submitted`, `pr_mergeable_changed`), `rate_limited`, and `blockers_resolved` (dependency audit). Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
 - **Built-in `merge-bot` profile** — ships embedded in the binary; reference it from `WORKFLOW.md` with `agent.profiles.merge-bot: {}` and the daemon resolves SOUL/INSTRUCTIONS from the embedded registry. The new `merge_pr` agent action runs `gh pr view` / `gh pr checks --required` / `gh pr merge` with required-check + block-label guards.
 - **Auto-clear workspaces** — delete cloned workspaces after successful completion. Disk stays clean, logs are preserved.
 - **Project filters** — filter issues by Linear project when working across multiple repos.
@@ -170,6 +172,10 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
   </tr>
 </table>
 
+### Mac menu-bar app
+
+A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, `brew install --cask vnovick/tap/itervox-app`, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. Guide: **[itervox.dev/guides/mac-app/](https://itervox.dev/guides/mac-app/)**.
+
 ### View from your phone, anywhere
 
 The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunnel, Tailscale, ngrok, or self-hosted Piko. Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
@@ -182,48 +188,25 @@ The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunne
 
 ## Or stay in the terminal
 
-`itervox watch` shows the running, retrying, waiting and paused issues of the daemon in any terminal, over SSH or in a pipe; `itervox logs -f <issue>` follows an issue's run log, and `itervox pause|resume|dispatch|workers|reply` act on it. See the [CLI reference](https://itervox.dev/cli/).
+`itervox watch` is a read-only live panel for any terminal, over SSH, in tmux or in a pipe: a status header, one lane per running issue with its latest (redacted) activity, tokens and cost, the feed's events as they happen, and every question or guardrail approval waiting for you with the exact command that answers it.
 
-The Bubbletea terminal UI below is **deprecated** and will be removed in v0.3. Since v0.2.4 Itervox runs headless by default; `itervox --tui` still starts it.
+```text
+itervox · 2/2 running · 0 queued · 0 retrying · 2 waiting for you · 1 waiting for a slot · 0 blocked by dependencies · 0 paused
 
-<table>
-  <tr>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-issues-logs-timeline.png" width="440" alt="TUI issues + logs + timeline" /><br/>
-      <sub><b>Issues · Logs · Timeline</b> — the default three-panel view</sub>
-    </td>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-session-details.png" width="440" alt="TUI session details" /><br/>
-      <sub><b>Session details</b> — press <code>d</code> for tools and metadata</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-gantt-timeline.png" width="440" alt="TUI Gantt timeline" /><br/>
-      <sub><b>Gantt timeline</b> — parallel runs at a glance</sub>
-    </td>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-history.png" width="440" alt="TUI history tab" /><br/>
-      <sub><b>History</b> — press <code>h</code> for previous runs</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-backlog.png" width="440" alt="TUI backlog" /><br/>
-      <sub><b>Backlog</b> — press <code>b</code>, <code>enter</code> to dispatch</sub>
-    </td>
-    <td align="center">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-backlog-issue-details.png" width="440" alt="TUI backlog issue details" /><br/>
-      <sub><b>Backlog issue details</b></sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2">
-      <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/tui-project-picker.png" width="440" alt="TUI project picker" /><br/>
-      <sub><b>Project picker</b> — press <code>p</code> to switch projects</sub>
-    </td>
-  </tr>
-</table>
+● ENG-142    Fix the login race in the session s… coder · claude    1m05s  turn 3   12.0k tok  $0.42
+    › [Bash] go test ./internal/auth/... — Running the auth tests
+
+NEEDS YOU
+  ! ENG-140    approval: Agent wants to run: `vercel --prod`
+      → itervox approve ENG-140
+  ? ENG-137    question: Which database should the migration target?
+      → itervox reply ENG-137 "<your answer>"
+
+EVENTS
+  14:02:09 #1842 ENG-139    started (codex · reviewer)
+```
+
+`--issue ENG-142` follows one issue's full log, `--events-only` and `--json` are for scripts, and `--since` resumes the event stream where it stopped. `itervox logs -f <issue>` follows a run log, and `itervox pause|resume|dispatch|workers|reply|approve` act. Watch never reads stdin or changes the terminal mode. The full-screen terminal UI was removed in v0.3 (`--tui` now points here). See the [terminal guide](https://itervox.dev/guides/terminal/) and the [CLI reference](https://itervox.dev/cli/).
 
 ---
 
@@ -367,10 +350,10 @@ Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the 
 | `itervox quickstart` | One command from a repository to a running board: detect tracker and agent, write or migrate `WORKFLOW.md`, set up the token and GitHub labels (asks first), run doctor, start the daemon in the background |
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |
-| `itervox init --template <preset>` | Accepts `minimal` (default), `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`; in v0.2.0 every preset emits the same default scaffold (preset-specific scaffolds land in a future release) |
+| `itervox init --template <name>` | Starter template: `minimal` (one implementer), `full` (four profiles, auto-review chain, common automations), `rate-limit-fallback` (backend fallback plus a `rate_limited` switch), `pr-review` (PR reviewer automations), `daily-qa` (daily cron QA). Without it, the standard four-profile scaffold. See the [CLI reference](site/src/content/docs/cli.mdx#starter-templates) |
 | `itervox init --update --workflow WORKFLOW.md` | Migrate a v0.1.x workflow to schema 2 (writes `WORKFLOW.md.bak`) |
 | `itervox doctor` | Preflight: validate `WORKFLOW.md`, report binary-resolution drift, list built-in profiles, surface any `.itervox/STARTUP_ERROR.md`, and on a GitHub tracker list missing state labels (`--fix` creates them) |
-| `itervox status` | One-shot daemon status snapshot (capacity, queue pressure, last error) |
+| `itervox status [--all] [--json]` | List running daemons for this project (`--all`: every daemon on the host); `--json` prints path, pid, URL, version, start time and token posture per daemon for supervisors such as the macOS app |
 | `itervox stop` | Gracefully stop a running daemon (signals only a daemon holding the project's pid lock; `--legacy` for pre-v0.2.1 daemons) |
 | `itervox action <subcommand>` | Daemon-backed agent actions: `comment`, `comment-pr`, `merge-pr`, `create-issue`, `move-state`, `provide-input` |
 | `itervox clear [IDENTIFIER…]` | Remove workspace directories (all, or specific issues) |
@@ -484,7 +467,7 @@ Itervox is designed for **high-trust local environments**:
 | Surface | macOS | Linux | Windows |
 |---|---|---|---|
 | Orchestrator + web dashboard | Supported | Supported | Unsupported (use WSL2) |
-| TUI | Supported | Supported | Unsupported (use WSL2) |
+| Terminal commands (`itervox watch`, quick actions) | Supported | Supported | Unsupported (use WSL2) |
 | Local agent execution | Supported | Supported | Unsupported (use WSL2) |
 | SSH worker hosts | Supported | Supported | Unsupported (use WSL2) |
 
@@ -494,7 +477,7 @@ Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses w
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline. Before tagging a release, run `make release-check` after committing release changes; it adds `govulncheck`, `goreleaser check`, and the GoReleaser hook dirty-worktree guard.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web coverage/build, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline. Every commit must be signed off (`git commit -s`), and first-time external contributors sign the [CLA](CLA.md) by commenting on their pull request; see [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco). Before tagging a release, run `make release-check` after committing release changes; it adds `govulncheck`, `goreleaser check`, and the GoReleaser hook dirty-worktree guard.
 
 Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/ATU5n3yZNX) to show your `WORKFLOW.md`, ask questions, or propose ideas.
 
@@ -509,3 +492,5 @@ If Itervox saves you time, please consider sponsoring development: **[github.com
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
+
+Contributions are accepted under the [Developer Certificate of Origin](DCO) (sign off every commit with `git commit -s`) and, for external contributors, the [Contributor License Agreement](CLA.md) ([corporate version](CLA-CORPORATE.md)). The CLA is a license grant, not a copyright assignment: you keep your copyright, and the project owner may also distribute contributions under licenses other than Apache 2.0.

@@ -138,6 +138,30 @@ gh label create "backlog"     --color "f9f9f9" --repo owner/repo
 
 Label names match case-insensitively, as on GitHub. Then add the `todo` label to an issue to hand it to an agent.
 
+## Filter which issues are read
+
+By default Itervox reads every issue carrying an active-state label. `tracker.filter` (#198) narrows that with groups of conditions — every condition in a group must match, and an issue is read when **any** group matches:
+
+```yaml
+tracker:
+  kind: github
+  api_key: $GITHUB_TOKEN
+  project_slug: owner/repo
+  active_states: ["todo", "in-progress"]
+  filter:
+    - labels_any: [agent, ai]          # agent work…
+      labels_none: [blocked, needs-human]
+    - assignee: me                     # …or anything assigned to the token's user
+      milestone: "v1.2"
+```
+
+- Supported conditions: `assignee` (`me` — the token's user — or a login), `labels_any`, `labels_all`, `labels_none`, `states` (narrows `active_states`; `working_state` always stays in) and `milestone`. `projects`, `teams`, `priority` and `cycle` have no GitHub search equivalent: they are a config error naming the condition, never ignored.
+- Each group is one [issue search](https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests): `repo:owner/repo is:issue is:open label:"agent" -label:"blocked" assignee:@me milestone:"v1.2"`. The results of all groups are unioned and de-duplicated by issue number. GitHub search has no OR between labels inside one query, so a group with several `labels_any` labels runs **one search per label** and unions them.
+- **States stay labels.** The filter decides which issues; the state labels still decide each issue's state exactly as without a filter, so put no state label in `labels_none` unless you mean to exclude that state. Terminal reads search the closed issues a group matches.
+- The search API allows 30 requests a minute and at most 1,000 results per query. With the tracker store on (the default) the poll reads the store; only its full pulls search, and its incremental pull lists the repository's changed issues and drops the ones the filter no longer matches. Keep the number of groups (and split labels) small.
+- Webhook refreshes and retries check an issue against the same filter in memory: an issue that gains an excluded label mid-run finishes its run and is not re-dispatched.
+- Edit it at runtime in **Settings → Tracker Scope** (group builder with a live match count); `itervox doctor` validates it and prints the match count. See the [configuration reference](/configuration/#tracker-filter).
+
 ## Priority labels
 
 GitHub has no priority field. Itervox reads priority from labels named `p0`, `p1`, `p2` and `p3` (any case):

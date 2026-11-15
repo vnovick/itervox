@@ -35,8 +35,22 @@ describe('uiStore', () => {
       'expandedRunningId',
       'logsAutomationOnly',
       'logsIssueSearch',
+      // #202 — Memory page.
+      'memoryFilters',
+      'memoryLessonsView', // #203
+      'memorySelectedId',
+      'memoryTab',
+      'memoryUndo',
+      'rulesLayer',
+      'rulesPreviewIssue',
+      'rulesPreviewProfile',
+      'rulesView',
+      'settingsLayer',
+      'settingsView',
       'timelineAutomationOnly',
     ]);
+    expect(state.settingsLayer).toBe('project');
+    expect(state.settingsView).toBe('form');
     expect(state.expandedRunningId).toBeNull();
     expect(state.expandedPausedId).toBeNull();
     expect(state.logsIssueSearch).toBe('');

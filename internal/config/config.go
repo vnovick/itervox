@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/profiles"
 	"github.com/vnovick/itervox/internal/workflow"
 )
@@ -187,10 +188,35 @@ const (
 
 // TrackerConfig holds tracker-related configuration.
 type TrackerConfig struct {
-	Kind           string
-	Endpoint       string
-	APIKey         string
-	ProjectSlug    string
+	Kind     string
+	Endpoint string
+	APIKey   string
+	// ProjectSlug is the project scope: a Linear project slug (optional;
+	// empty reads every project), a GitHub owner/repo, or the local
+	// tracker's identifier prefix.
+	ProjectSlug string
+	// Assignee narrows a Linear tracker to the issues assigned to one user
+	// (#182): "me" (the API key's own user), a user id, or an email. ANDed
+	// with ProjectSlug and Labels; alone it reads that user's issues in
+	// every project of every team the key can read. Resolved to a user id
+	// once per load, off the event loop. Load-time only: the dashboard's
+	// scope filter changes the tracker client's runtime scope, not this
+	// field.
+	Assignee string
+	// Team narrows an assignee scope to one Linear team, by key (ENG) or id
+	// (#182). Ignored without Assignee.
+	Team string
+	// Labels narrows a Linear tracker to the issues carrying ANY of these
+	// labels (#182), ANDed with the project and assignee. Empty: no label
+	// filter. Load-time only, like Assignee.
+	Labels []string
+	// Filter is tracker.filter (#198): groups of conditions, ANDed inside a
+	// group and ORed between groups. When set it replaces ProjectSlug (for
+	// Linear), Assignee, Team and Labels, which act as one implicit group
+	// otherwise; setting both is a validation error. Load-time config: the
+	// dashboard's scope save changes the tracker client's runtime filter
+	// (and WORKFLOW.md, reload-fenced), not this field.
+	Filter         issuefilter.Filter
 	ActiveStates   []string
 	TerminalStates []string
 	// WorkingState is the state name to transition an issue to when it is
@@ -212,6 +238,15 @@ type TrackerConfig struct {
 	// the orchestrator's completion/failed-state paths. Default true; set
 	// false as a kill switch to restore the old synchronous behavior.
 	Outbox bool
+	// PushIntervalMs is tracker.push_interval_ms (#115): how long a
+	// non-urgent outbox write waits for its issue's batch before it is
+	// pushed. Inside one batch only an issue's last state move is sent;
+	// comments keep their order. Urgent writes (input-required questions and
+	// replies, failure notices, operator comments) skip it. 0 pushes every
+	// write as soon as the flusher sees it; a negative value falls back to
+	// the default. Only used with Outbox on. Load-time only: no runtime
+	// setter, so it is not in the cfgMu allowlist.
+	PushIntervalMs int
 	// CommentCommands (#84) lets repository maintainers drive Itervox from
 	// GitHub issue comments (`/itervox run|stop|review`). Off by default;
 	// GitHub only. Read once at startup.
@@ -225,7 +260,16 @@ type TrackerConfig struct {
 	// refresh the store by issue, and the store's periodic pull slows to the
 	// safety-net interval.
 	Webhooks TrackerWebhooksConfig
+	// Sync is tracker.sync (#118): two-way sync of the local issue files
+	// with a Linear project or GitHub repository. kind: local only. Read
+	// once at startup.
+	Sync TrackerSyncConfig
 }
+
+// DefaultTrackerPushIntervalMs is tracker.push_interval_ms when unset (#115):
+// long enough to fold a run's closing moves (completion state, review state)
+// into one write, short enough that the tracker trails the board by seconds.
+const DefaultTrackerPushIntervalMs = 10000
 
 // TrackerStoreConfig configures the local tracker store (#113).
 type TrackerStoreConfig struct {
@@ -289,7 +333,17 @@ type PollingConfig struct {
 	// An explicit 0 disables shedding entirely. Values >= 100 would shed
 	// permanently and are clamped to the default.
 	RateLimitReservePercent int
+	// AutomationIntervalMs is how often the automation event poll
+	// (tracker_comment_added, issue_entered_state, issue_moved_to_backlog)
+	// lists issues from the tracker (#155). The poll stretches it while the
+	// tracker's remaining request budget is low. Load-time only: no runtime
+	// setter, so it is not in the cfgMu allowlist.
+	AutomationIntervalMs int
 }
+
+// DefaultAutomationPollIntervalMs is polling.automation_interval_ms when
+// unset: the automation event poll's historical fixed 15s cadence.
+const DefaultAutomationPollIntervalMs = 15000
 
 // WorkspaceConfig holds workspace settings.
 type WorkspaceConfig struct {
@@ -553,6 +607,15 @@ type AgentConfig struct {
 	// operators answer in Linear/GitHub. Automation replies (agent-actions
 	// provide-input) are unaffected. Default: false.
 	InlineInput bool
+	// LiveSteering (#178) lets an operator message from the Sessions panel
+	// reach a running local Claude turn mid-turn: the turn runs with
+	// `--input-format stream-json` and the message is written into its
+	// stdin. Off (default), and always for Codex and SSH workers, a message
+	// waits for the current turn to end and is delivered as the prompt of
+	// the next turn, which resumes the same session. Opt-in because a
+	// wrapper script that reads its stdin to EOF before starting never sees
+	// EOF in streaming mode. Read-only after startup.
+	LiveSteering bool
 	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
 	// automation can swap an issue to a different profile / backend within
 	// SwitchWindowHours. Default 2. 0 means "unlimited" (not recommended).
@@ -608,6 +671,9 @@ type AgentConfig struct {
 	// model dropdown. When empty, the frontend falls back to a built-in default
 	// list.
 	AvailableModels map[string][]ModelOption
+	// Playbooks is agent.playbooks (#218): per-task-type playbooks chosen by
+	// label, then by a keyword classifier. Load-time config.
+	Playbooks PlaybooksConfig
 }
 
 // ModelOption represents an available model for a backend. Matches the
@@ -660,6 +726,13 @@ type ServerConfig struct {
 	// MagicDNS hostnames belong here. Ignored in token mode. Read-only after
 	// startup.
 	AllowedHosts []string
+	// AllowedOrigins (YAML `server.allowed_origins`, #231) is the CORS
+	// allow-list: origins (scheme://host[:port], normalized as a browser
+	// sends them) whose pages may call this daemon's API, and the hub when
+	// this daemon serves it, cross-origin with a bearer token — a dashboard
+	// hosted elsewhere, for example. Empty (the default) is same-origin
+	// only. Read-only after startup.
+	AllowedOrigins []string
 	// Metrics (YAML `server.metrics`) controls the Prometheus text endpoint
 	// GET /metrics (CORE-045). Read-only after startup.
 	Metrics MetricsConfig
@@ -744,19 +817,56 @@ type Config struct {
 	// and migration errors.
 	WorkflowPath string
 	// WorkflowHash is the sha256 of the WORKFLOW.md bytes Load parsed into
-	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
+	// this Config. cmd/itervox passes it to its config watcher as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
-	WorkflowHash   [32]byte
-	Tracker        TrackerConfig
-	Polling        PollingConfig
-	Workspace      WorkspaceConfig
-	Agent          AgentConfig
-	Hooks          HooksConfig
-	Server         ServerConfig
-	Dependencies   DependenciesConfig
+	WorkflowHash [32]byte
+	Tracker      TrackerConfig
+	Polling      PollingConfig
+	Workspace    WorkspaceConfig
+	Agent        AgentConfig
+	Hooks        HooksConfig
+	Server       ServerConfig
+	// Hub is the `hub` section (#228). Read-only after startup.
+	Hub          HubConfig
+	Dependencies DependenciesConfig
+	// Sessions configures the Sessions panel's discovery of agent sessions
+	// started by hand (#178). Read-only after startup.
+	Sessions SessionsConfig
+	// Memory configures the managed memory block of each run (#202).
+	// Read-only after startup.
+	Memory MemoryConfig
+	// Guardrails limits what agents Itervox starts may do with git, the
+	// GitHub/GitLab CLIs and deploy commands (#204). Read-only after
+	// startup.
+	Guardrails GuardrailsConfig
+	// PREvents is pr_events (#173): how the PR-event automation triggers
+	// (pr_check_completed, pr_synchronized, pr_review_submitted,
+	// pr_mergeable_changed) learn about GitHub activity. Read once at
+	// startup.
+	PREvents       PREventsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
+	// FrontMatter reports the layered keys WORKFLOW.md's front matter still
+	// sets: deprecated (they move to the settings files) and in conflict
+	// with a settings file (#239). Set by Load; read-only after startup.
+	FrontMatter FrontMatterReport
+	// SettingsFiles are the user, project and local settings files Load
+	// looked at, present or not, each with the hash of the bytes it read
+	// (#245). cmd/itervox watches them alongside WORKFLOW.md with these
+	// hashes as the baselines. Set by Load; read-only after startup.
+	SettingsFiles []SettingsFile
+}
+
+// PREventsConfig is pr_events (#173).
+type PREventsConfig struct {
+	// WebhookSecret, when set, serves POST /api/v1/webhooks/pr-events for
+	// signed GitHub check_run, status, pull_request and pull_request_review
+	// deliveries ($VAR resolves from the environment). Checks and reviews
+	// then arrive by webhook and the poll only reads each managed PR (head
+	// SHA and mergeable_state, which GitHub sends no event for). Empty: the
+	// poll also reads check runs, commit statuses and reviews.
+	WebhookSecret string
 }
 
 // Load reads a WORKFLOW.md file, parses front matter, applies defaults, and resolves env vars.
@@ -768,11 +878,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	// #129: the user and project settings files sit under the front matter.
-	layers, err := readSettingsLayers(path)
+	// #129, #239: the user, project and local settings files sit over the
+	// front matter; what the front matter still sets of the layered
+	// sections is reported (deprecated, or in conflict with a file).
+	layers, files, err := readSettingsLayerFiles(path)
 	if err != nil {
 		return nil, err
 	}
+	report := frontMatterReport(wf.Config, layers)
 	if len(layers) > 0 {
 		wf.Config, _ = mergeLayers(wf.Config, layers)
 	}
@@ -794,6 +907,8 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.WorkflowHash = wf.ContentHash
+	cfg.SettingsFiles = files
+	cfg.FrontMatter = report
 	return cfg, nil
 }
 
@@ -812,28 +927,41 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// Tracker
 	tracker := nestedMap(raw, "tracker")
-	cfg.Tracker.Kind = strField(tracker, "kind", "")
-	// Apply the Linear default endpoint only when tracker.kind is "linear" so
-	// that GitHub users who omit endpoint: get an empty string, triggering the
-	// GitHub client's own default (https://api.github.com).
-	defaultEndpoint := ""
-	if cfg.Tracker.Kind == "linear" {
-		defaultEndpoint = "https://api.linear.app/graphql"
+	// The connection keys (kind, endpoint, api_key, project_slug and the
+	// state lists) are parsed by the helper tracker.sync shares (#118). The
+	// Linear default endpoint applies only to kind linear, so GitHub users
+	// who omit endpoint: get the GitHub client's own default.
+	conn := parseTrackerConnection(tracker)
+	cfg.Tracker.Kind = conn.Kind
+	cfg.Tracker.Endpoint = conn.Endpoint
+	cfg.Tracker.APIKey = conn.APIKey
+	cfg.Tracker.ProjectSlug = conn.ProjectSlug
+	cfg.Tracker.Assignee = conn.Assignee // #182
+	cfg.Tracker.Team = conn.Team
+	cfg.Tracker.Labels = conn.Labels
+	// #198: tracker.filter. A malformed filter fails the load, so a typo
+	// never silently widens what Itervox reads.
+	filter, err := issuefilter.Parse(tracker["filter"], "tracker.filter")
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
 	}
-	cfg.Tracker.Endpoint = strField(tracker, "endpoint", defaultEndpoint)
-	cfg.Tracker.APIKey = resolveSecret(strField(tracker, "api_key", ""))
-	cfg.Tracker.ProjectSlug = strField(tracker, "project_slug", "")
-	cfg.Tracker.ActiveStates = strSliceField(tracker, "active_states", []string{"Todo", "In Progress"})
-	cfg.Tracker.TerminalStates = strSliceField(tracker, "terminal_states", []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"})
+	cfg.Tracker.Filter = filter
+	if filter != nil {
+		noteSetting(tracker, "filter", tracker["filter"])
+	}
+	cfg.Tracker.ActiveStates = conn.ActiveStates
+	cfg.Tracker.TerminalStates = conn.TerminalStates
 	cfg.Tracker.WorkingState = strField(tracker, "working_state", "In Progress")
-	cfg.Tracker.CompletionState = strField(tracker, "completion_state", "")
-	defaultBacklog := []string{}
-	if cfg.Tracker.Kind == "linear" || cfg.Tracker.Kind == "local" {
-		defaultBacklog = []string{"Backlog"}
-	}
-	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
+	cfg.Tracker.CompletionState = conn.CompletionState
+	cfg.Tracker.BacklogStates = conn.BacklogStates
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
+	// #115: intField, not positiveIntField — an explicit 0 (no batching) is
+	// meaningful; only a negative value falls back to the default.
+	cfg.Tracker.PushIntervalMs = intField(tracker, "push_interval_ms", DefaultTrackerPushIntervalMs)
+	if cfg.Tracker.PushIntervalMs < 0 {
+		cfg.Tracker.PushIntervalMs = DefaultTrackerPushIntervalMs
+	}
 	store := nestedMap(tracker, "store")
 	cfg.Tracker.Store = TrackerStoreConfig{
 		Enabled:            boolField(store, "enabled", true), // #132: on by default
@@ -849,6 +977,16 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	if err := validateTrackerWebhooks(cfg.Tracker); err != nil {
 		return nil, err
 	}
+	cfg.Tracker.Sync = parseTrackerSync(tracker) // #118
+	if err := validateTrackerSync(cfg.Tracker); err != nil {
+		return nil, err
+	}
+	cfg.PREvents = PREventsConfig{
+		WebhookSecret: resolveSecret(strField(nestedMap(raw, "pr_events"), "webhook_secret", "")),
+	}
+	if s := cfg.PREvents.WebhookSecret; s != "" && len(s) < MinWebhookSecretLength {
+		return nil, fmt.Errorf("config: pr_events.webhook_secret is shorter than %d characters (generate one with: openssl rand -hex 32)", MinWebhookSecretLength)
+	}
 	cc := nestedMap(tracker, "comment_commands")
 	cfg.Tracker.CommentCommands = CommentCommandsConfig{
 		Enabled:             boolField(cc, "enabled", false),
@@ -863,6 +1001,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	// intField, not positiveIntField: an explicit 0 is meaningful here (shed
 	// nothing) and must survive, exactly like escalate_blocked_after_hours.
 	cfg.Polling.RateLimitReservePercent = intField(polling, "rate_limit_reserve_percent", DefaultRateLimitReservePercent)
+	// #155: the automation event poll's cadence. Not under automations:,
+	// which is a list; a zero or negative value falls back to the default.
+	cfg.Polling.AutomationIntervalMs = positiveIntField(polling, "automation_interval_ms", DefaultAutomationPollIntervalMs)
 
 	// Workspace
 	ws := nestedMap(raw, "workspace")
@@ -925,6 +1066,8 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.DepsAnalyzerChunkSize = positiveIntField(agent, "deps_analyzer_chunk_size", DefaultDepsAnalyzerChunkSize)
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
+	cfg.Agent.LiveSteering = boolField(agent, "live_steering", false)
+	cfg.Agent.Playbooks = parsePlaybooksConfig(nestedMap(agent, "playbooks")) // #218
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	budget := nestedMap(agent, "budget")
 	cfg.Agent.Budget = BudgetConfig{
@@ -1016,12 +1159,29 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Server.AllowedHosts = allowedHosts
+	if cfg.Server.AllowedOrigins, err = normalizeAllowedOrigins(strSliceField(srv, "allowed_origins", nil)); err != nil {
+		return nil, err
+	}
 	cfg.Server.Metrics.Enabled = boolField(nestedMap(srv, "metrics"), "enabled", false)
 	if v, ok := srv["allowed_hosts"]; ok && v != nil {
 		if _, isList := v.([]any); !isList {
 			slog.Warn("config: server.allowed_hosts must be a list of host names; ignoring", "value", v)
 		}
 	}
+
+	// Hub (#228)
+	if cfg.Hub, err = parseHubConfig(nestedMap(raw, "hub")); err != nil {
+		return nil, err
+	}
+
+	// Sessions (#178)
+	cfg.Sessions = parseSessionsConfig(nestedMap(raw, "sessions"))
+
+	// Memory (#202)
+	cfg.Memory = parseMemoryConfig(nestedMap(raw, "memory"))
+
+	// Guardrails (#204)
+	cfg.Guardrails = parseGuardrailsConfig(nestedMap(raw, "guardrails"))
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")

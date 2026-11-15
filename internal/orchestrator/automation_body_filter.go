@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"regexp"
 	"strings"
+
+	"github.com/vnovick/itervox/internal/issuefilter"
 )
 
 // TrackerCommentAutomation is the compiled, event-loop-ready form of a
@@ -17,6 +19,7 @@ type TrackerCommentAutomation struct {
 	MatchMode       string
 	States          []string
 	LabelsAny       []string
+	Groups          issuefilter.Filter // #198
 	IdentifierRegex *regexp.Regexp
 	BodyContainsAny []string
 	BodyRegex       *regexp.Regexp

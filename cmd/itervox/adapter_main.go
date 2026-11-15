@@ -77,8 +77,10 @@ func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.Tracker
 	snap := a.orch.Snapshot()
 	now := time.Now()
 	result := make([]server.TrackerIssue, len(issues))
+	choose := a.orch.PlaybookChooser() // #218: reads the playbooks once per request
 	for i, issue := range issues {
 		result[i] = app.EnrichIssue(issue, snap, now, a.cfg)
+		app.ApplyPlaybook(&result[i], issue, snap, choose)
 	}
 	return result, nil
 }
@@ -283,6 +285,10 @@ func (a *orchestratorAdapter) RefreshAvailableModels(ctx context.Context, backen
 // EmitPRMerged implements server.PRMergedEmitter so the merge_pr action
 // handler can fire pr_merged automations after a successful gh merge. P1.
 func (a *orchestratorAdapter) EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef, headRef string) error {
+	if a.orch != nil { // #213: the merge happened, whatever the automations do
+		a.orch.RecordFeedEvent(orchestrator.FeedEvent{Kind: orchestrator.FeedPRMerged, Identifier: identifier,
+			Payload: orchestrator.FeedPayload{PRURL: prURL}})
+	}
 	err := a.emitPRMerged(ctx, identifier, prURL, prNumber, mergedSHA, baseRef, headRef)
 	if err != nil && a.orch != nil {
 		// M6-close BH-M6-2: surface it in the Failures panel, not only the log.
@@ -353,6 +359,9 @@ func (a *orchestratorAdapter) PostOperatorComment(ctx context.Context, identifie
 			IssueID:    issue.ID,
 			Identifier: issue.Identifier,
 			Body:       body,
+			// #115: the operator who wrote it is watching for it, so it
+			// skips the push interval.
+			Urgent: true,
 		})
 	}
 	_, err = a.tr.CreateComment(ctx, issue.ID, body)
@@ -380,6 +389,16 @@ func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, 
 	}
 	if issue == nil {
 		return fmt.Errorf("issue %s not found", identifier)
+	}
+	// #177: an agent's move of its own issue waits for the issue's running
+	// worker to exit, so reconciliation does not stop that worker before it
+	// has finished its post-run work. The orchestrator applies it (and
+	// records the status change) after the exit. A person's move (the
+	// dashboard) is never deferred: it stops the worker, as it always did.
+	if server.IssueStatusSource(ctx) == server.IssueStatusSourceAgent && a.orch.DeferAgentStateMove(ctx, orchestrator.DeferredStateMove{
+		IssueID: issue.ID, Identifier: identifier, TargetState: stateName, FromState: issue.State,
+	}) {
+		return nil
 	}
 	if err := a.tr.UpdateIssueState(ctx, issue.ID, stateName); err != nil {
 		return err

@@ -17,7 +17,7 @@ func defaultLogsDir(workflowPath string) string {
 		base = filepath.Join(home, ".itervox", "logs")
 	}
 	cfg, err := config.Load(workflowPath)
-	if err != nil || cfg.Tracker.Kind == "" || cfg.Tracker.ProjectSlug == "" {
+	if err != nil || cfg.Tracker.Kind == "" || cfg.Tracker.ScopeName() == "" {
 		// No slug to namespace by — fall back to a directory derived from the
 		// workflow's own path rather than the shared base.
 		//
@@ -42,6 +42,7 @@ func defaultLogsDir(workflowPath string) string {
 	//
 	// The slug stays in the path so the directory remains recognisable to a
 	// human browsing ~/.itervox/logs.
-	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
+	// #182: an assignee scope is named "assignee-<who>[-<team>]".
+	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ScopeName())
 	return filepath.Join(base, cfg.Tracker.Kind, safe+"-"+config.WorkspaceProjectKey(workflowPath))
 }

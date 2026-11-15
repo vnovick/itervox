@@ -1,8 +1,14 @@
 import { z } from 'zod';
-import type { AutomationDef } from '../../../types/schemas';
+import { FilterGroupSchema, type AutomationDef } from '../../../types/schemas';
 import { AUTOMATION_TRIGGER_TYPES } from '../../../types/automationTriggers';
+import {
+  PR_EVENT_FILTER_FIELDS,
+  prEventFilterFromValues,
+  type PREventFilterValues,
+} from './prEventFilters';
 import type { SuggestedAutomation } from './suggestedAutomations';
 import type { AutomationUnknownFields } from '../../../types/configRoundTrip';
+import { parseCron } from '../../../lib/cron';
 
 function isValidRegex(value: string): boolean {
   if (value.trim() === '') return true;
@@ -30,6 +36,8 @@ export const automationFormSchema = z
     matchMode: z.enum(['all', 'any']),
     states: z.array(z.string().min(1)),
     labelsAny: z.array(z.string().min(1)),
+    // #198 — tracker-filter groups from WORKFLOW.md; carried, not edited here.
+    groups: z.array(FilterGroupSchema).optional(),
     identifierRegex: z.string(),
     limit: z.string().refine((value) => value.trim() === '' || /^\d+$/.test(value.trim()), {
       message: 'Limit must be a non-negative integer.',
@@ -47,6 +55,12 @@ export const automationFormSchema = z
       message: 'Cooldown must be a non-negative integer (in minutes).',
     }),
     moveToState: z.string(),
+    // #173 PR-event filters, persisted only on the trigger they belong to.
+    checkNames: z.array(z.string().min(1)),
+    conclusions: z.array(z.string().min(1)),
+    reviewStates: z.array(z.string().min(1)),
+    reviewAuthors: z.array(z.string().min(1)),
+    mergeableStates: z.array(z.string().min(1)),
     // CORE-047 round 2: raw values from a newer daemon, read-only in the form
     // and restored on save (automationDefToWire).
     unknownFields: z.custom<AutomationUnknownFields>().optional(),
@@ -61,6 +75,12 @@ export const automationFormSchema = z
         path: ['cron'],
         message: 'Cron automations require a cron expression.',
       });
+    } else if (triggerKnown && values.triggerType === 'cron') {
+      // #211 — the same rules as the daemon's parser (internal/schedule).
+      const parsed = parseCron(values.cron);
+      if (!parsed.ok) {
+        ctx.addIssue({ code: 'custom', path: ['cron'], message: `Invalid cron: ${parsed.error}` });
+      }
     }
     if (
       triggerKnown &&
@@ -122,6 +142,7 @@ export function automationValuesFromDef(automation: AutomationDef): AutomationFo
     matchMode: automation.filter?.matchMode ?? 'all',
     states: automation.filter?.states ?? [],
     labelsAny: automation.filter?.labelsAny ?? [],
+    groups: automation.filter?.groups ?? [],
     identifierRegex: automation.filter?.identifierRegex ?? '',
     limit:
       automation.filter?.limit !== undefined && automation.filter.limit > 0
@@ -140,6 +161,7 @@ export function automationValuesFromDef(automation: AutomationDef): AutomationFo
         ? String(automation.policy.cooldownMinutes)
         : '',
     moveToState: automation.policy?.moveToState ?? '',
+    ...prEventFilterValues(automation.filter),
     unknownFields: automation.unknownFields,
   };
 }
@@ -152,6 +174,7 @@ export function automationDefFromValues(values: AutomationFormValues): Automatio
   if (values.matchMode !== 'all') filter.matchMode = values.matchMode;
   if (values.states.length > 0) filter.states = values.states;
   if (values.labelsAny.length > 0) filter.labelsAny = values.labelsAny;
+  if (values.groups?.length) filter.groups = values.groups;
   if (values.identifierRegex.trim()) filter.identifierRegex = values.identifierRegex.trim();
   if (!Number.isNaN(parsedLimit) && parsedLimit > 0) filter.limit = parsedLimit;
   if (values.inputContextRegex.trim()) filter.inputContextRegex = values.inputContextRegex.trim();
@@ -162,6 +185,7 @@ export function automationDefFromValues(values: AutomationFormValues): Automatio
     const parsedAge = trimmedAge === '' ? Number.NaN : Number.parseInt(trimmedAge, 10);
     if (!Number.isNaN(parsedAge) && parsedAge > 0) filter.maxAgeMinutes = parsedAge;
   }
+  Object.assign(filter, prEventFilterFromValues(values.triggerType, values));
 
   return {
     id: values.id.trim(),
@@ -229,6 +253,7 @@ export function emptyAutomationValues(
     matchMode: 'all',
     states: [],
     labelsAny: [],
+    groups: [],
     identifierRegex: '',
     limit: '',
     inputContextRegex: '',
@@ -238,7 +263,14 @@ export function emptyAutomationValues(
     switchToBackend: '',
     cooldownMinutes: '',
     moveToState: '',
+    ...prEventFilterValues(undefined),
   };
+}
+
+function prEventFilterValues(filter: AutomationDef['filter']): PREventFilterValues {
+  const out = {} as PREventFilterValues;
+  for (const field of PR_EVENT_FILTER_FIELDS) out[field] = filter?.[field] ?? [];
+  return out;
 }
 
 export function automationValuesFromSuggestion(
@@ -256,6 +288,7 @@ export function automationValuesFromSuggestion(
     matchMode: suggestion.matchMode ?? 'all',
     states: suggestion.states ?? [],
     labelsAny: suggestion.labelsAny ?? [],
+    groups: [],
     identifierRegex: suggestion.identifierRegex ?? '',
     limit: suggestion.limit ? String(suggestion.limit) : '',
     inputContextRegex: suggestion.inputContextRegex ?? '',
@@ -265,5 +298,6 @@ export function automationValuesFromSuggestion(
     switchToBackend: '',
     cooldownMinutes: '',
     moveToState: suggestion.moveToState ?? '',
+    ...prEventFilterValues(undefined),
   };
 }

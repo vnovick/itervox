@@ -396,9 +396,21 @@ func dependencyGraphRows(s orchestrator.State) ([]server.DependencyGraphNodeRow,
 			})
 		}
 	}
-	nodeRows := make([]server.DependencyGraphNodeRow, 0, len(nodes))
-	for _, node := range nodes {
-		nodeRows = append(nodeRows, node)
+	// Only nodes an edge touches go on the wire (#210). Every audited issue
+	// gets a node above (so its state, title and flags merge in when it is
+	// a blocker of another), but one with no blocker and no dependent is
+	// ~140 bytes per issue of every dashboard frame that the Deps graph
+	// never draws.
+	linked := make(map[string]bool, 2*len(edges))
+	for _, e := range edges {
+		linked[e.SourceIdentifier] = true
+		linked[e.TargetIdentifier] = true
+	}
+	nodeRows := make([]server.DependencyGraphNodeRow, 0, len(linked))
+	for id, node := range nodes {
+		if linked[id] {
+			nodeRows = append(nodeRows, node)
+		}
 	}
 	sort.Slice(nodeRows, func(i, j int) bool { return nodeRows[i].Identifier < nodeRows[j].Identifier })
 	sort.Slice(edges, func(i, j int) bool { return edges[i].ID < edges[j].ID })
@@ -595,6 +607,31 @@ func trackerErrorRow(s orchestrator.State) *server.TrackerErrorRow {
 		ResetAt:             nilIfZero(e.ResetAt),
 		ConsecutiveFailures: s.ConsecutivePollFailures,
 	}
+}
+
+// trackerPollRow converts State.TrackerPoll and State.TrackerBreaker into
+// their wire row (#187).
+func trackerPollRow(s orchestrator.State, now time.Time) *server.TrackerPollRow {
+	threshold := orchestrator.SlowPollThreshold(time.Duration(s.PollIntervalMs) * time.Millisecond)
+	p, b := s.TrackerPoll, s.TrackerBreaker
+	row := &server.TrackerPollRow{
+		InFlight:                     p.InFlight,
+		LastFinishedAt:               nilIfZero(p.LastFinishedAt),
+		LastDurationMs:               p.LastDuration.Milliseconds(),
+		SlowAfterMs:                  threshold.Milliseconds(),
+		Degraded:                     b.Degraded(),
+		BreakerOpenUntil:             nilIfZero(b.OpenUntil),
+		ConsecutiveTransportFailures: b.ConsecutiveTransportFailures,
+	}
+	if p.InFlight && !p.StartedAt.IsZero() {
+		row.StartedAt = nilIfZero(p.StartedAt)
+		running := max(now.Sub(p.StartedAt), 0)
+		row.RunningForMs = running.Milliseconds()
+		row.Slow = running > threshold
+	} else {
+		row.Slow = p.LastDuration > threshold
+	}
+	return row
 }
 
 // reviewRow is the issue's latest review for issue detail (#135), nil when

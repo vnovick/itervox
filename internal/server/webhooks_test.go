@@ -65,3 +65,31 @@ func TestWebhookRouteWithoutWebhooksIs404(t *testing.T) {
 	s := server.New(cfg)
 	assert.Equal(t, http.StatusNotFound, postWebhook(s, "/api/v1/webhooks/github", "localhost"))
 }
+
+// prEventHooks stands in for the PR-event receiver (#173).
+type prEventHooks struct{ hits int }
+
+func (r *prEventHooks) Tracker() string { return "pr-events" }
+
+func (r *prEventHooks) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	r.hits++
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// TestPREventWebhookRoute (#173): /api/v1/webhooks/pr-events reaches the
+// PR-event receiver without the API token, next to the tracker receiver,
+// and is a 404 when pr_events.webhook_secret is not configured.
+func TestPREventWebhookRoute(t *testing.T) {
+	tracker, pr := &recordingWebhooks{}, &prEventHooks{}
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "tok"
+	cfg.Webhooks = tracker
+	cfg.PREventWebhooks = pr
+	s := server.New(cfg)
+	assert.Equal(t, http.StatusAccepted, postWebhook(s, "/api/v1/webhooks/pr-events", "tunnel.example.net"))
+	assert.Equal(t, http.StatusAccepted, postWebhook(s, "/api/v1/webhooks/github", "tunnel.example.net"))
+	assert.Equal(t, 1, pr.hits)
+	assert.Equal(t, 1, tracker.hits)
+
+	assert.Equal(t, http.StatusNotFound, postWebhook(server.New(makeTestConfig(baseSnap())), "/api/v1/webhooks/pr-events", "localhost"))
+}

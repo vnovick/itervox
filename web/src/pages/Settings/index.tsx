@@ -1,18 +1,24 @@
+import { Link } from 'react-router';
 import PageMeta from '../../components/common/PageMeta';
 import { GeneralCard } from './GeneralCard';
 import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
 import { DependenciesCard } from './DependenciesCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
+import { TrackerFilterCard } from './trackerFilter/TrackerFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
-import { SkillsCard } from './SkillsCard';
 import { RetriesCard } from './RetriesCard';
 import { CapacityCard } from './CapacityCard';
 import { RateLimitsFailoverCard } from './RateLimitsFailoverCard';
 import { BrowserNotificationsCard } from './BrowserNotificationsCard';
-import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
-import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
+import { EditorCard } from './EditorCard';
+import { SchemaSettingsCard } from './schema/SchemaSettingsCard';
 import { useSettingsPageData } from './useSettingsPageData';
+import { RequireScope } from '../../components/itervox/RequireScope';
+import { useCallerScope } from '../../hooks/useCallerScope';
+import { scopeAllows } from '../../auth/scope';
+import { AccessCard } from './AccessCard';
+import { MaintenanceSection } from './MaintenanceSection';
 
 export default function Settings() {
   const {
@@ -25,6 +31,7 @@ export default function Settings() {
     inlineInput,
     trackerKind,
     activeProjectFilter,
+    filterSupported,
     maxRetries,
     failedState,
     maxSwitchesPerIssuePerWindow,
@@ -34,14 +41,18 @@ export default function Settings() {
     setAutoClearWorkspace,
     setDepsAnalysisMode,
     setProjectFilter,
+    setTrackerFilter,
     setInlineInput,
     setMaxRetries,
     setFailedState,
     setMaxSwitchesPerIssuePerWindow,
     setSwitchWindowHours,
   } = useSettingsPageData();
-  const clearAllLogs = useClearAllLogs();
-  const clearAllWorkspaces = useClearAllWorkspaces();
+  // #214 — settings, tokens and workspace resets are admin; clearing logs is
+  // operator. The daemon enforces this; the page hides what the scope
+  // cannot use.
+  const scope = useCallerScope();
+  const isAdmin = scopeAllows(scope, 'admin');
 
   return (
     <>
@@ -63,12 +74,28 @@ export default function Settings() {
           </p>
         </div>
 
-        <section aria-labelledby="section-general">
-          <h2 id="section-general" className="mb-3 text-xs font-semibold tracking-widest uppercase">
-            General
-          </h2>
-          <GeneralCard inlineInput={inlineInput} onSetInlineInput={setInlineInput} />
-        </section>
+        {!isAdmin && (
+          <p
+            role="note"
+            data-testid="settings-scope-notice"
+            className="border-theme-line bg-theme-bg-soft text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-3 text-sm"
+          >
+            Your token has the {scope} scope, so settings are hidden here. Changing settings needs
+            an admin token.
+          </p>
+        )}
+
+        {isAdmin && (
+          <section aria-labelledby="section-general">
+            <h2
+              id="section-general"
+              className="mb-3 text-xs font-semibold tracking-widest uppercase"
+            >
+              General
+            </h2>
+            <GeneralCard inlineInput={inlineInput} onSetInlineInput={setInlineInput} />
+          </section>
+        )}
 
         <section aria-labelledby="section-notifications">
           <h2
@@ -80,154 +107,163 @@ export default function Settings() {
           <BrowserNotificationsCard />
         </section>
 
-        <section aria-labelledby="section-tracker">
-          <h2 id="section-tracker" className="mb-3 text-xs font-semibold tracking-widest uppercase">
-            Tracker States
+        <section aria-labelledby="section-editor">
+          <h2 id="section-editor" className="mb-3 text-xs font-semibold tracking-widest uppercase">
+            Editor
           </h2>
-          <div className="space-y-4">
-            <TrackerStatesCard
-              initialActiveStates={activeStates}
-              initialTerminalStates={terminalStates}
-              initialCompletionState={completionState}
-              onSave={updateTrackerStates}
-            />
-            {trackerKind === 'linear' && (
-              <ProjectFilterCard
-                activeFilter={activeProjectFilter}
-                onSetFilter={setProjectFilter}
+          <EditorCard />
+        </section>
+
+        {isAdmin && (
+          <>
+            <section aria-labelledby="section-access">
+              <h2
+                id="section-access"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Access
+              </h2>
+              <AccessCard />
+            </section>
+
+            <section aria-labelledby="section-tracker">
+              <h2
+                id="section-tracker"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Tracker States
+              </h2>
+              <div className="space-y-4">
+                <TrackerStatesCard
+                  initialActiveStates={activeStates}
+                  initialTerminalStates={terminalStates}
+                  initialCompletionState={completionState}
+                  onSave={updateTrackerStates}
+                />
+                {filterSupported ? (
+                  <TrackerFilterCard onSave={setTrackerFilter} />
+                ) : (
+                  trackerKind === 'linear' && (
+                    <ProjectFilterCard
+                      activeFilter={activeProjectFilter}
+                      onSetFilter={setProjectFilter}
+                    />
+                  )
+                )}
+              </div>
+            </section>
+
+            <section aria-labelledby="section-workspace">
+              <h2
+                id="section-workspace"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Workspace
+              </h2>
+              <WorkspaceCard
+                autoClearWorkspace={autoClearWorkspace}
+                autoReviewEnabled={autoReview}
+                onToggle={setAutoClearWorkspace}
               />
-            )}
-          </div>
-        </section>
+            </section>
 
-        <section aria-labelledby="section-workspace">
-          <h2
-            id="section-workspace"
-            className="mb-3 text-xs font-semibold tracking-widest uppercase"
-          >
-            Workspace
-          </h2>
-          <WorkspaceCard
-            autoClearWorkspace={autoClearWorkspace}
-            autoReviewEnabled={autoReview}
-            onToggle={setAutoClearWorkspace}
-          />
-        </section>
+            <section aria-labelledby="section-dependencies">
+              <h2
+                id="section-dependencies"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Dependencies
+              </h2>
+              <DependenciesCard mode={depsAnalysisMode} onSetMode={setDepsAnalysisMode} />
+            </section>
 
-        <section aria-labelledby="section-dependencies">
-          <h2
-            id="section-dependencies"
-            className="mb-3 text-xs font-semibold tracking-widest uppercase"
-          >
-            Dependencies
-          </h2>
-          <DependenciesCard mode={depsAnalysisMode} onSetMode={setDepsAnalysisMode} />
-        </section>
+            <section aria-labelledby="section-retries">
+              <h2
+                id="section-retries"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Retries
+              </h2>
+              <RetriesCard
+                maxRetries={maxRetries}
+                failedState={failedState}
+                trackerStateOptions={trackerStateOptions}
+                completionState={completionState}
+                onSetMaxRetries={setMaxRetries}
+                onSetFailedState={setFailedState}
+              />
+            </section>
 
-        <section aria-labelledby="section-retries">
-          <h2 id="section-retries" className="mb-3 text-xs font-semibold tracking-widest uppercase">
-            Retries
-          </h2>
-          <RetriesCard
-            maxRetries={maxRetries}
-            failedState={failedState}
-            trackerStateOptions={trackerStateOptions}
-            completionState={completionState}
-            onSetMaxRetries={setMaxRetries}
-            onSetFailedState={setFailedState}
-          />
-        </section>
-
-        {/* CORE-093 — Capacity (max concurrent agents) sits next to Retries:
+            {/* CORE-093 — Capacity (max concurrent agents) sits next to Retries:
             both decide how much work runs at once and how failures are
             handled. It moved here from the Agents page. */}
-        <section aria-labelledby="section-capacity">
-          <h2
-            id="section-capacity"
-            className="mb-3 text-xs font-semibold tracking-widest uppercase"
-          >
-            Capacity
-          </h2>
-          <CapacityCard />
-        </section>
+            <section aria-labelledby="section-capacity">
+              <h2
+                id="section-capacity"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Capacity
+              </h2>
+              <CapacityCard />
+            </section>
 
-        <section aria-labelledby="section-rate-limits">
-          <h2
-            id="section-rate-limits"
-            className="mb-3 text-xs font-semibold tracking-widest uppercase"
-          >
-            Rate limits &amp; failover
-          </h2>
-          <RateLimitsFailoverCard
-            maxSwitchesPerIssuePerWindow={maxSwitchesPerIssuePerWindow}
-            switchWindowHours={switchWindowHours}
-            onSetMaxSwitchesPerIssuePerWindow={setMaxSwitchesPerIssuePerWindow}
-            onSetSwitchWindowHours={setSwitchWindowHours}
-          />
-        </section>
-
-        <section aria-labelledby="section-ssh-hosts">
-          <h2
-            id="section-ssh-hosts"
-            className="mb-3 text-xs font-semibold tracking-widest uppercase"
-          >
-            SSH Hosts
-          </h2>
-          <SSHHostsCard />
-        </section>
-
-        <section aria-labelledby="section-skills">
-          <h2 id="section-skills" className="mb-3 text-xs font-semibold tracking-widest uppercase">
-            Skills Inventory
-          </h2>
-          <SkillsCard />
-        </section>
-
-        <section aria-labelledby="section-logs">
-          <h2 id="section-logs" className="mb-3 text-xs font-semibold tracking-widest uppercase">
-            Logs
-          </h2>
-          <div className="border-theme-line bg-theme-panel space-y-3 rounded-lg border p-4">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-theme-text text-sm font-medium">Clear all logs</p>
-                <p className="text-theme-muted mt-0.5 text-xs">
-                  Deletes in-memory and on-disk log buffers for all issues.
-                </p>
-              </div>
-              <ConfirmButton
-                label="Clear all logs"
-                confirmLabel="Yes, clear"
-                pendingLabel="Clearing…"
-                isPending={clearAllLogs.isPending}
-                onConfirm={() => {
-                  clearAllLogs.mutate(undefined);
-                }}
+            <section aria-labelledby="section-rate-limits">
+              <h2
+                id="section-rate-limits"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                Rate limits &amp; failover
+              </h2>
+              <RateLimitsFailoverCard
+                maxSwitchesPerIssuePerWindow={maxSwitchesPerIssuePerWindow}
+                switchWindowHours={switchWindowHours}
+                onSetMaxSwitchesPerIssuePerWindow={setMaxSwitchesPerIssuePerWindow}
+                onSetSwitchWindowHours={setSwitchWindowHours}
               />
-            </div>
+            </section>
 
-            <div className="border-theme-line border-t" />
+            <section aria-labelledby="section-ssh-hosts">
+              <h2
+                id="section-ssh-hosts"
+                className="mb-3 text-xs font-semibold tracking-widest uppercase"
+              >
+                SSH Hosts
+              </h2>
+              <SSHHostsCard />
+            </section>
 
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-theme-text text-sm font-medium">Reset all workspaces</p>
-                <p className="text-theme-muted mt-0.5 text-xs">
-                  Deletes all cloned workspace directories under workspace.root. Does not affect
-                  logs or tracker state.
-                </p>
-              </div>
-              <ConfirmButton
-                label="Reset workspaces"
-                confirmLabel="Yes, reset"
-                pendingLabel="Resetting…"
-                isPending={clearAllWorkspaces.isPending}
-                onConfirm={() => {
-                  clearAllWorkspaces.mutate(undefined);
-                }}
-              />
-            </div>
-          </div>
-        </section>
+            {/* #158 — every layered setting, rendered from the settings schema. */}
+            <section aria-labelledby="section-all-settings">
+              <h2
+                id="section-all-settings"
+                className="mb-1 text-xs font-semibold tracking-widest uppercase"
+              >
+                All settings
+              </h2>
+              <p className="text-theme-muted mb-3 text-xs">
+                Every agent, automations, dependencies, hooks, hub, polling, server, tracker and
+                workspace setting, from the settings schema. Pick the layer a save writes: your user
+                file, the project file (committed) or the project-local file (gitignored). The
+                project and local files win over the same key in WORKFLOW.md (whose front matter is
+                deprecated for them), and WORKFLOW.md wins over your user file.
+              </p>
+              <SchemaSettingsCard />
+            </section>
+          </>
+        )}
+
+        {/* #200 — the inventory is analysis, not a setting. */}
+        <p className="text-theme-muted text-sm">
+          Skills inventory moved to{' '}
+          <Link to="/repo#capabilities" className="text-theme-accent hover:underline">
+            Repo Analysis
+          </Link>
+          .
+        </p>
+
+        <RequireScope scope="operator">
+          <MaintenanceSection isAdmin={isAdmin} />
+        </RequireScope>
       </div>
     </>
   );

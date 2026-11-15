@@ -56,6 +56,15 @@ instead of being logged and ignored.
 
 **4. `CLAUDE.md`.** Useful for steering. Not a fence.
 
+:::note[Itervox's own guardrails]
+On top of these, Itervox's [guardrails](/guides/guardrails/) (on by default)
+keep the agents it starts to their issue branch, stop them merging their own
+pull requests, and hold deploy commands for a human approval. Like a
+`PreToolUse` hook they are not bypassed by the approval flags; like any
+client-side check they are guidance, not a sandbox — branch protection is
+still what makes a push impossible.
+:::
+
 ## Where the rules live: your repo, not Itervox
 
 Hooks belong in the **repository Itervox is working on**, not in Itervox

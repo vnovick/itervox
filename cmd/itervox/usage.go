@@ -64,37 +64,96 @@ Commands:
              list       show each key as set / placeholder / empty
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --replace  (set) replace a value that is already set
+             --hub      the hub's own ~/.itervox/hub/.env (Slack tokens)
+
+  token   Manage stored API tokens (.itervox/tokens.json, hashes only):
+          viewer, operator or admin scope. A running daemon picks up a
+          change within a second; no restart. New tokens print once.
+             create --name NAME --scope viewer|operator|admin [--expires 90d]
+             list   [--json]
+             revoke ID
+             rotate [ID]  (no ID: the only stored admin token)
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --hub      the hub's own token store (~/.itervox/hub/tokens.json)
+
+  hub     Print the machine's hub URL and its member projects (--json).
+          The first daemon started becomes the hub: one URL for every
+          project (hub.port, default 8089, loopback), opened with a hub
+          token (itervox token create --hub). --no-hub opts a daemon out.
+             slack setup   print the Slack app manifest, store the app and
+                           bot tokens (echo off) and pick a channel per
+                           project (--json: JSON manifest; --manifest-only)
+             slack status  tokens set or missing, hub.slack settings and
+                           each project's channel (--json)
+
+  mcp     Serve the board and memory of this project's running daemon to
+          an MCP client over stdio (claude mcp add itervox -- itervox mcp).
+          Uses a stored "mcp" token created on first use (viewer; remembered
+          in .itervox/mcp-token.json), or --token / ITERVOX_TOKEN
+             --token-scope operator  also offer dispatch, pause, replies,
+                        steering and remember
+             --project  the project directory (default: the --workflow dir)
+             --url      the daemon's address (default: discovered)
 
   config  Show the effective settings and the layer each came from
           (default, ~/.itervox/settings.jsonc, .itervox/settings.jsonc,
-          WORKFLOW.md), or edit a settings file with its comments kept
+          .itervox/settings.local.jsonc, WORKFLOW.md), or edit a
+          settings file with its comments kept
              show       every value with its layer (--json for JSON)
              set KEY VALUE  set agent.*, polling.*, server.* or
                         workspace.* in .itervox/settings.jsonc (--user:
                         ~/.itervox/settings.jsonc)
              unset KEY  remove a key from that file
+             --local    (set, unset) the gitignored
+                        .itervox/settings.local.jsonc instead
+             schema     print the settings JSON Schema
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+
+  import  Convert a Symphony or Itervox v0.x WORKFLOW.md: settings move
+          to .itervox/settings.jsonc, profile prompts to prompt files;
+          writes WORKFLOW.md.bak and prints every key it could not map
+             --force    overwrite an existing WORKFLOW.md.bak
+
+  export  --symphony: write a Symphony WORKFLOW.md (core keys and the
+          worker prompt) and list the Itervox-only features it dropped
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --out      output path, or - for stdout
+                        (default: WORKFLOW.symphony.md)
+             --force    overwrite --out
 
   report  costs: tokens and estimated cost per issue and per day
              --days N   days to list (default 14)  --json  JSON output
 
   Talking to a running daemon (it finds the daemon from .itervox/dashboard_url
   and its token from ITERVOX_API_TOKEN, .itervox/.env or <logs-dir>/api-token;
-  every one takes --workflow, --logs-dir and --url):
-  watch   a read-only, plain-text view of running, retrying, queued,
-          input-required and paused issues, refreshed every --interval
-          (default 2s); --once prints it once (works over SSH, no TTY)
+  every one takes --workflow, --logs-dir and --url, and --project NAME to reach
+  one hub project with the hub token in ITERVOX_HUB_TOKEN):
+  watch   a read-only live panel: status header, one lane per running issue
+          with its latest (redacted) activity, feed events as they happen,
+          and the exact reply/approve command for every agent waiting on you.
+          Never reads stdin or changes the terminal mode (SSH, tmux, no TTY).
+             --issue ID      follow one issue's full log and its events
+             --events-only   the event stream alone (for piping)
+             --json          one JSON object per line
+             --since SEQ     replay the feed events after cursor SEQ
+             --interval 2s   refresh interval; --once prints once and exits
   logs    print an issue's run log; -f keeps following new lines
              itervox logs [-f] <issue>
   pause    <issue>         stop the issue's agent and pause the issue
   resume   <issue>         resume a paused issue
+  pause    [--reason r] [--for 2h]
+                           pause ALL dispatch: running agents continue,
+                           nothing new starts (until resume, or --for)
+  resume                   resume all dispatch
   dispatch <issue>         move the issue to the first active state
   workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
   reply    <issue> <text>  answer an agent's question
+  approve  <issue>         approve the command a guardrail is holding (once)
 
   --version  Print version information
 
-Run mode (default when no command given; headless unless --tui):
+Run mode (default when no command given; always headless — watch it with
+itervox watch or the dashboard):
 `)
 	flag.PrintDefaults()
 }

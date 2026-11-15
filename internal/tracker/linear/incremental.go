@@ -27,6 +27,11 @@ const updatedSinceNodeFields = `
       trashed
       archivedAt
       labels { nodes { name } }
+      project { slugId }
+      team { id key }
+      assignee { id }
+      cycle { id isActive }
+      projectMilestone { name }
       inverseRelations(first: $relationFirst) {
         nodes {
           type
@@ -57,7 +62,7 @@ var (
 
 // FetchIssuesUpdatedSince implements tracker.IncrementalFetcher (#114) over
 // the same scope as FetchCandidateIssues (the runtime project filter, else
-// project_slug, else every issue): one paginated request per project in the
+// project_slug, else every issue; ANDed with the assignee and labels): one paginated request per project in the
 // filter. A trashed or archived issue is reported gone. An issue moved to a
 // project outside the scope does not appear: the store's full pull catches
 // it.
@@ -68,25 +73,43 @@ func (c *Client) FetchIssuesUpdatedSince(ctx context.Context, since time.Time) (
 		m[k] = v
 		return m
 	}
-	filter := c.GetProjectFilter()
-	if filter == nil {
-		if c.cfg.ProjectSlug != "" {
-			return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSince, with("projectSlug", c.cfg.ProjectSlug))
-		}
-		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSinceAll, base)
+	sc := c.Scope()
+	type request struct {
+		query string
+		vars  map[string]any
 	}
-	if len(filter) == 0 {
+	var reqs []request
+	// #182/#198: a filter (or a legacy scope narrowed by an assignee or
+	// labels) is one request over the compiled IssueFilter. An issue that
+	// left the scope (reassigned, label changed) does not appear; the
+	// store's full pull catches it, as it catches a move to another project.
+	groups, compiled, err := c.compiledScope(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	switch {
+	case compiled:
+		filter := map[string]any{"and": []any{map[string]any{"updatedAt": map[string]any{"gte": base["since"]}}, groups}}
+		return c.fetchUpdatedPages(ctx, filteredChangesQuery("ItervoxLinearChangesScoped"),
+			map[string]any{"filter": filter, "relationFirst": pageSize})
+	case len(sc.Projects) == 0:
 		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSinceAll, base)
+	case len(sc.Projects) == 1 && sc.Projects[0] != noProjectSentinel:
+		return c.fetchUpdatedPages(ctx, QueryIssuesUpdatedSince, with("projectSlug", sc.Projects[0]))
+	default:
+		for _, slug := range sc.Projects {
+			if slug == noProjectSentinel {
+				reqs = append(reqs, request{QueryIssuesUpdatedSinceNoProject, base})
+				continue
+			}
+			reqs = append(reqs, request{QueryIssuesUpdatedSince, with("projectSlug", slug)})
+		}
 	}
 	var changed []domain.Issue
 	var gone []string
 	seen := map[string]struct{}{}
-	for _, slug := range filter {
-		query, vars := QueryIssuesUpdatedSince, with("projectSlug", slug)
-		if slug == noProjectSentinel {
-			query, vars = QueryIssuesUpdatedSinceNoProject, base
-		}
-		ch, g, err := c.fetchUpdatedPages(ctx, query, vars)
+	for _, r := range reqs {
+		ch, g, err := c.fetchUpdatedPages(ctx, r.query, r.vars)
 		if err != nil {
 			return nil, nil, err
 		}

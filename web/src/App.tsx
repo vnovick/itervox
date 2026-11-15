@@ -15,6 +15,10 @@ import {
   AutomationsIcon,
   DashboardIcon,
   LogsIcon,
+  MemoryIcon,
+  RepoIcon,
+  RulesIcon,
+  SessionsIcon,
   SettingsIcon,
   TimelineIcon,
 } from './components/layout/NavIcons';
@@ -24,17 +28,28 @@ import { useDialogLayer } from './components/ui/dialog/useDialogLayer';
 import { useMultiTabWarning } from './hooks/useMultiTabWarning';
 import { useAttentionCount } from './hooks/useOperatorQueue';
 import { useIssueUrlSync } from './hooks/useUrlState';
+import { inputRequiredRowState } from './utils/inputRequired';
 
 import { PageLoader } from './components/common/PageLoader';
 import { CommandPaletteHost } from './components/itervox/CommandPaletteHost';
 import { AttentionNotifier } from './components/itervox/AttentionNotifier';
+import { getApiContext, routerBasename } from './auth/apiBase';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
+const Sessions = lazy(() => import('./pages/Sessions'));
 const Timeline = lazy(() => import('./pages/Timeline'));
 const Agents = lazy(() => import('./pages/Agents'));
 const Automations = lazy(() => import('./pages/Automations'));
+const Rules = lazy(() => import('./pages/Rules'));
+const RepoAnalysis = lazy(() => import('./pages/Repo'));
+const Memory = lazy(() => import('./pages/Memory'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
+const HubPage = lazy(() => import('./pages/Hub'));
+// #231 — the phone layout: the hub's /hub/m and one issue at
+// /hub/p/{project}/m/{issue}.
+const HubMobilePage = lazy(() => import('./pages/HubMobile'));
+const MobileIssuePage = lazy(() => import('./pages/MobileIssue'));
 
 /** Tailwind's `md` breakpoint (the drawer is `md:hidden`). */
 const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
@@ -42,15 +57,35 @@ const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
 const NAV_ITEMS = [
   { to: '/', icon: <DashboardIcon />, label: 'Dashboard' },
   { to: '/timeline', icon: <TimelineIcon />, label: 'Timeline' },
+  { to: '/sessions', icon: <SessionsIcon />, label: 'Sessions' },
   { to: '/logs', icon: <LogsIcon />, label: 'Logs' },
   { to: '/agents', icon: <AgentsIcon />, label: 'Agents' },
   { to: '/automations', icon: <AutomationsIcon />, label: 'Automations' },
+  { to: '/rules', icon: <RulesIcon />, label: 'Rules' },
+  { to: '/repo', icon: <RepoIcon />, label: 'Repo Analysis' },
+  { to: '/memory', icon: <MemoryIcon />, label: 'Memory' },
   { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
 function SidebarContent() {
   // CORE-078 — same count as the attention inbox and the page title.
   const attention = useAttentionCount();
+  // #178 — sessions waiting for input badge the Sessions tab.
+  const waitingSessions = useItervoxStore(
+    (s) =>
+      s.snapshot?.inputRequired?.filter((r) => inputRequiredRowState(r) === 'input_required')
+        .length ?? 0,
+  );
+  // #203 — proposed lessons waiting for review badge the Memory item.
+  const proposedLessons = useItervoxStore((s) => s.snapshot?.proposedLessons ?? 0);
+  const badgeFor = (to: string): number =>
+    to === '/'
+      ? attention
+      : to === '/sessions'
+        ? waitingSessions
+        : to === '/memory'
+          ? proposedLessons
+          : 0;
   return (
     <>
       {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
@@ -62,7 +97,8 @@ function SidebarContent() {
             to={item.to}
             icon={item.icon}
             label={item.label}
-            badge={item.to === '/' ? attention : 0}
+            badge={badgeFor(item.to)}
+            badgeLabel={item.to === '/memory' ? 'lessons to review' : undefined}
           />
         ))}
       </nav>
@@ -176,6 +212,16 @@ export { buildSnapshotInvalidationFingerprint };
 export function AppRouteTable() {
   return (
     <Routes>
+      <Route
+        path="/m/:identifier"
+        element={
+          <Suspense fallback={<PageLoader />}>
+            <PageErrorBoundary>
+              <MobileIssuePage />
+            </PageErrorBoundary>
+          </Suspense>
+        }
+      />
       <Route element={<AppShell />}>
         <Route
           index
@@ -208,6 +254,16 @@ export function AppRouteTable() {
           }
         />
         <Route
+          path="/sessions"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Sessions />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
           path="/settings"
           element={
             <Suspense fallback={<PageLoader />}>
@@ -233,6 +289,36 @@ export function AppRouteTable() {
             <Suspense fallback={<PageLoader />}>
               <PageErrorBoundary>
                 <Automations />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/rules"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Rules />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/memory"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <Memory />
+              </PageErrorBoundary>
+            </Suspense>
+          }
+        />
+        <Route
+          path="/repo"
+          element={
+            <Suspense fallback={<PageLoader />}>
+              <PageErrorBoundary>
+                <RepoAnalysis />
               </PageErrorBoundary>
             </Suspense>
           }
@@ -277,8 +363,20 @@ function AppWithSSE() {
 }
 
 export default function App() {
+  // #228 — /hub/ is the hub's project switcher; /hub/p/{project}/ is that
+  // project's unchanged dashboard over the hub's proxied API.
+  // #231 — /hub/m is the phone layout (the installed web app's start page).
+  const ctx = getApiContext();
+  if (ctx.mode === 'hub') {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        {ctx.view === 'mobile' ? <HubMobilePage /> : <HubPage />}
+        <Toast />
+      </Suspense>
+    );
+  }
   return (
-    <Router>
+    <Router basename={routerBasename() || undefined}>
       <AppWithSSE />
     </Router>
   );

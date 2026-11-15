@@ -11,17 +11,16 @@ import (
 	"time"
 )
 
-// CORE-059 — --log-format json also applies to stderr when no terminal is
-// attached (systemd, containers), through the same RedactingHandler as the
-// file sink. With a terminal (the TUI path) stderr stays human text.
+// CORE-059 — --log-format json also applies to stderr (systemd,
+// containers, a terminal), through the same RedactingHandler as the file
+// sink.
 
 func TestHeadlessStderrHonoursJSONLogFormat(t *testing.T) {
 	var stderrBuf, fileBuf bytes.Buffer
-	boot, stderrOnly := bootLogHandlers(&stderrBuf, &fileBuf, slog.LevelInfo, "json", true)
+	boot, stderrOnly := bootLogHandlers(&stderrBuf, &fileBuf, slog.LevelInfo, "json")
 	slog.New(boot).Info("boot line", "issue", "ENG-1")
 	slog.New(boot).Warn("boot warning", "n", 3)
-	// ttyAvailable=false: statusui will not start, the headless fanout stays.
-	post := slog.New(postStartupHandler(&fileBuf, slog.LevelInfo, "json", stderrOnly, false))
+	post := slog.New(postStartupHandler(&fileBuf, slog.LevelInfo, "json", stderrOnly))
 	post.Info("post-startup line", "at", time.Unix(0, 0).UTC())
 	post.Error("post-startup error", "err", "boom")
 
@@ -39,20 +38,9 @@ func TestHeadlessStderrHonoursJSONLogFormat(t *testing.T) {
 		}
 	}
 
-	// A terminal keeps human text on stderr, whatever --log-format says.
-	var ttyStderr, ttyFile bytes.Buffer
-	bootTTY, _ := bootLogHandlers(&ttyStderr, &ttyFile, slog.LevelInfo, "json", false)
-	slog.New(bootTTY).Info("interactive line")
-	if strings.HasPrefix(strings.TrimSpace(ttyStderr.String()), "{") {
-		t.Errorf("with a terminal stderr must stay text, got %q", ttyStderr.String())
-	}
-	if !strings.Contains(ttyFile.String(), `"msg":"interactive line"`) {
-		t.Errorf("the file sink still honours json with a terminal: %q", ttyFile.String())
-	}
-
 	// Headless text stays text.
 	var txtStderr, txtFile bytes.Buffer
-	bootTxt, _ := bootLogHandlers(&txtStderr, &txtFile, slog.LevelInfo, "text", true)
+	bootTxt, _ := bootLogHandlers(&txtStderr, &txtFile, slog.LevelInfo, "text")
 	slog.New(bootTxt).Info("text line")
 	if strings.HasPrefix(strings.TrimSpace(txtStderr.String()), "{") {
 		t.Errorf("--log-format text must not produce JSON on stderr: %q", txtStderr.String())
@@ -62,9 +50,9 @@ func TestHeadlessStderrHonoursJSONLogFormat(t *testing.T) {
 func TestHeadlessJSONStderrIsRedacted(t *testing.T) {
 	const token = "abcdefghijklmnopqrstuvwxyz0123456789"
 	var stderrBuf, fileBuf bytes.Buffer
-	boot, stderrOnly := bootLogHandlers(&stderrBuf, &fileBuf, slog.LevelInfo, "json", true)
+	boot, stderrOnly := bootLogHandlers(&stderrBuf, &fileBuf, slog.LevelInfo, "json")
 	slog.New(boot).Info("calling tracker", "authorization", "Bearer "+token)
-	post := slog.New(postStartupHandler(&fileBuf, slog.LevelInfo, "json", stderrOnly, false))
+	post := slog.New(postStartupHandler(&fileBuf, slog.LevelInfo, "json", stderrOnly))
 	post.Info("header dump Authorization: Bearer "+token, "linear", "lin_api_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
 	out := stderrBuf.String()
@@ -84,8 +72,7 @@ func TestHeadlessJSONStderrIsRedacted(t *testing.T) {
 
 // TestHeadlessDaemonStderrIsJSON runs the real daemon headless with
 // --log-format json: every slog record it writes to stderr is a JSON object
-// (lines written with fmt.Fprint* outside slog are listed and allowed), and
-// no charmlog text line appears.
+// and no charmlog or other text line appears.
 func TestHeadlessDaemonStderrIsJSON(t *testing.T) {
 	p := newDaemonProject(t)
 	_, stderrPath := p.startHeadless(t, []string{"--log-format", "json"})
@@ -107,16 +94,12 @@ func TestHeadlessDaemonStderrIsJSON(t *testing.T) {
 		other = append(other, line)
 	}
 	for _, line := range other {
-		// The one known non-slog write: statusui's own fmt.Fprintln when it
-		// refuses to start without a terminal.
-		if !strings.HasPrefix(line, "statusui: not starting TUI:") {
-			t.Errorf("non-JSON stderr line: %q", line)
-		}
+		t.Errorf("non-JSON stderr line: %q", line)
 	}
 	if jsonLines < 5 {
 		t.Errorf("only %d JSON slog lines on stderr", jsonLines)
 	}
-	t.Logf("%d JSON slog lines, %d allowed non-slog lines", jsonLines, len(other))
+	t.Logf("%d JSON slog lines", jsonLines)
 }
 
 // M4-close D8 — records emitted before bootLogHandlers (the stale PID file
@@ -158,24 +141,23 @@ func TestHeadlessEarlyLogLinesAreJSON(t *testing.T) {
 }
 
 // TestEarlyLogHandlerRedactsAndHonoursFormat pins the early handler itself:
-// redacting, JSON when headless with json requested (flag or env; the flag
-// wins), text otherwise.
+// redacting, JSON when json is requested (flag or env; the flag wins), text
+// otherwise.
 func TestEarlyLogHandlerRedactsAndHonoursFormat(t *testing.T) {
 	const token = "abcdefghijklmnopqrstuvwxyz0123456789"
 	for _, tc := range []struct {
-		args     []string
-		env      string
-		headless bool
-		json     bool
+		args []string
+		env  string
+		json bool
 	}{
-		{[]string{"itervox", "--log-format", "json"}, "", true, true},
-		{[]string{"itervox", "-log-format=json"}, "", true, true},
-		{[]string{"itervox"}, "json", true, true},
-		{[]string{"itervox", "--log-format=text"}, "json", true, false},
-		{[]string{"itervox", "--log-format", "json"}, "", false, false},
+		{[]string{"itervox", "--log-format", "json"}, "", true},
+		{[]string{"itervox", "-log-format=json"}, "", true},
+		{[]string{"itervox"}, "json", true},
+		{[]string{"itervox", "--log-format=text"}, "json", false},
+		{[]string{"itervox"}, "", false},
 	} {
 		var buf bytes.Buffer
-		slog.New(earlyLogHandler(&buf, tc.args, tc.env, tc.headless)).Info("reclaiming", "authorization", "Bearer "+token)
+		slog.New(earlyLogHandler(&buf, tc.args, tc.env)).Info("reclaiming", "authorization", "Bearer "+token)
 		out := buf.String()
 		if strings.Contains(out, token) {
 			t.Fatalf("%v: early handler leaked a secret: %s", tc.args, out)
@@ -183,7 +165,7 @@ func TestEarlyLogHandlerRedactsAndHonoursFormat(t *testing.T) {
 		var rec map[string]any
 		isJSON := json.Unmarshal([]byte(strings.TrimSpace(out)), &rec) == nil
 		if isJSON != tc.json {
-			t.Errorf("%v env=%q headless=%v: json=%v, want %v: %s", tc.args, tc.env, tc.headless, isJSON, tc.json, out)
+			t.Errorf("%v env=%q: json=%v, want %v: %s", tc.args, tc.env, isJSON, tc.json, out)
 		}
 	}
 }

@@ -1,0 +1,6 @@
+# Rust build output
+src-tauri/target/
+# Sidecar binaries built by scripts/build-sidecar.sh (make desktop-sidecar)
+src-tauri/binaries/
+# Tauri-generated schemas
+src-tauri/gen/

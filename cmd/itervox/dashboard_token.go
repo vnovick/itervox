@@ -39,6 +39,10 @@ type dashboardTokenAnnounce struct {
 	NoPrintFlag bool   // --no-print-token
 	PrintEnv    string // raw ITERVOX_PRINT_TOKEN value
 	StderrIsTTY bool   // term.IsTerminal(os.Stderr.Fd())
+	// Supervised is true when Token came from ITERVOX_SUPERVISOR_TOKEN
+	// (#119): the tokenised URL is then never printed, whatever the other
+	// knobs say, because the supervisor already holds the token.
+	Supervised bool
 }
 
 // shouldPrintDashboardToken decides whether the tokenised URL may go to
@@ -115,7 +119,7 @@ func announceDashboardToken(stderrOnly, logger *slog.Logger, a dashboardTokenAnn
 			"path", filepath.Join(a.LogsDir, apiTokenFileName), "error", err)
 	}
 
-	if shouldPrintDashboardToken(a.NoPrintFlag, a.PrintEnv, a.StderrIsTTY) {
+	if !a.Supervised && shouldPrintDashboardToken(a.NoPrintFlag, a.PrintEnv, a.StderrIsTTY) {
 		// Token must NEVER hit the rotating log file: stderrOnly bypasses
 		// the file sink and the redacting wrapper by design.
 		stderrOnly.Info("dashboard URL (carries token — copy/paste once)",
@@ -127,6 +131,11 @@ func announceDashboardToken(stderrOnly, logger *slog.Logger, a dashboardTokenAnn
 		"token_fingerprint", tokenFingerprint(a.Token),
 	}
 	switch {
+	case a.Supervised:
+		attrs = append(attrs, "token_source", supervisorTokenEnv,
+			"hint", "the supervisor that started this daemon holds the token; it is never printed")
+		logger.Info("dashboard URL (token withheld from logs)", attrs...)
+		return
 	case tokenFile != "":
 		attrs = append(attrs, "token_file", tokenFile)
 	case a.Generated:

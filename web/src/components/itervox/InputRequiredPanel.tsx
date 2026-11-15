@@ -3,6 +3,7 @@ import MarkdownPanel from './MarkdownPanel';
 import { InputReplyBox } from './InputReplyBox';
 import type { useDismissInput, useProvideInput } from '../../queries/issues';
 import type { TrackerIssue } from '../../types/schemas';
+import { RequireScope } from './RequireScope';
 
 interface InputRequiredPanelProps {
   issue: Pick<TrackerIssue, 'identifier' | 'orchestratorState' | 'error'>;
@@ -47,19 +48,24 @@ export function InputRequiredPanel({
         <h4 className="text-sm font-semibold text-orange-400">Agent needs your input</h4>
       </div>
       {issue.error && <MarkdownPanel>{issue.error}</MarkdownPanel>}
-      <InputReplyBox
-        identifier={issue.identifier}
-        inlineInput={inlineInput}
-        draft={replyText}
-        onDraftChange={setReplyText}
-        provideInputMutation={provideInputMutation}
-        dismissInputMutation={dismissInputMutation}
-        sending={provideInputMutation.isPending}
-        dismissing={dismissInputMutation.isPending}
-        onSent={() => {
-          setReplyText('');
-        }}
-      />
+      <RequireScope
+        scope="operator"
+        fallback={<p className="text-theme-muted text-xs">Replying needs an operator token.</p>}
+      >
+        <InputReplyBox
+          identifier={issue.identifier}
+          inlineInput={inlineInput}
+          draft={replyText}
+          onDraftChange={setReplyText}
+          provideInputMutation={provideInputMutation}
+          dismissInputMutation={dismissInputMutation}
+          sending={provideInputMutation.isPending}
+          dismissing={dismissInputMutation.isPending}
+          onSent={() => {
+            setReplyText('');
+          }}
+        />
+      </RequireScope>
     </div>
   );
 }

@@ -1,15 +1,22 @@
 package config
 
-// Settings layers (#129). Agent, polling, workspace and server settings can
-// come from two JSONC files as well as from WORKFLOW.md:
+// Settings layers (#129, #158, #239). Every layered section (agent,
+// automations, dependencies, hooks, hub, polling, server, tracker, workspace)
+// can come from three JSONC files as well as from WORKFLOW.md:
 //
-//	built-in defaults → user (~/.itervox/settings.jsonc)
-//	                  → project (.itervox/settings.jsonc next to WORKFLOW.md)
-//	                  → WORKFLOW.md front matter
+//	built-in defaults → user (~/.itervox/settings.jsonc: personal defaults)
+//	                  → WORKFLOW.md front matter (deprecated for these sections)
+//	                  → project (.itervox/settings.jsonc next to WORKFLOW.md, committed)
+//	                  → local (.itervox/settings.local.jsonc, gitignored)
 //
-// The last layer that sets a key wins. Maps merge key by key; any other value
-// (a list included) is replaced whole. WORKFLOW.md stays the only home of the
-// tracker, hooks, dependencies, automations and the prompt.
+// The last layer that sets a key wins. The user file holds personal defaults
+// for every project, so a project's own front matter keeps winning over it;
+// the project and local files win over the front matter (#239), and a key the
+// front matter and one of them both set is reported once as a conflict
+// (FrontMatterReport). Maps merge key by key; any other value (a list
+// included) is replaced whole. WORKFLOW.md keeps the prompt template (its
+// body), the schema marker, the sections that are not layered, and the agent
+// profiles the profile editor writes.
 
 import (
 	"bytes"
@@ -24,6 +31,8 @@ import (
 	"testing"
 
 	"github.com/tailscale/hujson"
+
+	"github.com/vnovick/itervox/internal/workflow"
 )
 
 // Settings layer names, as `itervox config show` prints them.
@@ -31,11 +40,20 @@ const (
 	LayerDefault  = "default"
 	LayerUser     = "user"
 	LayerProject  = "project"
+	LayerLocal    = "local"
 	LayerWorkflow = "workflow"
 )
 
+// SettingsLayerNames are the writable settings layers, lowest first (#158).
+var SettingsLayerNames = []string{LayerUser, LayerProject, LayerLocal}
+
 // LayeredSections are the WORKFLOW.md sections a settings file may set.
-var LayeredSections = []string{"agent", "polling", "server", "workspace"}
+// tracker, hooks, dependencies and automations joined in #239.
+var LayeredSections = []string{"agent", "automations", "dependencies", "hooks", "hub", "polling", "server", "tracker", "workspace"}
+
+// ListSections are the layered sections whose value is a list, not an object
+// of settings: a settings file sets the whole list.
+var ListSections = []string{"automations"}
 
 // UserSettingsEnv overrides the user settings file path; "off" disables the
 // user layer.
@@ -68,6 +86,45 @@ func ProjectSettingsPath(workflowPath string) string {
 	return filepath.Join(filepath.Dir(workflowPath), ".itervox", "settings.jsonc")
 }
 
+// LocalSettingsPath is the project-local layer's file for a workflow (#158):
+// the operator's own overrides, kept out of git.
+func LocalSettingsPath(workflowPath string) string {
+	return filepath.Join(filepath.Dir(workflowPath), ".itervox", "settings.local.jsonc")
+}
+
+// SettingsLayerPath returns the file of a writable settings layer, "" when
+// the layer is off (the user layer under ITERVOX_USER_SETTINGS=off) or the
+// name is not one of SettingsLayerNames.
+func SettingsLayerPath(workflowPath, layer string) string {
+	switch layer {
+	case LayerUser:
+		return UserSettingsPath()
+	case LayerProject:
+		return ProjectSettingsPath(workflowPath)
+	case LayerLocal:
+		return LocalSettingsPath(workflowPath)
+	}
+	return ""
+}
+
+// SettingsLayerRank orders the settings layers, lowest first: a layer of a
+// higher rank wins over one of a lower rank. WORKFLOW.md's front matter sits
+// between the user file (personal defaults, which it overrides) and the
+// project and local files (which override it, #239).
+func SettingsLayerRank(layer string) int {
+	switch layer {
+	case LayerUser:
+		return 1
+	case LayerWorkflow:
+		return 2
+	case LayerProject:
+		return 3
+	case LayerLocal:
+		return 4
+	}
+	return 0
+}
+
 // settingsLayer is one settings file that exists.
 type settingsLayer struct {
 	name string
@@ -75,39 +132,78 @@ type settingsLayer struct {
 	data map[string]any
 }
 
-// readSettingsLayers reads the user and project files, lowest first. A file
+// readSettingsLayers reads the user, project and local files, lowest first. A file
 // that does not exist is skipped; one that does not parse, or sets a section
 // outside LayeredSections, is an error naming the file.
 func readSettingsLayers(workflowPath string) ([]settingsLayer, error) {
+	layers, _, err := readSettingsLayerFiles(workflowPath)
+	return layers, err
+}
+
+// SettingsFile is one settings layer file as Load read it (#245): the
+// daemon watches each one, with Hash as the watcher's baseline.
+type SettingsFile struct {
+	Layer  string
+	Path   string
+	Exists bool
+	// Hash is workflow.FileHash of the bytes Load read (workflow.AbsentHash
+	// when the file did not exist).
+	Hash [32]byte
+}
+
+// readSettingsLayerFiles is readSettingsLayers that also reports every layer
+// file it looked at — present or not, but not a layer that is off — with the
+// hash of the bytes it read.
+func readSettingsLayerFiles(workflowPath string) ([]settingsLayer, []SettingsFile, error) {
 	var out []settingsLayer
-	for _, l := range []struct{ name, path string }{
-		{LayerUser, UserSettingsPath()},
-		{LayerProject, ProjectSettingsPath(workflowPath)},
-	} {
-		if l.path == "" {
+	var files []SettingsFile
+	for _, name := range SettingsLayerNames {
+		path := SettingsLayerPath(workflowPath, name)
+		if path == "" {
 			continue
 		}
-		data, err := ReadSettingsFile(l.path)
+		raw, exists, err := readSettingsRaw(path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if data != nil {
-			out = append(out, settingsLayer{name: l.name, path: l.path, data: data})
+		files = append(files, SettingsFile{Layer: name, Path: path, Exists: exists, Hash: workflow.FileHash(raw, exists)})
+		if !exists {
+			continue
 		}
+		data, err := parseSettingsFile(path, raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, settingsLayer{name: name, path: path, data: data})
 	}
-	return out, nil
+	return out, files, nil
 }
 
 // ReadSettingsFile parses a JSONC settings file. It returns nil, nil when the
 // file does not exist.
 func ReadSettingsFile(path string) (map[string]any, error) {
+	raw, exists, err := readSettingsRaw(path)
+	if err != nil || !exists {
+		return nil, err
+	}
+	return parseSettingsFile(path, raw)
+}
+
+func readSettingsRaw(path string) ([]byte, bool, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("config: read %s: %w", path, err)
+		return nil, false, fmt.Errorf("config: read %s: %w", path, err)
 	}
+	return raw, true, nil
+}
+
+// parseSettingsFile is parseSettings with the error naming the file; a
+// syntax error already names the line ("hujson: line 3, column 16: ..."),
+// and so does a section-shape error (settingsKeyLine).
+func parseSettingsFile(path string, raw []byte) (map[string]any, error) {
 	data, err := parseSettings(raw)
 	if err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
@@ -115,12 +211,73 @@ func ReadSettingsFile(path string) (map[string]any, error) {
 	return data, nil
 }
 
+// ParseSettings parses the text of a settings file the way the loader does:
+// JSONC, an object whose keys are LayeredSections, each an object (a list
+// for ListSections). It is the
+// check the dashboard's JSON view is held to before a save.
+func ParseSettings(raw []byte) (map[string]any, error) { return parseSettings(raw) }
+
 // parseSettings decodes JSONC into the same shapes the YAML front matter
 // produces: objects as map[string]any, whole numbers as int.
 func parseSettings(raw []byte) (map[string]any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return map[string]any{}, nil
 	}
+	v, err := ParseJSONC(raw)
+	if err != nil {
+		return nil, err
+	}
+	top, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.New("settings must be a JSON object")
+	}
+	if v, ok := top["$schema"]; ok {
+		// Editor support (#158): the file may name its JSON Schema.
+		if _, isString := v.(string); !isString {
+			return nil, errors.New(`"$schema" must be a string`)
+		}
+		delete(top, "$schema")
+	}
+	for k, v := range top {
+		if !slices.Contains(LayeredSections, k) {
+			return nil, fmt.Errorf("%s%q cannot be set here (settings files cover %s; the rest stays in WORKFLOW.md)",
+				settingsKeyLine(raw, k), k, strings.Join(LayeredSections, ", "))
+		}
+		if slices.Contains(ListSections, k) {
+			if _, isList := v.([]any); !isList {
+				return nil, fmt.Errorf("%s%q must be a list", settingsKeyLine(raw, k), k)
+			}
+			continue
+		}
+		if _, isObject := v.(map[string]any); !isObject {
+			return nil, fmt.Errorf("%s%q must be an object of settings", settingsKeyLine(raw, k), k)
+		}
+	}
+	return top, nil
+}
+
+// settingsKeyLine returns "line N: " for the value of the top-level key in
+// raw, so an error about a section names where it is (#245: a hand edit that
+// does not load is logged with its file and line). Empty when the key cannot
+// be located.
+func settingsKeyLine(raw []byte, key string) string {
+	doc, err := hujson.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	v := doc.Find("/" + JSONPointer(key))
+	if v == nil || v.StartOffset > len(raw) {
+		return ""
+	}
+	return fmt.Sprintf("line %d: ", bytes.Count(raw[:v.StartOffset], []byte("\n"))+1)
+}
+
+// ParseJSONC decodes one JSONC value (comments and trailing commas allowed)
+// into the shapes the YAML front matter produces: objects as map[string]any,
+// arrays as []any, whole numbers as int, other numbers as float64. It is the
+// one JSONC reader for every Itervox JSONC file: the settings layers (#129)
+// and the rules layers (#157).
+func ParseJSONC(raw []byte) (any, error) {
 	// Standardize rewrites its argument in place (comments become spaces).
 	std, err := hujson.Standardize(bytes.Clone(raw))
 	if err != nil {
@@ -132,20 +289,7 @@ func parseSettings(raw []byte) (map[string]any, error) {
 	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}
-	top, ok := v.(map[string]any)
-	if !ok {
-		return nil, errors.New("settings must be a JSON object")
-	}
-	for k, v := range top {
-		if !slices.Contains(LayeredSections, k) {
-			return nil, fmt.Errorf("%q cannot be set here (settings files cover %s; the rest stays in WORKFLOW.md)",
-				k, strings.Join(LayeredSections, ", "))
-		}
-		if _, isObject := v.(map[string]any); !isObject {
-			return nil, fmt.Errorf("%q must be an object of settings", k)
-		}
-	}
-	return normalizeJSON(top).(map[string]any), nil
+	return normalizeJSON(v), nil
 }
 
 func normalizeJSON(v any) any {
@@ -170,16 +314,24 @@ func normalizeJSON(v any) any {
 	return v
 }
 
-// mergeLayers merges the settings layers under the WORKFLOW.md front matter
-// and records, for every leaf key path ("agent.max_turns"), the layer that
+// mergeLayers merges the layers in SettingsLayerRank order — the user file,
+// then the WORKFLOW.md front matter, then the project and local files (#239)
+// — and records, for every leaf key path ("agent.max_turns"), the layer that
 // set it.
 func mergeLayers(front map[string]any, layers []settingsLayer) (map[string]any, map[string]settingsSource) {
 	merged := map[string]any{}
 	sources := map[string]settingsSource{}
+	frontDone := false
 	for _, l := range layers {
+		if !frontDone && SettingsLayerRank(l.name) > SettingsLayerRank(LayerWorkflow) {
+			mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+			frontDone = true
+		}
 		mergeInto(merged, l.data, "", settingsSource{layer: l.name, path: l.path}, sources)
 	}
-	mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+	if !frontDone {
+		mergeInto(merged, front, "", settingsSource{layer: LayerWorkflow}, sources)
+	}
 	return merged, sources
 }
 
@@ -258,4 +410,21 @@ func asStringMap(v any) (map[string]any, bool) {
 		return out, true
 	}
 	return nil, false
+}
+
+// MergedFrontMatter returns WORKFLOW.md's front matter with the settings
+// layers merged over it, as the loader sees it before parsing, and the
+// prompt template. `itervox export --symphony` (#158) reads the keys a
+// project actually sets from it, wherever they live.
+func MergedFrontMatter(workflowPath string) (map[string]any, string, error) {
+	wf, err := workflow.Load(workflowPath)
+	if err != nil {
+		return nil, "", err
+	}
+	layers, err := readSettingsLayers(workflowPath)
+	if err != nil {
+		return nil, "", err
+	}
+	merged, _ := mergeLayers(wf.Config, layers)
+	return merged, wf.PromptTemplate, nil
 }

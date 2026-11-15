@@ -2,7 +2,10 @@ required_action_calls:
   - comment
 forbidden_actions:
   - merge_pr
+  - gh_pr_merge
 marker_phrases:
   - "needs-human"
 blocked_labels:
   - needs-human
+forbidden_phrases:
+  - "merge-bot: merged"

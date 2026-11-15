@@ -24,7 +24,7 @@
 │  └──────────┘           └────────────────┘                   │
 │                                                              │
 │  ┌──────────┐                                                │
-│  │  TUI     │  bubbletea, reads Orchestrator.Snapshot()      │
+│  │ CLI      │  itervox watch & quick actions, via the API    │
 │  └──────────┘                                                │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -75,7 +75,7 @@ is the cfgMu list in the project root `CLAUDE.md`.
 ### Snapshot access
 
 `Snapshot()` acquires `snapMu.RLock` and returns a copy of `lastSnap`. HTTP
-handlers and the TUI consume the snapshot; they never read raw `State`. The
+handlers consume the snapshot; they never read raw `State`. The
 snapshot is rebuilt on the event loop after each state transition, then
 broadcast to SSE subscribers via `OnStateChange`.
 
@@ -125,7 +125,7 @@ unchanged for 2 s before acting. When it settles it invokes the supplied
 callback, which `cmd/itervox` wires to a run-context cancel and a full reload
 of the orchestrator generation — which cancels in-flight agent turns.
 
-Settings saves from the dashboard and TUI do **not** reload (CORE-116). They
+Settings saves from the dashboard do **not** reload (CORE-116). They
 apply the new value in memory under `cfgMu` and write `WORKFLOW.md` through
 the locked patchers in `internal/workflow`, which register each write's
 (pre, post) content hashes in a small process-local registry
@@ -236,11 +236,34 @@ Assembly order at dispatch time (from `internal/orchestrator/worker.go`):
    order, budget-truncated. See **Agent handoff** below.
 3. **`## Run Context`** block — `run.timestamp` and `run.handoff_path` for
    this dispatch. The agent uses these to write its own deliverable.
-4. **SOUL.md** — compact identity ("who you are"), appended via
+4. **`## Rules`** block (#157) — the layered rules in scope for the run's
+   project, profile and backend, must rules first. `internal/rules` reads
+   `~/.itervox/rules.json`, `.itervox/rules.json` and
+   `.itervox/rules.local.json` again at every dispatch (`startRun`), so an
+   edit applies to the next run; the run records the set's hash and ids.
+   Omitted when a template prints `{{ rules }}` (or a field of it) itself.
+   The dependency analyzer gets the same block at the top of its prompt.
+5. **`## Memory`** block (#202) — managed memory: `internal/memory` reads
+   `~/.itervox/memory.json` (private) and `.itervox/memory.json` (project
+   shared) again at every dispatch (`startRun` → `runHandle.memory`), keeps
+   the active entries whose profiles match, always includes the pinned ones
+   and adds the rest ranked by lexical overlap with the issue within
+   `memory.token_budget` (and what the rules leave of
+   `memory.prompt_share_tokens`). The run records the entry ids
+   (`CompletedRun.MemoryIDs`) and the selection is a prompt-digest
+   component. The worker's `EventMemoryUsed` makes the event loop hand the
+   `lastUsed`/`useCount` rewrite to a goroutine joined by `Run` (`memoryWg`).
+   Lessons (#203) are proposed entries (never in this block until approved):
+   the event loop detects corrections (input replies, steering) and
+   failed-then-succeeded runs, rate-limits per issue in `State`, and a
+   `lessonWg` goroutine drafts them (a budgeted `agent.Runner` call to the
+   lesson profile's backend, or `memory.TemplateDraft`) and writes the
+   proposal, reporting back with `EventLessonDrafted`.
+6. **SOUL.md** — compact identity ("who you are"), appended via
    `renderProfilePromptBlocks`.
-5. **INSTRUCTIONS.md** — operational rules, checklists, including the
+7. **INSTRUCTIONS.md** — operational rules, checklists, including the
    "Handoff Protocol" section that points at `run.handoff_path`.
-6. Optional appends: automation instructions, action context, sub-agent
+8. Optional appends: automation instructions, action context, sub-agent
    roster, first-turn PR context.
 
 The concatenated result is passed to the agent subprocess. Inline `prompt:`
@@ -350,6 +373,37 @@ dedup ledger on `State.PRMergedDispatched`; `AutomationDispatchesPRMergedTotal`
 and `AutomationDroppedPRMergedDedupTotal` counters surface dispatch
 telemetry.
 
+### PR-event triggers (#173)
+
+`pr_check_completed`, `pr_synchronized`, `pr_review_submitted` and
+`pr_mergeable_changed` fire on GitHub activity on a **managed** PR: one whose
+URL a run's exit carried (`RunEntry.PRURL`, plus `RunEntry.HeadSHA`, the
+remote-tracking head the run left). The event loop records it in
+`State.ManagedPRs` (`recordManagedPR`, on `EventWorkerExited`).
+
+```
+ GitHub webhook (POST /api/v1/webhooks/pr-events)   poll of open managed PRs
+        │ prwatch.Handler (HMAC check)                 │ prwatch.Watcher.Poll (ETag/304)
+        └───────────────► prwatch.Event ◄──────────────┘
+                              │ cmd/itervox prEventSink: issue by identifier
+                              ▼
+        Orchestrator.DispatchPREventAutomations (off-loop: rule + PR filters)
+                              │ EventDispatchAutomation (one per matching rule)
+                              ▼
+        event loop: dispatchOrQueueAutomation → claimPREventDedup
+          managed for this issue? predates the recording run? head/mergeable
+          changed for this rule (State.PREventBaselines)? key already in
+          State.PREventDispatched? → start / queue / drop
+```
+
+`internal/prwatch` imports only stdlib, `metrics` and `tracker` (for the
+rate-limit snapshot type); it never decides dispatch. `ManagedPRs`,
+`PREventDispatched` and `PREventBaselines` are event-loop state, persisted
+together to `pr_events.json` by the ledger writer from `storeSnap`, and pruned
+by `pruneTerminalRuntimeLedgers` when the issue turns terminal. The watcher
+reads the managed PRs from the last snapshot (`Orchestrator.ManagedPRs`), never
+from live state.
+
 ### `itervox doctor` (P0-D / P0-G)
 
 A preflight subcommand that runs WORKFLOW.md schema validation + dispatch
@@ -381,6 +435,11 @@ state changes at a bounded interval (default 15 s) via
 
 - active workflow path and `itervox_schema_version`
 - dashboard URL and tracker/project
+- tracker sync status (`## Sync`, #117): mode, last pull, lag and its warn
+  threshold, pending writes, next push, last sync error. Also rewritten when
+  the sync status changes, so `itervox doctor` reads a current last pull
+- the off-loop tracker poll (`- Poll:` under `## Tracker`, #187): ok with the
+  last duration, running for Xs, slow, or degraded by the tracker breaker
 - agent capacity (running / max)
 - automation queue pressure (length / max, paused producers, recent rejects)
 - dependency audit summary (blocked / unknown / unblocked counts)
@@ -414,7 +473,7 @@ Browser POST /api/v1/issues/:id/resume
 
 | Package | Responsibility |
 |---|---|
-| `cmd/itervox` | Entry point; loads WORKFLOW.md, wires orchestrator, server, TUI, and `workflow.Watch` |
+| `cmd/itervox` | Entry point; loads WORKFLOW.md, wires orchestrator, server and `workflow.Watch`; the terminal client commands (`itervox watch`, quick actions) talk to a running daemon over its API |
 | `internal/orchestrator` | Single-goroutine event loop, dispatch, reconcile, state machine, reviewer, retries |
 | `internal/agent` | `Runner` interface, claude and codex subprocess runners, stream parsing, sentinel detection, log tailer, fake runner for tests |
 | `internal/tracker` | `Tracker` interface plus normalize helpers and an in-memory backend |
@@ -425,20 +484,21 @@ Browser POST /api/v1/issues/:id/resume
 | `internal/workflow` | WORKFLOW.md loader and content-hash file watcher |
 | `internal/workspace` | Workspace provisioning, path safety, git worktree / bare-clone helpers, PR branches, lifecycle hooks |
 | `internal/prompt` | Liquid template rendering for agent prompts |
+| `internal/rules` | Layered JSONC rules (#157): read, merge (user `must` rules locked), scope filter, `## Rules` block and `{{ rules }}` binding, comment-preserving saves for the Rules editor |
 | `internal/logbuffer` | Per-issue ring buffer for live log streaming |
 | `internal/prdetector` | Detects PR URLs in agent output |
 | `internal/app` | Cross-cutting business logic (e.g. `EnrichIssue`) |
 | `internal/server` | chi-based HTTP API, SSE broadcaster, embedded web assets |
-| `internal/statusui` | Bubbletea terminal UI; reads `Orchestrator.Snapshot()` |
 | `internal/templates` | WORKFLOW.md scaffolding and human-input template |
-| `internal/templates/scaffold` | Registry of `--template` presets for `itervox init` (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) |
+| `internal/templates/scaffold` | Registry of `itervox init --template` starter templates (`minimal`, `full`, `rate-limit-fallback`, `pr-review`, `daily-qa`) and their one-line summaries; `cmd/itervox/init_templates.go` renders each template's profiles, review settings, backend fallback and automations |
 | `internal/logging` | slog setup and shared logging helpers |
 | `internal/profiles` | Built-in profile registry: `embed.FS` of `builtin/<name>/{SOUL,INSTRUCTIONS}.md` plus per-profile `Default{Command,Backend,Actions}` |
 | `internal/depsanalysis` | Dependency analyzer sidecar — async job that runs an analyzer profile over the snapshot graph and caches results |
-| `internal/evals` | Profile evaluation suite (`Scenario`, `Recording`, `Judge`, `Report`) wired into `make evals-fast`; first merge-bot fixtures live under `internal/evals/fixtures/merge-bot/` |
+| `internal/evals` | Profile evaluation suite (`Scenario`, `Recording`, `Judge`, `Report`). Recorded mode replays `internal/evals/fixtures/<profile>/<scenario>/recording.jsonl` in `make evals-fast`; live mode (`RunLive`, #189) runs each scenario against a real agent CLI with the prompt from `orchestrator.ComposeEvalPrompt` inside a `gh`/`itervox` shim sandbox, behind `ITERVOX_EVALS_LIVE=1` and a per-run budget. See [evals.md](evals.md) |
+| `cmd/itervox-evals` | Developer CLI for evals: `recorded`, `live`, `record` (writes `recording.candidate.jsonl`) and `promote`; driven by `make evals` / `evals-live` / `evals-record` / `evals-promote` and `.github/workflows/evals-live.yml`. `recorded`, `live` and `record` save the judged report to `.itervox/evals/<ISO8601>.json` (#201), which the daemon serves read-only at `GET /api/v1/repo/evals`. Not part of the released binary |
 | `internal/agentactions` | Short-lived per-run bearer grant store for the `/api/v1/agent-actions/*` routes |
 | `internal/atomicfs` | Tmp-file + fsync + rename helpers; used for every WORKFLOW.md mutation, scaffold write, pidfile, and queue persistence file |
 | `internal/automationconfig` / `internal/automationdef` | Helper packages for automation YAML parsing and rule definitions |
 | `internal/schedule` | Cron parsing for the `cron` automation trigger and the legacy `schedules:` block |
-| `internal/skills` | Capability inventory scanner for the Settings → Skills surface |
+| `internal/skills` | Capability inventory scanner for the Repo Analysis → Capabilities surface |
 | `web/` | React 19 + Vite + TypeScript dashboard, embedded into the binary via `internal/server/embed.go` (`go:embed web/dist`) |

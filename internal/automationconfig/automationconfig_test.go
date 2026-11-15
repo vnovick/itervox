@@ -31,6 +31,11 @@ func TestAutomationConfigRoundTripPreservesEveryDefinitionField(t *testing.T) {
 			Limit:             12,
 			InputContextRegex: "continue|branch",
 			MaxAgeMinutes:     45,
+			CheckNames:        []string{"ci"},
+			Conclusions:       []string{"failure"},
+			ReviewStates:      []string{"commented"},
+			ReviewAuthors:     []string{"greptile-apps[bot]"},
+			MergeableStates:   []string{"dirty"},
 		},
 		Policy: automationdef.Policy{
 			AutoResume:      true,

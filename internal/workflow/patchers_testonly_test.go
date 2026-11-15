@@ -467,3 +467,26 @@ func MutateAgentIntField(key string, value int) Mutator {
 		return newFrontLines, nil
 	}
 }
+
+// MutateIntField rewrites the first occurrence of `key: <int>` inside the
+// front matter, preserving any inline comment. Errors when the key is
+// missing — this matches PatchIntField's strict-key semantics.
+func MutateIntField(key string, n int) Mutator {
+	return func(frontLines []string) ([]string, error) {
+		for i, line := range frontLines {
+			m := keyLineRE.FindStringSubmatch(line)
+			if m == nil || m[2] != key {
+				continue
+			}
+			oldVal := m[4]
+			comment := ""
+			if ci := strings.Index(oldVal, " #"); ci >= 0 {
+				comment = " " + strings.TrimSpace(oldVal[ci+1:])
+				comment = " #" + comment[2:]
+			}
+			frontLines[i] = m[1] + m[2] + m[3] + strconv.Itoa(n) + comment
+			return frontLines, nil
+		}
+		return nil, fmt.Errorf("workflow mutate: key %q not found in front matter", key)
+	}
+}
