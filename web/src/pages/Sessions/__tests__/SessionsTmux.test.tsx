@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   sendMutate: vi.fn(),
   keyMutate: vi.fn(),
   startMutate: vi.fn(),
-  killMutate: vi.fn(),
+  stopMutate: vi.fn(),
   screenIds: [] as string[],
 }));
 
@@ -47,7 +47,7 @@ vi.mock('../../../queries/sessionsTmux', () => ({
   },
   useSendSessionKey: () => ({ mutate: mocks.keyMutate, isPending: false }),
   useStartSession: () => ({ mutate: mocks.startMutate, isPending: false }),
-  useKillSession: () => ({ mutate: mocks.killMutate, isPending: false }),
+  useStopSession: () => ({ mutate: mocks.stopMutate, isPending: false }),
 }));
 
 vi.mock('../../../queries/issues', () => ({
@@ -141,7 +141,7 @@ beforeEach(() => {
   mocks.sendMutate.mockReset();
   mocks.keyMutate.mockReset();
   mocks.startMutate.mockReset();
-  mocks.killMutate.mockReset();
+  mocks.stopMutate.mockReset();
   mocks.screenIds = [];
 });
 
@@ -233,11 +233,56 @@ describe('Sessions panel — tmux', () => {
     renderAt();
     expect(screen.getByTestId('tmux-attach')).toHaveTextContent('tmux attach -t itervox-abc123');
     expect(screen.getByTestId('session-tab-detail')).toHaveTextContent('started in tmux · codex');
+    expect(screen.queryByTestId('session-adopted')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Stop session' }));
-    expect(mocks.killMutate).not.toHaveBeenCalled();
-    const dialog = screen.getByRole('dialog');
+    expect(mocks.stopMutate).not.toHaveBeenCalled();
+    let dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Sends Ctrl-C to the agent');
     await user.click(within(dialog).getByRole('button', { name: 'Stop session' }));
-    expect(mocks.killMutate).toHaveBeenCalledWith('itervox-abc123');
+    expect(mocks.stopMutate).toHaveBeenCalledWith({ id: 'itervox-abc123', force: false });
+
+    await user.click(screen.getByRole('button', { name: 'Force stop' }));
+    dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Kills its tmux session');
+    await user.click(within(dialog).getByRole('button', { name: 'Force stop' }));
+    expect(mocks.stopMutate).toHaveBeenLastCalledWith({ id: 'itervox-abc123', force: true });
+  });
+
+  it('says a re-adopted session was started by itervox, and warns about its stale guardrails', () => {
+    mocks.sessions = [{ ...OWN_TMUX, adopted: true, guardrailsStale: true }];
+    renderAt();
+    expect(screen.getByTestId('session-adopted')).toHaveTextContent(
+      'Started by itervox (re-adopted after restart).',
+    );
+    expect(screen.getByTestId('session-guardrails-stale')).toHaveTextContent(
+      'Guardrails from the previous daemon run',
+    );
+    expect(screen.getByTestId('session-tab-detail')).toHaveTextContent(
+      're-adopted after restart · codex',
+    );
+    expect(screen.getByRole('button', { name: 'Force stop' })).toBeInTheDocument();
+    expect(screen.getByTestId('tmux-attach')).toBeInTheDocument();
+  });
+
+  it('offers a keys-only Stop, never Force stop, for a hand-started session in tmux', async () => {
+    const user = userEvent.setup();
+    mocks.sessions = [HAND_IN_TMUX];
+    renderAt();
+    expect(screen.queryByRole('button', { name: 'Force stop' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Stop session' }));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('it never kills it');
+    await user.click(within(dialog).getByRole('button', { name: 'Stop session' }));
+    expect(mocks.stopMutate).toHaveBeenCalledWith({ id: 'hand-1', force: false });
+  });
+
+  it('tells how to stop a running hand-started session outside tmux, with its pid', () => {
+    mocks.sessions = [{ ...HAND_PLAIN, status: 'running', pid: 4242 }];
+    renderAt();
+    expect(screen.getByTestId('session-stop-hint')).toHaveTextContent(
+      'Stop it in its own terminal: Ctrl-C, or kill 4242.',
+    );
+    expect(screen.queryByRole('button', { name: 'Stop session' })).toBeNull();
   });
 
   it('keeps a hand-started session not in tmux read-only, with the tmux hint', () => {

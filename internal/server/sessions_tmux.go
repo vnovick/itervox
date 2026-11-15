@@ -237,3 +237,39 @@ func (s *Server) handleKillSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "kill_failed", "the session could not be killed")
 	}
 }
+
+// handleStopSession stops a session (SessionsClient.StopSession). A
+// hand-started session outside a controllable tmux pane is refused with
+// 403 not_controllable (writeTmuxError): it is stopped in its own terminal.
+// POST /api/v1/sessions/{id}/stop {"force":false}
+// 200 {"id":"...","outcome":"stopped"|"killed"|"interrupted"}
+func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "sessions are not available")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Force bool `json:"force"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSONBody(w, r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+			return
+		}
+	}
+	res, err := s.sessions.StopSession(id, body.Force)
+	if writeTmuxError(w, err) {
+		return
+	}
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, res)
+	case errors.Is(err, ErrSessionNotOwned):
+		writeError(w, http.StatusForbidden, "not_owned", "only a tmux session itervox started can be force-stopped")
+	case errors.Is(err, ErrSessionNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "no session "+id)
+	default:
+		writeError(w, http.StatusInternalServerError, "stop_failed", "the session could not be stopped")
+	}
+}

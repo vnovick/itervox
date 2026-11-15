@@ -34,6 +34,8 @@ type fakeSessions struct {
 	keyArgs    []string
 	startReq   *server.NewSessionRequest
 	killed     string
+	stopped    string
+	stopForce  bool
 }
 
 func (f *fakeSessions) TmuxStatus() server.TmuxStatusRow            { return f.tmux }
@@ -60,6 +62,14 @@ func (f *fakeSessions) StartSession(req server.NewSessionRequest) (server.Sessio
 func (f *fakeSessions) KillSession(id string) error {
 	f.killed = id
 	return f.tmuxErr
+}
+
+func (f *fakeSessions) StopSession(id string, force bool) (server.SessionStopResult, error) {
+	f.stopped, f.stopForce = id, force
+	if f.tmuxErr != nil {
+		return server.SessionStopResult{}, f.tmuxErr
+	}
+	return server.SessionStopResult{ID: id, Outcome: "stopped"}, nil
 }
 
 func (f *fakeSessions) SessionTranscript(id string, before int64, limit int) (server.TranscriptResponse, error) {

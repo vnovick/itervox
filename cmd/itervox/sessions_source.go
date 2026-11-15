@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -108,10 +109,33 @@ type sessionSource struct {
 	// is off (tmux is still detected and listed for itervox's own).
 	scanner *extsessions.Scanner
 	detect  *tmuxDetector
+	// project is the daemon's project directory: the tmux sessions tagged
+	// with it are offered for re-adoption (sessions_adopt.go).
+	project string
+}
+
+// ownSessions lists the tmux sessions itervox started for this project
+// (read only: `tmux list-sessions`), only when a listed pane belongs to a
+// session named like one, so a pass costs no extra tmux process otherwise
+// (#210). A listing error offers none.
+func (s sessionSource) ownSessions(panes []tmuxctl.Pane) []orchestrator.TmuxSession {
+	if s.project == "" || !slices.ContainsFunc(panes, func(p tmuxctl.Pane) bool {
+		return itervoxSessionNameRe.MatchString(p.Session)
+	}) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxctl.DefaultTimeout)
+	defer cancel()
+	list, err := s.detect.client.ListSessions(ctx)
+	if err != nil {
+		return nil
+	}
+	return adoptableSessions(list, s.project)
 }
 
 // Discover runs one pass. Reads only: transcript files, the process list,
-// `tmux -V` (until tmux is found) and `tmux list-panes` — skipped when no
+// `tmux -V` (until tmux is found), `tmux list-panes` and `tmux
+// list-sessions` (itervox's tags, for re-adoption) — skipped when no
 // tmux server socket exists, since there are no panes to list (#210).
 func (s sessionSource) Discover(now time.Time) (orchestrator.ExternalScan, error) {
 	scan := orchestrator.ExternalScan{ScannedAt: time.Now()}
@@ -131,6 +155,7 @@ func (s sessionSource) Discover(now time.Time) (orchestrator.ExternalScan, error
 			for _, p := range panes {
 				scan.TmuxPanes = append(scan.TmuxPanes, paneRef(p))
 			}
+			scan.TmuxOwned = s.ownSessions(panes)
 		}
 	}
 	if s.scanner == nil {

@@ -1,6 +1,8 @@
 // Package tmuxctl drives the tmux CLI for the Sessions panel (#178): it lists
 // panes, captures a pane's screen, pastes text, sends a short allowlist of
-// keys, and starts and kills itervox's own tmux sessions.
+// keys, and starts, tags (sessions.go: @itervox-* user options, listed back
+// for re-adoption after a daemon restart) and kills itervox's own tmux
+// sessions.
 //
 // It is the ONLY package that may write to a process itervox did not start:
 // an operator's agent CLI running in a tmux pane, reached through tmux's own

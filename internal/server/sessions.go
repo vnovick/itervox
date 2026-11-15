@@ -82,6 +82,15 @@ type SessionRow struct {
 	Controllable bool `json:"controllable"`
 	// AttachCommand attaches a terminal to an itervox tmux session.
 	AttachCommand string `json:"attachCommand,omitempty"`
+	// PID is the CLI process of a running hand-started session, when
+	// known (the panel's "stop it in its own terminal" hint).
+	PID int `json:"pid,omitempty"`
+	// Adopted: a tmux session itervox started in a previous daemon process
+	// and re-adopted after the restart.
+	Adopted bool `json:"adopted,omitempty"`
+	// GuardrailsStale: an adopted session whose guardrails were prepared by
+	// the previous daemon process (its guardrail token died with it).
+	GuardrailsStale bool `json:"guardrailsStale,omitempty"`
 }
 
 // SessionsResponse is the GET /api/v1/sessions body.
@@ -127,9 +136,25 @@ type SessionsClient interface {
 	// Errors: ErrTmuxUnavailable, ErrBadSessionRequest, ErrUnknownProfile,
 	// ErrTooManySessions, ErrBusy.
 	StartSession(req NewSessionRequest) (SessionRow, error)
-	// KillSession kills a tmux session itervox started. Errors:
-	// ErrSessionNotFound, ErrSessionNotOwned, ErrTmuxUnavailable.
+	// KillSession kills a tmux session itervox started (a force stop).
+	// Errors: ErrSessionNotFound, ErrSessionNotOwned, ErrTmuxUnavailable.
 	KillSession(id string) error
+	// StopSession stops a session: for a tmux session itervox started, its
+	// CLI's interrupt keys, then kill-session if it is still there after a
+	// few seconds (force: kill-session at once); for a hand-started session
+	// in a controllable tmux pane, the interrupt keys only. Errors:
+	// ErrSessionNotFound, ErrSessionNotOwned (force on a hand-started
+	// session), ErrNotControllable, ErrTmuxUnavailable, ErrPaneGone.
+	StopSession(id string, force bool) (SessionStopResult, error)
+}
+
+// SessionStopResult is the POST /api/v1/sessions/{id}/stop body.
+type SessionStopResult struct {
+	ID string `json:"id"`
+	// Outcome is "stopped" (the CLI quit on its interrupt), "killed"
+	// (tmux kill-session, forced or after the wait) or "interrupted" (the
+	// keys reached a hand-started session that is still running).
+	Outcome string `json:"outcome"`
 }
 
 // Errors a SessionsClient returns.

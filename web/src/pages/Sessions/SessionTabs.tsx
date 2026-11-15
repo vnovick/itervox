@@ -19,7 +19,10 @@ const STATUS_LABEL: Record<string, string> = {
 /** The second line of a tab: who owns it and how it runs. */
 function tabDetail(s: SessionRow): string {
   if (s.owner === 'external') return 'started outside itervox';
-  if (s.kind === 'tmux') return ['started in tmux', s.backend].filter(Boolean).join(' · ');
+  if (s.kind === 'tmux')
+    return [s.adopted ? 're-adopted after restart' : 'started in tmux', s.backend]
+      .filter(Boolean)
+      .join(' · ');
   return [s.profile, s.backend, s.workerHost].filter(Boolean).join(' · ') || 'default';
 }
 
