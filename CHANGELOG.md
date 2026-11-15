@@ -9,10 +9,6 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
-### Fixed
-
-- **Tracker polling no longer resets the stall timeout.** Every poll that found a running issue still in an active state (or an automation run, a reviewer on the completion state, or an in-place review continuation) stamped the run's last-activity time with the poll time. `agent.stall_timeout_ms` measures silence against that time, so an agent that produced no output was never stopped while the tracker kept polling. Only agent activity (worker updates) and an answered guardrail approval restart the stall clock now; the dashboard's "last event" time likewise reflects the agent, not the poll.
-
 ## [0.3.3] — 2026-11-15
 
 ### Added
@@ -76,6 +72,7 @@ Each release has its own section, newest first. Changes merged since the last ta
 ### Fixed
 
 - **A held push no longer fails after `agent.read_timeout_ms`.** While a guardrail approval is pending, the agent prints nothing, so the turn used to fail after 30 seconds and be retried. The idle read deadline is now suspended while the run waits for the operator and restarts in full from the answer, and a run waiting for an approval is not treated as stalled. `agent.turn_timeout_ms` still bounds the wait.
+- **Tracker polling no longer resets the stall timeout.** Every poll that found a running issue still in an active state (or an automation run, a reviewer on the completion state, or an in-place review continuation) stamped the run's last-activity time with the poll time. `agent.stall_timeout_ms` measures silence against that time, so an agent that produced no output was never stopped while the tracker kept polling. Only agent activity (worker updates) and an answered guardrail approval restart the stall clock now; the dashboard's "last event" time likewise reflects the agent, not the poll.
 - **A held pipeline push shows its files.** The list of pipeline files now appears in the Needs-attention reply row and in the issue's Now panel. Before, it only rendered in the input-required panel, which a held push never reaches because its issue is still running.
 - **The lane matcher is polynomial** in `**` segments (it was exponential on deep paths), and a long run of `git -C` options is linear.
 
