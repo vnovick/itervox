@@ -769,6 +769,13 @@ hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
 
 templates (WORKFLOW.md scaffolding)
 
+evals (internal/evals: profile eval scenarios, judges, live runs and saved
+       reports; embeds its fixtures/ for the released binary — imports
+       orchestrator, agent, config, domain, atomicfs)
+     └── evals/cli (the recorded/live/record/promote command line behind
+         `itervox evals` and the contributor cmd/itervox-evals — imports
+         evals only; never writes into the embedded fixtures)
+
 referee (internal/referee: the CI referee behind `itervox referee` and the
          standalone cmd/referee — imports attest, config, gitexec,
          guardrails; never orchestrator. Its policy is read from the base

@@ -8,9 +8,9 @@ import (
 
 // Repo evals (#201): the latest persisted eval result per profile and
 // scenario, read from <project>/.itervox/evals by a provider cmd/itervox
-// injects (Config.RepoEvals). The endpoint only reads reports `make evals`,
-// `make evals-live`, `make evals-record` and cmd/itervox-evals wrote; it
-// never starts an eval run.
+// injects (Config.RepoEvals). The endpoint only reads reports `itervox
+// evals recorded|live|record` (and the contributor route, `make evals*` /
+// cmd/itervox-evals) wrote; it never starts an eval run.
 
 // RepoEvalReport is one persisted report the response was built from.
 type RepoEvalReport struct {

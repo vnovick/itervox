@@ -89,7 +89,7 @@ func ensureItervoxGitignore(itervoxDir string) error {
 	// the runtime /*.json ignore (the negation must follow it);
 	// rules.local.json is the operator's private layer and stays ignored, as
 	// does the project-local settings layer (#158). evals/ holds the eval
-	// reports `make evals` saves for Repo Analysis (#201). memory.json is
+	// reports `itervox evals` saves for Repo Analysis (#201). memory.json is
 	// the committed project-shared memory (#202), carved out like rules.json.
 	// tokens.json (#214) holds API token hashes; /*.json already ignores
 	// it, and the explicit line keeps it ignored should a broader negation

@@ -15,8 +15,8 @@ import (
 	"github.com/vnovick/itervox/internal/atomicfs"
 )
 
-// Persisted eval results (#201). `make evals` (recorded mode), `make
-// evals-live`, `make evals-record` and cmd/itervox-evals write each judged
+// Persisted eval results (#201). `itervox evals recorded|live|record` (and
+// the contributor route, `make evals*` via cmd/itervox-evals) write each judged
 // Report as JSON to <project>/.itervox/evals/<ISO8601>.json — gitignored
 // runtime state, the newest MaxResultFiles kept — and the daemon's Repo
 // Analysis page reads the newest files back through LoadResults. Reading is
@@ -45,9 +45,9 @@ const (
 
 // Result modes (ResultFile.Mode): which command produced the report.
 const (
-	ModeRecorded = "recorded" // replayed the committed recordings (`make evals`)
-	ModeLive     = "live"     // ran a real agent (`make evals-live`)
-	ModeRecord   = "record"   // ran a real agent and wrote candidates (`make evals-record`)
+	ModeRecorded = "recorded" // replayed the recordings (`itervox evals recorded`, `make evals`)
+	ModeLive     = "live"     // ran a real agent (`itervox evals live`, `make evals-live`)
+	ModeRecord   = "record"   // ran a real agent and wrote candidates (`itervox evals record`, `make evals-record`)
 )
 
 // resultTimeLayout is the file name stamp: ISO 8601 basic format in UTC with

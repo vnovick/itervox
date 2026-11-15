@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **`itervox evals` in the released binary.** The profile evals no longer need a repository checkout: `itervox evals recorded` (free, no agent), `ITERVOX_EVALS_LIVE=1 itervox evals live`, `itervox evals record` and `itervox evals promote` are the commands `make evals*` runs, now shared through `internal/evals/cli` (`cmd/itervox-evals` stays as the contributor wrapper, so the Makefile targets are unchanged). Scenarios come from `-fixtures DIR`, else the project's `.itervox/evals/fixtures`, else the built-in scenarios embedded in the binary; `record` and `promote` write next to the fixtures and so refuse the built-in set. Reports go to `.itervox/evals/` next to `WORKFLOW.md`, where **Repo Analysis → Evals** reads them; its empty state, the CLI reference and the Repo Analysis guide now name `itervox evals` instead of `make evals`.
+
 ## [0.3.3] — 2026-11-15
 
 ### Added

@@ -991,9 +991,9 @@ anything that is not a pass. Check IDs, in order:
 ### `GET /api/v1/repo/evals`
 
 The latest saved eval result per profile and scenario (#201), for the
-dashboard's **Repo Analysis → Evals** section. `make evals` (recorded mode),
-`make evals-live`, `make evals-record` and `itervox-evals` save each judged
-report as JSON to `<project>/.itervox/evals/<ISO8601>.json` (the newest 20
+dashboard's **Repo Analysis → Evals** section. `itervox evals recorded`,
+`itervox evals live` and `itervox evals record` (contributors: `make evals`,
+`make evals-live`, `make evals-record`) save each judged report as JSON to `<project>/.itervox/evals/<ISO8601>.json` (the newest 20
 kept; the directory carries its own `.gitignore`); the endpoint reads the
 newest of those files on the request goroutine. It never starts an eval run.
 

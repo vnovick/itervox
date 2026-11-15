@@ -127,7 +127,9 @@ describe('EvalsSection (#201)', () => {
     respond({ dir: '/proj/.itervox/evals', reports: [], cases: [] });
     render(<EvalsSection />);
     expect(await screen.findByText(/No eval reports yet/)).toBeInTheDocument();
-    expect(screen.getByText('make evals')).toBeInTheDocument();
+    expect(screen.getByText('itervox evals recorded')).toBeInTheDocument();
+    expect(screen.getByText('ITERVOX_EVALS_LIVE=1 itervox evals live')).toBeInTheDocument();
+    expect(screen.queryByText(/make evals/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
