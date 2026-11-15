@@ -769,9 +769,11 @@ hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
 
 templates (WORKFLOW.md scaffolding)
 
-referee (cmd/referee: standalone CI referee for projects without Itervox —
-         imports attest, config, gitexec, guardrails; never orchestrator.
-         Its policy is read from the base ref only, never the working tree)
+referee (internal/referee: the CI referee behind `itervox referee` and the
+         standalone cmd/referee — imports attest, config, gitexec,
+         guardrails; never orchestrator. Its policy is read from the base
+         ref only, never the working tree. `itervox referee` dispatches
+         before loadDotEnv so checks never inherit .itervox/.env)
 
 cmd/itervox (wires everything)
 ```

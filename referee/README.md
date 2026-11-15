@@ -34,8 +34,10 @@ mode. [`examples/referee-pr.yml`](examples/referee-pr.yml) is a `pull_request`
 workflow that fails human-lane pull requests without a `pipeline-approved`
 label, with the trade-offs of label approval written out.
 
-Build locally with `make referee` (writes `bin/referee`) or
-`go install github.com/vnovick/itervox/cmd/referee@<version>`.
+Every Itervox release ships it as `itervox referee <command>`. For a
+referee-only install, build `make referee` (writes `bin/referee`) or
+`go install github.com/vnovick/itervox/cmd/referee@<version>`; both run the
+same code (`internal/referee`).
 `bash referee/run_test.sh` tests the Action's step script.
 
 Full guide: [site/src/content/docs/guides/referee.mdx](../site/src/content/docs/guides/referee.mdx).

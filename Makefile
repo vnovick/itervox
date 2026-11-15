@@ -23,8 +23,8 @@ build: web-deps web-build
 	go build -o itervox ./cmd/itervox
 	go build $(GO_PACKAGES)
 
-# referee (cmd/referee) is the standalone CI referee for projects that do not
-# use Itervox: lanes, audit, pin, run, keygen, verify. Not part of `build`
+# referee (cmd/referee) is the standalone build of `itervox referee` (both
+# wrap internal/referee): lanes, audit, pin, run, keygen, verify. Not part of `build`
 # (the root has a referee/ directory, the Action, so the binary goes to bin/).
 referee:
 	go build -o bin/referee ./cmd/referee

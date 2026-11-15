@@ -1,4 +1,4 @@
-package main
+package referee
 
 import (
 	"crypto/sha256"

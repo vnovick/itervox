@@ -409,6 +409,25 @@ record from an earlier version of the code fails. It prints one line per
 record (`ok` or `FAIL` with the reason) and exits `0` when all verify, `1`
 when one does not, `2` for a usage or read error.
 
+## `itervox referee` — The CI referee
+
+An agent may change what CI checks, never how CI checks. `itervox referee`
+sorts a pull request into lanes, flags changes that weaken checks, and signs
+check runs. It works with any agent and any CI and needs only git; the same
+code ships as the standalone `referee` binary.
+
+```bash
+itervox referee lanes --base origin/main   # exit 0 auto, 10 second_opinion, 20 human
+itervox referee audit --base origin/main   # exit 20 when a change weakens checks
+itervox referee pin --file .referee.yml --policy-sha256 <hex>
+itervox referee run --name test --key KEY --out checks.jsonl -- go test ./...
+itervox referee verify checks.jsonl --pubkey attest.pub --tree .
+```
+
+Errors exit 2, never 0. It starts before `.itervox/.env` is loaded, so the
+checks it runs never see those secrets. Full guide:
+[CI referee](/guides/referee/).
+
 ## `itervox hook` — Guardrails for your own agent sessions
 
 ```bash

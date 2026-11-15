@@ -81,6 +81,17 @@ Commands:
              --pubkey     public key (default: .itervox/attest.pub)
              --workflow   path to WORKFLOW.md (default: WORKFLOW.md)
 
+  referee The CI referee: an agent may change what CI checks, never how
+          CI checks. Works with any agent and any CI; needs only git.
+             lanes    sort the diff into auto / second_opinion / human
+                      (policy read from --base, exit 0 / 10 / 20)
+             audit    list changes that weaken checks (exit 20 on findings)
+             pin      check a policy file against a pinned sha256
+             run      run a check and append a signed record
+             keygen   make the ed25519 key pair records are signed with
+             verify   verify signed records (--tree: and the tree now)
+          Errors exit 2, never 0. "itervox referee <command> -h" for flags.
+
   hook    The guardrail policy as a PreToolUse hook for an agent session
           you run yourself (no daemon). A convenience layer: it sees the
           command before the shell expands it.
