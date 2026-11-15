@@ -4,13 +4,16 @@ name: Action
 # actionlint checks this workflow, and through the dry-run job's
 # `uses: ./action`, the action's inputs; shellcheck and the trust-check and
 # pipeline-check script tests cover action/*.sh; the dry run installs a release binary with
-# its checksum verified. Fork-safe: `pull_request`, a read-only token, no
+# its checksum verified; referee-e2e runs referee/action.yml itself against a
+# fixture repository and asserts each mode's outcome and outputs. Fork-safe: `pull_request`, a read-only token, no
 # secrets, nothing published.
 on:
   pull_request:
     paths:
       - 'action/**'
       - 'referee/**'
+      - 'cmd/referee/**'
+      - 'internal/referee/**'
       - '.github/workflows/action.yml'
   workflow_dispatch:
 
@@ -59,3 +62,192 @@ jobs:
         env:
           STATUS: ${{ steps.itervox.outputs.status }}
         run: test "$STATUS" = dry_run
+
+  # Runs referee/action.yml itself (setup-go, go install, run.sh, the real
+  # binary). `uses: ./itervox/referee` is right here: this tests the Action's
+  # own code, not a pull request the referee judges.
+  referee-e2e:
+    name: referee action end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: itervox
+          persist-credentials: false
+      - id: fixture
+        name: build the fixture repository
+        run: |
+          set -euo pipefail
+          g() { git -c user.email=ci@example.invalid -c user.name=ci -c commit.gpgsign=false "$@"; }
+          git init -q -b main .
+          echo /itervox/ >>.git/info/exclude
+          mkdir -p .github/workflows src/auth
+          printf 'human:\n  - ".github/**"\nsecond_opinion:\n  - "src/auth/**"\n' >.referee.yml
+          printf 'name: ci\non: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n' >.github/workflows/ci.yml
+          printf 'package app\n\nfunc Add(a, b int) int { return a + b }\n' >src/app.go
+          printf 'package app\n\nimport "testing"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal("add")\n\t}\n}\n' >src/app_test.go
+          printf 'package auth\n\nfunc Check(token string) bool { return token != "" }\n' >src/auth/auth.go
+          g add -A && g commit -qm base
+          echo "policy-sha256=$(sha256sum .referee.yml | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+          branch() { local name=$1; shift; g checkout -qb "$name" main; "$@"; g commit -qam "$name"; }
+          branch human sed -i 's/go test/go test -race/' .github/workflows/ci.yml
+          branch second-opinion sed -i 's/!= ""/!= "" \&\& len(token) > 8/' src/auth/auth.go
+          branch code-only sed -i 's/a + b/b + a/' src/app.go
+          branch audit-skip sed -i 's/^func TestAdd(t \*testing.T) {$/&\n\tt.Skip("flaky")/' src/app_test.go
+          branch pin-edited sed -i 's|src/auth/\*\*|src/**|' .referee.yml
+          g checkout -q main
+          git log --oneline --all
+      - run: git checkout -q human
+      - id: lanes-human
+        name: 'lanes: human, fail-on human'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: lanes
+          base: main
+      - name: 'assert lanes-human'
+        env:
+          WANT: failure lane=human exit-code=20
+          GOT: ${{ steps.lanes-human.outcome }} lane=${{ steps.lanes-human.outputs.lane }} exit-code=${{ steps.lanes-human.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::lanes-human: want $WANT, got $GOT"; exit 1; }'
+      - id: lanes-human-never
+        name: 'lanes: human, fail-on never'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: lanes
+          base: main
+          fail-on: never
+      - name: 'assert lanes-human-never'
+        env:
+          WANT: success lane=human exit-code=20
+          GOT: ${{ steps.lanes-human-never.outcome }} lane=${{ steps.lanes-human-never.outputs.lane }} exit-code=${{ steps.lanes-human-never.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::lanes-human-never: want $WANT, got $GOT"; exit 1; }'
+      - run: git checkout -q second-opinion
+      - id: lanes-second
+        name: 'lanes: second_opinion, fail-on human'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: lanes
+          base: main
+      - name: 'assert lanes-second'
+        env:
+          WANT: success lane=second_opinion exit-code=10
+          GOT: ${{ steps.lanes-second.outcome }} lane=${{ steps.lanes-second.outputs.lane }} exit-code=${{ steps.lanes-second.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::lanes-second: want $WANT, got $GOT"; exit 1; }'
+      - id: lanes-second-strict
+        name: 'lanes: second_opinion, fail-on second_opinion'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: lanes
+          base: main
+          fail-on: second_opinion
+      - name: 'assert lanes-second-strict'
+        env:
+          WANT: failure lane=second_opinion exit-code=10
+          GOT: ${{ steps.lanes-second-strict.outcome }} lane=${{ steps.lanes-second-strict.outputs.lane }} exit-code=${{ steps.lanes-second-strict.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::lanes-second-strict: want $WANT, got $GOT"; exit 1; }'
+      - run: git checkout -q code-only
+      - id: lanes-auto
+        name: 'lanes: code only'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: lanes
+          base: main
+      - name: 'assert lanes-auto'
+        env:
+          WANT: success lane=auto exit-code=0
+          GOT: ${{ steps.lanes-auto.outcome }} lane=${{ steps.lanes-auto.outputs.lane }} exit-code=${{ steps.lanes-auto.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::lanes-auto: want $WANT, got $GOT"; exit 1; }'
+      - id: lanes-error
+        name: 'lanes: missing base fails closed'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: lanes
+          base: origin/nope
+          fail-on: never
+      - name: 'assert lanes-error'
+        env:
+          WANT: failure lane=unknown exit-code=2
+          GOT: ${{ steps.lanes-error.outcome }} lane=${{ steps.lanes-error.outputs.lane }} exit-code=${{ steps.lanes-error.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::lanes-error: want $WANT, got $GOT"; exit 1; }'
+      - run: git checkout -q audit-skip
+      - id: audit-skip
+        name: 'audit: t.Skip added, fail-on human'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: audit
+          base: main
+      - name: 'assert audit-skip'
+        env:
+          WANT: failure lane= exit-code=20
+          GOT: ${{ steps.audit-skip.outcome }} lane=${{ steps.audit-skip.outputs.lane }} exit-code=${{ steps.audit-skip.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::audit-skip: want $WANT, got $GOT"; exit 1; }'
+      - id: audit-skip-never
+        name: 'audit: t.Skip added, fail-on never'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: audit
+          base: main
+          fail-on: never
+      - name: 'assert audit-skip-never'
+        env:
+          WANT: success lane= exit-code=20
+          GOT: ${{ steps.audit-skip-never.outcome }} lane=${{ steps.audit-skip-never.outputs.lane }} exit-code=${{ steps.audit-skip-never.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::audit-skip-never: want $WANT, got $GOT"; exit 1; }'
+      - run: git checkout -q pin-edited
+      - id: pin-mismatch
+        name: 'pin: policy edited after pinning'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: pin
+          policy-sha256: ${{ steps.fixture.outputs.policy-sha256 }}
+      - name: 'assert pin-mismatch'
+        env:
+          WANT: failure lane= exit-code=20
+          GOT: ${{ steps.pin-mismatch.outcome }} lane=${{ steps.pin-mismatch.outputs.lane }} exit-code=${{ steps.pin-mismatch.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::pin-mismatch: want $WANT, got $GOT"; exit 1; }'
+      - name: sign a check run on main
+        run: |
+          set -euo pipefail
+          git checkout -q main
+          command -v referee || { echo "::error::the Action did not put referee on PATH"; exit 1; }
+          referee keygen --out "$RUNNER_TEMP/keys"
+          referee run --name test --key "$RUNNER_TEMP/keys/attest.key" --out "$RUNNER_TEMP/checks.jsonl" -- 'true'
+      - id: verify-ok
+        name: 'verify: tree unchanged'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: verify
+          records: ${{ runner.temp }}/checks.jsonl
+          pubkey: ${{ runner.temp }}/keys/attest.pub
+          tree: .
+      - name: 'assert verify-ok'
+        env:
+          WANT: success lane= exit-code=0
+          GOT: ${{ steps.verify-ok.outcome }} lane=${{ steps.verify-ok.outputs.lane }} exit-code=${{ steps.verify-ok.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::verify-ok: want $WANT, got $GOT"; exit 1; }'
+      - run: echo '// changed after the run' >>src/app.go
+      - id: verify-changed
+        name: 'verify: file changed after the run'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: verify
+          records: ${{ runner.temp }}/checks.jsonl
+          pubkey: ${{ runner.temp }}/keys/attest.pub
+          tree: .
+      - name: 'assert verify-changed'
+        env:
+          WANT: failure lane= exit-code=1
+          GOT: ${{ steps.verify-changed.outcome }} lane=${{ steps.verify-changed.outputs.lane }} exit-code=${{ steps.verify-changed.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::verify-changed: want $WANT, got $GOT"; exit 1; }'
