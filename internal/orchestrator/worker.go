@@ -520,10 +520,20 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	var cumulativeInput, cumulativeCached, cumulativeOutput int // accumulate tokens across turns for dashboard display
 	var prevResultText string                                   // detect repeated identical responses (Codex resume loop)
 	// Input-required resume: single turn with the user's reply as the prompt.
-	// Normal dispatch and pause/resume use the configured max.
+	// Automation run (any trigger): single turn too. Its task is the
+	// automation's (answer a question, triage a failure, review a PR), not
+	// the issue's implementation, so the issue staying in an active state is
+	// no reason to continue: every continuation turn re-sent the same prompt
+	// and redid the job (an input_required helper answered up to max_turns
+	// times). A run on the issue lifecycle (UseIssueLifecycle, kind worker)
+	// is the issue's implementation and keeps the configured max, as do
+	// normal dispatch and pause/resume. Operator messages still extend any
+	// run by a turn (steerMore).
 	effectiveMaxTurns := maxTurns
 	if inputRequiredResume {
 		effectiveMaxTurns = 1
+	} else if automationRun {
+		effectiveMaxTurns = min(maxTurns, 1)
 	}
 	startedAt := time.Now()
 	// Agent handoff plumbing: generate ONE timestamp per worker invocation
