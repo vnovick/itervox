@@ -352,7 +352,10 @@ so your index, staged changes and `git status` are untouched.
 **Verifying.** A record is *verified* when its signature is valid for the
 daemon's key and its tree is the run's final tree (the seal's). The dashboard
 API reports this per record
-([`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations));
+([`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations)),
+and the dashboard shows it in the issue panel's **Signed checks** section:
+each run's checks with their exit code, duration, short tree hash and
+whether the record and the run's seal verify;
 anyone with the public key can check a file offline, and `--tree` proves the
 records are for the code in front of them:
 

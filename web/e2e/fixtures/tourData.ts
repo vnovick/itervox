@@ -385,6 +385,38 @@ function decisions(identifier: string) {
   };
 }
 
+// Signed checks: one sealed run with a passing and a failing check.
+const TOUR_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+function attestations(identifier: string) {
+  const check = (name: string, exitCode: number, durationMs: number) => ({
+    kind: 'check',
+    name,
+    command: `make ${name}`,
+    exitCode,
+    startedAt: T,
+    durationMs,
+    treeHash: TOUR_TREE,
+    keyId: '0123456789abcdef',
+    verified: true,
+  });
+  return {
+    identifier,
+    keyId: '0123456789abcdef',
+    runs: [
+      {
+        runId: `run-${identifier}`,
+        profile: 'default',
+        finalTree: TOUR_TREE,
+        records: [
+          check('test', 0, 65_000),
+          check('lint', 1, 850),
+          { kind: 'seal', exitCode: 0, durationMs: 0, treeHash: TOUR_TREE, verified: true },
+        ],
+      },
+    ],
+  };
+}
+
 /** The endpoints behind the run_context capability, for the issue detail. */
 export function installRunContextData(api: MockApiHandle): void {
   const idOf = (url: string, tail: string) =>
@@ -394,6 +426,9 @@ export function installRunContextData(api: MockApiHandle): void {
   );
   api.override(/\/api\/v1\/issues\/[^/]+\/decisions$/, (route) =>
     route.fulfill(json(decisions(idOf(route.request().url(), '/decisions')))),
+  );
+  api.override(/\/api\/v1\/issues\/[^/]+\/attestations$/, (route) =>
+    route.fulfill(json(attestations(idOf(route.request().url(), '/attestations')))),
   );
   api.override(/\/api\/v1\/playbooks$/, (route) => route.fulfill(json(PLAYBOOKS)));
   api.override(/\/api\/v1\/steering\/phrases$/, (route) =>

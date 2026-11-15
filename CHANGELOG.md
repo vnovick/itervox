@@ -22,6 +22,7 @@ Each release has its own section, newest first. Changes merged since the last ta
   - **Signing and storage:** records are signed with ed25519 and stored as `.itervox/attestations/<issue>/<run>_<profile>.jsonl`, each run sealed with its final tree. The key is `.itervox/attest.key`: gitignored, in the isolation deny list, and created only when a profile uses `verify`.
   - **What "done" means:** a failing or tree-changing check holds the run as input-required, naming the check and its exit code. For a `require_evidence` name that is also in `verify`, the agent's own evidence file is ignored, so the writer is never the judge.
   - **Where to see them:** `GET /api/v1/issues/{identifier}/attestations` (viewer scope) lists the records with `verified` and a reason. `itervox attest verify <file.jsonl> [--tree DIR]` checks the signatures and the tree.
+- **Signed checks in the dashboard.** The issue panel has a read-only **Signed checks** section, read from `GET /api/v1/issues/{identifier}/attestations` (viewer scope): each run's checks with their name, ok/failed and exit code (or timed out), duration, short tree hash and whether the record verifies (the reason when it does not), the run's seal status and the signing key id. An issue with no records shows an empty state; a daemon that does not serve signed checks shows nothing.
 - **Safety guide and a full-permissions warning.** A new [Safety](https://itervox.dev/guides/safety/) guide covers three things:
   - what an agent can do by default (approvals bypassed, no sandbox, open network);
   - how to confine it, from a disposable machine down to repository rules;
@@ -78,6 +79,9 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 - **A held push no longer fails after `agent.read_timeout_ms`.** While a guardrail approval is pending, the agent prints nothing, so the turn used to fail after 30 seconds and be retried. The idle read deadline is now suspended while the run waits for the operator and restarts in full from the answer, and a run waiting for an approval is not treated as stalled. `agent.turn_timeout_ms` still bounds the wait.
 - **A held pipeline push shows its files.** The list of pipeline files now appears in the Needs-attention reply row and in the issue's Now panel. Before, it only rendered in the input-required panel, which a held push never reaches because its issue is still running.
+- **The hub's phone view names the files of a held pipeline push.** When an agent's push changes `guardrails.lanes.human` files, the approval on a phone now shows which files it touches:
+  - the needs-attention card on `/hub/m` reads "Pipeline change · changes .github/workflows/ci.yml (+N)";
+  - the issue page's approval card lists the files (up to 10, then "and N more") right above Approve and Reject, as the dashboard's "Pipeline change" notice does.
 - **The lane matcher is polynomial** in `**` segments (it was exponential on deep paths), and a long run of `git -C` options is linear.
 
 ### Changed
