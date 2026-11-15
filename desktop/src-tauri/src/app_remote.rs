@@ -248,6 +248,15 @@ impl RemoteShared {
             .ok_or_else(|| "That remote daemon is not connected yet.".into())
     }
 
+    /// Where a remote daemon's dashboard opens in the browser: Open
+    /// Dashboard's tunnel URL and token, refused through a host's hub
+    /// ([`RemoteCore::browser_target`]).
+    pub fn browser_dashboard(&self, key: &str) -> Result<DashboardTarget, String> {
+        lock(&self.core)
+            .browser_target(key, self.tokens.as_ref())
+            .map_err(String::from)
+    }
+
     fn after_change(&self, conn: &str, err: Option<String>) {
         lock(&self.core).set_error(conn, err);
         self.send(TunnelCmd::Sync);

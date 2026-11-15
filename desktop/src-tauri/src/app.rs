@@ -650,6 +650,7 @@ fn append_entry<R: Runtime>(
 fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
     match action {
         MenuAction::OpenDashboard(key) => open_dashboard(app, shared, &key, None),
+        MenuAction::OpenInBrowser(key) => dash::open_in_browser(app, shared, &key),
         MenuAction::OpenUrl { project, url } => open_dashboard(app, shared, &project, Some(url)),
         MenuAction::NewTask(key) => dash::open_page(app, shared, &key, crate::menu::NEW_TASK_PATH),
         MenuAction::Start(key) => spawn_op(app, shared, key, PendingOp::Starting),

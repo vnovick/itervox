@@ -97,6 +97,36 @@ pub fn open(target: &str) {
     let _ = c.spawn();
 }
 
+/// Whether `url` may go to the OS opener as a web page: an `http://` or
+/// `https://` address with no whitespace or control character (so it can
+/// be neither an option of the opener nor a file or another scheme).
+pub fn is_web_url(url: &str) -> bool {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"));
+    rest.is_some_and(|r| {
+        !r.is_empty()
+            && !r.starts_with('/')
+            && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+    })
+}
+
+/// Opens an `http(s)` `url` in the default browser through [`open`]'s
+/// opener, without waiting. Anything else is refused. The error never
+/// carries `url`: "Open in Browser" passes one holding a token.
+pub fn open_web_url(url: &str) -> Result<(), String> {
+    if !is_web_url(url) {
+        return Err("Only an http(s) address can be opened in the browser.".into());
+    }
+    let (program, args) = open_command(Os::current(), url);
+    let mut c = Command::new(&program);
+    c.args(args);
+    no_console(&mut c);
+    c.spawn()
+        .map(drop)
+        .map_err(|_| format!("Could not start {program} to open the browser."))
+}
+
 /// The user's home directory: `$HOME` on Unix, `%USERPROFILE%` on Windows
 /// (what Go's `os.UserHomeDir` reads, so the app and the daemon agree on
 /// `~/.itervox`).
@@ -293,6 +323,31 @@ mod tests {
         let (p, a) = open_command(Os::Windows, "https://example.com/");
         assert_eq!(p, "explorer.exe");
         assert_eq!(a, vec!["https://example.com/".to_string()]);
+    }
+
+    /// "Open in Browser": only an http(s) address goes to the opener, and
+    /// a refusal never echoes the address (it may hold a token).
+    #[test]
+    fn only_web_urls_go_to_the_browser_opener() {
+        assert!(is_web_url("http://127.0.0.1:8090/?token=abc"));
+        assert!(is_web_url("https://example.com/"));
+        for bad in [
+            "",
+            "/etc/passwd",
+            "file:///etc/passwd",
+            "-a Calculator",
+            "javascript:alert(1)",
+            "HTTP://h/",
+            "http://",
+            "http:///x",
+            "http://h/ -x",
+            "http://h/\n",
+            "smb://h/share",
+        ] {
+            assert!(!is_web_url(bad), "{bad:?}");
+        }
+        let err = open_web_url("file:///secret?token=abc").unwrap_err();
+        assert!(!err.contains("token") && !err.contains("secret"), "{err}");
     }
 
     #[test]
