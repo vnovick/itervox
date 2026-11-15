@@ -9,9 +9,9 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- **Docs: four new guides.** [Lanes](https://itervox.dev/guides/lanes/), [Signed checks](https://itervox.dev/guides/signed-checks/), [Pipeline-guard demo](https://itervox.dev/guides/pipeline-guard-demo/) (how to run `scripts/pipeline-guard-demo.sh` yourself) and [What's new in v0.3.3](https://itervox.dev/guides/whats-new-v033/) (every feature since v0.3.1, with upgrade notes), linked from the sidebar, the Guardrails, CI and referee guides and Getting started.
+- **Tracker polling no longer resets the stall timeout.** Every poll that found a running issue still in an active state (or an automation run, a reviewer on the completion state, or an in-place review continuation) stamped the run's last-activity time with the poll time. `agent.stall_timeout_ms` measures silence against that time, so an agent that produced no output was never stopped while the tracker kept polling. Only agent activity (worker updates) and an answered guardrail approval restart the stall clock now; the dashboard's "last event" time likewise reflects the agent, not the poll.
 
 ## [0.3.3] — 2026-11-15
 
@@ -62,6 +62,7 @@ Each release has its own section, newest first. Changes merged since the last ta
 - **Approval rules scoped to an environment.** A `guardrails.approval_commands` entry may be `{match, when_env}`, held only when the environment matches, for example `terraform apply` when `TF_WORKSPACE=prod*`. The shim checks the real environment at exec time. Plain string entries are unchanged; a malformed object is a startup error.
 - **Patches only: the daemon pushes (`push: daemon`).** Set it on a profile (or `agent.push` for all of them). That profile's agent gets no forge or tracker credentials, and its shims and pre-push hook refuse `git push` and pull-request writes. After the run and its gates (`after_run_required`, `verify`, `require_evidence`), Itervox sorts the diff into lanes (a human-lane change waits for approval), pushes the commit with its own credentials and opens the pull request. With `verify`, only the tree the signed checks ran on is pushed. Needs `guardrails.enabled`; refused with `agent.ssh_hosts`. The default (`agent`) is unchanged.
 - **Pipeline-guard demo.** `scripts/pipeline-guard-demo.sh` and `scripts/pipeline-guard-capture.mjs` reproduce "an agent asked to fix a red build edits the pipeline instead" with a scripted agent doing real git work behind the guardrails: unguarded (pushed, green, tests still fail) and guarded (held in the human lane, signed check exit 1, code fixed, signed check exit 0). `demo/pipeline-guard/RECORDING.md` explains how to run it and how to record it with a real agent.
+- **Docs: four new guides.** [Lanes](https://itervox.dev/guides/lanes/), [Signed checks](https://itervox.dev/guides/signed-checks/), [Pipeline-guard demo](https://itervox.dev/guides/pipeline-guard-demo/) (how to run `scripts/pipeline-guard-demo.sh` yourself) and [What's new in v0.3.3](https://itervox.dev/guides/whats-new-v033/) (every feature since v0.3.1, with upgrade notes), linked from the sidebar, the Guardrails, CI and referee guides and Getting started.
 - **Fuzz tests for the guardrails and signed checks.** `FuzzDecide`, `FuzzMatchApproval`, `FuzzLanes`, `FuzzRecordVerify` and `FuzzRecordByteFlip`, run with `make fuzz` (`FUZZTIME`, default 30s; not part of `make verify`); their seeds run under `go test`. `scripts/guardrails-shim-latency.sh` measures the git shim: about 8–9 ms per call at p50 on a loaded 4-CPU test machine.
 
 ### Security

@@ -18,9 +18,6 @@ agent:
   max_concurrent_agents: 1
   max_turns: 1
   max_retries: 0
-  # A held push waits for a human while the agent prints nothing; the
-  # default 30s idle read timeout would end the turn first.
-  read_timeout_ms: 600000
   profiles:
     fixer:
       backend: custom
