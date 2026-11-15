@@ -5,6 +5,8 @@
 
 #[path = "app_dash.rs"]
 mod dash;
+#[path = "app_welcome.rs"]
+mod welcome_win;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -82,6 +84,9 @@ struct Shared {
     hub_covered: Mutex<std::collections::HashSet<String>>,
     /// Model servers and the GPU, read on their own thread.
     machine: Arc<MachinePoller>,
+    /// The project list last pushed to the welcome window: what its Start
+    /// and Open buttons may act on.
+    welcome_last: Mutex<Option<crate::welcome::WelcomeView>>,
 }
 
 /// A hub window: label, token, origin.
@@ -152,6 +157,18 @@ pub fn run() {
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
         }
+        // Opened again while it runs (Finder, the Dock, Spotlight): show a
+        // window rather than nothing — a menu bar icon the notch hides is
+        // otherwise the app's only sign of life.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            if let Some(shared) = app.try_state::<Arc<Shared>>() {
+                welcome_win::reopen(app, &shared, has_visible_windows);
+            }
+        }
         _ => {}
     });
 }
@@ -213,6 +230,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         hub_status: Mutex::default(),
         hub_covered: Mutex::default(),
         machine: Arc::default(),
+        welcome_last: Mutex::default(),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -271,6 +289,13 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .build(app)?;
     update_menu(app, &shared);
     app_update::refresh_cli_copy(app, shared.sidecar.as_deref().ok());
+    // A first launch (nothing added yet) opens the welcome window: on a Mac
+    // whose full menu bar hides the icon behind the notch, the app would
+    // otherwise look as if it never started.
+    let saved_count = lock(&shared.core).saved.projects.len();
+    if crate::welcome::startup_window(saved_count, shared.remote.views().len()).is_some() {
+        welcome_win::open(app, &shared);
+    }
 
     // #244: the Projects menu's shortcuts act on the focused dashboard
     // window (its tab strip). The Mac has one app menu bar; Linux and Windows give
@@ -473,6 +498,7 @@ fn refresh(app: &AppHandle, shared: &Arc<Shared>) {
     push_sessions(app, shared);
     // #244: the project tabs show this refresh; they read nothing themselves.
     dash::push_all(app, shared, false);
+    welcome_win::push(app, shared, false);
     for alert in &outcome.alerts {
         let id = lock(&shared.targets).register(&alert.project, &alert.url);
         let _ = app
@@ -646,6 +672,7 @@ fn handle_action(app: &AppHandle, shared: &Arc<Shared>, action: MenuAction) {
             }
             update_menu(app, shared);
             dash::push_all(app, shared, false);
+            welcome_win::push(app, shared, false);
         }
         MenuAction::RevealLog(key) => {
             let log = shared.output_dir.join(output_log_name(&key));
@@ -774,6 +801,7 @@ fn add_project(app: &AppHandle, shared: &Arc<Shared>) {
             }
             update_menu(&app2, &shared2);
             dash::push_all(&app2, &shared2, false);
+            welcome_win::push(&app2, &shared2, false);
             wake(&shared2);
         });
 }

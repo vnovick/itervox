@@ -68,6 +68,11 @@ impl Dash {
         }
     }
 
+    /// Whether a dashboard window shows `key`.
+    pub(super) fn shows(&self, key: &str) -> bool {
+        lock(&self.windows).values().any(|w| w.project == key)
+    }
+
     /// A window gained focus.
     pub(super) fn note_focus(&self, label: &str) {
         if lock(&self.windows).contains_key(label) {
@@ -359,8 +364,16 @@ fn create(
     Ok(())
 }
 
+/// The dashboard window focused last, while it is open.
+pub(super) fn last_focused(shared: &Shared) -> Option<String> {
+    let windows = lock(&shared.dash.windows);
+    lock(&shared.dash.focused)
+        .clone()
+        .filter(|l| windows.contains_key(l))
+}
+
 /// The tabs as the last refresh left them.
-fn current_rail(shared: &Shared) -> RailView {
+pub(super) fn current_rail(shared: &Shared) -> RailView {
     let remotes = shared.remote.views();
     let machine = shared.machine.panel();
     let core = lock(&shared.core);

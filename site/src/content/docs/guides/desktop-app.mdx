@@ -53,6 +53,14 @@ Open the app from **Applications**: an app opened from the disk image or the Dow
 
 The app has no Dock icon: look for the **I//** mark in the menu bar.
 
+### First launch
+
+The first time the app starts, with no projects added and no remote connections, it opens a **Welcome to Itervox** window as well as its menu-bar icon. The window says where the app lives, has an **Add Project…** button (choose a project's `WORKFLOW.md`; run `itervox init` in the project first if it has none), and lists the projects the app knows with **Start** for a stopped project and **Open** for a running one. **Open** shows the project's dashboard and closes the welcome window. Once you have added a project (or a remote), later launches open only the menu-bar icon, as before.
+
+**Can't see the icon?** On a MacBook with a notch, a full menu bar can put the icon behind the notch, so the app looks as if it never started. Hide some other menu-bar items to make room. Opening Itervox again while it runs (from Finder, Spotlight or the Applications folder) always shows a window: the window you had minimized, else the dashboard of the first project in [tab order](#project-tabs) with a running daemon, else the welcome window with your projects and their **Start** buttons.
+
+The welcome window is an app-local page like the [project tabs](#project-tabs): it has no access to the network or to the app, no token ever reaches it, and its buttons only ask the app to run its own **Add Project…**, **Start** or **Open Dashboard** for a project it listed. The Dock icon shows while it is open, as for any app window.
+
 ### Opening an unsigned build
 
 macOS blocks an unsigned app that carries the quarantine flag a download gets: an `-unsigned` release file, or a build from source copied from another Mac. On macOS 15 and later, right-click → **Open** no longer offers a way past this. Use one of these instead:
@@ -330,6 +338,7 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 
 ## Troubleshooting
 
+- **The app seems not to start.** Its only sign of life after the first launch is the menu-bar icon, which a full menu bar can hide behind a MacBook's notch. Open Itervox again from Finder or Spotlight to get a window ([First launch](#first-launch)), and hide other menu-bar items to make room for the icon.
 - **See what the app sees.** Quit it and run `ITERVOX_DESKTOP_DEBUG=1 /Applications/Itervox.app/Contents/MacOS/itervox-desktop` in a terminal: every refresh prints each project's state and every notification.
 - **Keychain prompt after a rebuild.** A build from source gets a new code signature on every build, so macOS may ask once whether the new build may read the tokens it stored. Choose **Always Allow**. Signed releases keep their identity across updates.
 - **"Itervox" cannot be opened**, or macOS says it cannot check it for malicious software. The app is unsigned: an `-unsigned` release file, a CI build, or a build from source copied from another Mac. Right-click → **Open** no longer works on macOS 15 and later; use **System Settings → Privacy & Security → Open Anyway**, or remove the quarantine flag with `xattr -dr com.apple.quarantine /Applications/Itervox.app`, as described (with its caution) in [Opening an unsigned build](#opening-an-unsigned-build). To check whether a copy is a signed release, run `spctl --assess --type execute -vv /Applications/Itervox.app`: a signed, notarized build prints `source=Notarized Developer ID`.
@@ -409,6 +418,7 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Waiting count as the menu-bar title | AppIndicator label, where the panel shows one | In the tooltip (no text beside the icon) |
 | Refresh when the pointer reaches or clicks the icon | Not on this platform: the 3 / 15-second schedule and window focus | As on the Mac |
 | No Dock icon until a window opens (activation policy) | Not on this platform: windows show in the taskbar while open | Not on this platform: as on Linux |
+| Opening the app again while it runs shows a window (minimized window, first running dashboard, else the welcome window) | Not on this platform: the welcome window opens on a first launch only | As on Linux |
 | **Projects** menu in the app menu bar, <kbd>⌘</kbd> shortcuts | **Projects** menu in each dashboard window, <kbd>Ctrl</kbd> shortcuts | As on Linux |
 | Prompts through `osascript` | `zenity` or `kdialog` | PowerShell and Windows Forms |
 | Keychain | Secret Service, or memory without one | Credential Manager |
