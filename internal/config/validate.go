@@ -307,10 +307,16 @@ func ValidateAutomationsWithDefaults(automations []AutomationConfig, profiles ma
 		return nil
 	}
 	seenIDs := make(map[string]struct{}, len(automations))
-	for _, entry := range automations {
+	for i, entry := range automations {
 		id := strings.TrimSpace(entry.ID)
-		if id == "" || strings.TrimSpace(entry.Profile) == "" || strings.TrimSpace(entry.Trigger.Type) == "" {
-			return fmt.Errorf("each automation requires id, trigger.type, and profile")
+		if id == "" {
+			return fmt.Errorf("automations[%d]: each automation requires id, trigger.type, and profile; this one has no id", i)
+		}
+		if strings.TrimSpace(entry.Profile) == "" {
+			return fmt.Errorf("automation %q requires profile: name the agent profile that runs it", id)
+		}
+		if strings.TrimSpace(entry.Trigger.Type) == "" {
+			return fmt.Errorf("automation %q requires trigger.type", id)
 		}
 		key := strings.ToLower(id)
 		if _, exists := seenIDs[key]; exists {
