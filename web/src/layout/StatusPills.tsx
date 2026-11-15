@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } fro
 import { Link, type To } from 'react-router';
 import { STATUS_META, type StatusKey } from '../lib/statusModel';
 import { useStatusSummary } from '../hooks/useStatusSummary';
-import { useDashboardHref } from '../hooks/useDashboardHref';
+import { useDashboardHref, type DashboardTarget } from '../hooks/useDashboardHref';
 
 // CORE-076 — pill colour per status-model tone (one palette for all pills).
 // The `.pill-*` classes live in index.css (tokens.contrast.test.ts measures
@@ -112,7 +112,7 @@ export function StatusPills() {
   const counted = (
     statusKey: StatusKey,
     count: number,
-    section: string,
+    section: DashboardTarget,
     title: string,
     prefix = '',
   ): PillItem => ({
