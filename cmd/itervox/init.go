@@ -46,13 +46,13 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 		writeLocalTrackerBlock(&b)
 	case "linear":
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
-		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
+		b.WriteString("  #                        Or pick projects in the web dashboard instead.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
 		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\", \"Duplicate\"]\n")
 		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")
 		b.WriteString("  #                                  # Set to \"\" to disable auto-transition.\n")
 		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
-		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown on the Kanban board; not auto-dispatched.\n")
 		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
 	default:
 		b.WriteString("  project_slug: " + slug + "\n")
@@ -71,7 +71,7 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 		b.WriteString("  #                               # MUST exist as a label in your repo.\n")
 		b.WriteString("  #                               # Set to \"\" to disable, or reuse an active label.\n")
 		b.WriteString("  completion_state: \"in-review\"  # Label applied when the agent finishes.\n")
-		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown on the Kanban board; not auto-dispatched.\n")
 		b.WriteString("  #                               # Must be an array — not a bare string.\n")
 		b.WriteString("  backlog_states: [\"backlog\"]\n")
 		b.WriteString("  # failed_state: \"backlog\"        # Label for issues that exhaust all retries.\n")
@@ -302,7 +302,8 @@ func runInit(args []string) {
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
 	dir := fs.String("dir", ".", "directory to scan for repo metadata")
 	force := fs.Bool("force", false, "overwrite output file if it already exists")
-	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema")
+	update := fs.Bool("update", false, "migrate an existing WORKFLOW.md to the latest schema and move its layered settings to .itervox/settings.jsonc")
+	dryRun := fs.Bool("dry-run", false, "for --update: print what would change (the new .itervox/settings.jsonc and the keys leaving WORKFLOW.md) and write nothing")
 	templateName := fs.String("template", "", templateFlagUsage())
 	// --server-port is opt-in for --update. When set (>= 0), the migration
 	// rewrites server.port in WORKFLOW.md. The recommended value for the
@@ -334,55 +335,10 @@ func runInit(args []string) {
 
 	if *update {
 		warnIfDaemonRunning(*workflowPath, "`itervox init --update`")
-		result, err := migrateWorkflowToSchema2(*workflowPath, *force, time.Now().UTC())
-		if err != nil {
+		if err := initUpdate(*workflowPath, *force, *dryRun, *serverPort, time.Now().UTC(), os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
 			fatalExit(1)
 		}
-		if result.Changed {
-			fmt.Printf("itervox init --update: migrated %s to schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
-			// gaps_11 G-19 — tell the operator the .bak is disposable once
-			// the migration is confirmed, so stale backups don't linger.
-			fmt.Printf("itervox init --update: backup written to %s — review the migrated workflow, then remove the backup once the migration is confirmed\n", result.BackupPath)
-			if len(result.Profiles) > 0 {
-				fmt.Printf("itervox init --update: migrated profiles: %s\n", strings.Join(result.Profiles, ", "))
-			}
-
-		} else {
-			fmt.Printf("itervox init --update: %s already uses schema %d\n", *workflowPath, config.LatestWorkflowSchemaVersion)
-		}
-		if result.AddedGuardrails {
-			fmt.Printf("itervox init --update: added the guardrails: block (#204) with its defaults to %s\n", *workflowPath)
-		}
-		if *serverPort >= 0 {
-			if err := rewriteServerPort(*workflowPath, *serverPort); err != nil {
-				fmt.Fprintf(os.Stderr, "itervox init --update: rewrite server.port: %v\n", err)
-				fatalExit(1)
-			}
-			fmt.Printf("itervox init --update: server.port set to %d in %s\n", *serverPort, *workflowPath)
-		}
-		for _, warning := range result.Warnings {
-			fmt.Fprintf(os.Stderr, "itervox init --update: warning: %s\n", warning)
-		}
-		// --update returns here, so anything an EXISTING project still needs
-		// must be done before this point. The .env stub is one of them: the
-		// fresh-init path below creates it, but a project migrating an old
-		// WORKFLOW.md never reaches that code, so `init --update` left the
-		// operator with `api_key: $LINEAR_API_KEY` and no file to define it
-		// in — the daemon then hard-failed startup with "missing
-		// tracker.api_key" and no indication of where to put it.
-		//
-		// The tracker kind comes from the migrated workflow, not --tracker,
-		// which is not required for --update.
-		updateDir := filepath.Join(filepath.Dir(*workflowPath), ".itervox")
-		ensureEnvStub(updateDir, trackerKindFromWorkflow(*workflowPath))
-		// The nested .itervox/.gitignore is self-healed on daemon startup,
-		// but write it now so the .env just created is covered before the
-		// operator's next `git add`.
-		if err := finalizeItervoxGitignore(updateDir); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init --update: %v\n", err)
-		}
-		scaffoldPlaybooks(updateDir, "itervox init --update", os.Stdout) // #218: only the missing ones
 		return
 	}
 
@@ -522,7 +478,7 @@ func runInit(args []string) {
 	if *trackerKind == "linear" {
 		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
 		nextStep++
-		fmt.Printf("  %d. Select a project via the TUI (press p) or the web dashboard\n", nextStep)
+		fmt.Printf("  %d. Select a project in the web dashboard\n", nextStep)
 		nextStep++
 	} else {
 		fmt.Printf("  %d. Run: %s\n", nextStep, runCmd)
@@ -531,7 +487,7 @@ func runInit(args []string) {
 	// server.port: 0 above means the daemon binds an OS-assigned port, not
 	// the 8090 default — find the actual URL with one of these instead of
 	// guessing a port (CORE-022).
-	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url, press 'w' in the TUI to copy it, or run \"itervox doctor\"\n", nextStep)
+	fmt.Printf("  %d. Find the dashboard URL: check .itervox/dashboard_url or run \"itervox doctor\"\n", nextStep)
 	nextStep++
 	fmt.Printf("  %d. Run \"itervox doctor\" to validate agent commands, tracker credentials, and config before the first real dispatch\n", nextStep)
 }

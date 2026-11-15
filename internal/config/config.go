@@ -817,7 +817,7 @@ type Config struct {
 	// and migration errors.
 	WorkflowPath string
 	// WorkflowHash is the sha256 of the WORKFLOW.md bytes Load parsed into
-	// this Config. cmd/itervox passes it to workflow.WatchFrom as the
+	// this Config. cmd/itervox passes it to its config watcher as the
 	// watcher's baseline (M1-close C2). Zero when not built by Load.
 	// Read-only after startup.
 	WorkflowHash [32]byte
@@ -847,6 +847,15 @@ type Config struct {
 	PREvents       PREventsConfig
 	Automations    []AutomationConfig
 	PromptTemplate string
+	// FrontMatter reports the layered keys WORKFLOW.md's front matter still
+	// sets: deprecated (they move to the settings files) and in conflict
+	// with a settings file (#239). Set by Load; read-only after startup.
+	FrontMatter FrontMatterReport
+	// SettingsFiles are the user, project and local settings files Load
+	// looked at, present or not, each with the hash of the bytes it read
+	// (#245). cmd/itervox watches them alongside WORKFLOW.md with these
+	// hashes as the baselines. Set by Load; read-only after startup.
+	SettingsFiles []SettingsFile
 }
 
 // PREventsConfig is pr_events (#173).
@@ -869,11 +878,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	// #129: the user and project settings files sit under the front matter.
-	layers, err := readSettingsLayers(path)
+	// #129, #239: the user, project and local settings files sit over the
+	// front matter; what the front matter still sets of the layered
+	// sections is reported (deprecated, or in conflict with a file).
+	layers, files, err := readSettingsLayerFiles(path)
 	if err != nil {
 		return nil, err
 	}
+	report := frontMatterReport(wf.Config, layers)
 	if len(layers) > 0 {
 		wf.Config, _ = mergeLayers(wf.Config, layers)
 	}
@@ -895,6 +907,8 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.WorkflowHash = wf.ContentHash
+	cfg.SettingsFiles = files
+	cfg.FrontMatter = report
 	return cfg, nil
 }
 

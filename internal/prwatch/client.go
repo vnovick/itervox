@@ -93,6 +93,14 @@ type PullRequest struct {
 		SHA string `json:"sha"`
 		Ref string `json:"ref"`
 	} `json:"head"`
+	// Base and Labels are read by change review (#238).
+	Base struct {
+		SHA string `json:"sha"`
+		Ref string `json:"ref"`
+	} `json:"base"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
 }
 
 // CheckRun is one check run.

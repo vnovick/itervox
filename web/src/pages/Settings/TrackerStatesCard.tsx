@@ -100,7 +100,8 @@ export function TrackerStatesCard({
         <h2 className="text-theme-text text-sm font-semibold">Tracker States</h2>
         <p className="text-theme-text-secondary mt-0.5 text-xs">
           Configure which states the orchestrator picks up (Active), marks as done (Terminal), and
-          transitions to on completion. Changes are written back to WORKFLOW.md.
+          transitions to on completion. Changes are saved to the project settings file
+          (.itervox/settings.jsonc), or the project-local one when it already sets them.
         </p>
       </div>
 

@@ -11,7 +11,7 @@ Itervox is configured entirely through a single `WORKFLOW.md` file in your proje
 
 Run `itervox init` in your project directory to generate a starter file for Linear or GitHub.
 
-`agent`, `hub`, `polling`, `workspace` and `server` settings can also come from [settings files](#settings-files-jsonc-layers) shared by every project or kept per project; `WORKFLOW.md` still wins over them.
+Every runtime section — `agent`, `automations`, `dependencies`, `hooks`, `hub`, `polling`, `server`, `tracker` and `workspace` — can also come from [settings files](#settings-files-jsonc-layers) shared by every project or kept per project. The project and local files win over the same key in `WORKFLOW.md`; your user file holds personal defaults, which a project's `WORKFLOW.md` overrides. `itervox init` writes these sections to `.itervox/settings.jsonc`. Keeping them in the front matter still works but is deprecated: `itervox init --update` moves them to `.itervox/settings.jsonc` and leaves the prompt in `WORKFLOW.md` (see [Moving settings out of WORKFLOW.md](/guides/settings-migration/)).
 
 ---
 
@@ -370,7 +370,7 @@ agent:
 
 Itervox adds up what every run of an issue uses (the implementer, its retries, reviewers and automation runs) and checks it after each update from the agent. When the issue reaches either limit, its agent is stopped, the issue is paused with reason `budget_exceeded`, and the dashboard notifies (if notifications are on). Retries, automations and an answered question do not start it again while it is over budget: each pauses it instead.
 
-To let it continue, raise the budget in `WORKFLOW.md` (the daemon reloads it) or with `itervox config set agent.budget.tokens N` (applied at the next reload), and resume the issue from the dashboard. Resuming without raising it pauses the issue again at once.
+To let it continue, raise the budget in `WORKFLOW.md` (the daemon reloads it) or with `itervox config set agent.budget.tokens N` (the daemon reloads for it too), and resume the issue from the dashboard. Resuming without raising it pauses the issue again at once.
 
 The totals live in `issue_spend.json` in the daemon's logs directory, so a restart does not reset a budget; a run's usage is written when the run ends, so a crash loses only the running turns' usage. `itervox report costs` prints them per issue and per day; see the [CLI reference](/cli/#itervox-report-costs--tokens-and-cost-per-issue-and-per-day).
 
@@ -519,8 +519,11 @@ agent:
 | `min_dwell_minutes` | int | `30` | Minimum time a switched issue stays on the fallback before it may switch back. It never blocks a further hop when the fallback itself becomes limited |
 | `switch_back` | string | `at_reset` | `at_reset`: the override is cleared once the dwell has passed AND the original backend is no longer limited (its reset, or the cooldown, has passed); the next dispatch goes back through the breaker. `on_success`: cleared by the first successful run after the dwell. `manual`: never cleared automatically (pin a backend, or use `switch_revert_hours`) |
 
-The block is read at load time: edit `WORKFLOW.md` to change it (the normal
-reload applies it). There is no settings API for it.
+The block is read at load time: set it in `.itervox/settings.jsonc` (or,
+deprecated since v0.3, in `WORKFLOW.md`'s front matter); a hand edit of
+either file reloads the daemon, which applies it. It has no runtime setter,
+and the Settings page shows it read-only outside its JSON view. For a
+walk-through, see the [Backend health and fallback guide](/guides/backend-health/).
 
 A switched implementer issue keeps its new profile and backend for later
 runs (a sticky override, shown on the card as `codex (auto)` and in the
@@ -557,7 +560,7 @@ Itervox can distribute agent work across multiple remote hosts via SSH. Each hos
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `ssh_hosts` | string[] | `[]` | List of SSH hosts in `"host"` or `"host:port"` format. When empty, agents run locally. |
-| `ssh_host_descriptions` | object | `{}` | Optional display labels for `ssh_hosts`. Keys are host strings, values are user-facing descriptions shown in the dashboard and TUI. |
+| `ssh_host_descriptions` | object | `{}` | Optional display labels for `ssh_hosts`. Keys are host strings, values are user-facing descriptions shown in the dashboard. |
 | `ssh_strict_host_checking` | string | `"accept-new"` | Default `StrictHostKeyChecking` mode applied to every SSH worker connection. Valid values: `accept-new` (TOFU — pin on first contact, reject on mismatch), `yes` (strict — reject any unknown or changed key), `no` / `off` (permissive — accept any key, **insecure**), `ask` (prompt — incompatible with `BatchMode=yes`). Defaults to `accept-new` so a brand-new host's key is recorded in `~/.ssh/known_hosts` on first contact and any subsequent mismatch is rejected. |
 | `ssh_strict_host_by_host` | object | `{}` | Per-host override for `StrictHostKeyChecking`, taking precedence over `ssh_strict_host_checking`. Keys are host addresses (matching entries in `ssh_hosts`), values use the same set as the default. Use to harden production hosts to `yes` or temporarily relax a sandbox VM to `no`. |
 | `dispatch_strategy` | string | `"round-robin"` | How issues are routed to SSH hosts. `"round-robin"` cycles through hosts in order. `"least-loaded"` sends each new issue to the host with the fewest active workers. Ignored when `ssh_hosts` is empty. |
@@ -766,7 +769,7 @@ a minute before it, has moved. Its `{{ trigger.previous_state }}` is then
 empty, since the poll never saw it. A move from an active state reports its
 previous state as before. An issue created in the trigger state does not fire.
 Neither does an issue that only became visible because the runtime project
-filter (dashboard or TUI) changed: the first poll after a filter change takes a
+filter (dashboard) changed: the first poll after a filter change takes a
 fresh baseline instead of inferring moves.
 
 `tracker_comment_added` watches comments only on the issues the poll lists, so
@@ -926,6 +929,8 @@ dependencies:
 ```
 
 ### Stacked worktrees
+
+A walk-through of this behaviour is in the [Stacked pull requests guide](/guides/stacked-prs/).
 
 Set `dependencies.stacked_prs: true` to have an issue's worktree branch from
 its blocker instead of `workspace.base_branch`, so the work starts from the
@@ -1268,7 +1273,7 @@ inject the port as `$PORT`, so the bind can come from the environment:
 
 Every bind — including loopback — requires `Authorization: Bearer <token>` on every HTTP request and SSE stream, unless `server.allow_unauthenticated: true` is set. Itervox reads the token from the `ITERVOX_API_TOKEN` environment variable; when unset, the daemon generates a random ephemeral token at startup, installs it, and logs the tokened dashboard URL to stderr once — only when stderr is a terminal or `ITERVOX_PRINT_TOKEN=1` (`--no-print-token` always suppresses it). Headless (systemd, containers, redirected stderr), an auto-generated token is written to `<logs-dir>/api-token` (mode 0600, rewritten on every start) instead, and the log line carries only its path and a `sha256:` fingerprint. The dashboard prompts for the token on first load and persists it (session-only by default, or via the "Remember" checkbox in `localStorage`). The `GET /api/v1/health` (static liveness) and `GET /api/v1/ready` (event-loop readiness) probes are auth-exempt so load balancers, uptime monitors and container health checks can use them without a token — they are the only auth-exempt routes. `GET /metrics` (opt-in via `server.metrics.enabled`) always needs the token.
 
-**Cross-origin guard in unauthenticated mode.** With `server.allow_unauthenticated: true` there is no bearer check, so Itervox instead refuses cross-origin state-changing requests, which stops a malicious web page in the operator's browser from driving the daemon. A `POST`, `PUT`, `PATCH` or `DELETE` to `/api/v1/*` gets `403` with code `cross_origin_forbidden` when the browser sends `Sec-Fetch-Site: cross-site` or `same-site`, or, for a browser that sends no `Sec-Fetch-Site`, an `Origin` whose host and port differ from the request's `Host` header (`Origin: null` never matches). Only host and port are compared, not the scheme, so a TLS-terminating proxy in front of a plain-HTTP daemon keeps working. Requests with neither header (curl, scripts, the TUI) pass, as do `GET` requests and the SSE streams. The Vite dev server (page on `:5173`, proxying to the daemon) passes on any browser that sends `Sec-Fetch-Site`, which all have since 2023. To call the API from a web page on another origin, run with a token instead: token mode has no origin check, because a browser never attaches the bearer token cross-site. The guard is not access control: anyone who can reach the port with curl still has full access.
+**Cross-origin guard in unauthenticated mode.** With `server.allow_unauthenticated: true` there is no bearer check, so Itervox instead refuses cross-origin state-changing requests, which stops a malicious web page in the operator's browser from driving the daemon. A `POST`, `PUT`, `PATCH` or `DELETE` to `/api/v1/*` gets `403` with code `cross_origin_forbidden` when the browser sends `Sec-Fetch-Site: cross-site` or `same-site`, or, for a browser that sends no `Sec-Fetch-Site`, an `Origin` whose host and port differ from the request's `Host` header (`Origin: null` never matches). Only host and port are compared, not the scheme, so a TLS-terminating proxy in front of a plain-HTTP daemon keeps working. Requests with neither header (curl, scripts, the terminal commands) pass, as do `GET` requests and the SSE streams. The Vite dev server (page on `:5173`, proxying to the daemon) passes on any browser that sends `Sec-Fetch-Site`, which all have since 2023. To call the API from a web page on another origin, run with a token instead: token mode has no origin check, because a browser never attaches the bearer token cross-site. The guard is not access control: anyone who can reach the port with curl still has full access.
 
 **Host guard (DNS rebinding) in unauthenticated mode.** The cross-origin guard cannot stop DNS rebinding: a page on a hostname the attacker controls re-points that name at your daemon's address and then talks to it *same-origin*, so it could otherwise store a profile with an arbitrary `command`, rewrite settings, or read state and logs. With `server.allow_unauthenticated: true`, every route — API, SSE, the dashboard and static files — therefore requires the request's `Host` (port and IPv6 brackets stripped, case-insensitive) to be `localhost`, an IP address, the configured `server.host`, or a name in `server.allowed_hosts`; anything else gets 403 with code `host_not_allowed`. IP addresses always pass because a rebinding attack needs a DNS name — so browsing to `http://192.168.1.20:8090` with `host: 0.0.0.0`, container probes by pod IP, and SSH tunnels to `localhost` all keep working, as does the Vite dev proxy (it forwards `Host: localhost:<port>`). `GET /api/v1/health` is exempt because it returns a constant, and `GET /api/v1/ready` because it returns only booleans and the tracker's rate-limit reset and is probed by whatever name the platform uses. **If you reach an unauthenticated daemon through a reverse proxy, tunnel, MagicDNS or container service hostname, add that name to `server.allowed_hosts`.** Token mode has no Host check: a rebound page never holds the bearer token.
 
@@ -1307,12 +1312,24 @@ its stop timeout must exceed `--shutdown-grace` (for systemd:
 signal), and `itervox stop --grace` must exceed it too, or the drain is cut
 short by a `SIGKILL`.
 
-### What an edit to `WORKFLOW.md` does
+### What an edit to `WORKFLOW.md` or a settings file does
 
-Settings saved from the dashboard or TUI never reload: each is written as the
-daemon's own write and applied in memory. An **operator edit** (your editor,
-`git pull`, a deploy) is detected by the file watcher and applied with
-**drain, then reload**: admission stops exactly as for a shutdown, in-flight
+The file watcher watches `WORKFLOW.md` and the user, project and local
+settings files (`~/.itervox/settings.jsonc` or `$ITERVOX_USER_SETTINGS`,
+`.itervox/settings.jsonc`, `.itervox/settings.local.jsonc`) as one set
+(#245): a change to any of them starts the same 2-second quiet period, and an
+edit that touches several at once (`itervox init --update` moving keys out of
+`WORKFLOW.md`) reloads once. A settings file that does not exist yet is
+watched by its path, so creating it — `.itervox/` included — is picked up;
+deleting one reloads without that layer. `itervox doctor` lists the watched
+files (`watched: …`).
+
+Settings saved from the dashboard never reload: each is written as the
+daemon's own write and applied in memory (a setting without a runtime setter
+is reported as needing a restart). `itervox config set` and `itervox init
+--update` run as separate processes, so a running daemon reloads exactly once
+for their write. An **operator edit** (your editor, `git pull`, a deploy) is
+detected by the file watcher and applied with **drain, then reload**: admission stops exactly as for a shutdown, in-flight
 turns finish (bounded by the same `--shutdown-grace`; past it the remaining
 turns are cancelled), and then the new generation loads the file and starts
 dispatching again. `/ready` reports `draining` meanwhile. A signal during a
@@ -1326,20 +1343,26 @@ to be hot-swappable, while only the fields on the runtime-mutable list can be
 changed safely under a running generation. Draining keeps the one-generation-
 at-a-time invariant and loses no work; the cost is that an edit takes effect
 only after the current turns end (or the grace expires), and no new work
-starts in between. An edit that makes the file invalid still drains first,
-then shows the "config invalid" banner and waits for a fix.
+starts in between.
+
+Before it drains, the daemon loads and validates the edited files off to the
+side. An edit that does not load — to `WORKFLOW.md` or any settings file —
+does not drain: the running generation keeps its config, the log gets one
+error naming the file (and the line, for a settings file that does not parse
+or sets a section of the wrong shape), and the dashboard shows the "config
+invalid" banner naming the file until an edit fixes it, which then reloads.
+If a file becomes invalid between that check and the reload, the reload waits
+for a fix with the banner up, as before.
 
 ### Log format
 
 `--log-format text|json` (or `ITERVOX_LOG_FORMAT`; the flag wins) selects
-the format of the rotating log file **and**, unless the terminal UI runs
-(it starts only with `--tui` since v0.2.4), of stderr — one JSON object per
-log record, for platforms that collect stdout/stderr. With `--tui` on a
-terminal, logs go to the file only. Both
+the format of the rotating log file **and** of stderr — one JSON object per
+log record, for platforms that collect stdout/stderr. Both
 sinks go through the same secret redaction (`Bearer` tokens, `lin_api_…`,
 `ghp_…`, `sk-ant-…` are written as `***`). Lines printed before logging
-starts or outside it (usage text, fatal start-up errors, the TUI's own
-"not starting" notice) are plain text in either format.
+starts or outside it (usage text, fatal start-up errors) are plain text in
+either format.
 
 ### GitHub state labels: `itervox doctor --fix`
 
@@ -1449,23 +1472,38 @@ GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
 ## Settings files (JSONC layers)
 
-Settings in the `agent`, `hub`, `polling`, `workspace` and `server` sections can also live in three JSONC files, so a default you use everywhere is set once:
+Settings in the `agent`, `automations`, `dependencies`, `hooks`, `hub`, `polling`, `server`, `tracker` and `workspace` sections live in three JSONC files, so a default you use everywhere is set once (`tracker`, `hooks`, `dependencies` and `automations` joined the layered sections in #239):
 
 | Layer | File | Wins over |
 |-------|------|-----------|
 | `default` | built in | — |
-| `user` | `~/.itervox/settings.jsonc` (or the path in `ITERVOX_USER_SETTINGS`; `off` disables it) | defaults |
-| `project` | `.itervox/settings.jsonc` next to `WORKFLOW.md` (committed) | user |
+| `user` | `~/.itervox/settings.jsonc` (or the path in `ITERVOX_USER_SETTINGS`; `off` disables it): your personal defaults for every project | defaults |
+| `workflow` | `WORKFLOW.md` front matter (deprecated for these sections) | user |
+| `project` | `.itervox/settings.jsonc` next to `WORKFLOW.md` (committed) | workflow |
 | `local` | `.itervox/settings.local.jsonc` next to `WORKFLOW.md` (gitignored: your own overrides for this project) | project |
-| `workflow` | `WORKFLOW.md` front matter | everything |
+
+**`WORKFLOW.md` keeps the prompt.** Its body is the Liquid prompt template, and it stays the import and export format (`itervox import`, `itervox export --symphony`). Its front matter keeps the schema marker, the sections that are not layered (`guardrails`, `memory`, `sessions`, `pr_events`) and three keys whose editors write them there: `agent.profiles` (the profile editor), `agent.available_models` (`itervox models refresh`) and the legacy `agent.reviewer_prompt`.
+
+**Front matter still works.** A layered key set in the front matter still applies. `itervox doctor` lists each one as `deprecated:`, naming `.itervox/settings.jsonc` as where it moves, and the daemon's startup log names them once. When the project or local settings file sets the same key, that file wins, and the conflict is reported once (a `WARNING:` line in `itervox doctor`, one startup-log line per key however often the workflow reloads). A user-file value under the front matter is a personal default the project overrides, not a conflict. `itervox init --update` moves the keys for you, with a `WORKFLOW.md.bak` first and `--dry-run` to preview; see [Moving settings out of WORKFLOW.md](/guides/settings-migration/).
+
+**Secrets stay out of settings files.** A secret key (`tracker.api_key`, `tracker.webhooks.secret`, any `*_token`, `*secret`, `*password`) holds a `$VAR` reference such as `"$LINEAR_API_KEY"`; the value stays in the environment or `.itervox/.env`. The writers (the Settings page, `itervox config set`) refuse an inline secret, and `itervox init --update` leaves a key holding one in `WORKFLOW.md` and says which.
 
 `itervox init` (and `itervox init --update`) adds `.itervox/settings.local.jsonc` to the ignore lists, and a save to the local layer from the dashboard or `itervox config set --local` makes sure `.itervox/.gitignore` ignores it.
 
-The keys are the same as in the front matter. Maps merge key by key (a user file can set `agent.max_turns` while the workflow sets `agent.max_concurrent_agents`); any other value, a list included, is replaced whole by a higher layer. The tracker, hooks, dependencies, automations and the prompt stay in `WORKFLOW.md`: a settings file that sets another section, or does not parse, stops the load with an error naming the file.
+The keys are the same as in the front matter. Maps merge key by key (a user file can set `agent.max_turns` while the project file sets `agent.max_concurrent_agents`); any other value, a list included, is replaced whole by a higher layer — `automations` is a list, so a layer that sets it sets the whole list. A settings file that sets a section that is not layered, or does not parse, stops the load with an error naming the file.
 
 ```jsonc
-// ~/.itervox/settings.jsonc
+// .itervox/settings.jsonc
 {
+  "$schema": "https://itervox.dev/schema/settings.schema.json",
+  "tracker": {
+    "kind": "linear",
+    "api_key": "$LINEAR_API_KEY", // the value lives in .itervox/.env
+    "project_slug": "core",
+    "active_states": ["Todo", "In Progress"],
+  },
+  "hooks": {"after_create": "pnpm install --frozen-lockfile\n", "timeout_ms": 90000},
+  "dependencies": {"analysis_mode": "manual"},
   "agent": {
     "max_concurrent_agents": 2, // this laptop
     "max_turns": 40,
@@ -1474,19 +1512,19 @@ The keys are the same as in the front matter. Maps merge key by key (a user file
 }
 ```
 
-`itervox init` writes most of these keys into `WORKFLOW.md`, and `WORKFLOW.md` wins; delete a key there to let a settings file decide it.
+`itervox init` (every template, and `itervox quickstart`) writes these keys to `.itervox/settings.jsonc` and leaves `WORKFLOW.md` with the schema marker, the non-layered sections, the profiles and the prompt, so a new project starts with nothing deprecated. For an older project, run `itervox init --update` once to move them.
 
 **The settings schema.** Every key of these sections is described by a JSON Schema generated from Itervox's config registry, with a label, a description, its type, enum values, minimum and default: [`https://itervox.dev/schema/settings.schema.json`](https://itervox.dev/schema/settings.schema.json) (`site/public/schema/settings.schema.json`, printed by `itervox config schema`). Point `"$schema"` at it for completion and checks in your editor; a settings file may carry that `"$schema"` key. A test fails when the loader reads a layered key that has no schema entry, and when the published file is stale (`make settings-schema` regenerates it).
 
-**The Settings page.** The dashboard's Settings page has an **All settings** section rendered from that schema: every layered setting, grouped by section and topic, with a control for its type (a toggle, a number, a choice, a one-per-line list, `key = value` lines for a map; a value with its own shape, such as `agent.profiles` or `agent.backend_fallback`, is shown read-only and edited on its own page or in the JSON view). Each field shows whether this layer sets it or which layer it inherits from, and whether a change applies at once or after a restart. A tab picks the layer every save writes — **User**, **Project** or **Project local** — and a **JSON** view shows that layer's file as text, comments included, checked against the schema as you type. Saves go through the same comment-preserving writer as `itervox config set` (the JSON view's text is written as typed). A save to the project or local layer also moves the keys it sets out of `WORKFLOW.md`, which would otherwise win; a user-layer save never edits the project, and the page says when a higher layer still overrides the value. Settings with a runtime setter (max workers, max retries, the switch budget and window, inline input, dispatch strategy, the reviewer profile and auto-review, the dependency analyzer profile, SSH hosts and their descriptions, available models, workspace auto-clear) apply to the running daemon at once; the rest apply at the next restart or `WORKFLOW.md` reload, and the save says which. A save made against a file someone else changed meanwhile is refused and the page reloads the file.
+**The Settings page.** The dashboard's Settings page has an **All settings** section rendered from that schema: every layered setting, grouped by section and topic, with a control for its type (a toggle, a number, a choice, a one-per-line list, `key = value` lines for a map; a value with its own shape, such as `agent.profiles` or `agent.backend_fallback`, is shown read-only and edited on its own page or in the JSON view). Each field shows whether this layer sets it or which layer it inherits from, and whether a change applies at once or after a restart. A tab picks the layer every save writes — **User**, **Project** or **Project local** — and a **JSON** view shows that layer's file as text, comments included, checked against the schema as you type. Saves go through the same comment-preserving writer as `itervox config set` (the JSON view's text is written as typed). A save to the project or local layer also moves the keys it sets out of `WORKFLOW.md` (a copy left there would only be reported as a conflict); a user-layer save never edits the project, and the page says when a higher layer — `WORKFLOW.md` included — still overrides the value. Settings with a runtime setter (max workers, max retries, the switch budget and window, inline input, dispatch strategy, the reviewer profile and auto-review, the dependency analyzer profile, SSH hosts and their descriptions, available models, workspace auto-clear, the tracker's active, terminal, completion and failed states, and `dependencies.analysis_mode`) apply to the running daemon at once; the rest apply at the next restart or reload (a save is the daemon's own write, so it does not reload by itself), and the save says which. A save made against a file someone else changed meanwhile is refused and the page reloads the file.
 
 **Moving between Symphony and Itervox.** `itervox import WORKFLOW.md` converts a Symphony workflow, or an Itervox v0.x one, into this layout (settings to `.itervox/settings.jsonc`, profile prompts to prompt files, a `WORKFLOW.md.bak`, and a list of every key it could not map); `itervox export --symphony` writes a Symphony `WORKFLOW.md` with the Symphony core keys and the worker prompt and lists the Itervox-only features it dropped. See the [CLI reference](/cli/#itervox-import--convert-a-symphony-or-older-itervox-workflow).
 
-**Dashboard and TUI saves.** A setting saved from the dashboard or the TUI in one of these sections (max workers, max retries, the switch budget, dispatch strategy, inline input, the reviewer profile and auto-review, SSH hosts, workspace auto-clear) is written to `.itervox/settings.jsonc`, which keeps its comments and is created if it is missing. If `WORKFLOW.md` also sets that key (under either spelling, for `server.allow_unauthenticated`), the same save removes it from `WORKFLOW.md` — only that key's lines; comments, order and the rest of the file stay as they were — so the saved value is the one the next load uses. If the `WORKFLOW.md` step fails, the settings file is put back and nothing changes. The save applies at once and does not reload the daemon. Tracker states, the failed state, the project filter, dependencies, automations and agent profiles are saved to `WORKFLOW.md` as before, each through one generic front-matter writer that changes only that key's lines.
+**Dashboard saves.** A setting saved from the dashboard in one of these sections (max workers, max retries, the switch budget, dispatch strategy, inline input, the reviewer profile and auto-review, SSH hosts, workspace auto-clear, and since #239 the tracker states, the failed state, the project filter, the tracker scope and filter, `dependencies.analysis_mode` and the automations) is written to `.itervox/settings.jsonc` — or to `.itervox/settings.local.jsonc` when that file already sets the key, so the save is never shadowed — which keeps its comments and is created if it is missing. If `WORKFLOW.md` also sets that key (under either spelling, for `server.allow_unauthenticated`), the same save removes it from `WORKFLOW.md` — only that key's lines; comments, order and the rest of the file stay as they were. A scope save removes the keys it clears (it used to comment them out in `WORKFLOW.md`). If the `WORKFLOW.md` step fails, the settings file is put back and nothing changes. The save applies at once and does not reload the daemon. Agent profiles are saved to `WORKFLOW.md`, and `itervox models refresh` writes `agent.available_models` to the settings file that sets it, else to `WORKFLOW.md`.
 
 **See where each value comes from.** `itervox config show` prints every setting Itervox reads, its effective value and its layer (with the file for `user` and `project`), plus `environment` (and the variable) for a server bind set by `ITERVOX_SERVER_HOST`, `ITERVOX_SERVER_PORT` or `PORT`; `--json` for scripts. A key a layer sets that Itervox does not read is listed with a note, and so is a value of the wrong type that was ignored for the default. Secrets such as `tracker.api_key` are shown as `(set, hidden)`, and a password inside a URL as `hidden`.
 
-**Edit a file.** `itervox config set agent.max_turns 40` writes `.itervox/settings.jsonc` (`--user` writes the user file, `--local` the project-local one) and `itervox config unset KEY` removes a key. Comments, and every other key, are kept; the file is laid out again on each write. The value is read as JSON (`40`, `true`, `["a","b"]`, `"text"`) or else as text. A value of the wrong type for the key (`agent.max_turns lots`), or a change the workflow then fails to load with, is refused and the file is left as it was. `set` warns when a higher layer also sets the key (so the change has no effect) and when Itervox does not read the key at all (a typo). A running daemon applies a settings-file change the next time it loads `WORKFLOW.md`: restart it, or save `WORKFLOW.md`.
+**Edit a file.** `itervox config set agent.max_turns 40` writes `.itervox/settings.jsonc` (`--user` writes the user file, `--local` the project-local one) and `itervox config unset KEY` removes a key. Comments, and every other key, are kept; the file is laid out again on each write. The value is read as JSON (`40`, `true`, `["a","b"]`, `"text"`) or else as text. A value of the wrong type for the key (`agent.max_turns lots`), or a change the workflow then fails to load with, is refused and the file is left as it was. `set` warns when a higher layer also sets the key (so the change has no effect), notes when `WORKFLOW.md`'s front matter also sets it (the file wins; remove the copy), and warns when Itervox does not read the key at all (a typo). A running daemon applies a settings-file change the next time it loads `WORKFLOW.md`: restart it, or save `WORKFLOW.md`.
 
 ---
 

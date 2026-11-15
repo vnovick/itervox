@@ -110,6 +110,22 @@ type DiffResponse struct {
 	Truncated  bool          `json:"truncated,omitempty"`
 	// HunksAllowed tells the client whether ?file= is open to its scope.
 	HunksAllowed bool `json:"hunksAllowed"`
+	// Source is what was diffed (#238): "worktree" (the worktree against
+	// the merge base) or "pr" (the pull request's files, base...head).
+	// Sources lists what ?source= may ask for: "pr" once the issue has a
+	// GitHub PR, "worktree" while a run is live or when there is no PR.
+	Source  string   `json:"source,omitempty"`
+	Sources []string `json:"sources,omitempty"`
+	// PRURL and HeadSHA name the pull request (source "pr", or whenever
+	// one exists).
+	PRURL   string `json:"prUrl,omitempty"`
+	HeadSHA string `json:"headSha,omitempty"`
+	// PRError says why the PR's files could not be read when the diff fell
+	// back to the worktree ("github_failed", "pr_not_found").
+	PRError string `json:"prError,omitempty"`
+	// WorktreePath is the worktree's directory on the daemon's host, for
+	// open-in-editor links.
+	WorktreePath string `json:"worktreePath,omitempty"`
 }
 
 // FileDiffResponse is GET /api/v1/issues/{identifier}/diff?file=.
@@ -121,6 +137,8 @@ type FileDiffResponse struct {
 	Truncated  bool        `json:"truncated,omitempty"`
 	Bytes      int         `json:"bytes"`
 	MaxBytes   int         `json:"maxBytes"`
+	// Source is "worktree" or "pr" (#238).
+	Source string `json:"source,omitempty"`
 }
 
 // RunContextResponse is GET /api/v1/issues/{identifier}/context.
@@ -196,16 +214,45 @@ func (s *Server) handleIssueContext(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleIssueDiff serves GET /api/v1/issues/{identifier}/diff[?base=][&file=].
+// handleIssueDiff serves GET /api/v1/issues/{identifier}/diff[?base=][&file=][&source=].
+// #238: once the issue has a GitHub PR the default source is the PR's
+// files (what GitHub will merge); ?source=worktree keeps the live worktree.
 func (s *Server) handleIssueDiff(w http.ResponseWriter, r *http.Request) {
 	if s.changes == nil {
 		writeError(w, http.StatusServiceUnavailable, "not_supported", "worktree diffs are not available")
 		return
 	}
 	id := chi.URLParam(r, "identifier")
-	base := r.URL.Query().Get("base")
+	q := r.URL.Query()
 	scope := callerScope(r)
-	file := r.URL.Query().Get("file")
+	file := q.Get("file")
+	if file != "" && !scope.Allows(apitokens.ScopeOperator) {
+		writeInsufficientScope(w, apitokens.ScopeOperator, scope)
+		return
+	}
+	src := s.resolveDiffSource(id)
+	switch q.Get("source") {
+	case "":
+	case DiffSourceWorktree:
+		src.use = DiffSourceWorktree
+	case DiffSourcePR:
+		if src.prURL == "" {
+			writeError(w, http.StatusNotFound, "no_pr", "the issue has no GitHub pull request")
+			return
+		}
+		src.use, src.explicit = DiffSourcePR, true
+	default:
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_source", `source must be "pr" or "worktree"`, "source")
+		return
+	}
+	if src.use == DiffSourcePR {
+		handled, prErr := s.servePRDiff(w, r, id, file, src)
+		if handled {
+			return
+		}
+		src.use, src.prError = DiffSourceWorktree, prErr // the PR could not be read: fall back
+	}
+	base := q.Get("base")
 	if file == "" {
 		diff, err := s.changes.Diff(r.Context(), id, base)
 		if err != nil {
@@ -217,11 +264,11 @@ func (s *Server) handleIssueDiff(w http.ResponseWriter, r *http.Request) {
 		if diff.Files == nil {
 			diff.Files = []DiffFileRow{}
 		}
+		src.decorate(&diff)
+		if s.changeReview != nil {
+			diff.WorktreePath = s.changeReview.WorktreePath(id)
+		}
 		writeJSON(w, http.StatusOK, diff)
-		return
-	}
-	if !scope.Allows(apitokens.ScopeOperator) {
-		writeInsufficientScope(w, apitokens.ScopeOperator, scope)
 		return
 	}
 	fd, err := s.changes.FileDiff(r.Context(), id, base, file)
@@ -230,6 +277,7 @@ func (s *Server) handleIssueDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fd.Identifier = id
+	fd.Source = DiffSourceWorktree
 	if scope != apitokens.ScopeAdmin {
 		fd.Patch = logging.RedactString(fd.Patch)
 	}

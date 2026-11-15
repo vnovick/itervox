@@ -33,8 +33,31 @@ describe('flattenSettingsSchema (#158)', () => {
   it('turns the published schema into one field per layered setting', () => {
     const fields = publishedFields();
     expect(new Set(fields.map((f) => f.section))).toEqual(
-      new Set(['agent', 'hub', 'polling', 'server', 'workspace']),
+      new Set([
+        'agent',
+        'automations',
+        'dependencies',
+        'hooks',
+        'hub',
+        'polling',
+        'server',
+        'tracker',
+        'workspace',
+      ]),
     );
+    // #239: the list section is one read-only field the Automations page edits.
+    expect(byKey(fields, 'automations')).toMatchObject({
+      kind: 'json',
+      editor: 'automations',
+      itemType: 'object',
+    });
+    expect(byKey(fields, 'tracker.active_states')).toMatchObject({
+      kind: 'list',
+      itemType: 'string',
+      live: true,
+    });
+    expect(byKey(fields, 'dependencies.ordering').kind).toBe('enum');
+    expect(byKey(fields, 'hooks.timeout_ms')).toMatchObject({ kind: 'integer', default: 60000 });
     const workers = byKey(fields, 'agent.max_concurrent_agents');
     expect(workers).toMatchObject({ kind: 'integer', live: true, minimum: 1, default: 10 });
     expect(byKey(fields, 'agent.budget.tokens').kind).toBe('integer');
@@ -99,12 +122,20 @@ describe('parseSettingsText (#158 JSON view validation)', () => {
         fields,
       ),
     ).toEqual({ ok: true, keys: 2 });
+    // #239: the new sections, the automations list and a filter list.
+    expect(
+      parseSettingsText(
+        `{"tracker": {"kind": "linear", "filter": [{"labels_any": ["a"]}]}, "hooks": {}, "automations": [{"id": "x"}]}`,
+        fields,
+      ),
+    ).toEqual({ ok: true, keys: 3 });
   });
 
   it.each([
     ['{"agent": ', 'JSON'],
     ['[]', 'one JSON object'],
-    ['{"tracker": {}}', 'cannot be set here'],
+    ['{"guardrails": {}}', 'cannot be set here'],
+    ['{"automations": {"id": "x"}}', 'automations must be a json'],
     ['{"agent": 3}', 'must be an object'],
     ['{"agent": {"max_turns": "x"}}', 'agent.max_turns must be a integer'],
     ['{"agent": {"dispatch_strategy": "fastest"}}', 'round-robin'],

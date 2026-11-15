@@ -126,10 +126,17 @@ Commands:
 
   Talking to a running daemon (it finds the daemon from .itervox/dashboard_url
   and its token from ITERVOX_API_TOKEN, .itervox/.env or <logs-dir>/api-token;
-  every one takes --workflow, --logs-dir and --url):
-  watch   a read-only, plain-text view of running, retrying, queued,
-          input-required and paused issues, refreshed every --interval
-          (default 2s); --once prints it once (works over SSH, no TTY)
+  every one takes --workflow, --logs-dir and --url, and --project NAME to reach
+  one hub project with the hub token in ITERVOX_HUB_TOKEN):
+  watch   a read-only live panel: status header, one lane per running issue
+          with its latest (redacted) activity, feed events as they happen,
+          and the exact reply/approve command for every agent waiting on you.
+          Never reads stdin or changes the terminal mode (SSH, tmux, no TTY).
+             --issue ID      follow one issue's full log and its events
+             --events-only   the event stream alone (for piping)
+             --json          one JSON object per line
+             --since SEQ     replay the feed events after cursor SEQ
+             --interval 2s   refresh interval; --once prints once and exits
   logs    print an issue's run log; -f keeps following new lines
              itervox logs [-f] <issue>
   pause    <issue>         stop the issue's agent and pause the issue
@@ -141,10 +148,12 @@ Commands:
   dispatch <issue>         move the issue to the first active state
   workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
   reply    <issue> <text>  answer an agent's question
+  approve  <issue>         approve the command a guardrail is holding (once)
 
   --version  Print version information
 
-Run mode (default when no command given; headless unless --tui):
+Run mode (default when no command given; always headless — watch it with
+itervox watch or the dashboard):
 `)
 	flag.PrintDefaults()
 }

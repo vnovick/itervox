@@ -33,9 +33,13 @@ async function getOrNull(path: string, op: string): Promise<unknown> {
 }
 
 export const RUN_CONTEXT_KEY = (identifier: string) => ['runContext', identifier] as const;
-export const ISSUE_DIFF_KEY = (identifier: string) => ['issueDiff', identifier] as const;
-export const FILE_DIFF_KEY = (identifier: string, file: string) =>
-  ['issueDiff', identifier, 'file', file] as const;
+/** A diff source the daemon serves (#238); undefined = the daemon's default. */
+export type DiffSource = 'pr' | 'worktree';
+
+export const ISSUE_DIFF_KEY = (identifier: string, source?: DiffSource) =>
+  ['issueDiff', identifier, source ?? 'default'] as const;
+export const FILE_DIFF_KEY = (identifier: string, file: string, source?: DiffSource) =>
+  ['issueDiff', identifier, source ?? 'default', 'file', file] as const;
 
 /**
  * The run context; `live` polls every RUN_CONTEXT_POLL_MS while the run is
@@ -57,13 +61,18 @@ export function useRunContext(identifier: string, opts: { enabled: boolean; live
   });
 }
 
-/** The changed files against the merge base. null when there is no worktree. */
-export function useIssueDiff(identifier: string, enabled: boolean) {
+/**
+ * The changed files: the worktree against the merge base, or — once the
+ * issue has a PR (#238) — the PR's files. `source` pins one; undefined lets
+ * the daemon choose. null when there is no worktree.
+ */
+export function useIssueDiff(identifier: string, enabled: boolean, source?: DiffSource) {
   return useQuery({
-    queryKey: ISSUE_DIFF_KEY(identifier),
+    queryKey: ISSUE_DIFF_KEY(identifier, source),
     enabled: enabled && identifier !== '',
     queryFn: async (): Promise<DiffResponse | null> => {
-      const data = await getOrNull(`/api/v1/issues/${enc(identifier)}/diff`, 'diff fetch');
+      const q = source ? `?source=${source}` : '';
+      const data = await getOrNull(`/api/v1/issues/${enc(identifier)}/diff${q}`, 'diff fetch');
       return data === null ? null : DiffResponseSchema.parse(data);
     },
     staleTime: DIFF_STALE_MS,
@@ -71,13 +80,14 @@ export function useIssueDiff(identifier: string, enabled: boolean) {
 }
 
 /** One file's unified diff (needs the operator scope). Idle for a null file. */
-export function useFileDiff(identifier: string, file: string | null) {
+export function useFileDiff(identifier: string, file: string | null, source?: DiffSource) {
   return useQuery({
-    queryKey: FILE_DIFF_KEY(identifier, file ?? ''),
+    queryKey: FILE_DIFF_KEY(identifier, file ?? '', source),
     enabled: file !== null && identifier !== '',
     queryFn: async (): Promise<FileDiffResponse> => {
+      const q = source ? `&source=${source}` : '';
       const { data } = await apiRequest(
-        `/api/v1/issues/${enc(identifier)}/diff?file=${enc(file ?? '')}`,
+        `/api/v1/issues/${enc(identifier)}/diff?file=${enc(file ?? '')}${q}`,
         { op: 'file diff fetch' },
       );
       return FileDiffResponseSchema.parse(data);

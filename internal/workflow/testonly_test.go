@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"log/slog"
+	"time"
 )
 
 // SetMaxConcurrentAgents queues an update to the `max_concurrent_agents`
@@ -122,4 +123,34 @@ func Watch(ctx context.Context, path string, onChange func()) error {
 		slog.Warn("workflow watcher: initial stat failed", "path", path, "error", err)
 	}
 	return watch(ctx, path, first.hash, first, false, onChange)
+}
+
+// WatchFrom is Watch with an explicit baseline: loaded is the sha256 of the
+// bytes the running config was built from (Workflow.ContentHash, via
+// config.Config.WorkflowHash). A first reading that differs from it is a
+// change pending from the start, judged at settle time like any other: a
+// chain of this process's own writes on top of loaded is suppressed, and
+// anything else — an operator edit that landed between config.Load and this
+// call — reloads (M1-close C2). Without it, such an edit became the
+// watcher's baseline and was never reloaded, so the running config silently
+// differed from WORKFLOW.md.
+//
+// The first reading takes no lock: the loaded hash, not the reading, is the
+// baseline, so there is no window left for a lock to close.
+//
+// Test-only since #245: the daemon watches WORKFLOW.md and its settings
+// files together with FileSetWatch (cmd/itervox watchConfigFiles); WatchFrom
+// is FileSetWatch over WORKFLOW.md alone, which the single-file watcher
+// tests below still drive.
+func WatchFrom(ctx context.Context, path string, loaded [32]byte, onChange func()) error {
+	return FileSetWatch{Files: []WatchedFile{{Path: path, Loaded: loaded}}}.Run(ctx, func([]string) { onChange() })
+}
+
+// watch is the single-file watcher Watch (testonly_test.go) runs: baseline
+// is its own first reading, so the registry check WatchFrom makes on its
+// first reading is skipped (checkRegistry false).
+func watch(ctx context.Context, path string, baseline [32]byte, current fileStamp, checkRegistry bool, onChange func()) error {
+	st := &watchedState{WatchedFile: WatchedFile{Path: path, Loaded: baseline}, settled: baseline, current: current}
+	st.dirty = current.hash != baseline || (checkRegistry && firstReadingSuspect(path, baseline, current.hash, time.Now()))
+	return FileSetWatch{}.loop(ctx, []*watchedState{st}, func([]string) { onChange() })
 }
