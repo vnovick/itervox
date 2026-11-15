@@ -26,6 +26,7 @@ export default defineConfig({
         {
           label: 'Guides',
           items: [
+            { label: "What's New in v0.3.3 (upgrading from v0.3.1)", slug: 'guides/whats-new-v033' },
             { label: "What's New in v0.3 (upgrading from v0.2.1)", slug: 'guides/whats-new-v030' },
             { label: "What's New in v0.2.0", slug: 'guides/whats-new-v020' },
             { label: 'The Orchestrated Coding Spec', slug: 'guides/orchestrated-coding' },
@@ -72,8 +73,11 @@ export default defineConfig({
             { label: 'Claude Code plugin', slug: 'guides/claude-code-plugin' },
             { label: 'Agent Permissions & Repo Rules', slug: 'guides/agent-permissions' },
             { label: 'Guardrails', slug: 'guides/guardrails' },
+            { label: 'Lanes (pipeline changes)', slug: 'guides/lanes' },
+            { label: 'Signed checks', slug: 'guides/signed-checks' },
             { label: 'Running in CI (GitHub Actions)', slug: 'guides/ci' },
             { label: 'referee (agents in CI, any harness)', slug: 'guides/referee' },
+            { label: 'Pipeline-guard demo', slug: 'guides/pipeline-guard-demo' },
             { label: 'Process isolation', slug: 'guides/isolation' },
             { label: 'Deploying on a Cloud VM', slug: 'guides/deployment' },
             { label: 'Why Vercel Is Not Suitable', slug: 'guides/deploy-vercel' },

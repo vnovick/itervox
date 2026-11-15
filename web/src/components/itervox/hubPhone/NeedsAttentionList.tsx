@@ -1,6 +1,10 @@
 import { EmptyState } from '../../ui/EmptyState';
 import { buttonClass } from '../../ui/button/buttonStyles';
-import { mobileIssueHref, type AttentionItem } from '../../../queries/hubPhone';
+import {
+  mobileIssueHref,
+  pipelineChangeSummary,
+  type AttentionItem,
+} from '../../../queries/hubPhone';
 
 // #231 — the phone's needs-attention list: every project's agents waiting
 // for an answer (questions and guardrail approvals) and recent run
@@ -79,6 +83,16 @@ export function NeedsAttentionList({
                       {it.project}
                     </span>
                   </span>
+                  {it.lanePaths && it.lanePaths.length > 0 && (
+                    <span data-testid="attention-pipeline" className="flex flex-col gap-1">
+                      <span className="border-theme-warning/40 text-theme-warning-text self-start rounded-full border px-2 py-0.5 text-xs font-semibold">
+                        Pipeline change
+                      </span>
+                      <span className="text-theme-text-secondary font-mono text-[13px] break-all">
+                        changes {pipelineChangeSummary(it.lanePaths, it.lanePathsTotal)}
+                      </span>
+                    </span>
+                  )}
                   {it.text && (
                     <span className="text-theme-text line-clamp-2 text-base leading-snug font-semibold">
                       {it.text}

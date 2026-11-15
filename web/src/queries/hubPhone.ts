@@ -26,6 +26,24 @@ export interface AttentionItem {
   /** The question (input) or the redacted failure message. */
   text: string;
   at: string;
+  /**
+   * guardrails.lanes — the files of a held pipeline push (an approval of an
+   * input row with `guardrailLanePaths`) and how many there were; absent
+   * for every other item.
+   */
+  lanePaths?: readonly string[];
+  lanePathsTotal?: number;
+}
+
+/**
+ * The one-line name of a held pipeline push's files for a narrow card:
+ * the first path, plus how many more ("ci.yml (+2)"); "" for none.
+ */
+export function pipelineChangeSummary(paths: readonly string[] = [], total = 0): string {
+  const first = paths[0];
+  if (!first) return '';
+  const more = Math.max(total, paths.length) - 1;
+  return more > 0 ? `${first} (+${String(more)})` : first;
 }
 
 const ATTENTION_POLL_MS = 15_000;
@@ -58,6 +76,12 @@ export function useHubAttention(projects: readonly HubProject[]) {
             kind: 'input',
             text: r.context,
             at: r.queuedAt,
+            ...(r.guardrailLanePaths?.length
+              ? {
+                  lanePaths: r.guardrailLanePaths,
+                  lanePathsTotal: r.guardrailLanePathsTotal ?? r.guardrailLanePaths.length,
+                }
+              : {}),
           }));
         const failures: AttentionItem[] = state.recentFailures
           .filter((f) => RUN_FAILURE_KINDS.includes(f.kind) && f.identifier)

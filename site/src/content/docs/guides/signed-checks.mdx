@@ -1,0 +1,184 @@
+---
+title: Signed checks
+description: The writer is never the judge. With a profile's verify list the daemon runs your checks itself on the tree the agent left, signs what it saw with ed25519, and holds the run when a check fails. Verify the records offline with itervox attest verify, and sign CI checks with itervox referee run.
+sidebar:
+  order: 12
+---
+
+An agent saying "done" is a claim. With
+[`require_evidence`](/configuration/#done-needs-evidence), the agent that
+wrote the fix also writes the proof. With **signed checks**, the daemon runs
+the checks itself and signs what it saw:
+
+> Done is a claim. A signed run on the same tree is proof.
+
+## Configure
+
+Add a `verify` list to a profile:
+
+```yaml
+agent:
+  profiles:
+    implementer:
+      require_evidence: [test]
+      verify:
+        - name: test
+          run: make test
+        - name: lint
+          run: golangci-lint run
+          timeout_ms: 300000
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `name` | yes | A short name: lower-case letters, digits, `-` or `_` (`test`, `lint`). Unique in the list. `ci` is reserved for the pull request's CI checks. |
+| `run` | yes | The command line, run by `bash` with `pipefail` in the worktree. |
+| `timeout_ms` | no | Kill the check's process group after this long. Default `600000` (10 minutes). |
+
+An unknown key, a bad name or an empty `run` is a config error, never
+dropped. A check silently ignored would let unverified work through. See the
+[`verify` reference](/configuration/#signed-checks).
+
+## What happens after the agent's run
+
+After the agent's last turn, before the run counts as succeeded, the worker:
+
+1. runs each check in order, in the worktree, on the files as the agent left
+   them (committed or not), and stops at the first failure;
+2. records each check and **seals** the run with the tree after the last one;
+3. signs every record and appends it to the run's record file.
+
+This happens after `hooks.after_run_required` and before every success side
+effect: the handoff, the pull request push and the completion move. Under
+[`isolation: process`](/guides/isolation/) the checks run inside the agent's
+sandbox, so the code under test cannot read the signing key.
+
+The agent's prompt names the checks Itervox will run, so it does not spend
+turns recording them.
+
+## When a check fails, the run is held
+
+A check fails when it exits non-zero, times out, cannot start, or changes the
+working tree (its tree differs from the seal). The run is then held
+**input required** instead of moving on, with the check's name, exit code,
+command and the last lines of its output:
+
+```text
+Signed checks failed (verify): Itervox ran them itself in the worktree after the agent finished.
+- `test` exited with code 1 (`make test`)
+```
+
+Reply to resume the agent, for example "fix the bug in cart.go, leave the
+test as it is". The checks run again when that run ends. Every check exiting
+`0` lets the run succeed.
+
+## The evidence gate
+
+`verify` and `require_evidence` share one gate:
+
+- a `require_evidence` name that is also a `verify` name is proven by the
+  daemon's signed run only. The agent's own evidence file is **not read** for
+  it, so the writer is never the judge;
+- other `require_evidence` names still need the agent's evidence file, and
+  `ci` still needs the pull request's checks;
+- `itervox doctor` lists `require_evidence` names that no `verify` check runs
+  as agent-reported, not daemon-run.
+
+## What a record contains
+
+One JSON line per check in
+`.itervox/attestations/<identifier>/<run timestamp>_<profile>.jsonl` next to
+`WORKFLOW.md`, then a `seal` line with the tree after the last check.
+
+| Field | Meaning |
+|---|---|
+| `command`, `argv`, `pipefail` | The configured command (redacted) and how it ran. With `pipefail`, `make test \| tail` records make's status, not tail's. |
+| `exit_code`, `timed_out`, `error` | The real exit status; `-1` when the check was killed or could not start. |
+| `started_at`, `duration_ms` | When it ran and for how long. |
+| `output_sha256`, `output_tail` | SHA-256 of the complete stdout and stderr; their last 4 KiB, redacted like log lines. |
+| `tree_hash`, `tree_excludes`, `head` | The git tree of the working tree when the check started (tracked plus untracked, non-ignored files, without `.itervox/handoff/` and `.itervox/evidence/`) and the HEAD commit. |
+| `key_id`, `sig` | The signing key's id and an ed25519 signature over every other field. |
+
+The tree hash is computed through a private index (`GIT_INDEX_FILE` in a
+temporary directory), so your index, staged changes and `git status` are
+untouched.
+
+## The signing key
+
+The daemon (and `itervox run`) creates an ed25519 key pair the first time it
+starts with a profile that has `verify`:
+
+| File | |
+|---|---|
+| `.itervox/attest.key` | The private key, mode `0600`. Gitignored, and on the [isolation](/guides/isolation/) deny list. |
+| `.itervox/attest.pub` | The public key. Share it so others can verify records. |
+
+A project without `verify` gets no key files. If the key cannot be loaded,
+the checks still run and still gate the run, but their records are neither
+signed nor stored, and the daemon logs a warning.
+
+## Verify the records
+
+The dashboard API lists an issue's records with `verified` and a reason
+([`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations),
+viewer scope). Offline, anyone with the public key can check a file:
+
+```bash
+itervox attest verify .itervox/attestations/ENG-1/2026-11-14T10-00-00.000Z_implementer.jsonl --tree ../worktree
+```
+
+```text
+  ok   check test     exit=0 tree=687d457a30e7 head=7b08300e2e83
+  ok   seal           tree=687d457a30e7 head=7b08300e2e83
+  all 2 records verify (key 45ad02a488567497)
+```
+
+- Every signature must be valid for the public key: `--pubkey PATH`, or by
+  default `.itervox/attest.pub` next to `--workflow`.
+- Every check must have run on the run's final tree (the seal's).
+- `--tree DIR` also requires that tree to be `DIR`'s working tree now, so the
+  records are for the code in front of you. A record from an earlier tree
+  fails it.
+
+An edited exit code or output hash fails the signature. Exit `0` when every
+record verifies, `1` when one does not, `2` on a usage or read error. See the
+[CLI reference](/cli/#itervox-attest--check-signed-check-records).
+
+## Signed checks in CI: itervox referee
+
+`itervox referee` (or the standalone `referee` binary) signs CI check runs in
+the same record format, for any agent and any CI:
+
+```bash
+itervox referee keygen --out "$RUNNER_TEMP/keys"     # attest.key (0600) + attest.pub
+itervox referee run --name test --key "$RUNNER_TEMP/keys/attest.key" --out checks.jsonl -- 'go test ./...'
+itervox referee verify checks.jsonl --pubkey "$RUNNER_TEMP/keys/attest.pub" --tree .
+```
+
+- `run` appends a check record and a seal, and exits with the check's own exit
+  code (`1` when it was killed, timed out or did not start; `2` when it cannot
+  sign or write). It refuses a key inside the working tree.
+- `verify` exits `0` when every record verifies, `1` when one does not, `2` on
+  an error. The records have the same format as the daemon's.
+
+Keep the private key in a CI secret available only to the job that runs the
+checks, not to the job the agent runs in. See [referee](/guides/referee/#referee-run-keygen-and-verify).
+
+## Patches only
+
+With [`push: daemon`](/guides/safety/#patches-only-the-daemon-pushes), the
+daemon pushes the agent's commit itself after the gates. With `verify`, only
+the tree the signed checks ran on is pushed.
+
+## What it does not prove
+
+A signature says *this daemon ran this command on this tree and saw this exit
+code*. It does not say the command tests the right thing.
+
+- Keep `verify` commands in `WORKFLOW.md`, not in files the agent edits.
+  `make test` runs the `Makefile` on the agent's branch, so keep the
+  `Makefile` in the [human lane](/guides/lanes/) (it is by default).
+  `itervox doctor` warns about a check whose definition is outside it.
+- Without `isolation: process` an agent runs as your user and could read the
+  key. The signature then proves only that the record was not edited
+  afterwards.

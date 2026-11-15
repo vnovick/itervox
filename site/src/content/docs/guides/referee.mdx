@@ -180,6 +180,8 @@ could read it.
 passed" is about this code, not some earlier version of it. Exit `0` when every
 record verifies, `1` when one does not, `2` on an error.
 
+See [Signed checks](/guides/signed-checks/) for what a record contains.
+
 Keep the private key where the agent cannot read it (a CI secret available only
 to the job that runs the checks, not to the job the agent runs in), and give
 reviewers the public key.
@@ -321,4 +323,7 @@ when it lands in a script, and which CI does not care about either way.
 Itervox has the same rule built in: [guardrails lanes](/guides/guardrails/)
 hold a push that changes human-lane files for an approval, and signed checks
 (`agent.profiles.<name>.verify`, `itervox attest verify`) use the same record
-format as `referee run`.
+format as `referee run`. See [Lanes](/guides/lanes/),
+[Signed checks](/guides/signed-checks/) and the
+[pipeline-guard demo](/guides/pipeline-guard-demo/), which runs
+`referee lanes` and `referee verify` with `--referee`.

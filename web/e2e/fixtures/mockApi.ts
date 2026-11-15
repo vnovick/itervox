@@ -233,6 +233,14 @@ export async function installMockApi(page: Page, scenario: Scenario): Promise<Mo
       });
     }
 
+    // Signed checks: no records by default (the issue panel's empty state).
+    {
+      const m = path.match(/\/api\/v1\/issues\/([^/]+)\/attestations$/);
+      if (m) {
+        return jsonRoute(route, { identifier: decodeURIComponent(m[1]), runs: [] });
+      }
+    }
+
     // Unhandled — fail loud so the spec author sees a missing route stub.
     await route.fulfill({
       status: 599,
