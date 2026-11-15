@@ -9,6 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.2.3] — 2026-11-03
+
+### Added
+
+- **Local tracker store** (#113). With `tracker.store.enabled: true`, Itervox keeps the tracked Linear or GitHub issues in `.itervox/tracker_store.json` and serves the orchestrator's and dashboard's list reads from it; ticks no longer call the tracker's list endpoints, and the board keeps working through a tracker outage. A background sync re-pulls every `tracker.store.sync_interval_ms` (default 60s). A restart serves from the file; a cold start pulls exactly once. Off by default until the dispatch claim check (#116) lands.
+
+---
+
 ## [0.2.2] — 2026-11-03
 
 ### Added

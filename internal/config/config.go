@@ -216,6 +216,22 @@ type TrackerConfig struct {
 	// GitHub issue comments (`/itervox run|stop|review`). Off by default;
 	// GitHub only. Read once at startup.
 	CommentCommands CommentCommandsConfig
+	// Store (#113) keeps a local copy of the tracked issues under .itervox/
+	// and serves the orchestrator's and dashboard's list reads from it; a
+	// background sync refreshes it from the tracker. Linear and GitHub only.
+	// Read once at startup.
+	Store TrackerStoreConfig
+}
+
+// TrackerStoreConfig configures the local tracker store (#113).
+type TrackerStoreConfig struct {
+	// Enabled turns the store on. Default false: until the claim check
+	// (#116) lands, an issue a person moves out of an active state can be
+	// dispatched once more within one sync interval.
+	Enabled bool
+	// SyncIntervalMs is how often the store re-pulls from the tracker
+	// (default 60000). Reads between syncs cost no tracker requests.
+	SyncIntervalMs int
 }
 
 // PollingConfig holds polling settings.
@@ -252,6 +268,10 @@ type WorkspaceConfig struct {
 	// BaseBranch is the branch worktrees are created from (default: "main").
 	BaseBranch string
 }
+
+// DefaultTrackerStoreSyncIntervalMs is tracker.store.sync_interval_ms when
+// unset.
+const DefaultTrackerStoreSyncIntervalMs = 60000
 
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
 //
@@ -757,6 +777,11 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
 	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 	cfg.Tracker.Outbox = boolField(tracker, "outbox", true)
+	store := nestedMap(tracker, "store")
+	cfg.Tracker.Store = TrackerStoreConfig{
+		Enabled:        boolField(store, "enabled", false),
+		SyncIntervalMs: positiveIntField(store, "sync_interval_ms", DefaultTrackerStoreSyncIntervalMs),
+	}
 	cc := nestedMap(tracker, "comment_commands")
 	cfg.Tracker.CommentCommands = CommentCommandsConfig{
 		Enabled:             boolField(cc, "enabled", false),
