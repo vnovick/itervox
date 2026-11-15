@@ -399,7 +399,7 @@ itervox attest verify FILE.jsonl [--pubkey PATH | --workflow WORKFLOW.md] [--tre
 ```
 
 Checks one run's [signed check](/guides/guardrails/#signed-checks) records
-(`.itervox/attestations/<identifier>/<run id>.jsonl`, written when a profile
+(`.itervox/attestations/<identifier>/<run timestamp>_<profile>.jsonl`, written when a profile
 has `verify`). Every record's ed25519 signature must be valid for the public
 key (default: `.itervox/attest.pub` next to `--workflow`), and every check
 must have run on the run's final tree (its `seal` record). `--tree DIR` also

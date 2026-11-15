@@ -1,0 +1,152 @@
+---
+title: Pipeline-guard demo
+description: Run the pipeline-guard reproduction on your machine. A scripted agent asked to fix a red build edits the CI pipeline instead; unguarded it ships a green run with failing tests, guarded the push is held in the human lane and a signed check records the real exit code.
+sidebar:
+  order: 14
+---
+
+An agent is asked to fix a red build. The quickest way to green is to edit the
+pipeline instead of the code: `continue-on-error: true` on the CI test step.
+`scripts/pipeline-guard-demo.sh` plays that story twice, on the same
+repository with the same agent:
+
+- **unguarded**: lanes off, no `verify`;
+- **guarded**: the default [human lane](/guides/lanes/) and one
+  [signed check](/guides/signed-checks/).
+
+The agent is a script, not a model. It does real git work behind the real
+guardrail shims and pre-push hook. Nothing leaves your machine: the remote is
+a local bare repository, the tracker is a [local issue file](/guides/local-issues/),
+and `gh` is a stub that prints placeholder pull request URLs.
+
+## What you need
+
+- A checkout of the Itervox repository.
+- `git`, `go`, `curl` and `jq` on `PATH`.
+- An `itervox` binary built from that checkout: `make build`. Without `--bin`
+  the script builds one with `go build`, which needs the embedded dashboard
+  (`make web-build` once).
+
+No agent CLI, API key or network access is needed.
+
+## Run it
+
+```bash
+make build
+scripts/pipeline-guard-demo.sh --bin ./itervox
+```
+
+Each part creates a fresh temporary project under `$TMPDIR`
+(`itervox-demo.*`): a small Go service whose `TestTotal` fails on `main`, a
+bare repository standing in for the remote, one issue (`DEMO-1`) and the
+`fixer` profile. It starts the daemon headless on a free loopback port, moves
+the issue to Todo and answers as the operator through the dashboard API. It
+checks every outcome itself and exits `0` when both parts told their story,
+`1` otherwise.
+
+The script pauses between beats so you can follow the dashboard (its URL is
+printed as `DEMO_DASHBOARD=`). With the pauses set to zero, both parts took
+about 12 seconds:
+
+```bash
+DEMO_START_DELAY=0 DEMO_OPERATOR_DELAY=0 DEMO_AGENT_PACE=0 scripts/pipeline-guard-demo.sh --bin ./itervox
+```
+
+## What the unguarded part shows
+
+The workflow sets `guardrails.lanes.human: []` and has no `verify` list. The
+agent's CI edit is pushed, the pull request opens and the issue moves to In
+Review. Then the script runs the tests on the pushed branch:
+
+```text
+pipeline-guard-demo: the run ended green: DEMO-1 is In Review, pull request https://example.com/demo/cart/pull/1
+pipeline-guard-demo: the pushed .github/workflows/ci.yml has: continue-on-error: true
+pipeline-guard-demo: go test ./... on the pushed branch exits 1 (nothing ran it before the PR opened)
+DEMO_RESULT=unguarded ok
+```
+
+The run is green, and the code is still broken.
+
+## What the guarded part shows
+
+The workflow keeps the default human lane and adds one check to the `fixer`
+profile:
+
+```yaml
+verify:
+  - name: test
+    run: "go test -count=1 ./..."
+```
+
+The same push changes `.github/workflows/ci.yml`, so it is held as a
+**Pipeline change** and never reaches the remote. The operator rejects it.
+The daemon runs `go test` itself and signs the result, exit 1, so the run is
+held again. The operator asks for a code fix. The agent fixes `cart.go`; that
+push changes only code, takes the auto lane and goes through. The signed check
+passes and the pull request opens:
+
+```text
+pipeline-guard-demo: the push is held in the human lane: .github/workflows/ci.yml
+pipeline-guard-demo: operator replies: Rejected: fix the code, not the pipeline. The CI config stays as it is.
+pipeline-guard-demo: signed check: `test` exited with code 1 (`go test -count=1 ./...`)
+pipeline-guard-demo: operator replies: Fix the bug in cart.go and leave CI alone; the test has to pass as written.
+pipeline-guard-demo: DEMO-1 is In Review, pull request https://example.com/demo/cart/pull/1
+pipeline-guard-demo: the pushed branch leaves .github/ unchanged
+pipeline-guard-demo: go test ./... on the pushed branch exits 0
+pipeline-guard-demo: signed check records (GET /api/v1/issues/DEMO-1/attestations):
+  test  exit 1  verified=true
+  test  exit 0  verified=true
+```
+
+It ends by running `itervox attest verify` on both runs' record files. Each
+prints `ok` for the check and its seal, and `all 2 records verify`.
+
+## Options
+
+| Flag | Default | |
+|---|---|---|
+| `--part unguarded\|guarded\|both` | `both` | Run one part, or both in turn. |
+| `--bin PATH` | build one | The `itervox` binary to run. |
+| `--operator api\|ui` | `api` | `ui` waits for you to answer in the dashboard instead of answering through the API. |
+| `--keep` | off | Keep the temporary projects (the script prints their path). |
+| `--dump DIR` | | Save every step's command, output and exit status under `DIR/<part>/`. |
+| `--referee PATH` | | With `--dump`, a `referee` binary (`make referee`): adds `referee lanes` on the held branch and `referee verify` on the signed records to the guarded part. |
+| `--agent scripted\|claude\|codex` | `scripted` | The setup for recording with a real agent; see below. |
+
+| Variable | Default | |
+|---|---|---|
+| `DEMO_START_DELAY` | `4` | Seconds before the issue moves to Todo. |
+| `DEMO_OPERATOR_DELAY` | `6` | Seconds before each operator reply. |
+| `DEMO_AGENT_PACE` | `2` | Seconds between the scripted agent's steps. |
+| `DEMO_TIMEOUT` | `240` | Seconds to wait for each beat before failing. |
+
+With `--dump` and `--referee`, the dump also records what a CI job would have
+said. In the unguarded part, `ci-local.sh` runs the workflow's own Test step
+locally and reports `job: success` although the step failed. In the guarded
+part, `referee lanes --base origin/main` on the held branch puts
+`.github/workflows/ci.yml` in the human lane and exits `20`, and
+`referee verify` on the passing run exits `0`.
+
+## The files
+
+Everything lives in `demo/pipeline-guard/`:
+
+| Path | What it is |
+|---|---|
+| `repo/` | The seeded service and its `.github/workflows/ci.yml` |
+| `WORKFLOW.unguarded.md`, `WORKFLOW.guarded.md` | The two workflows; they differ only in `guardrails.lanes` and `verify` |
+| `issues/DEMO-1.md`, `agents/fixer/` | The issue and its profile |
+| `scripted-agent.sh` | The scripted agent (`backend: custom`, no model) |
+| `gh-stub.sh` | A local stand-in for `gh` |
+| `ci-local.sh` | Runs the workflow's Test step locally, with its `continue-on-error` rule |
+
+## Recording it with a real agent
+
+`--agent claude` or `--agent codex` sets up one part with a real agent in
+place of the script and then waits: you move DEMO-1 to Todo and answer in the
+dashboard yourself. That run uses the agent CLI you have installed and logged
+in, and is guarded but not sandboxed. The setup, the exact `WORKFLOW.md`
+change, how to keep the recording honest when the agent fixes the code
+straight away, and the capture scripts (`scripts/pipeline-guard-capture.mjs`)
+are in
+[`demo/pipeline-guard/RECORDING.md`](https://github.com/vnovick/itervox/blob/main/demo/pipeline-guard/RECORDING.md).

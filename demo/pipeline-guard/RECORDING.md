@@ -137,9 +137,9 @@ cd <run>/project && itervox attest verify .itervox/attestations/DEMO-1/*.jsonl  
 
 Settings both parts share, and why:
 
-- `agent.read_timeout_ms: 600000`. While a push is held, the agent prints
-  nothing. Under the default 30s idle timeout the turn fails before the
-  operator has answered.
+- No `agent.read_timeout_ms` override. While a push is held for approval
+  the daemon suspends the idle read timeout, so the agent can wait silently
+  for the operator; `agent.turn_timeout_ms` still bounds the wait.
 - `tracker.push_interval_ms: 0`. The issue file is written at once.
 - `hub.enabled: false`. No machine-wide hub port.
 - `server.port: 0` and `allow_unauthenticated: true` on 127.0.0.1, for a
@@ -167,22 +167,9 @@ recording honest:
 
 Check these again on the build you use.
 
-- **The "Pipeline change" notice component may not render for a live held
-  push.** `PipelineChangeNotice` sits inside `InputRequiredPanel`, which
-  renders only when the issue's `orchestratorState` is `input_required`.
-  Some builds report a running issue as `running` first (in
-  `internal/app/enrich.go`), so on those builds the notice never appears.
-  The held push is still shown in two places:
-  - the "Needs attention" row ("Pipeline change: the agent wants to push
-    changes to …");
-  - the issue panel's "Waiting for approval" line.
-
-  Builds where it does render show the notice, with its file list, under
-  that row.
-- **A held push is limited by `agent.read_timeout_ms`.** The agent's own
-  tool timeout applies too: check your CLI's shell-tool timeout and answer
-  within about a minute. If the tool times out, the request stays open and
-  the same push joins it.
+- **The agent's own tool timeout still applies to a held push.** Check
+  your CLI's shell-tool timeout and answer within about a minute. If the
+  tool times out, the request stays open and the same push joins it.
 - **The dashboard has no view of the signed-check records.** They are
   served by `GET /api/v1/issues/DEMO-1/attestations` and checked by
   `itervox attest verify` or `referee verify`.

@@ -124,6 +124,10 @@ guardrails:
 
 ## Lanes
 
+See [Lanes](/guides/lanes/) for the full guide, and the
+[pipeline-guard demo](/guides/pipeline-guard-demo/) to watch a held pipeline
+push on your machine.
+
 Where a push goes is one question; **what it changes** is another. An agent
 fixing a red build could add `continue-on-error: true` to
 `.github/workflows/ci.yml` on its own issue branch, and the push would be a
@@ -302,6 +306,8 @@ affected.
 
 ## Signed checks
 
+See [Signed checks](/guides/signed-checks/) for the full guide.
+
 The writer is never the judge. An agent saying "done" is a claim, and with
 [`require_evidence`](/configuration/#done-needs-evidence) the agent that wrote
 the fix also writes the proof. With a profile's
@@ -327,7 +333,7 @@ exit code, exactly like missing evidence; every check exiting `0` lets the run
 succeed.
 
 **What is recorded.** One JSON line per check in
-`.itervox/attestations/<identifier>/<run id>.jsonl` next to `WORKFLOW.md`,
+`.itervox/attestations/<identifier>/<run timestamp>_<profile>.jsonl` next to `WORKFLOW.md`,
 followed by a `seal` line with the tree after the last check:
 
 | Field | Meaning |
@@ -346,7 +352,10 @@ so your index, staged changes and `git status` are untouched.
 **Verifying.** A record is *verified* when its signature is valid for the
 daemon's key and its tree is the run's final tree (the seal's). The dashboard
 API reports this per record
-([`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations));
+([`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations)),
+and the dashboard shows it in the issue panel's **Signed checks** section:
+each run's checks with their exit code, duration, short tree hash and
+whether the record and the run's seal verify;
 anyone with the public key can check a file offline, and `--tree` proves the
 records are for the code in front of them:
 

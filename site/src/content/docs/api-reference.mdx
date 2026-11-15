@@ -1726,7 +1726,7 @@ decision.
 
 The issue's [signed check](/guides/guardrails/#signed-checks) records
 (`agent.profiles.<name>.verify`), one entry per run, oldest first (viewer).
-They are read from `.itervox/attestations/<identifier>/<run id>.jsonl` and
+They are read from `.itervox/attestations/<identifier>/<run timestamp>_<profile>.jsonl` and
 verified on each request: a record is `verified` when its ed25519 signature is
 valid for the daemon's key and its `treeHash` is the run's final tree (the
 `seal` record's tree); `reason` says why not. Commands and output tails were
