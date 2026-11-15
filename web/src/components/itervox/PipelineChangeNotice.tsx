@@ -5,9 +5,12 @@ const EMPTY_PATHS: readonly string[] = [];
 const MAX_SHOWN = 10;
 
 // guardrails.lanes — labels a held push that changes human-lane files
-// ("pipeline change") with the files it changes, inside the input-required
-// panel. Reads the snapshot's input-required row for the issue; renders
-// nothing for any other input request.
+// ("pipeline change") with the files it changes. A held push belongs to a
+// running issue (its agent waits in the guardrail shim), so it is rendered
+// wherever that approval is shown: the Needs-attention reply row, the issue's
+// Now panel ("Waiting for approval") and the input-required panel. Reads the
+// snapshot's input-required row for the issue; renders nothing for any other
+// input request.
 export function PipelineChangeNotice({ identifier }: { identifier: string }) {
   const { paths, total } = useItervoxStore(
     useShallow((s) => {

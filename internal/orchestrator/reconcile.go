@@ -57,6 +57,13 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 		if entry.observeFinishing() {
 			continue
 		}
+		// A run waiting for an operator's guardrail approval is silent by
+		// design: its agent is blocked in a shim until a human answers. That
+		// is not a stall; resolveGuardrailApproval restarts the clock once
+		// the answer arrives. agent.turn_timeout_ms still bounds the wait.
+		if awaitingGuardrailApproval(state, entry) {
+			continue
+		}
 		var elapsed time.Duration
 		if entry.LastEventAt != nil {
 			elapsed = now.Sub(*entry.LastEventAt)

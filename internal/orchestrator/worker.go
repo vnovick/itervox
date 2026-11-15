@@ -361,6 +361,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		activeBranchName, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), turnTimeoutMs, maxTurns)
 	if guard != nil {
 		ctx = agent.WithRunEnv(ctx, guardEnv)
+		// While this run's agent is blocked in a shim waiting for an
+		// operator's approval it prints nothing; the runner's idle read
+		// deadline must not fail the turn for that. o.guardApprovals is
+		// concurrency-safe and not State, so the worker may consult it.
+		approvals, identifier, runID := o.guardApprovals, issue.Identifier, runLogID
+		ctx = agent.WithIdleHold(ctx, func() bool { return approvals.Waiting(identifier, runID) })
 	}
 	ctx = withLocalWorkspacePort(ctx, wsPort, workerHost) // #250
 	defer func() {
