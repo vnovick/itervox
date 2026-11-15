@@ -540,7 +540,10 @@ agent:
 **Backend circuit breaker.** Itervox keeps one breaker per agent backend and
 worker host (`claude`, `codex`, `claude@build-1`, ...): a limit seen on SSH
 host A says nothing about local runs or host B, which may use other
-credentials. A breaker opens when:
+credentials. A profile with a `pool` gets its own breaker for its backend:
+`claude/local`, or `claude/local@build-1` on an SSH host (`/` separates the
+pool, `@` the host). Profiles without a pool share the backend's breaker. A
+breaker opens when:
 
 - a run stops on a usage limit (Claude `rate_limit_event` `rejected`, a
   result with API status 429/402, a Codex "You've hit your usage limit"):
@@ -594,8 +597,8 @@ agent:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` when the block is present | `false` keeps the block but turns rerouting off. Without the block there is no rerouting, but the breaker still holds issues on a limited backend. The whole block may also be a boolean: `backend_fallback: false` is off, `true` is on with the defaults. Any other shape (`"off"`, a number, a list, `enabled: "false"`) fails config loading |
-| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known (`claude`, `codex`, `opencode`, `cursor`, `custom`), distinct backends only |
-| `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). The reverse direction is implied: a target profile maps back through its source row |
+| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known (`claude`, `codex`, `opencode`, `cursor`, `custom`), distinct backends only. An entry may name a quota pool as `backend/pool` (`claude/local`); see "Quota pools as fallback steps" below |
+| `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). A backend key may be `backend/pool`; its target must then have that `pool`. The reverse direction is implied: a target profile maps back through its source row |
 | `on_unmapped` | string | `hold` | For a profile with no mapping: `hold` (wait with `backend_limited`) or `backend_hint` (request the chain backend for the issue's own command; works only for wrapper commands — a `claude ...` command is never paired with codex) |
 | `default_cooldown_minutes` | int | `15` | How long a breaker stays limited when the vendor published no reset time (1–1440). Also used by the breaker when the block is absent |
 | `min_dwell_minutes` | int | `30` | Minimum time a switched issue stays on the fallback before it may switch back. It never blocks a further hop when the fallback itself becomes limited |
@@ -634,6 +637,36 @@ rerouted per run and leave the issue's profile alone.
 
 When both are configured, use `profile_map` for the common Claude ⇄ Codex
 pairs and keep `rate_limited` rules for custom mappings or helper runs.
+
+**Quota pools as fallback steps.** A `chain` entry or a `profile_map` backend
+key may name a pool as `backend/pool`. This lets a profile that runs Claude
+Code against a local model server take over when Anthropic's usage limit
+opens the `claude` breaker:
+
+```yaml
+agent:
+  profiles:
+    coder:
+      command: claude --model opus
+    coder-codex:
+      command: codex --model gpt-5
+    coder-local:
+      command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"
+      pool: local                   # its own breaker: claude/local
+  backend_fallback:
+    chain: [claude, codex, claude/local]
+    profile_map:
+      coder: { codex: coder-codex, "claude/local": coder-local }
+```
+
+A limited `coder` run moves to `coder-codex`, or to `coder-local` when Codex
+is limited too, and switches back per `switch_back`. The backend part must be
+a known backend and the pool must match `[a-z0-9-]+`. A `profile_map` target
+for `claude/local` must run `claude` with `pool: local`. A target with a pool
+cannot be mapped under the plain backend key, and the other way round. The
+snapshot's `backendHealth` rows report a pooled breaker with the lane as its
+`backend` (`"claude/local"`). **Clear** and
+`POST /api/v1/backend-health/clear` take the same value.
 
 ### SSH dispatch
 
@@ -697,6 +730,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `soul_file` | string | Path to `SOUL.md`, relative to `WORKFLOW.md` when not absolute. Holds identity, purpose, boundaries, and collaboration style. |
 | `instructions_file` | string | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute. Holds operational rules, checklists, and done criteria. |
 | `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field): `claude`, `codex`, `opencode`, `cursor` or `custom`. |
+| `pool` | string | Optional, empty by default. Names a separate quota pool for the profile's backend, for a profile that points a known agent CLI at another model server, e.g. `command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"` with `pool: local`. The profile still runs the `claude` backend, but its circuit breaker is `claude/local`, so a Claude usage limit does not hold it, and `agent.backend_fallback` can name `claude/local` as its own step. Lower-case letters, digits and `-`; any other value fails config loading. Read at load time; kept as is when the profile is saved from the dashboard. See [Backend health and fallback](#backend-health-and-fallback-agentbackend_fallback). |
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |

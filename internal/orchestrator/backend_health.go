@@ -7,14 +7,19 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/config"
 )
 
 // CORE-053 — backend-wide circuit breaker.
 //
-// State.BackendHealth holds one breaker per (backend, worker host): a limit
-// seen on SSH host A says nothing about local runs or host B, which may run
-// under different credentials, so the key is BackendHealthKey(backend, host)
-// ("claude", "codex@build-1"). An absent key is healthy.
+// State.BackendHealth holds one breaker per (backend lane, worker host): a
+// limit seen on SSH host A says nothing about local runs or host B, which may
+// run under different credentials, so the key is BackendHealthKey(backend,
+// pool, host) ("claude", "codex@build-1"). A profile's quota pool
+// (agent.profiles.<name>.pool) splits a backend into lanes: a claude profile
+// pointed at a local model server with pool: local keys "claude/local" (and
+// "claude/local@build-1" on a host), so an Anthropic usage limit on "claude"
+// does not hold it. An absent key is healthy.
 //
 //	healthy ──quota LimitSignal──────────────▶ limited (LimitedUntil = the
 //	   │                                          published reset, else now +
@@ -117,7 +122,10 @@ func clampLimitedUntil(until, now time.Time, kind, source, limitType string) tim
 // type with no reference fields, so maps.Clone is a deep copy.
 type BackendHealthEntry struct {
 	Backend string
-	Host    string
+	// Pool is the quota pool of the lane (agent.profiles.<name>.pool), ""
+	// for the backend's own quota.
+	Pool string
+	Host string
 	// Status is warning, limited or probing (healthy entries are deleted).
 	Status string
 	// Kind is the agent.LimitKind that opened the breaker (quota|throttle).
@@ -177,12 +185,16 @@ type AutoSwitchRecord struct {
 	SwitchedAt time.Time
 }
 
-// BackendHealthKey is the breaker key for a backend on a worker host.
-func BackendHealthKey(backend, host string) string {
+// BackendHealthKey is the breaker key for a backend's quota pool on a worker
+// host: "claude", "claude/local", "codex@build-1", "claude/local@build-1".
+// '/' separates the pool (config.BackendLane) and '@' the host; with no pool
+// the key is the historical backend[@host].
+func BackendHealthKey(backend, pool, host string) string {
+	lane := config.BackendLane(backend, pool)
 	if host == "" {
-		return backend
+		return lane
 	}
-	return backend + "@" + host
+	return lane + "@" + host
 }
 
 // backendCooldown is the time a breaker stays limited when the vendor did
@@ -193,17 +205,18 @@ func (o *Orchestrator) backendCooldown() time.Duration {
 	return time.Duration(o.cfg.Agent.BackendFallback.CooldownMinutes()) * time.Minute
 }
 
-// recordBackendLimit opens (or extends) the breaker for (backend, host) on a
-// quota limit signal. A breaker is never shortened by a later signal with an
-// earlier reset. Returns whether the entry changed. Event loop only.
-func (o *Orchestrator) recordBackendLimit(state *State, backend, host, identifier string, sig *agent.LimitSignal, now time.Time) bool {
+// recordBackendLimit opens (or extends) the breaker for (backend, pool,
+// host) on a quota limit signal. A breaker is never shortened by a later
+// signal with an earlier reset. Returns whether the entry changed. Event
+// loop only.
+func (o *Orchestrator) recordBackendLimit(state *State, backend, pool, host, identifier string, sig *agent.LimitSignal, now time.Time) bool {
 	if backend == "" || !sig.Terminal() {
 		return false
 	}
 	if state.BackendHealth == nil {
 		state.BackendHealth = make(map[string]BackendHealthEntry)
 	}
-	key := BackendHealthKey(backend, host)
+	key := BackendHealthKey(backend, pool, host)
 	e := state.BackendHealth[key]
 	wasOpen := e.Status == BackendStatusLimited || e.Status == BackendStatusProbing
 	until, known := sig.ResetsAt, true
@@ -219,7 +232,7 @@ func (o *Orchestrator) recordBackendLimit(state *State, backend, host, identifie
 	if e.Status == BackendStatusLimited && e.LimitedUntil.After(until) {
 		until, known = e.LimitedUntil, e.ResetKnown
 	}
-	e.Backend, e.Host = backend, host
+	e.Backend, e.Pool, e.Host = backend, pool, host
 	e.Status = BackendStatusLimited
 	e.Kind = string(sig.Kind)
 	e.LimitType = sig.LimitType
@@ -233,7 +246,7 @@ func (o *Orchestrator) recordBackendLimit(state *State, backend, host, identifie
 	e.ProbeIssue = ""
 	state.BackendHealth[key] = e
 	o.logger().Warn("orchestrator: backend limited, breaker open",
-		"backend", backend, "worker_host", host, "identifier", identifier,
+		"backend", backend, "pool", pool, "worker_host", host, "identifier", identifier,
 		"limited_until", until.UTC().Format(time.RFC3339), "reset_known", known,
 		"limit_type", sig.LimitType, "source", sig.Source)
 	return true
@@ -244,20 +257,20 @@ func (o *Orchestrator) recordBackendLimit(state *State, backend, host, identifie
 // them within backendThrottleWindow open the breaker for
 // max(backendThrottleCooldown, the vendor's retry delay); fewer mark it
 // warning, which never gates dispatch. Returns whether the status changed.
-func (o *Orchestrator) recordBackendThrottle(state *State, backend, host, identifier string, sig *agent.LimitSignal, now time.Time) bool {
+func (o *Orchestrator) recordBackendThrottle(state *State, backend, pool, host, identifier string, sig *agent.LimitSignal, now time.Time) bool {
 	if backend == "" || sig == nil || sig.Kind != agent.LimitKindThrottle || sig.Source != agent.LimitSourceAPIRetry {
 		return false
 	}
 	if state.BackendHealth == nil {
 		state.BackendHealth = make(map[string]BackendHealthEntry)
 	}
-	key := BackendHealthKey(backend, host)
+	key := BackendHealthKey(backend, pool, host)
 	e := state.BackendHealth[key]
 	if e.ThrottleWindowStart.IsZero() || now.Sub(e.ThrottleWindowStart) > backendThrottleWindow {
 		e.ThrottleWindowStart, e.ThrottleCount = now, 0
 	}
 	e.ThrottleCount++
-	e.Backend, e.Host = backend, host
+	e.Backend, e.Pool, e.Host = backend, pool, host
 	changed := false
 	switch e.Status {
 	case BackendStatusLimited, BackendStatusProbing:
@@ -385,7 +398,7 @@ func settleBackendProbe(state *State, liveEntry *RunEntry, identifier string, re
 	if liveEntry == nil || (reason != TerminalSucceeded && reason != TerminalInputRequired) {
 		return false
 	}
-	key := BackendHealthKey(liveEntry.Backend, liveEntry.WorkerHost)
+	key := BackendHealthKey(liveEntry.Backend, liveEntry.Pool, liveEntry.WorkerHost)
 	e, ok := state.BackendHealth[key]
 	if !ok || e.Status != BackendStatusProbing || e.ProbeIssue != identifier {
 		return false

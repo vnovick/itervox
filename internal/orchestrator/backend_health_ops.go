@@ -20,10 +20,13 @@ const EventClearBackendBreaker EventType = "ClearBackendBreaker"
 
 // ClearBackendBreaker asks the event loop to close the breaker for
 // (backend, host) — the operator override for a breaker holding a backend
-// the operator knows is available again. Safe from any goroutine: it only
-// sends an event (non-blocking); false means the event channel was full.
+// the operator knows is available again. backend is a lane: "claude", or
+// "claude/local" for a quota pool (the snapshot's backendHealth[].backend).
+// Safe from any goroutine: it only sends an event (non-blocking); false
+// means the event channel was full.
 func (o *Orchestrator) ClearBackendBreaker(backend, host string) bool {
-	key := BackendHealthKey(backend, host)
+	b, pool := config.SplitBackendLane(backend)
+	key := BackendHealthKey(b, pool, host)
 	select {
 	case o.events <- OrchestratorEvent{Type: EventClearBackendBreaker, Identifier: key}:
 		slog.Info("orchestrator: clear backend breaker queued", "breaker", key)
@@ -95,8 +98,10 @@ func (f *limitForwarder) sent(l *agent.LimitSignal) { f.delivered = l }
 // non-limited (probing or warning) breaker for a backend no dispatch path
 // uses any more (agent.command, enabled profiles, the fallback chain). A
 // still-limited breaker for an unused backend is kept until it expires into
-// probing. When a wrapper command's backend cannot be determined every
-// backend counts as used. Event loop only; returns whether it changed.
+// probing. Use is per lane: a breaker for a quota pool ("claude/local") no
+// enabled profile or chain step runs any more is orphaned too. When a
+// wrapper command's backend cannot be determined every backend counts as
+// used. Event loop only; returns whether it changed.
 func (o *Orchestrator) pruneOrphanBreakers(state *State) bool {
 	if len(state.BackendHealth) == 0 {
 		return false
@@ -106,7 +111,7 @@ func (o *Orchestrator) pruneOrphanBreakers(state *State) bool {
 	used := map[string]struct{}{}
 	anyBackend := false
 	addCommand := func(p config.AgentProfile) {
-		if b := config.ProfileRunsBackend(p, o.cfg.Agent.Command); b != "" {
+		if b := config.ProfileRunsLane(p, o.cfg.Agent.Command); b != "" {
 			used[b] = struct{}{}
 		} else {
 			anyBackend = true
@@ -127,7 +132,7 @@ func (o *Orchestrator) pruneOrphanBreakers(state *State) bool {
 	changed := false
 	for key, e := range state.BackendHealth {
 		hostGone := e.Host != "" && !slices.Contains(hosts, e.Host)
-		_, backendUsed := used[e.Backend]
+		_, backendUsed := used[config.BackendLane(e.Backend, e.Pool)]
 		unused := !anyBackend && !backendUsed && e.Status != BackendStatusLimited
 		if hostGone || unused {
 			delete(state.BackendHealth, key)

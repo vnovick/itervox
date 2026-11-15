@@ -92,7 +92,7 @@ archive: run it on the new tag right after the release workflow publishes it
 1. Actions → **Release acceptance** → Run workflow: `check: deploy-gcp`,
    `version: <tag>`, optionally `zone`. Approve the run.
 2. `deploy/acceptance/gcp-deploy-smoke.sh` follows the deploy skill's commands
-   (`.claude/skills/deploy/SKILL.md`):
+   (`plugins/itervox/skills/deploy/SKILL.md`):
    1. `deploy/gcp/provision.sh` (no public IP; IAP SSH; Cloud NAT);
    2. `deploy/bootstrap.sh --version <tag> --data-disk …` on the VM;
    3. `itervox init --tracker local --force` in the VM's checkout, so no

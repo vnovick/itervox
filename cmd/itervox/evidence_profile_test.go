@@ -67,3 +67,45 @@ Prompt.
 	assert.Equal(t, "sandbox", qa.PermissionMode, "permission_mode survives a dashboard save")
 	assert.Equal(t, []string{"test", "ci", "123", "true"}, orch.ProfilesCfg()["qa"].RequireEvidence)
 }
+
+// TestUpsertProfileKeepsPool: the dashboard profile editor does not edit a
+// profile's quota pool (load-time only, like permission_mode), so a save
+// carries it over instead of stripping it from WORKFLOW.md.
+func TestUpsertProfileKeepsPool(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  profiles:
+    local:
+      command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"
+      pool: local
+` + testProfileFileFields(t, dir, "local") + `---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	require.Equal(t, "local", cfg.Agent.Profiles["local"].Pool)
+
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, cfg: cfg, tr: mt, workflowPath: workflowPath, notify: func() {}}
+	require.NoError(t, adapter.UpsertProfile("local", server.ProfileDef{
+		Command: "ANTHROPIC_BASE_URL=http://127.0.0.1:9000 claude",
+		Enabled: true,
+	}, "local"))
+
+	reloaded, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, "ANTHROPIC_BASE_URL=http://127.0.0.1:9000 claude", reloaded.Agent.Profiles["local"].Command, "the save applied")
+	assert.Equal(t, "local", reloaded.Agent.Profiles["local"].Pool, "pool survives a dashboard save")
+	assert.Equal(t, "local", orch.ProfilesCfg()["local"].Pool)
+}

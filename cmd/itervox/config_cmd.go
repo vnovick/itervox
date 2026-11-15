@@ -146,7 +146,25 @@ func configShow(workflow string, asJSON bool, out, errOut io.Writer) int {
 	if err := tw.Flush(); err != nil {
 		return 1
 	}
+	// How each agent runs, resolved the way dispatch resolves it: the
+	// settings above say what was configured, this says what it adds up to.
+	if cfg, err := config.Load(workflow); err == nil {
+		_, _ = fmt.Fprint(out, renderRunModes(runModes(cfg.Agent)))
+	}
 	return 0
+}
+
+// renderRunModes is `config show`'s "How agents run" section.
+func renderRunModes(modes []profileRunMode) string {
+	var b strings.Builder
+	b.WriteString("\nHow agents run\n")
+	for _, m := range modes {
+		fmt.Fprintf(&b, "  %s: %s\n", m.Name, describeRunMode(m))
+	}
+	if full := fullPermissionNames(modes); len(full) > 0 {
+		fmt.Fprintf(&b, "  %s run with full permissions; see %s\n", strings.Join(full, ", "), safetyGuideURL)
+	}
+	return b.String()
 }
 
 // configSet sets (value != nil) or removes a key in a settings file, then
