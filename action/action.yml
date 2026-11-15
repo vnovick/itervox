@@ -17,7 +17,7 @@ inputs:
     required: false
     default: claude
   version:
-    description: The itervox release to install ("latest", or a version such as 0.3.1). Pin it.
+    description: The itervox release to install ("latest", or a version such as 0.3.3). Pin it.
     required: false
     default: latest
   answer:

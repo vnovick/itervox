@@ -75,10 +75,10 @@ jobs:
         with:
           fetch-depth: 0
       - id: itervox
-        uses: vnovick/itervox/action@v0.3.1
+        uses: vnovick/itervox/action@v0.3.3
         with:
           issue: ${{ github.event.issue.number }}
-          version: 0.3.1
+          version: 0.3.3
           timeout: 60m
           log-dir: ${{ runner.temp }}/itervox-logs
         env:

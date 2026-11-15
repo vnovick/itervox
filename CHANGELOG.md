@@ -9,6 +9,8 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-11-15
+
 ### Added
 
 - **Signed checks: the daemon runs the checks itself.** A profile can set `verify: [{name, run, timeout_ms?}]`. After the agent's run, the daemon runs each command in the worktree itself (inside the run's sandbox under `isolation: process`), with `pipefail`, a timeout and a process-group kill.
