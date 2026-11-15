@@ -53,11 +53,14 @@ export const promptTheme = EditorView.theme({
   },
 
   // Autocomplete list
+  // Popups float over the editor's own text, so they use the opaque
+  // --surface: the glass --panel let the text underneath show through.
   '.cm-tooltip': {
-    backgroundColor: 'var(--panel)',
+    backgroundColor: 'var(--surface)',
     color: 'var(--text)',
     border: '1px solid var(--line-strong)',
     borderRadius: 'var(--radius-sm)',
+    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
   },
   '.cm-tooltip.cm-tooltip-autocomplete > ul': {
     fontFamily: 'var(--font-mono)',
@@ -71,7 +74,13 @@ export const promptTheme = EditorView.theme({
     color: 'var(--text)',
   },
   '.cm-completionDetail': { color: 'var(--muted)', fontStyle: 'normal', marginLeft: '0.75em' },
-  '.cm-completionInfo': { fontFamily: 'var(--font-sans)', fontSize: '12px', maxWidth: '20rem' },
+  '.cm-completionInfo': {
+    fontFamily: 'var(--font-sans)',
+    fontSize: '12px',
+    lineHeight: '1.45',
+    maxWidth: '20rem',
+    padding: '8px 10px',
+  },
 
   // Reference check (#123): hover message and lint panel
   '.cm-tooltip-lint': { maxWidth: '28rem' },
@@ -80,7 +89,7 @@ export const promptTheme = EditorView.theme({
   '.cm-diagnostic-info': { borderLeftColor: 'var(--muted)' },
 
   // Search panel
-  '.cm-panels': { backgroundColor: 'var(--panel)', color: 'var(--text)' },
+  '.cm-panels': { backgroundColor: 'var(--surface)', color: 'var(--text)' },
   '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--line)' },
   '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--line)' },
   '.cm-panel input, .cm-panel button': {

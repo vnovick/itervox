@@ -78,6 +78,7 @@ Each release has its own section, newest first. Changes merged since the last ta
 - **A held push no longer fails after `agent.read_timeout_ms`.** While a guardrail approval is pending, the agent prints nothing, so the turn used to fail after 30 seconds and be retried. The idle read deadline is now suspended while the run waits for the operator and restarts in full from the answer, and a run waiting for an approval is not treated as stalled. `agent.turn_timeout_ms` still bounds the wait.
 - **A held pipeline push shows its files.** The list of pipeline files now appears in the Needs-attention reply row and in the issue's Now panel. Before, it only rendered in the input-required panel, which a held push never reaches because its issue is still running.
 - **The lane matcher is polynomial** in `**` segments (it was exponential on deep paths), and a long run of `git -C` options is linear.
+- **Editor suggestions are readable again.** The `@`/`{{` suggestion list and its description panel in the SOUL.md, INSTRUCTIONS.md and prompt editors used the translucent glass `--panel` after the redesign, so the text behind them showed through. They now use the opaque `--surface` with a shadow, as toasts do; the editor's search panel too.
 
 ### Changed
 
