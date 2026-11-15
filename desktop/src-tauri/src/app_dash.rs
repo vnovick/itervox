@@ -22,9 +22,9 @@ use crate::dashboard::origin_of;
 use crate::material::{self, Surface};
 use crate::model::token_for;
 use crate::rail::{
-    build_rail, move_before, nudge, page_plan, page_url, push_script, rail_action,
-    rail_page_allowed, rail_width, switch_plan, DashTarget, PagePlan, RailAction, RailCommand,
-    RailView, SwitchPlan, RAIL_PAGE,
+    build_rail, menu_changed, menu_projects, move_before, nudge, page_plan, page_url, push_script,
+    rail_action, rail_page_allowed, rail_width, switch_plan, DashTarget, MenuProject, PagePlan,
+    RailAction, RailCommand, RailView, SwitchPlan, RAIL_PAGE,
 };
 use crate::remote::is_remote_key;
 
@@ -46,6 +46,9 @@ pub(super) struct Dash {
     generation: AtomicU32,
     /// The rail last pushed to every window, to skip unchanged pushes.
     last_push: Mutex<Option<RailView>>,
+    /// The projects the Projects menu was last built with, to rebuild it
+    /// only when its labels change.
+    last_menu: Mutex<Option<Vec<MenuProject>>>,
 }
 
 impl Dash {
@@ -303,7 +306,7 @@ fn create(
     // Linux and Windows have no app menu bar: the window carries the
     // Projects menu, with Ctrl accelerators (#260).
     #[cfg(not(target_os = "macos"))]
-    let builder = builder.menu(window_menu(app)?);
+    let builder = builder.menu(window_menu(app, &current_rail(shared))?);
     let window = builder.build()?;
     // Applied before the rail exists: when it fails, the rail is built
     // without the flag and draws its CSS look.
@@ -391,6 +394,7 @@ fn eval_rail(app: &AppHandle, label: &str, view: &RailView, active: &str) {
 /// rail shows what the refresh read and reads nothing itself.
 pub(super) fn push_all(app: &AppHandle, shared: &Shared, force: bool) {
     let view = current_rail(shared);
+    refresh_menus(app, shared, &view);
     {
         let mut last = lock(&shared.dash.last_push);
         if !force && last.as_ref() == Some(&view) {
@@ -597,22 +601,80 @@ fn go_submenu(app: &AppHandle) -> tauri::Result<tauri::menu::Submenu<tauri::Wry>
     Ok(go)
 }
 
+/// Rebuilds the Projects menu when the projects it lists changed (names,
+/// order, pins, a project added or removed) since it was last built. The
+/// rail is pushed after every refresh; the menu is rebuilt only when its
+/// labels differ. Menus are built on the main thread.
+fn refresh_menus(app: &AppHandle, shared: &Shared, view: &RailView) {
+    let next = menu_projects(view);
+    {
+        let mut last = lock(&shared.dash.last_menu);
+        if !menu_changed(last.as_deref(), &next) {
+            return;
+        }
+        *last = Some(next);
+    }
+    let (app2, view) = (app.clone(), view.clone());
+    // Linux and Windows: every dashboard window carries its own menu bar.
+    #[cfg(not(target_os = "macos"))]
+    let labels: Vec<String> = lock(&shared.dash.windows).keys().cloned().collect();
+    let _ = app.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        if let Err(e) = set_app_menu(&app2, &view) {
+            eprintln!("itervox desktop: could not rebuild the Projects menu: {e}");
+        }
+        #[cfg(not(target_os = "macos"))]
+        for label in labels {
+            let Some(window) = app2.get_window(&label) else {
+                continue;
+            };
+            let result = window_menu(&app2, &view).and_then(|m| window.set_menu(m));
+            if let Err(e) = result {
+                eprintln!("itervox desktop: could not rebuild the Projects menu: {e}");
+            }
+        }
+    });
+}
+
+/// The Projects submenu: Next and Previous Project, one item per project
+/// of `view` (crate::rail::menu_items), the names toggle and New Task….
+/// `accel` maps an accelerator to the platform's; `sep_before_new_task`
+/// adds the Mac's separator before New Task….
+fn projects_submenu(
+    app: &AppHandle,
+    view: &RailView,
+    accel: impl Fn(&str) -> String,
+    sep_before_new_task: bool,
+) -> tauri::Result<tauri::menu::Submenu<tauri::Wry>> {
+    use tauri::menu::{MenuItem, PredefinedMenuItem, Submenu};
+    let projects = Submenu::new(app, "Projects", true)?;
+    let items = crate::rail::menu_items(view);
+    for (i, (id, label, a)) in items.iter().enumerate() {
+        if crate::rail::menu_separator_before(&items, i)
+            || (sep_before_new_task && id == crate::rail::NEW_TASK_MENU_ID)
+        {
+            projects.append(&PredefinedMenuItem::separator(app)?)?;
+        }
+        let a = accel(a);
+        projects.append(&MenuItem::with_id(
+            app,
+            id.as_str(),
+            label.as_str(),
+            true,
+            Some(a.as_str()),
+        )?)?;
+    }
+    Ok(projects)
+}
+
 /// The Projects menu of a dashboard window on Linux and Windows: the rail's
 /// shortcuts, each accelerator shown and bound with Ctrl; then the Go menu.
 #[cfg(not(target_os = "macos"))]
-fn window_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+fn window_menu(app: &AppHandle, view: &RailView) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use crate::platform::{accelerator, Os};
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    use tauri::menu::Menu;
     let menu = Menu::new(app)?;
-    let projects = Submenu::new(app, "Projects", true)?;
-    for (i, (id, label, accel)) in crate::rail::menu_items().into_iter().enumerate() {
-        // Separators after Previous and after Project 9, as on the Mac.
-        if i == 2 || i == 2 + crate::rail::MAX_SHORTCUTS {
-            projects.append(&PredefinedMenuItem::separator(app)?)?;
-        }
-        let accel = accelerator(Os::current(), &accel);
-        projects.append(&MenuItem::with_id(app, id, label, true, Some(accel))?)?;
-    }
+    let projects = projects_submenu(app, view, |a| accelerator(Os::current(), a), false)?;
     menu.append(&projects)?;
     menu.append(&go_submenu(app)?)?;
     Ok(menu)
@@ -620,19 +682,22 @@ fn window_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> 
 
 /// Adds the Projects menu with the rail's shortcuts and the Go menu to the
 /// macOS menu bar (shown while a window is open), keeping the default menus
-/// (Edit's copy and paste for the dashboard's text fields).
+/// (Edit's copy and paste for the dashboard's text fields). Rebuilt by
+/// [`refresh_menus`] when the rail's projects change.
 #[cfg(target_os = "macos")]
-pub(super) fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+pub(super) fn install_app_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<()> {
+    let view = current_rail(shared);
+    *lock(&shared.dash.last_menu) = Some(menu_projects(&view));
+    set_app_menu(app, &view)
+}
+
+/// `app.set_menu` replaces the whole menu bar: the default menus, then
+/// Projects and Go.
+#[cfg(target_os = "macos")]
+fn set_app_menu(app: &AppHandle, view: &RailView) -> tauri::Result<()> {
+    use tauri::menu::Menu;
     let menu = Menu::default(app)?;
-    let projects = Submenu::new(app, "Projects", true)?;
-    for (i, (id, label, accel)) in crate::rail::menu_items().into_iter().enumerate() {
-        // Separators after Previous, after Project 9 and before New Task….
-        if i == 2 || i == 2 + crate::rail::MAX_SHORTCUTS || id == crate::rail::NEW_TASK_MENU_ID {
-            projects.append(&PredefinedMenuItem::separator(app)?)?;
-        }
-        projects.append(&MenuItem::with_id(app, id, label, true, Some(accel))?)?;
-    }
+    let projects = projects_submenu(app, view, |a| a.to_string(), true)?;
     menu.append(&projects)?;
     menu.append(&go_submenu(app)?)?;
     app.set_menu(menu)?;

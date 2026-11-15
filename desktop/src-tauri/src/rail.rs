@@ -422,8 +422,64 @@ pub enum RailCommand {
 /// Prefix of the app menu's rail item ids.
 pub const MENU_ID_PREFIX: &str = "itervox-rail-";
 
-/// The app menu's rail items: (id, label, accelerator).
-pub fn menu_items() -> Vec<(String, String, String)> {
+/// One numbered item of the Projects menu: a row's ⌘n shortcut and its
+/// name as the rail shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuProject {
+    pub shortcut: usize,
+    pub name: String,
+}
+
+/// The projects the Projects menu lists: exactly the rows ⌘1…⌘9 go to
+/// ([`RailView::target`]), in rail order, so a label and its shortcut
+/// always agree. Empty without projects.
+pub fn menu_projects(rail: &RailView) -> Vec<MenuProject> {
+    rail.rows()
+        .filter_map(|r| {
+            r.shortcut.map(|n| MenuProject {
+                shortcut: n,
+                name: r.name.clone(),
+            })
+        })
+        .take(MAX_SHORTCUTS)
+        .collect()
+}
+
+/// Whether the Projects menu must be rebuilt: its numbered items differ
+/// from the ones it was last built with (`None`: not built yet). The rail
+/// is pushed on every refresh; the menu changes only with its labels.
+pub fn menu_changed(last: Option<&[MenuProject]>, next: &[MenuProject]) -> bool {
+    last != Some(next)
+}
+
+/// A menu label that shows `name` literally: menus treat `&` as a
+/// mnemonic marker and `&&` as one `&`.
+fn menu_label(name: &str) -> String {
+    name.replace('&', "&&")
+}
+
+/// Whether a separator goes before `items[i]` of [`menu_items`]: before
+/// the first project and before "Show or Hide Project Names" — a single
+/// separator, not an empty pair, when there are no projects. The Mac adds
+/// one before New Task… itself.
+pub fn menu_separator_before(items: &[(String, String, String)], i: usize) -> bool {
+    let is_goto = |j: usize| {
+        items
+            .get(j)
+            .is_some_and(|(id, _, _)| matches!(menu_command(id), Some(RailCommand::Goto(_))))
+    };
+    let Some((id, _, _)) = items.get(i) else {
+        return false;
+    };
+    i > 0
+        && ((is_goto(i) && !is_goto(i - 1))
+            || menu_command(id) == Some(RailCommand::ToggleCollapsed))
+}
+
+/// The app menu's rail items: (id, label, accelerator). Between Previous
+/// Project and "Show or Hide Project Names", one item per project of
+/// [`menu_projects`], labelled with its name.
+pub fn menu_items(rail: &RailView) -> Vec<(String, String, String)> {
     let mut v = vec![
         (
             format!("{MENU_ID_PREFIX}next"),
@@ -436,10 +492,11 @@ pub fn menu_items() -> Vec<(String, String, String)> {
             "CmdOrCtrl+Shift+[".to_string(),
         ),
     ];
-    for n in 1..=MAX_SHORTCUTS {
+    for p in menu_projects(rail) {
+        let n = p.shortcut;
         v.push((
             format!("{MENU_ID_PREFIX}goto-{n}"),
-            format!("Project {n}"),
+            menu_label(&p.name),
             format!("CmdOrCtrl+{n}"),
         ));
     }
@@ -672,6 +729,38 @@ pub fn init_script_for(t: &DashTarget) -> Option<String> {
         .map(|origin| dashboard_init_script(origin, t.token.as_deref()))
 }
 
+/// A rail of running local projects named `names`, top to bottom, with
+/// the shortcuts [`build_rail`] gives (for other modules' menu tests).
+#[cfg(test)]
+pub(crate) fn test_rail(names: &[&str]) -> RailView {
+    let rows = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| RailRow {
+            key: format!("/p/{name}/WORKFLOW.md"),
+            name: name.to_string(),
+            health: RailHealth::Running,
+            running: 0,
+            needs_you: 0,
+            pinned: false,
+            shortcut: (i < MAX_SHORTCUTS).then_some(i + 1),
+            openable: true,
+            detail: String::new(),
+            label: name.to_string(),
+            group: Some(RailGroup::Local),
+        })
+        .collect();
+    RailView {
+        collapsed: false,
+        sections: vec![RailSection {
+            id: "local".into(),
+            title: "This Mac".into(),
+            rows,
+        }],
+        machine: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,7 +976,7 @@ mod tests {
         assert_eq!(prev.as_deref(), Some("remote/gpu-vm/srv/ml/WORKFLOW.md"));
 
         // The app menu's shortcuts map to the commands.
-        let items = menu_items();
+        let items = menu_items(&rail);
         let accel = |id: &str| {
             items
                 .iter()
@@ -895,7 +984,22 @@ mod tests {
                 .map(|(_, _, a)| a.clone())
         };
         assert_eq!(accel("itervox-rail-goto-1").as_deref(), Some("CmdOrCtrl+1"));
-        assert_eq!(accel("itervox-rail-goto-9").as_deref(), Some("CmdOrCtrl+9"));
+        assert_eq!(accel("itervox-rail-goto-7").as_deref(), Some("CmdOrCtrl+7"));
+        assert_eq!(accel("itervox-rail-goto-8"), None, "seven projects");
+        // Each numbered item names the row its shortcut goes to.
+        for r in rail.rows() {
+            let n = r.shortcut.unwrap();
+            let (_, label, _) = items
+                .iter()
+                .find(|(i, _, _)| *i == format!("itervox-rail-goto-{n}"))
+                .unwrap();
+            assert_eq!(label, &r.name, "⌘{n}");
+        }
+        assert_eq!(
+            rail.target(None, RailCommand::Goto(1)).as_deref(),
+            Some(rail.rows().next().unwrap().key.as_str()),
+            "⌘1 goes to the first item's project"
+        );
         assert_eq!(
             accel("itervox-rail-next").as_deref(),
             Some("CmdOrCtrl+Shift+]")
@@ -914,6 +1018,181 @@ mod tests {
         );
         assert_eq!(menu_command("itervox-rail-goto-10"), None);
         assert_eq!(menu_command("open-dashboard"), None);
+    }
+
+    fn goto_labels(items: &[(String, String, String)]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .filter(|(id, _, _)| matches!(menu_command(id), Some(RailCommand::Goto(_))))
+            .map(|(id, label, accel)| (format!("{id} {accel}"), label.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn projects_menu_labels_follow_rail_order() {
+        let core = core_with_projects();
+        let plain = build_rail(core.views(), &[], &RailPrefs::default());
+        let names: Vec<String> = plain.rows().map(|r| r.name.clone()).collect();
+        assert_eq!(&names[..2], ["alpha", "beta"], "hub members first");
+        let items = menu_items(&plain);
+        let ids: Vec<&str> = items.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "itervox-rail-next",
+                "itervox-rail-previous",
+                "itervox-rail-goto-1",
+                "itervox-rail-goto-2",
+                "itervox-rail-goto-3",
+                "itervox-rail-goto-4",
+                "itervox-rail-toggle",
+                "itervox-rail-new-task",
+            ],
+            "the projects sit between Previous Project and the toggle"
+        );
+        let labels: Vec<String> = goto_labels(&items).into_iter().map(|(_, l)| l).collect();
+        assert_eq!(labels, names, "one item per project, in rail order");
+
+        // Pinning and reordering move the labels with the shortcuts.
+        let prefs = RailPrefs {
+            pinned: vec!["/p/solo/WORKFLOW.md".into()],
+            order: vec!["/p/beta/WORKFLOW.md".into()],
+            collapsed: false,
+        };
+        let arranged = build_rail(core.views(), &[], &prefs);
+        let got = goto_labels(&menu_items(&arranged));
+        assert_eq!(got[0].0, "itervox-rail-goto-1 CmdOrCtrl+1");
+        assert_eq!(got[0].1, "solo", "the pinned project is ⌘1");
+        assert_eq!(got[1].1, "beta");
+        assert_eq!(got[2].1, "alpha");
+        assert_eq!(
+            arranged.target(None, RailCommand::Goto(1)).as_deref(),
+            Some("/p/solo/WORKFLOW.md"),
+            "⌘1 goes where its label says"
+        );
+        for (n, p) in menu_projects(&arranged).iter().enumerate() {
+            assert_eq!(p.shortcut, n + 1);
+            assert_eq!(arranged.rows().nth(n).unwrap().name, p.name);
+        }
+
+        // A remote project is labelled with its rail row's name.
+        let remotes = vec![remote(
+            "gpu-vm",
+            &[(
+                "remote/gpu-vm/srv/ml/WORKFLOW.md",
+                "ml",
+                Some(state("ml", 0, 0)),
+                true,
+            )],
+        )];
+        let with_remote = build_rail(core.views(), &remotes, &RailPrefs::default());
+        let last = goto_labels(&menu_items(&with_remote)).pop().unwrap();
+        assert_eq!(
+            last,
+            ("itervox-rail-goto-5 CmdOrCtrl+5".into(), "ml".into())
+        );
+        assert_eq!(
+            with_remote
+                .row("remote/gpu-vm/srv/ml/WORKFLOW.md")
+                .unwrap()
+                .name,
+            "ml"
+        );
+
+        // A name is shown literally, not as a mnemonic.
+        let amp = test_rail(&["R&D"]);
+        assert_eq!(goto_labels(&menu_items(&amp))[0].1, "R&&D");
+        assert_eq!(menu_projects(&amp)[0].name, "R&D");
+    }
+
+    #[test]
+    fn projects_menu_lists_at_most_nine_projects() {
+        let names: Vec<String> = (1..=12).map(|i| format!("p{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let rail = test_rail(&refs);
+        let got = goto_labels(&menu_items(&rail));
+        assert_eq!(got.len(), MAX_SHORTCUTS);
+        assert_eq!(
+            got[8],
+            ("itervox-rail-goto-9 CmdOrCtrl+9".into(), "p9".into())
+        );
+        assert_eq!(menu_projects(&rail).len(), 9);
+        for (id, _, _) in menu_items(&rail) {
+            assert!(menu_command(&id).is_some(), "{id}");
+        }
+        let items = menu_items(&rail);
+        let seps: Vec<usize> = (0..items.len())
+            .filter(|&i| menu_separator_before(&items, i))
+            .collect();
+        assert_eq!(seps, [2, 11], "after Previous and after the ninth project");
+    }
+
+    #[test]
+    fn projects_menu_without_projects_has_no_numbered_items() {
+        let items = menu_items(&RailView::default());
+        assert!(goto_labels(&items).is_empty());
+        let ids: Vec<&str> = items.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "itervox-rail-next",
+                "itervox-rail-previous",
+                "itervox-rail-toggle",
+                "itervox-rail-new-task",
+            ]
+        );
+        // One separator before the toggle, not an empty pair.
+        let seps: Vec<usize> = (0..items.len())
+            .filter(|&i| menu_separator_before(&items, i))
+            .collect();
+        assert_eq!(seps, [2]);
+        assert!(menu_projects(&RailView::default()).is_empty());
+    }
+
+    #[test]
+    fn projects_menu_rebuilds_only_when_labels_change() {
+        let core = core_with_projects();
+        let a = menu_projects(&build_rail(core.views(), &[], &RailPrefs::default()));
+        let b = menu_projects(&build_rail(core.views(), &[], &RailPrefs::default()));
+        assert!(!menu_changed(Some(&a), &b), "identical labels");
+        assert!(menu_changed(None, &a), "never built");
+        assert!(menu_changed(None, &[]), "never built, even when empty");
+        assert!(!menu_changed(Some(&[]), &[]));
+
+        // Counts and health change on every refresh; the labels do not.
+        let mut busy = test_rail(&["alpha", "beta"]);
+        let calm = menu_projects(&busy);
+        busy.sections[0].rows[0].running = 5;
+        busy.sections[0].rows[0].needs_you = 2;
+        busy.sections[0].rows[1].health = RailHealth::Stopped;
+        busy.sections[0].rows[1].openable = false;
+        assert!(!menu_changed(Some(&calm), &menu_projects(&busy)));
+
+        // A rename, a reorder, an added or removed project do.
+        assert!(menu_changed(
+            Some(&calm),
+            &menu_projects(&test_rail(&["alpha", "gamma"]))
+        ));
+        assert!(menu_changed(
+            Some(&calm),
+            &menu_projects(&test_rail(&["beta", "alpha"]))
+        ));
+        assert!(menu_changed(
+            Some(&calm),
+            &menu_projects(&test_rail(&["alpha", "beta", "gamma"]))
+        ));
+        assert!(menu_changed(
+            Some(&calm),
+            &menu_projects(&test_rail(&["alpha"]))
+        ));
+        let pinned = RailPrefs {
+            pinned: vec!["/p/solo/WORKFLOW.md".into()],
+            ..RailPrefs::default()
+        };
+        assert!(menu_changed(
+            Some(&a),
+            &menu_projects(&build_rail(core.views(), &[], &pinned))
+        ));
     }
 
     #[test]
@@ -1404,7 +1683,7 @@ mod tests {
         assert!(html.contains("e.key === 'ContextMenu'"));
         assert!(html.contains("'Open in New Window'"));
         // The toggle's hint matches its menu shortcut.
-        let toggle = menu_items()
+        let toggle = menu_items(&RailView::default())
             .into_iter()
             .find(|(id, _, _)| id.ends_with("toggle"))
             .unwrap();

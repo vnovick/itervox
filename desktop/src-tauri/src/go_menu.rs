@@ -89,7 +89,7 @@ mod tests {
         assert_eq!(go_menu_path("itervox-go-"), None);
         assert_eq!(go_menu_path("open-dashboard"), None);
         // No id collides with the Projects menu's ids.
-        for (id, _, _) in crate::rail::menu_items() {
+        for (id, _, _) in crate::rail::menu_items(&crate::rail::test_rail(&["a", "b"])) {
             assert_eq!(go_menu_path(&id), None, "{id}");
         }
     }
