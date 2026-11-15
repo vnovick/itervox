@@ -185,7 +185,7 @@ func TestSettingsSavesDuringTurnDoNotReload(t *testing.T) {
 	p := newDrainProject(t, 8)
 	_, stderrPath := p.startHeadless(t, []string{"--shutdown-grace", "30s"})
 	waitFor(t, 20*time.Second, "first agent turn started", func() bool { return countLines(p.startedPath) >= 1 })
-	base := strings.TrimSuffix(readTrim(t, dashboardURLFilePath(p.Workflow)), "/")
+	base := strings.TrimSuffix(p.dashboardURL(t), "/")
 
 	do := func(method, path, body string) int {
 		req, err := http.NewRequest(method, base+path, strings.NewReader(body))
