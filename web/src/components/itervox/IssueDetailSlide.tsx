@@ -13,6 +13,7 @@ import { IssueProfilePicker } from './IssueProfilePicker';
 import { IssuePlaybookPicker } from './IssuePlaybookPicker';
 import { IssueSteerBox } from './IssueSteerBox';
 import { DecisionsTimeline } from './DecisionsTimeline';
+import { IssueSignedChecks } from './IssueSignedChecks';
 import { useItervoxStore } from '../../store/itervoxStore';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
 import { ConfirmButton } from '../ui/button/ConfirmButton';
@@ -225,6 +226,10 @@ export default function IssueDetailSlide() {
                   }
                 : undefined
             }
+          />
+          <IssueSignedChecks
+            identifier={issue.identifier}
+            live={issue.orchestratorState === 'running'}
           />
           {/* Priority + Labels */}
           {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (

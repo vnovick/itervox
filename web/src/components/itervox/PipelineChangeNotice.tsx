@@ -8,9 +8,9 @@ const MAX_SHOWN = 10;
 // ("pipeline change") with the files it changes. A held push belongs to a
 // running issue (its agent waits in the guardrail shim), so it is rendered
 // wherever that approval is shown: the Needs-attention reply row, the issue's
-// Now panel ("Waiting for approval") and the input-required panel. Reads the
-// snapshot's input-required row for the issue; renders nothing for any other
-// input request.
+// Now panel ("Waiting for approval"), the input-required panel and the
+// phone's approval card. Reads the snapshot's input-required row for the
+// issue; renders nothing for any other input request.
 export function PipelineChangeNotice({ identifier }: { identifier: string }) {
   const { paths, total } = useItervoxStore(
     useShallow((s) => {
@@ -34,8 +34,9 @@ export function PipelineChangeNotice({ identifier }: { identifier: string }) {
         This push changes how CI checks the work. Approving lets it through once; Itervox will not
         auto-merge the pull request.
       </p>
+      {/* break-all: a long workflow path wraps on a phone instead of overflowing. */}
       <ul
-        className="text-theme-text-secondary font-mono text-xs"
+        className="text-theme-text-secondary font-mono text-xs break-all"
         aria-label="Pipeline files changed"
       >
         {shown.map((p) => (
