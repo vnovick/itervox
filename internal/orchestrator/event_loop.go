@@ -2493,7 +2493,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// read a verdict from. advanceReviewChainForIssue ran just above
 			// and deletes ReviewChainIndex when the quorum closes, so a still
 			// present index means another reviewer is genuinely pending.
-			if autoClear && !reviewerWillRun && !reviewChainInFlight(state, issue.Identifier) {
+			if autoClear && !reviewerWillRun && !reviewChainInFlight(state, issue.Identifier) &&
+				!automationRunKeepsWorkspace(finished, issue.State, state) {
 				// Use the actual worktree branch propagated via sendExitWithBranch.
 				// PR-continuation runs use prCtx.Branch, which differs from
 				// issue.BranchName; re-deriving the branch here would delete the
@@ -3189,6 +3190,19 @@ func runStartsAReview(finished RunRecord, known bool) bool {
 		return false
 	}
 	return finished.Kind == "" || finished.Kind == "worker"
+}
+
+// automationRunKeepsWorkspace reports whether a successful automation run
+// leaves its issue's workspace in place although workspace.auto_clear is on.
+// The success-path clear assumes the run finished the issue: a worker moves
+// it to tracker.completion_state. An automation run does not move the issue
+// for itself, so its issue's lifecycle is not over: clearing removed the
+// worktree and its branch, taking the run's committed handoff with it, and
+// the next run of an automation chain (issue_entered_state researcher →
+// implementer) started from a fresh worktree without it. The workspace is
+// cleared as before once the issue is terminal at the run's exit.
+func automationRunKeepsWorkspace(finished RunRecord, issueState string, state State) bool {
+	return finished.Kind == "automation" && !isTerminalState(issueState, state)
 }
 
 // markStalledHandoffPartial renames the in-flight handoff file authored by

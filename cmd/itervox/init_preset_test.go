@@ -77,6 +77,25 @@ func TestReviewerScaffoldsAreReadOnly(t *testing.T) {
 	}
 }
 
+// TestInputResponderScaffoldIsAnswerOnly: the input-responder Itervox
+// scaffolds answers the blocked agent's question once and implements
+// nothing: its SOUL.md and INSTRUCTIONS.md forbid edits, commits, pushes and
+// pull requests, and its allowed_actions are comment and provide_input only.
+func TestInputResponderScaffoldIsAnswerOnly(t *testing.T) {
+	soul := initSoulContent("input-responder")
+	instructions := initInstructionsContent("input-responder", "claude")
+	assert.Contains(t, soul, "You answer; you do not implement.")
+	assert.Contains(t, soul, "Never edit\nfiles, commit, push, open a pull request or move the issue.")
+	assert.Contains(t, instructions, "You are a helper run, not the implementer.")
+	assert.Contains(t, instructions, "never commit, push, open or update a pull request, or move the issue")
+	assert.Contains(t, instructions, "Send the answer once, with `itervox action provide-input`")
+	for name, text := range map[string]string{"SOUL": soul, "INSTRUCTIONS": instructions} {
+		assert.NotContains(t, text, "Implement the smallest", name)
+		assert.NotContains(t, text, "git push", name)
+	}
+	assert.Equal(t, "[comment, provide_input]", profileActions("input-responder"))
+}
+
 // TestOfferCrossReviewPreset (#79): init offers the preset only on a
 // terminal with both agent CLIs installed; anything but y is no.
 func TestOfferCrossReviewPreset(t *testing.T) {
