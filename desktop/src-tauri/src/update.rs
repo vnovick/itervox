@@ -9,6 +9,10 @@
 //! (`cli_tool.rs`) and so follows too. Daemons the app started are detached
 //! processes and keep running across the restart, on the binary they were
 //! started with, until they are restarted.
+//!
+//! Linux and Windows (#260) do not update themselves ([`Mode::Notify`]):
+//! the app reads the latest GitHub release and, when it is newer, the menu
+//! links to its release page instead of offering Install.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -21,6 +25,55 @@ use serde::Deserialize;
 /// `plugins.updater.endpoints` in `tauri.conf.json`.
 pub const ENDPOINT: &str =
     "https://github.com/vnovick/itervox/releases/latest/download/latest.json";
+
+/// Linux and Windows (#260): the newest published release, read from the
+/// GitHub API. Those builds do not update themselves; the menu links to the
+/// release page instead.
+pub const LATEST_RELEASE_API: &str = "https://api.github.com/repos/vnovick/itervox/releases/latest";
+
+/// The release page of `version`.
+pub fn release_page(version: &str) -> String {
+    let v = version.trim();
+    let v = v.strip_prefix('v').unwrap_or(v);
+    format!("https://github.com/vnovick/itervox/releases/tag/v{v}")
+}
+
+/// How a platform updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The Mac: download, verify and install (`tauri-plugin-updater`).
+    SelfUpdate,
+    /// Linux and Windows: say an update exists and link to its release.
+    Notify,
+}
+
+/// The update mode of `os`.
+pub fn mode_for(os: crate::platform::Os) -> Mode {
+    match os {
+        crate::platform::Os::Mac => Mode::SelfUpdate,
+        crate::platform::Os::Linux | crate::platform::Os::Windows => Mode::Notify,
+    }
+}
+
+/// The version of the GitHub API's latest release (its `tag_name`); drafts
+/// and prereleases never come from that endpoint, and are refused anyway.
+pub fn parse_latest_release(json: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+        #[serde(default)]
+        draft: bool,
+        #[serde(default)]
+        prerelease: bool,
+    }
+    let r: Release =
+        serde_json::from_str(json).map_err(|e| format!("the release is malformed: {e}"))?;
+    if r.draft || r.prerelease {
+        return Err("the latest release is a draft or prerelease".into());
+    }
+    let v = Version::parse(&r.tag_name)?;
+    Ok(format!("{}.{}.{}", v.major, v.minor, v.patch))
+}
 
 /// How often the app checks while it runs.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -277,6 +330,8 @@ pub enum UpdateState {
 pub enum UpdateAction {
     Check,
     Install,
+    /// Linux and Windows: open the offered version's release page.
+    OpenRelease,
 }
 
 /// One menu item: label, enabled, action (`None` for a label).
@@ -356,6 +411,24 @@ impl UpdateState {
         }
     }
 
+    /// The update section in `mode`: Notify swaps Install for a link to
+    /// the release page.
+    pub fn menu_items_for(&self, mode: Mode) -> Vec<UpdateItem> {
+        let mut items = self.menu_items();
+        if mode == Mode::Notify {
+            for item in &mut items {
+                if item.2 == Some(UpdateAction::Install) {
+                    *item = (
+                        "Update available — Open the Release Page…".to_string(),
+                        true,
+                        Some(UpdateAction::OpenRelease),
+                    );
+                }
+            }
+        }
+        items
+    }
+
     /// The menu items of the update section.
     pub fn menu_items(&self) -> Vec<UpdateItem> {
         let check = || {
@@ -400,6 +473,14 @@ impl UpdateState {
 }
 
 /// The initial state for a build whose updater public key is `pubkey`.
+pub fn initial_state_for(mode: Mode, pubkey: Option<&str>) -> UpdateState {
+    match mode {
+        Mode::SelfUpdate => initial_state(pubkey),
+        // Nothing is installed, so nothing needs the update key.
+        Mode::Notify => UpdateState::Idle,
+    }
+}
+
 pub fn initial_state(pubkey: Option<&str>) -> UpdateState {
     match pubkey.map(str::trim) {
         Some(k) if !k.is_empty() => UpdateState::Idle,
@@ -621,5 +702,51 @@ mod tests {
         let endpoints = &conf["plugins"]["updater"]["endpoints"];
         assert_eq!(endpoints, &serde_json::json!([ENDPOINT]));
         assert!(conf["plugins"]["updater"]["pubkey"].is_string());
+    }
+
+    /// #260: Linux and Windows show the update with a link, never install.
+    #[test]
+    fn linux_and_windows_link_to_the_release_instead_of_installing() {
+        use crate::platform::Os;
+        assert_eq!(mode_for(Os::Mac), Mode::SelfUpdate);
+        assert_eq!(mode_for(Os::Linux), Mode::Notify);
+        assert_eq!(mode_for(Os::Windows), Mode::Notify);
+        // No update key is needed to tell the user.
+        assert_eq!(initial_state_for(Mode::Notify, None), UpdateState::Idle);
+        assert!(matches!(
+            initial_state_for(Mode::SelfUpdate, None),
+            UpdateState::Disabled(_)
+        ));
+        let s = UpdateState::Available(offer("0.3.1"));
+        let items = s.menu_items_for(Mode::Notify);
+        assert_eq!(
+            items[0],
+            (
+                "Update available — Open the Release Page…".to_string(),
+                true,
+                Some(UpdateAction::OpenRelease)
+            )
+        );
+        assert!(items.iter().all(|i| i.2 != Some(UpdateAction::Install)));
+        assert_eq!(s.menu_items_for(Mode::SelfUpdate), s.menu_items());
+        assert_eq!(
+            release_page("v0.3.1"),
+            "https://github.com/vnovick/itervox/releases/tag/v0.3.1"
+        );
+        assert_eq!(release_page("0.3.1"), release_page("v0.3.1"));
+    }
+
+    #[test]
+    fn the_latest_release_is_read_from_the_github_api() {
+        assert_eq!(
+            parse_latest_release(
+                r#"{"tag_name":"v0.3.1","draft":false,"prerelease":false,"html_url":"x"}"#
+            )
+            .unwrap(),
+            "0.3.1"
+        );
+        assert!(parse_latest_release(r#"{"tag_name":"v0.4.0-rc.1","prerelease":true}"#).is_err());
+        assert!(parse_latest_release(r#"{"tag_name":"nightly"}"#).is_err());
+        assert!(parse_latest_release("not json").is_err());
     }
 }

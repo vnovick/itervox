@@ -2,7 +2,6 @@ import { Link, type To } from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../store/itervoxStore';
 import { MobileMenuButton } from '../components/ui/MobileMenuButton';
-import { ItervoxLogo } from '../components/brand/ItervoxLogo';
 import { fmtMs } from '../utils/format';
 import { STATUS_META, type StatusKey } from '../lib/statusModel';
 import { useStatusSummary } from '../hooks/useStatusSummary';
@@ -12,14 +11,19 @@ import { DemoModeBadge } from '../components/itervox/DemoModeBadge';
 import { HubProjectSwitcher } from '../components/itervox/HubProjectSwitcher';
 import { useDashboardHref } from '../hooks/useDashboardHref';
 import { useUIStore } from '../store/uiStore';
+import { NewTaskButton } from '../components/itervox/newTask/NewTaskButton';
+import { useEmbedded } from '../hooks/useEmbeddedShell';
+import { EmbeddedMoreMenu, EmbeddedNavLinks, EmbeddedTitle } from './EmbeddedNav';
 
 // CORE-076 — pill colour per status-model tone (one palette for all pills).
+// The `.pill-*` classes live in index.css (tokens.contrast.test.ts measures
+// them on the top bar's glass).
 const PILL_TONE_CLASS: Record<string, string> = {
-  success: 'bg-theme-success-soft text-theme-success-text',
-  warning: 'bg-theme-warning-soft text-theme-warning-text',
-  danger: 'bg-theme-danger-soft text-theme-danger-text',
-  info: 'bg-theme-accent-soft text-theme-accent-strong',
-  neutral: 'bg-theme-bg-elevated text-theme-text-secondary',
+  success: 'pill-ok',
+  warning: 'pill-warn',
+  danger: 'pill-danger',
+  info: 'pill-accent',
+  neutral: 'pill-neutral',
 };
 
 // CORE-086 — every count pill links to the dashboard section behind it.
@@ -43,7 +47,7 @@ function StatusPill({
       data-status-key={statusKey}
       data-status-count={count}
       title={title}
-      className={`rounded-full px-2 py-0.5 text-xs transition-colors hover:opacity-80 ${PILL_TONE_CLASS[meta.tone] ?? ''}`}
+      className={`pill hover:opacity-80 ${PILL_TONE_CLASS[meta.tone] ?? ''}`}
     >
       {prefix}
       {count} {meta.noun}
@@ -87,6 +91,9 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
     headline,
   } = useStatusSummary();
   const dashboardHref = useDashboardHref();
+  // Embedded in the desktop app: `project · ISSUE`, Board / Sessions /
+  // New task / More; the status chips show as space allows.
+  const embedded = useEmbedded();
 
   const liveLabel = sseConnected
     ? 'Live'
@@ -97,18 +104,15 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         : 'Connecting\u2026';
 
   return (
-    <>
+    // The banners and the top bar stick together above the page content.
+    <div className="sticky top-0 z-30 flex flex-col gap-2 pt-3 md:pt-4">
       {/* Config-invalid banner — surfaces an edit of WORKFLOW.md or a
           settings file that did not load, so the operator knows it didn't
           take and the daemon is running on the previously-valid config
           (T-26, #245). retryAttempt is 0 when the running generation kept
           its config and waits for the next edit. */}
       {configInvalid && (
-        <div
-          role="alert"
-          className="bg-theme-warning-soft text-theme-warning-text border-theme-warning sticky top-0 z-40 border-b px-4 py-2 text-sm"
-          data-testid="config-invalid-banner"
-        >
+        <div role="alert" className="banner-warn" data-testid="config-invalid-banner">
           <strong className="font-semibold">
             {configFileLabel(configInvalid.path)} is invalid:
           </strong>{' '}
@@ -131,11 +135,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
           channel (keepalives included) and the polling fallback have gone
           quiet past the threshold — see useConnectionState. */}
       {isStale && (
-        <div
-          role="alert"
-          className="bg-theme-warning-soft text-theme-warning-text border-theme-warning sticky top-0 z-40 border-b px-4 py-2 text-sm"
-          data-testid="stale-data-banner"
-        >
+        <div role="alert" className="banner-warn" data-testid="stale-data-banner">
           <strong className="font-semibold">Data may be out of date:</strong>{' '}
           <span>
             last update {dataAgeMs !== null ? `${fmtMs(dataAgeMs)} ago` : 'unknown'} — the dashboard
@@ -143,32 +143,27 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
           </span>
         </div>
       )}
-      <header className="bg-theme-bg-soft border-theme-line sticky top-0 z-30 flex min-w-0 flex-wrap items-center gap-2 border-b px-4 py-3 text-sm sm:gap-3">
+      <header className="glass-panel glass-bar flex min-w-0 flex-wrap items-center gap-2 px-3 py-2.5 text-sm sm:gap-3 md:px-4">
         {/* Mobile menu button */}
-        {onMenuClick && <MobileMenuButton onClick={onMenuClick} />}
+        {onMenuClick && !embedded && <MobileMenuButton onClick={onMenuClick} />}
 
-        {/* Brand — sits adjacent to the live pulse so the connection status reads as
-          itervox status, not unattributed UI chrome. Replaces the previous bordered
-          logo box at the top of the sidebar. */}
-        <ItervoxLogo className="h-5 w-auto" aria-label="Itervox" />
-
-        {/* Live pulse */}
-        <span className="flex shrink-0 items-center gap-2">
-          <span className="relative flex h-2.5 w-2.5">
+        {/* Live pulse — the connection status of this itervox daemon. */}
+        <span className="text-theme-text flex shrink-0 items-center gap-1.5 font-semibold">
+          <span className="relative flex h-2 w-2">
             {running > 0 && (
               <span className="bg-theme-success absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" />
             )}
-            <span
-              className={`relative inline-flex h-2.5 w-2.5 rounded-full ${sseConnected ? 'bg-theme-success' : 'bg-theme-danger'}`}
-            />
+            <span className={`status-dot relative ${sseConnected ? 'dot-ok' : 'dot-danger'}`} />
           </span>
-          <span className="text-theme-text-secondary">{liveLabel}</span>
+          <span className={embedded ? 'sr-only' : undefined}>{liveLabel}</span>
         </span>
 
+        {embedded && <EmbeddedTitle />}
+
         {/* Project name — disambiguates multiple daemons running for different repos. */}
-        {projectName && (
+        {projectName && !embedded && (
           <span
-            className="text-theme-text max-w-[120px] min-w-0 truncate font-mono text-xs font-semibold sm:max-w-[200px]"
+            className="text-theme-text max-w-[120px] min-w-0 truncate font-mono text-[13px] font-medium sm:max-w-[200px]"
             title={`Project: ${projectName}`}
           >
             {projectName}
@@ -180,100 +175,126 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
         {demoMode && <DemoModeBadge />}
 
-        {/* Orchestrator state */}
-        <span
-          data-testid="header-orchestrator-state"
-          className="bg-theme-bg-elevated text-theme-text-secondary shrink-0 rounded px-2 py-0.5 font-mono text-xs"
-        >
-          {STATUS_META[headline].label}
+        {/* Embedded: the status chips show from the lg breakpoint up. */}
+        <span className={embedded ? 'hidden min-w-0 items-center gap-2 lg:flex' : 'contents'}>
+          {/* Orchestrator state */}
+          <span
+            data-testid="header-orchestrator-state"
+            className={`pill shrink-0 font-semibold ${PILL_TONE_CLASS[STATUS_META[headline].tone] ?? 'pill-neutral'}`}
+          >
+            {STATUS_META[headline].label}
+          </span>
+
+          {/* Running count */}
+          {running > 0 && (
+            <Link
+              to={dashboardHref('running-sessions')}
+              data-status-key="running"
+              data-status-count={running}
+              title="Jump to the running sessions"
+              className="text-theme-text flex items-center gap-1 rounded underline-offset-2 hover:underline"
+            >
+              <strong>{running}</strong>
+              <span>{STATUS_META.running.noun}</span>
+            </Link>
+          )}
+
+          {paused > 0 && (
+            <StatusPill
+              statusKey="paused"
+              count={paused}
+              to={dashboardHref('running-sessions')}
+              title="Jump to the paused sessions"
+            />
+          )}
+
+          {awaitingInput > 0 && (
+            <StatusPill
+              statusKey="input_required"
+              count={awaitingInput}
+              to={dashboardHref('attention-inbox')}
+              title="Jump to the attention inbox"
+            />
+          )}
+
+          {pendingInputResumes > 0 && (
+            <StatusPill
+              statusKey="pending_input_resume"
+              count={pendingInputResumes}
+              to={dashboardHref('pending-resume')}
+              title="Jump to the Resuming panel"
+            />
+          )}
+
+          {retrying > 0 && (
+            <StatusPill
+              statusKey="retrying"
+              count={retrying}
+              prefix="↻ "
+              to={dashboardHref('retry-queue')}
+              title="Jump to the retry queue"
+            />
+          )}
         </span>
 
-        {/* Running count */}
-        {running > 0 && (
-          <Link
-            to={dashboardHref('running-sessions')}
-            data-status-key="running"
-            data-status-count={running}
-            title="Jump to the running sessions"
-            className="text-theme-success-text flex items-center gap-1.5 rounded underline-offset-2 hover:underline"
-          >
-            <strong>{running}</strong>
-            <span className="text-theme-text-secondary">{STATUS_META.running.noun}</span>
-          </Link>
-        )}
+        <span aria-hidden="true" className="flex-1" />
 
-        {paused > 0 && (
-          <StatusPill
-            statusKey="paused"
-            count={paused}
-            to={dashboardHref('running-sessions')}
-            title="Jump to the paused sessions"
-          />
-        )}
-
-        {awaitingInput > 0 && (
-          <StatusPill
-            statusKey="input_required"
-            count={awaitingInput}
-            to={dashboardHref('attention-inbox')}
-            title="Jump to the attention inbox"
-          />
-        )}
-
-        {pendingInputResumes > 0 && (
-          <StatusPill
-            statusKey="pending_input_resume"
-            count={pendingInputResumes}
-            to={dashboardHref('pending-resume')}
-            title="Jump to the Resuming panel"
-          />
-        )}
-
-        {retrying > 0 && (
-          <StatusPill
-            statusKey="retrying"
-            count={retrying}
-            prefix="↻ "
-            to={dashboardHref('retry-queue')}
-            title="Jump to the retry queue"
-          />
-        )}
+        {embedded && <EmbeddedNavLinks />}
 
         {/* Capacity bar — hidden on mobile */}
         {maxAgents > 0 && (
-          <span className="ml-2 hidden items-center gap-2 md:flex">
-            <span className="text-theme-muted text-xs">running/max</span>
-            <span className="bg-theme-bg-elevated h-1.5 w-20 overflow-hidden rounded-full">
+          <span className={`hidden items-center gap-2.5 ${embedded ? 'xl:flex' : 'md:flex'}`}>
+            <span className="sr-only">running/max</span>
+            <span className="subtle-fill h-1.5 w-20 overflow-hidden rounded-full">
               <span
                 className="block h-full rounded-full transition-all"
                 style={{
                   width: `${String(pct)}%`,
                   background:
-                    pct >= 90 ? 'var(--danger)' : pct >= 60 ? 'var(--warning)' : 'var(--success)',
+                    pct >= 90 ? 'var(--danger)' : pct >= 75 ? 'var(--warning)' : 'var(--accent)',
                 }}
               />
             </span>
-            <span className="text-theme-text-secondary font-mono text-xs">
+            <span className="text-theme-text font-semibold tabular-nums">
               {running}/{maxAgents}
             </span>
           </span>
         )}
 
         {/* CORE-095 — the command palette's visible entry point (also Mod+K). */}
-        {/* A plain button (the Button primitive's ghost/xs look): the header is
-            in the main entry and the primitives pull in tailwind-merge (M6-close). */}
+        {/* A plain button with the glass-chip class: the header is in the main
+            entry and the primitives pull in tailwind-merge (M6-close). */}
         <button
           type="button"
-          className="text-theme-text-secondary hover:bg-theme-panel-strong hover:text-theme-text focus-visible:ring-theme-accent ml-auto inline-flex h-6 items-center gap-1.5 rounded-[var(--radius-sm)] px-2 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
+          className="glass-chip text-theme-text hover:bg-theme-panel-strong inline-flex h-9 items-center gap-1.5 px-3 text-[13px] font-medium transition-colors sm:px-3.5"
           aria-keyshortcuts="Control+K Meta+K"
           onClick={() => {
             useUIStore.getState().setCommandPaletteOpen(true);
           }}
         >
-          Commands <kbd className="text-theme-muted font-mono">Ctrl/⌘ K</kbd>
+          {/* Phones: a search glyph keeps the top bar to two rows; the
+              label stays the accessible name. */}
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            className="h-4 w-4 sm:hidden"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          <span className="sr-only sm:not-sr-only">Commands</span>
+          <kbd className="text-theme-muted hidden font-sans sm:inline">Ctrl/⌘ K</kbd>
         </button>
+
+        {/* #251 — New task, from every page (operator scope). */}
+        <NewTaskButton />
+        {embedded && <EmbeddedMoreMenu />}
       </header>
-    </>
+    </div>
   );
 };
 

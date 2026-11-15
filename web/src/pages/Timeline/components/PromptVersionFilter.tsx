@@ -14,12 +14,12 @@ interface PromptVersionFilterProps {
  */
 export function PromptVersionFilter({ versions, value, onChange }: PromptVersionFilterProps) {
   return (
-    <label className="text-theme-muted flex items-center gap-1.5 font-mono text-[10px]">
-      prompt version
+    <label className="glass-chip text-theme-text flex min-h-10 items-center gap-2 pl-3.5 text-[13px]">
+      Prompt version
       <Select
         data-testid="timeline-prompt-version"
         aria-label="Filter runs by prompt version"
-        className="h-7 py-0 font-mono text-[10px]"
+        className="h-8 w-auto rounded-full border-0 bg-transparent py-0 font-semibold"
         value={value}
         disabled={versions.length === 0}
         title={

@@ -5,6 +5,7 @@ import type { FilterGroup } from '../../../types/schemas';
 import { cleanGroups, filterLabel, firstEmptyGroup } from '../../../utils/filterGroups';
 import { FilterGroupEditor } from './FilterGroupEditor';
 import { FilterPreviewLine } from './FilterPreviewLine';
+import { buttonClass } from '../../../components/ui/button/buttonStyles';
 
 // #198 — Settings → Tracker Scope: the tracker filter's group builder.
 // Conditions inside a group AND; the groups OR. Saving writes tracker.filter
@@ -61,16 +62,16 @@ export function TrackerFilterCard({ onSave }: Props) {
   };
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Tracker Scope</h2>
+    <div>
+      <div className="mb-4">
+        <h3 className="text-theme-text text-sm font-semibold">Tracker Scope</h3>
         <p className="text-theme-text-secondary mt-0.5 text-xs">
           Itervox reads an issue when it matches <strong>any</strong> group (OR). Inside a group,{' '}
           <strong>every</strong> condition must match (AND). No groups: every issue.
         </p>
       </div>
 
-      <div className="space-y-4 px-5 py-5">
+      <div className="space-y-4">
         {isLoading && <p className="text-theme-muted text-sm">Loading the tracker scope…</p>}
         {isError && (
           <p className="text-theme-danger-text text-sm">
@@ -129,7 +130,7 @@ export function TrackerFilterCard({ onSave }: Props) {
               <button
                 onClick={handleSave}
                 disabled={saving || (!dirty && scope.filterMode) || emptyAt >= 0}
-                className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+                className={buttonClass('primary', 'md', undefined, true)}
               >
                 {saving ? 'Saving…' : 'Save filter'}
               </button>

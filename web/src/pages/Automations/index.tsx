@@ -33,15 +33,16 @@ export default function Automations() {
         title="Itervox | Automations"
         description="Itervox automations — cron and event-driven helper runs"
       />
-      <div className="w-full max-w-none space-y-8">
-        <div>
-          <h1 className="text-theme-text text-2xl font-bold tracking-tight">Automations</h1>
-          <p className="text-theme-muted mt-1 text-sm">
-            Configure cron and event-driven helper runs, and see what each rule has fired.
-          </p>
+      <div className="page-container">
+        <div className="page-header flex flex-wrap items-center gap-3">
+          <div className="mr-auto">
+            <h1 className="page-title">Automations</h1>
+            <p className="text-theme-text-secondary text-sm">
+              Configure cron and event-driven helper runs, and see what each rule has fired.
+            </p>
+          </div>
+          <AutomationsTabs current={tab} onChange={setTab} />
         </div>
-
-        <AutomationsTabs current={tab} onChange={setTab} />
 
         <section
           id="automations-panel-configure"
@@ -49,10 +50,10 @@ export default function Automations() {
           aria-labelledby="automations-tab-configure"
           hidden={tab !== 'configure'}
         >
-          <div className="space-y-8">
-            <Card variant="elevated" className="space-y-2">
-              <p className="text-theme-text text-sm font-medium">Automation scope</p>
-              <p className="text-theme-muted text-sm leading-relaxed">
+          <div className="flex flex-col gap-4">
+            <Card variant="card" className="space-y-1">
+              <p className="text-theme-text text-[13px] font-semibold">Automation scope</p>
+              <p className="text-theme-text-secondary text-[13px] leading-relaxed">
                 Scheduled QA checks, backlog review, helper agents that react to input-required
                 events, and rate_limited rules that move an issue to another profile when its
                 backend is limited.
@@ -124,7 +125,7 @@ function AutomationsTabs({ current, onChange }: AutomationsTabsProps) {
       role="tablist"
       aria-label="Automations sections"
       data-testid="automations-tablist"
-      className="border-theme-line flex gap-1 border-b"
+      className="segmented"
     >
       {AUTOMATIONS_TABS.map((t) => {
         const active = current === t.id;
@@ -144,12 +145,7 @@ function AutomationsTabs({ current, onChange }: AutomationsTabsProps) {
             onKeyDown={(event) => {
               handleKeyDown(event, t.id);
             }}
-            className={
-              'border-b-2 px-3 py-2 text-sm font-medium transition-colors ' +
-              (active
-                ? 'border-theme-accent text-theme-text'
-                : 'text-theme-muted hover:text-theme-text border-transparent')
-            }
+            className="min-h-9 text-[15px]"
           >
             {t.label}
           </button>

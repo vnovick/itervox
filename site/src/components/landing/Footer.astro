@@ -1,0 +1,84 @@
+---
+import Mark from './Mark.astro';
+
+const cols = [
+  { label: 'Docs', links: [['Getting started', '/getting-started/'], ['Configuration', '/configuration/'], ['CLI', '/cli/'], ['API reference', '/api-reference/']] },
+  { label: 'Guides', links: [['Agent backends', '/guides/backends/'], ['Local issues', '/guides/local-issues/'], ['Automations', '/guides/automations/'], ['Desktop app', '/guides/desktop-app/']] },
+  { label: 'Community', links: [['GitHub', 'https://github.com/vnovick/itervox'], ['Releases', 'https://github.com/vnovick/itervox/releases/latest'], ['Discord', 'https://discord.gg/ATU5n3yZNX'], ['Contributing', 'https://github.com/vnovick/itervox/blob/main/CONTRIBUTING.md']] },
+];
+---
+<footer class="wrap section footer-wrap">
+  <div class="glass footer">
+    <div class="about">
+      <div class="brand"><Mark size={34} /><span class="wordmark">itervox</span></div>
+      <p class="body">From Latin <em>iter</em> (journey) + <em>vox</em> (voice). Your codebase's journey, narrated by agents.</p>
+      <p class="body small">Apache 2.0 · Implements the OpenAI Symphony spec and the Orchestrated Coding spec at L3.</p>
+    </div>
+    {cols.map((c) => (
+      <nav class="col" aria-label={c.label}>
+        <span class="eyebrow">{c.label}</span>
+        {c.links.map(([t, h]) => <a href={h}>{t}</a>)}
+      </nav>
+    ))}
+  </div>
+</footer>
+
+<style>
+  .footer-wrap {
+    padding-bottom: 40px;
+  }
+  .footer {
+    padding: 44px;
+    border-radius: 32px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 36px 40px;
+  }
+  .about {
+    flex: 2 1 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .about .body {
+    max-width: 360px;
+  }
+  .small {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .wordmark {
+    font-size: 21px;
+    font-weight: 650;
+    letter-spacing: -0.035em;
+  }
+  .col {
+    flex: 1 1 140px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 14px;
+  }
+  .col .eyebrow {
+    margin-bottom: 6px;
+  }
+  .col a {
+    padding: 4px 0;
+    text-decoration: none;
+  }
+  @media (max-width: 820px) {
+    .footer {
+      padding: 24px;
+      border-radius: 26px;
+    }
+    .col a {
+      padding: 8px 0;
+      font-size: 15px;
+    }
+  }
+</style>

@@ -91,8 +91,13 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
 		// Not edited by the dashboard: carried over from the saved profile
 		// so a dashboard save does not strip them from WORKFLOW.md.
-		PermissionMode:  existingProfile.PermissionMode,
-		RequireEvidence: existingProfile.RequireEvidence,
+		PermissionMode:    existingProfile.PermissionMode,
+		RequireEvidence:   existingProfile.RequireEvidence,
+		CreateIssueLabels: existingProfile.CreateIssueLabels,
+		// #258: likewise the sandbox settings.
+		Isolation:           existingProfile.Isolation,
+		IsolationExtraWrite: existingProfile.IsolationExtraWrite,
+		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {

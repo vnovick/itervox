@@ -16,6 +16,10 @@
 //!
 //! The stub needs python3 (part of the Xcode Command Line Tools on a Mac).
 
+// Unix only: the stand-in ssh/gcloud are shell scripts and the tests
+// signal tunnel processes (SIGKILL, SIGSTOP).
+#![cfg(unix)]
+
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
@@ -639,9 +643,22 @@ fn remote_hub_covers_every_daemon_through_one_tunnel() {
     );
     let hub_port = statuses[0].local_port;
 
-    // Every daemon is read through the hub's proxy.
+    // Every daemon is read through the hub's proxy. The hub can answer before
+    // it has registered every member (a member it does not know yet is a
+    // 404), so refresh until all of them read healthy or the deadline passes.
     let mut core = RemoteCore::new(0);
-    refresh(&mut core, &remotes, &mgr, &tokens);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        refresh(&mut core, &remotes, &mgr, &tokens);
+        let all_ok = core.views()[0]
+            .daemons
+            .iter()
+            .all(|d| matches!(d.health, Health::Ok(_)));
+        if all_ok || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let view = &core.views()[0];
     for d in &view.daemons {
         assert!(

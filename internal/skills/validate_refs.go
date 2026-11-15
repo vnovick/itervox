@@ -285,13 +285,11 @@ func commandBinaryBackend(command string) string {
 	if hinted, rest := config.ParseBackendHint(command); hinted != "" {
 		command = rest
 	}
-	if base := filepath.Base(config.FirstCommandToken(command)); config.IsSupportedBackend(base) {
-		return base
-	}
-	return ""
+	return config.BackendForBinary(filepath.Base(config.FirstCommandToken(command)))
 }
 
-// ProfileBackend returns the runner ("claude" or "codex") a profile runs on.
+// ProfileBackend returns the backend (config.SupportedBackends) a profile
+// runs on.
 // It replays the orchestrator's dispatch resolver
 // (internal/orchestrator/dispatch_resolve.go resolveDispatchTarget) for the
 // static part of the decision and then routes the resulting runner command
@@ -301,8 +299,8 @@ func commandBinaryBackend(command string) string {
 // backend. A requested backend is honoured only when the command's binary
 // is unrecognised or already matches; a conflicting request keeps the
 // binary. MultiRunner routes by agent.BackendFromCommand of the runner
-// command and sends anything other than codex to the default (Claude)
-// runner. Per-issue pins and rate-limit switches are runtime decisions and
+// command and sends any command without a supported backend to the default
+// (Claude) runner. Per-issue pins and rate-limit switches are runtime decisions and
 // are not modelled.
 func ProfileBackend(p config.AgentProfile, d RefBackendDefaults) string {
 	cmd := d.Command
@@ -323,10 +321,10 @@ func ProfileBackend(p config.AgentProfile, d RefBackendDefaults) string {
 		runner = cmd
 	}
 	request(p.Backend)
-	if agent.BackendFromCommand(runner) == "codex" {
-		return "codex"
+	if b := agent.BackendFromCommand(runner); config.IsSupportedBackend(b) {
+		return b
 	}
-	return "claude"
+	return config.BackendClaude
 }
 
 // stripBackendHint returns command without a leading backend hint (the

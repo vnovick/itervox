@@ -1,3 +1,5 @@
+import { Button } from '../../components/ui/button';
+import { checkboxCls, fieldLabelCls, helperTextCls, selectCls } from './formStyles';
 import { useEffect, useState } from 'react';
 
 interface ReviewerCardProps {
@@ -67,12 +69,9 @@ export function ReviewerCard({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div>
-        <label
-          htmlFor="reviewer-profile-select"
-          className="text-theme-text-secondary mb-1 block text-xs font-medium"
-        >
+        <label htmlFor="reviewer-profile-select" className={fieldLabelCls}>
           Reviewer profile
         </label>
         <select
@@ -82,7 +81,7 @@ export function ReviewerCard({
             const nextProfile = e.target.value;
             updatePending({ profile: nextProfile, ...(nextProfile === '' ? { auto: false } : {}) });
           }}
-          className="focus:border-theme-accent w-full cursor-pointer rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] px-3 py-2 text-[13px] text-[var(--text)] focus:outline-none"
+          className={selectCls}
         >
           <option value="">None (disabled)</option>
           {availableProfiles.map((p) => (
@@ -91,7 +90,7 @@ export function ReviewerCard({
             </option>
           ))}
         </select>
-        <p className="text-theme-muted mt-1 text-[10px]">
+        <p className={helperTextCls}>
           Select a profile to use for AI code review. The reviewer runs as a regular worker with the
           profile's command, backend, and prompt.
         </p>
@@ -111,34 +110,36 @@ export function ReviewerCard({
             updatePending({ auto: e.target.checked });
           }}
           disabled={!profile}
-          className="border-theme-line rounded"
+          className={checkboxCls}
         />
         <span className={`text-sm ${!profile ? 'text-theme-muted' : 'text-theme-text'}`}>
           Auto-review after agent succeeds
         </span>
       </label>
       {error && (
-        <p role="alert" className="text-theme-danger-text pl-6 text-[10px]">
+        <p role="alert" className="text-theme-danger-text pl-6 text-xs">
           {error}
         </p>
       )}
       {auto && profile && (
-        <p className="text-theme-muted pl-6 text-[10px]">
+        <p className="field-help pl-6">
           A reviewer worker will be automatically dispatched using the <strong>{profile}</strong>{' '}
           profile after each successful agent run.
         </p>
       )}
 
       {dirty && (
-        <button
+        <Button
+          variant="primary"
+          size="lg"
+          pill
           onClick={() => {
             void handleSave();
           }}
           disabled={saving}
-          className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save'}
-        </button>
+        </Button>
       )}
     </div>
   );

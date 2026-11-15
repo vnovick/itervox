@@ -1,0 +1,33 @@
+---
+import Shot from './Shot.astro';
+import type { ShotName } from '../../data/screenshots';
+
+const cards: { name: ShotName; title: string; body: string; href: string; alt: string; fit?: string }[] = [
+  { name: 'review-continue', title: 'Review and continue', body: 'Comment on diff lines, collect a draft review, send it to the agent in one action.', href: '/guides/change-review/', alt: 'Changes tab with a line comment and a draft review ready to send to the agent' },
+  { name: 'system-visibility', title: 'System visibility', body: 'CPU, memory, processes and disk for every run, plus an audit of commands, files and connections.', href: '/guides/system-visibility/', alt: 'Issue view with the run’s resource use and its activity audit' },
+  { name: 'command-palette', title: 'Command palette', body: 'Ctrl/⌘+K finds issues, actions, settings, profiles and automations.', href: '/guides/command-palette/', alt: 'Command palette searching for “pa”: Pause dispatch, pause a running issue, matching settings' },
+  { name: 'automations', title: 'Automations', body: 'Cron and event-driven helper runs on your own profiles, from starter templates.', href: '/guides/automations/', alt: 'Automations page with three rules and starter templates' },
+  { name: 'new-task', title: 'New task', body: 'A one-off task with its own instructions, no tracker issue needed.', href: '/guides/new-task/', alt: 'New task dialog: title, instructions, profile, backend and base branch' },
+  { name: 'hub', title: 'Every project, one hub', body: 'The hub lists every project on the machine and what needs you.', href: '/guides/hub/', alt: 'Hub page with three projects and what each needs', fit: 'fit-contain' },
+];
+---
+<section class="wrap section">
+  <div class="section-head">
+    <div>
+      <span class="num">04 — IN CONTROL</span>
+      <h2 class="h2">Review, steer and see inside every run</h2>
+    </div>
+    <p class="lead">Send a whole review to the agent, watch what each run does to your machine, and reach everything from one palette.</p>
+  </div>
+  <div class="grid-3">
+    {cards.map((c) => (
+      <figure class="glass figure">
+        <div class="shotbox"><Shot name={c.name} alt={c.alt} class={c.fit ?? ''} sizes="(max-width: 820px) 100vw, 380px" /></div>
+        <figcaption>
+          <strong class="h3"><a href={c.href}>{c.title}</a></strong>
+          <span class="body">{c.body}</span>
+        </figcaption>
+      </figure>
+    ))}
+  </div>
+</section>

@@ -58,16 +58,7 @@ function AgentColumnHeader({
           : undefined
       }
     >
-      {/* Colored top edge */}
-      <div
-        className="h-[3px] rounded-t-[var(--radius-md)]"
-        style={{
-          background: `linear-gradient(90deg, ${color.accent}, ${color.accent}44)`,
-          opacity: 0.8,
-        }}
-      />
-
-      <div className="px-3 pt-3 pb-2">
+      <div className="px-1.5 pt-1 pb-0.5">
         <div className="flex items-start gap-2.5">
           {/* Avatar */}
           <div
@@ -81,24 +72,18 @@ function AgentColumnHeader({
           {/* Meta */}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
-              <h3 className="text-theme-text m-0 truncate text-xs font-semibold">{label}</h3>
+              <h3 className="text-theme-text m-0 truncate text-[13px] font-semibold">{label}</h3>
               {profileDef && (
                 <>
-                  <span
-                    className={`flex-shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold tracking-wide uppercase ${backendBadgeClass(inferredBackend)}`}
-                  >
+                  <span className={`tag flex-shrink-0 ${backendBadgeClass(inferredBackend)}`}>
                     {backendLabel(inferredBackend)}
                   </span>
-                  {modelDisplay && (
-                    <span className="text-theme-text-secondary bg-theme-bg-soft flex-shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-medium">
-                      {modelDisplay}
-                    </span>
-                  )}
+                  {modelDisplay && <span className="tag flex-shrink-0">{modelDisplay}</span>}
                 </>
               )}
             </div>
             {promptSnippet && (
-              <p className="text-theme-text-secondary mt-1 line-clamp-2 text-[11px] leading-snug">
+              <p className="text-theme-muted mt-1 line-clamp-2 text-[11px] leading-snug">
                 {promptSnippet}
               </p>
             )}
@@ -126,14 +111,7 @@ function AgentColumnHeader({
 function UnassignedColumnHeader({ issueCount }: { issueCount: number }) {
   return (
     <div className="flex-shrink-0">
-      <div
-        className="h-[3px] rounded-t-[var(--radius-md)]"
-        style={{
-          background: `linear-gradient(90deg, ${UNASSIGNED_COLOR.accent}, ${UNASSIGNED_COLOR.accent}44)`,
-          opacity: 0.5,
-        }}
-      />
-      <div className="px-3 pt-3 pb-2">
+      <div className="px-1.5 pt-1 pb-0.5">
         <div className="flex items-start gap-2.5">
           <div
             className="text-theme-muted flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] text-sm"
@@ -142,12 +120,12 @@ function UnassignedColumnHeader({ issueCount }: { issueCount: number }) {
             ?
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="text-theme-text m-0 truncate text-xs font-semibold">Unassigned</h3>
-            <p className="text-theme-text-secondary mt-1 text-[11px] leading-snug">
+            <h3 className="text-theme-text m-0 truncate text-[13px] font-semibold">Unassigned</h3>
+            <p className="text-theme-muted mt-0.5 text-[11px] leading-snug">
               Drag to an agent to assign
             </p>
           </div>
-          <span className="bg-theme-bg-elevated text-theme-text flex min-w-[28px] flex-shrink-0 items-center justify-center rounded-full px-2.5 py-1 text-xs font-semibold">
+          <span className="text-theme-text-secondary flex-shrink-0 text-xs font-semibold tabular-nums">
             {issueCount}
           </span>
         </div>
@@ -170,12 +148,10 @@ function DefaultColumnHeader({
 }) {
   const subtitle = columnSubtitle(label);
   return (
-    <div className="flex flex-shrink-0 items-start justify-between gap-3 px-3 py-3">
+    <div className="flex flex-shrink-0 items-start justify-between gap-3 px-1.5 pt-1 pb-0.5">
       <div className="min-w-0">
         <span className="flex items-center gap-1.5">
-          <h3 className="text-theme-text m-0 truncate text-xs font-semibold tracking-wide uppercase">
-            {label}
-          </h3>
+          <h3 className="text-theme-text m-0 truncate text-[13px] font-semibold">{label}</h3>
           {onInfoClick && (
             <button
               onClick={(e) => {
@@ -203,11 +179,9 @@ function DefaultColumnHeader({
             </button>
           )}
         </span>
-        {subtitle && (
-          <p className="text-theme-text-secondary mt-1 text-[11px] leading-snug">{subtitle}</p>
-        )}
+        {subtitle && <p className="text-theme-muted text-[11px] leading-snug">{subtitle}</p>}
       </div>
-      <span className="bg-theme-bg-elevated text-theme-text flex min-w-[28px] flex-shrink-0 items-center justify-center rounded-full px-2.5 py-1 text-xs font-semibold">
+      <span className="text-theme-text-secondary flex-shrink-0 text-xs font-semibold tabular-nums">
         {issueCount}
       </span>
     </div>
@@ -293,15 +267,14 @@ export default function BoardColumn({
     <div
       ref={setNodeRef}
       data-board-column={state}
-      className="border-theme-line bg-theme-bg-soft relative flex max-h-[85vh] w-[280px] min-w-[280px] flex-shrink-0 flex-col overflow-hidden rounded-[var(--radius-md)] border transition-colors duration-200"
+      className="board-column relative flex max-h-[85vh] w-[240px] min-w-[220px] flex-1 snap-start flex-col gap-2 overflow-hidden transition-colors duration-200 max-sm:min-w-[78vw]"
       style={color && isOver ? { borderColor: `${color.accent}44` } : undefined}
     >
       {/* Dark overlay when dropping */}
       <div
-        className={`pointer-events-none absolute inset-0 z-10 rounded-[var(--radius-md)] transition-opacity duration-150 ${
+        className={`bg-theme-accent-soft pointer-events-none absolute inset-0 z-10 rounded-[inherit] transition-opacity duration-150 ${
           isOver ? 'opacity-100' : 'opacity-0'
         }`}
-        style={{ background: 'rgba(0,0,0,0.25)' }}
       />
 
       {/* Column header */}

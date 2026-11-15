@@ -3,6 +3,7 @@ import { useItervoxStore } from '../../store/itervoxStore';
 import { useSettingsActions } from '../../hooks/useSettingsActions';
 import { AddSSHHostModal } from './AddSSHHostModal';
 import { EMPTY_HOSTS } from '../../utils/constants';
+import { buttonClass } from '../../components/ui/button/buttonStyles';
 
 const STRATEGIES: { id: string; label: string; desc: string; available: boolean }[] = [
   { id: 'round-robin', label: 'Round Robin', desc: 'Cycle hosts in order', available: true },
@@ -16,7 +17,10 @@ const STRATEGIES: { id: string; label: string; desc: string; available: boolean 
 
 export function SSHHostsCard() {
   const hosts = useItervoxStore((s) => s.snapshot?.sshHosts ?? EMPTY_HOSTS);
-  const strategy = useItervoxStore((s) => s.snapshot?.dispatchStrategy ?? 'round-robin');
+  // The daemon routes every value but "least-loaded" round-robin (its
+  // default), so an unset or unrecognised value shows Round Robin selected.
+  const rawStrategy = useItervoxStore((s) => s.snapshot?.dispatchStrategy);
+  const strategy = rawStrategy === 'least-loaded' ? 'least-loaded' : 'round-robin';
   const { addSSHHost, removeSSHHost, setDispatchStrategy } = useSettingsActions();
   const [addOpen, setAddOpen] = useState(false);
   const [removingHost, setRemovingHost] = useState<string | null>(null);
@@ -29,64 +33,74 @@ export function SSHHostsCard() {
 
   return (
     <>
-      <div className="bg-theme-bg-elevated border-theme-line overflow-hidden rounded-xl border">
-        {/* Header */}
-        <div className="border-theme-line flex items-center justify-between border-b px-[18px] py-3.5">
-          <div>
-            <span className="text-theme-text text-[15px] font-semibold">SSH Hosts</span>
-            <span className="ml-2 text-[11px]">
-              {hosts.length === 0
-                ? 'running locally'
-                : `${String(hosts.length)} host${hosts.length === 1 ? '' : 's'}`}
-            </span>
-          </div>
-          <button
-            onClick={() => {
-              setAddOpen(true);
-            }}
-            style={{
-              padding: '5px 12px',
-              borderRadius: 6,
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-              background: 'var(--accent)',
-              color: '#fff',
-              border: 'none',
-            }}
-          >
-            + Add host
-          </button>
-        </div>
+      <div className="space-y-3">
+        <p className="text-theme-text-secondary text-[13px]">
+          {hosts.length === 0
+            ? 'No SSH hosts configured — agents run locally on this machine.'
+            : `${String(hosts.length)} host${hosts.length === 1 ? '' : 's'}`}
+        </p>
 
-        {/* Host list */}
-        {hosts.length === 0 ? (
-          <div className="text-theme-muted px-[18px] py-5 text-[13px]">
-            No SSH hosts configured — agents run locally on this machine.
+        {/* Dispatch strategy — only shown when there are hosts */}
+        {hosts.length > 0 && (
+          <div>
+            <p className="field-label">Dispatch strategy</p>
+            {/* Same control family as the other two-choice pickers: a card
+                per option with a radio indicator. */}
+            <div
+              role="radiogroup"
+              aria-label="Dispatch strategy"
+              className="grid gap-2 sm:grid-cols-2"
+            >
+              {STRATEGIES.map((s) => (
+                <label key={s.id} className="choice-card items-start">
+                  <input
+                    type="radio"
+                    name="ssh-dispatch-strategy"
+                    className="accent-theme-accent mt-0.5 shrink-0"
+                    checked={strategy === s.id}
+                    onChange={() => {
+                      void setDispatchStrategy(s.id);
+                    }}
+                  />
+                  <span className="min-w-0">
+                    <span className="text-theme-text block text-[13px] font-semibold">
+                      {s.label}
+                    </span>
+                    <span className="text-theme-text-secondary block text-xs leading-[1.4]">
+                      {s.desc}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
           </div>
-        ) : (
-          <ul className="border-theme-line divide-y">
+        )}
+
+        {hosts.length > 0 && (
+          <ul className="space-y-2" aria-label="SSH hosts">
             {hosts.map((h) => (
-              <li key={h.host} className="flex items-center justify-between px-[18px] py-3">
-                <div className="min-w-0">
-                  <span className="text-theme-text font-mono text-[13px]">{h.host}</span>
+              <li
+                key={h.host}
+                className="glass-card flex items-center gap-2 rounded-[14px] px-3 py-2 text-[13px]"
+              >
+                <div className="min-w-0 flex-1">
+                  <span className="text-theme-text font-mono">{h.host}</span>
                   {h.description && (
-                    <span className="text-theme-muted ml-2 text-[12px]">{h.description}</span>
+                    <span className="text-theme-text-secondary ml-2 text-xs">{h.description}</span>
                   )}
                 </div>
                 <button
+                  type="button"
                   onClick={() => {
                     void handleRemove(h.host);
                   }}
                   disabled={removingHost === h.host}
-                  className="ml-4 flex-shrink-0 text-[12px] transition-opacity"
-                  style={{
-                    color: 'var(--danger-text)',
-                    background: 'transparent',
-                    border: 'none',
-                    cursor: removingHost === h.host ? 'wait' : 'pointer',
-                    opacity: removingHost === h.host ? 0.5 : 1,
-                  }}
+                  className={buttonClass(
+                    'secondary',
+                    'xs',
+                    'text-theme-danger-text disabled:cursor-wait',
+                    true,
+                  )}
                 >
                   {removingHost === h.host ? 'Removing…' : 'Remove'}
                 </button>
@@ -95,34 +109,15 @@ export function SSHHostsCard() {
           </ul>
         )}
 
-        {/* Dispatch strategy — only shown when there are hosts */}
-        {hosts.length > 0 && (
-          <div className="border-theme-line border-t px-[18px] py-4">
-            <p className="text-theme-text-secondary mb-2.5 text-[12px] font-medium">
-              Dispatch strategy
-            </p>
-            <div className="flex gap-2">
-              {STRATEGIES.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => {
-                    void setDispatchStrategy(s.id);
-                  }}
-                  className="flex-1 rounded-lg border-2 px-3 py-2.5 text-left transition-all"
-                  style={{
-                    borderColor: strategy === s.id ? 'var(--accent)' : 'var(--line)',
-                    background: strategy === s.id ? 'rgba(99,102,241,0.06)' : 'transparent',
-                  }}
-                >
-                  <div className="text-theme-text text-[12px] font-semibold">{s.label}</div>
-                  <div className="text-theme-text-secondary mt-0.5 text-[11px] leading-[1.4]">
-                    {s.desc}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        <button
+          type="button"
+          onClick={() => {
+            setAddOpen(true);
+          }}
+          className={buttonClass('secondary', 'md', undefined, true)}
+        >
+          + Add host
+        </button>
       </div>
 
       <AddSSHHostModal

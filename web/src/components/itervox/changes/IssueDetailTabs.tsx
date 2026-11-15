@@ -14,11 +14,7 @@ export function IssueDetailTabs({
   onChange: (tab: IssueDetailTab) => void;
 }) {
   return (
-    <div
-      role="tablist"
-      aria-label="Issue detail"
-      className="border-theme-line flex gap-1 border-b px-5"
-    >
+    <div role="tablist" aria-label="Issue detail" className="segmented mx-6 mb-1 self-start">
       {TABS.map((t) => (
         <button
           key={t.id}
@@ -29,11 +25,7 @@ export function IssueDetailTabs({
           onClick={() => {
             onChange(t.id);
           }}
-          className={`-mb-px border-b-2 px-3 py-2 text-xs font-medium ${
-            tab === t.id
-              ? 'border-theme-accent text-theme-text'
-              : 'text-theme-muted border-transparent hover:opacity-80'
-          }`}
+          className="min-h-8 px-4 py-1 text-sm"
         >
           {t.label}
         </button>

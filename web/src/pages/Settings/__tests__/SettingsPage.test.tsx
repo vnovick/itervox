@@ -42,7 +42,10 @@ vi.mock('../DependenciesCard', () => ({
 }));
 
 vi.mock('../schema/SchemaSettingsCard', () => ({
-  SchemaSettingsCard: () => <div data-testid="schema-settings-card" />,
+  // The card draws the section heading at the start of its toolbar.
+  SchemaSettingsCard: ({ heading }: { heading?: React.ReactNode }) => (
+    <div data-testid="schema-settings-card">{heading}</div>
+  ),
 }));
 
 vi.mock('../CapacityCard', () => ({

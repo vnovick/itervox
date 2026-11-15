@@ -60,9 +60,10 @@ func playbookInput(issue domain.Issue, override string) playbook.Input {
 
 // resolveRunPlaybook chooses the playbook of a run startRun is starting.
 // Event loop only (it reads state.PlaybookOverrides and, under cfgMu, the
-// reviewer profile). Unusable playbook files are logged; the run still
-// starts.
-func (o *Orchestrator) resolveRunPlaybook(state *State, entry *RunEntry) playbook.Choice {
+// reviewer profile). taskPlaybook is the playbook a New task was created
+// with (#251), used when the operator has no override yet. Unusable
+// playbook files are logged; the run still starts.
+func (o *Orchestrator) resolveRunPlaybook(state *State, entry *RunEntry, taskPlaybook string) playbook.Choice {
 	if o == nil || o.cfg == nil || entry == nil || !o.cfg.Agent.Playbooks.Enabled {
 		return playbook.Choice{}
 	}
@@ -72,9 +73,11 @@ func (o *Orchestrator) resolveRunPlaybook(state *State, entry *RunEntry) playboo
 	if !playbookApplies(entry.Kind, reviewerProfile, entry.AutomationID != "") {
 		return playbook.Choice{}
 	}
-	override := ""
+	override := taskPlaybook
 	if state != nil {
-		override = state.PlaybookOverrides[entry.Issue.Identifier]
+		if ov, ok := state.PlaybookOverrides[entry.Issue.Identifier]; ok {
+			override = ov
+		}
 	}
 	choice, errs := resolvePlaybookFor(o.cfg, entry.Issue, override)
 	for _, e := range errs {

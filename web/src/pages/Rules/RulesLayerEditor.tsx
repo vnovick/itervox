@@ -25,13 +25,36 @@ export function RulesLayerEditor({ layer, schemaUrl }: { layer: RulesLayer; sche
   const draftKey = `${layer.name}-${layer.version}`;
 
   return (
-    <div className="space-y-4" data-testid={`rules-layer-${layer.name}`}>
-      <div className="space-y-1">
-        <p className="text-theme-text font-mono text-xs break-all">{layer.path || '(off)'}</p>
-        <p className="text-theme-muted text-xs">
-          {info.git}{' '}
-          {!layer.exists && layer.writable && 'The file does not exist yet; saving creates it.'}
-        </p>
+    <div className="space-y-3" data-testid={`rules-layer-${layer.name}`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          {/* One line, never broken mid-word: long paths truncate (full path
+              on hover). */}
+          <p className="text-theme-text truncate font-mono text-xs" title={layer.path || undefined}>
+            {layer.path || '(off)'}
+          </p>
+          <p className="text-theme-muted text-xs">
+            {info.git}{' '}
+            {!layer.exists && layer.writable && 'The file does not exist yet; saving creates it.'}
+          </p>
+        </div>
+        {layer.writable && (
+          <div role="group" aria-label="Editor view" className="segmented">
+            {VIEWS.map((v) => (
+              <button
+                key={v.id}
+                type="button"
+                aria-pressed={view === v.id}
+                className="text-sm"
+                onClick={() => {
+                  setView(v.id);
+                }}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {layer.error && (
         <Banner tone="danger" className="rounded-[var(--radius-sm)]">
@@ -42,25 +65,6 @@ export function RulesLayerEditor({ layer, schemaUrl }: { layer: RulesLayer; sche
         <p className="text-theme-muted text-sm">This layer is turned off.</p>
       ) : (
         <>
-          <div role="group" aria-label="Editor view" className="flex gap-1">
-            {VIEWS.map((v) => (
-              <button
-                key={v.id}
-                type="button"
-                aria-pressed={view === v.id}
-                className={`rounded-[var(--radius-sm)] px-3 py-1 text-xs font-medium ${
-                  view === v.id
-                    ? 'bg-theme-accent text-white'
-                    : 'text-theme-text-secondary hover:bg-theme-panel-strong'
-                }`}
-                onClick={() => {
-                  setView(v.id);
-                }}
-              >
-                {v.label}
-              </button>
-            ))}
-          </div>
           {view === 'form' && layer.error ? (
             <p className="text-theme-muted text-sm">
               Fix the file in the JSON view to edit it as a form.

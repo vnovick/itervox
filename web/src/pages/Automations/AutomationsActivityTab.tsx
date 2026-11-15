@@ -32,7 +32,7 @@ export default function AutomationsActivityTab() {
 
   if (automations.length === 0) {
     return (
-      <Card variant="elevated" className="space-y-2">
+      <Card variant="panel" padding="lg" className="space-y-2">
         <p className="text-theme-text text-sm font-semibold">No automations configured yet</p>
         <p className="text-theme-muted text-sm leading-relaxed">
           Switch to the Configure tab to add your first cron, input-required, or run-failed rule.
@@ -42,7 +42,7 @@ export default function AutomationsActivityTab() {
   }
 
   return (
-    <div className="space-y-4" data-testid="automations-activity">
+    <div className="flex flex-col gap-4" data-testid="automations-activity">
       {sorted.map((automation) => (
         <AutomationActivityCard
           key={automation.id}

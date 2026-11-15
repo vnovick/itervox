@@ -75,23 +75,18 @@ func runModelsList(args []string) {
 func runModelsRefresh(args []string) {
 	fs := flag.NewFlagSet("models refresh", flag.ExitOnError)
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md")
-	backend := fs.String("backend", "all", "claude | codex | all")
+	backend := fs.String("backend", "all", "claude | codex | opencode | all")
 	dryRun := fs.Bool("dry-run", false, "print discovered models; do not write")
 	_ = fs.Parse(args)
 
-	discovered := map[string][]agent.ModelOption{}
-	switch *backend {
-	case "claude":
-		discovered["claude"] = agent.ListClaudeModels()
-	case "codex":
-		discovered["codex"] = agent.ListCodexModels()
-	case "all", "":
-		discovered["claude"] = agent.ListClaudeModels()
-		discovered["codex"] = agent.ListCodexModels()
-	default:
-		fmt.Fprintf(os.Stderr, "itervox models refresh: invalid --backend %q (claude|codex|all)\n", *backend)
+	if *backend == "" {
+		*backend = "all"
+	}
+	if !IsAcceptedModelBackend(*backend) {
+		fmt.Fprintf(os.Stderr, "itervox models refresh: invalid --backend %q (%s)\n", *backend, strings.Join(modelBackendsAccepted(), "|"))
 		fatalExit(2)
 	}
+	discovered := discoverModels(*backend)
 
 	for be, opts := range discovered {
 		fmt.Printf("%s: %d model(s)\n", be, len(opts))
@@ -262,8 +257,33 @@ func mergeAvailableModelsFront(frontLines []string, discovered map[string][]agen
 // understands. Kept narrow so the HTTP handler and the CLI share the same
 // validation surface.
 func modelBackendsAccepted() []string {
-	return []string{"claude", "codex", "all"}
+	return []string{"claude", "codex", "opencode", "all"}
 }
+
+// discoverModels lists the models of backend ("claude", "codex",
+// "opencode" or "all"), shared by `itervox models refresh` and the
+// dashboard's refresh. Claude and Codex fall back to built-in lists;
+// OpenCode's comes from `opencode models` and is left out of "all" when
+// that finds none (the CLI is not installed), so a refresh never blanks a
+// hand-written opencode list.
+func discoverModels(backend string) map[string][]agent.ModelOption {
+	discovered := map[string][]agent.ModelOption{}
+	if backend == "claude" || backend == "all" {
+		discovered["claude"] = agent.ListClaudeModels()
+	}
+	if backend == "codex" || backend == "all" {
+		discovered["codex"] = agent.ListCodexModels()
+	}
+	if backend == "opencode" || backend == "all" {
+		if list := listOpenCodeModels(); len(list) > 0 || backend == "opencode" {
+			discovered["opencode"] = list
+		}
+	}
+	return discovered
+}
+
+// listOpenCodeModels is agent.ListOpenCodeModels; a var for tests.
+var listOpenCodeModels = agent.ListOpenCodeModels
 
 // IsAcceptedModelBackend reports whether s is one of the recognised
 // --backend values. Exposed for the HTTP refresh handler.

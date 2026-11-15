@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/react';
 import { TimeAxis } from '../TimeAxis';
-import { buildTimeAxisTicks, formatTimeAxisLabel, timeAxisStep } from '../timeAxisModel';
+import {
+  buildTimeAxisTicks,
+  formatTimeAxisLabel,
+  tickTargetForWidth,
+  timeAxisStep,
+} from '../timeAxisModel';
 import { formatAxisTime } from '../timeFormatting';
 
 describe('formatAxisTime', () => {
@@ -98,5 +103,18 @@ describe('formatAxisTime', () => {
     const end = start + 90 * 24 * 60 * 60_000;
 
     expect(buildTimeAxisTicks(start, end).length).toBeLessThanOrEqual(8);
+  });
+
+  it('fits fewer ticks on a narrow axis so HH:mm labels never collide', () => {
+    expect(tickTargetForWidth(0)).toBe(6);
+    expect(tickTargetForWidth(1200)).toBe(6);
+    expect(tickTargetForWidth(250)).toBe(4);
+    expect(tickTargetForWidth(60)).toBe(2);
+    const start = new Date(2026, 0, 1, 23, 13).getTime();
+    const end = start + 30 * 60_000;
+    // A phone-width axis (~250px): every label keeps >= 56px of room.
+    const narrow = buildTimeAxisTicks(start, end, tickTargetForWidth(250));
+    expect(narrow.length).toBeLessThanOrEqual(4);
+    expect(buildTimeAxisTicks(start, end).length).toBeGreaterThan(narrow.length);
   });
 });

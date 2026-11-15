@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::client::{ClientPool, FetchError};
-use crate::daemon_state::{InputRequired, StateSummary, INPUT_STATE_WAITING};
+use crate::daemon_state::{DiskWarning, InputRequired, StateSummary, INPUT_STATE_WAITING};
 use crate::model::FetchJob;
 use crate::status::DaemonRecord;
 
@@ -76,6 +76,17 @@ struct Summary {
     project_name: String,
     counts: SummaryCounts,
     paused: bool,
+    /// System visibility: the summary's rounded run memory and disk warning.
+    system: SummarySystem,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct SummarySystem {
+    runs_rss_bytes: u64,
+    disk_low: bool,
+    disk_critical: bool,
+    disk_free_bytes: u64,
 }
 
 /// What the tray shows of a daemon from its `/api/v1/summary`: the counts
@@ -104,6 +115,11 @@ pub fn summary_state(summary: &serde_json::Value) -> Option<StateSummary> {
         input_required,
         failures: Vec::new(),
         dispatch_paused: s.paused,
+        runs_rss_bytes: s.system.runs_rss_bytes,
+        disk: s.system.disk_low.then_some(DiskWarning {
+            free_bytes: s.system.disk_free_bytes,
+            critical: s.system.disk_critical,
+        }),
     })
 }
 
@@ -570,6 +586,19 @@ pub(crate) mod tests {
         assert_eq!(st.waiting_for_input().count(), 1);
         assert_eq!(st.input_required.len(), 3);
         assert!(st.dispatch_paused);
+        assert_eq!((st.runs_rss_bytes, st.disk), (0, None), "an older hub");
+        let sys = summary_state(&serde_json::json!({
+            "system": {"runsRssBytes": 1073741824u64, "diskLow": true, "diskCritical": true, "diskFreeBytes": 805306368u64}
+        }))
+        .unwrap();
+        assert_eq!(sys.runs_rss_bytes, 1 << 30);
+        assert_eq!(
+            sys.disk,
+            Some(DiskWarning {
+                free_bytes: 805_306_368,
+                critical: true
+            })
+        );
         // Placeholders never notify: no identifier, no timestamp.
         let mut d = crate::events::EventDetector::new(0);
         assert!(d.observe("/w", "w", "http://x/", &st).is_empty());

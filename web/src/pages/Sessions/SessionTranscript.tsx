@@ -20,12 +20,12 @@ function TranscriptItem({ entry }: { entry: TranscriptEntry }) {
     <li
       data-testid="transcript-entry"
       data-kind={entry.kind}
-      className="border-theme-line flex gap-2 border-b py-1.5 text-xs last:border-b-0"
+      className="border-theme-line flex gap-3 border-b py-1.5 font-mono text-xs leading-relaxed last:border-b-0"
     >
       <span
         className={
           entry.role === 'user' && !tool
-            ? 'w-12 shrink-0 font-mono font-semibold text-orange-400'
+            ? 'text-theme-warning-text w-12 shrink-0 font-mono font-semibold'
             : 'text-theme-muted w-12 shrink-0 font-mono'
         }
       >

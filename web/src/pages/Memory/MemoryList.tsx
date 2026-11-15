@@ -14,10 +14,7 @@ export function MemoryList({
 }) {
   const select = useUIStore((s) => s.setMemorySelectedId);
   return (
-    <ul
-      className="divide-theme-line border-theme-line divide-y rounded border"
-      data-testid="memory-list"
-    >
+    <ul className="space-y-2" data-testid="memory-list">
       {entries.map((e) => {
         const active = e.id === selectedId;
         return (
@@ -25,12 +22,12 @@ export function MemoryList({
             <button
               type="button"
               aria-pressed={active}
-              className={`w-full px-3 py-2 text-left text-sm ${active ? 'bg-theme-accent-soft' : 'hover:bg-theme-panel-strong'}`}
+              className="choice-card w-full flex-col items-start gap-1.5 rounded-[var(--radius-md)] px-3.5 py-2.5 text-sm"
               onClick={() => {
                 select(active ? null : e.id);
               }}
             >
-              <span className="text-theme-text block truncate">
+              <span className="text-theme-text block w-full truncate">
                 {e.pinned && (
                   <span className="text-theme-accent-strong mr-1.5 text-xs font-semibold">
                     Pinned
@@ -38,16 +35,23 @@ export function MemoryList({
                 )}
                 {e.text}
               </span>
-              <span className="text-theme-muted mt-0.5 flex flex-wrap gap-x-3 text-xs">
-                <span>{TYPE_LABELS[e.type]}</span>
-                <span>{SCOPE_INFO[e.scope].label}</span>
-                {e.status === 'archived' && <span>Archived</span>}
-                <span>
+              <span
+                className="flex flex-wrap justify-start gap-1.5"
+                data-testid="memory-entry-meta"
+              >
+                <span className="tag">{TYPE_LABELS[e.type]}</span>
+                <span className="tag">{SCOPE_INFO[e.scope].label}</span>
+                {e.status === 'archived' && <span className="tag pill-warn">Archived</span>}
+                <span className="tag">
                   {e.useCount === 0
                     ? 'never used'
                     : `used by ${String(e.useCount)} run${e.useCount === 1 ? '' : 's'}`}
                 </span>
-                {e.tags.length > 0 && <span>#{e.tags.join(' #')}</span>}
+                {e.tags.map((t) => (
+                  <span key={t} className="tag">
+                    #{t}
+                  </span>
+                ))}
               </span>
             </button>
           </li>

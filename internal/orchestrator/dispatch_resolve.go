@@ -33,9 +33,9 @@ type dispatchTarget struct {
 	Reason        string // non-empty when a requested backend was refused
 }
 
-// commandBinaryBackend returns "claude" or "codex" when the command's first
+// commandBinaryBackend returns the backend whose CLI the command's first
 // real token (after any backend hint, env assignments and an `env` prefix)
-// is that binary, and "" for anything else — an opaque wrapper script, npx,
+// is (config.BackendForBinary), and "" for anything else — an opaque wrapper script, npx,
 // a shell. Unlike agent.BackendFromCommand it ignores the hint: it answers
 // "what will actually execute".
 func commandBinaryBackend(command string) string {
@@ -46,10 +46,7 @@ func commandBinaryBackend(command string) string {
 	if first == "" {
 		return ""
 	}
-	if base := filepath.Base(first); config.IsSupportedBackend(base) {
-		return base
-	}
-	return ""
+	return config.BackendForBinary(filepath.Base(first))
 }
 
 // stripBackendHint returns command without a leading backend hint.
@@ -126,19 +123,20 @@ func resolveDispatchTarget(in dispatchTargetInput) dispatchTarget {
 // authoritative, because the session id being resumed belongs to it:
 //
 //   - An empty stored command resolves to the profile's command, else — for
-//     a non-claude backend — the backend name as its binary, else
+//     a non-claude backend — that backend's binary (config.BackendBinary;
+//     none for custom), else
 //     agent.command (the pre-existing fallback, preserved).
 //   - When the resolved command's binary is recognisable and disagrees with
 //     the stored backend (a stored "claude ..." for a codex session, or an
-//     empty command whose profile says claude), the backend name is used as
-//     the binary instead, and Reason says why. A wrapper keeps its command
+//     empty command whose profile says claude), the backend's binary is used
+//     instead, and Reason says why. A wrapper keeps its command
 //     and gets the hint.
 func resolveResumeTarget(storedCommand, storedBackend, profileCommand, defaultCommand string) dispatchTarget {
 	cmd := storedCommand
 	if cmd == "" {
 		cmd = profileCommand
 		if cmd == "" && storedBackend != "" && storedBackend != "claude" {
-			cmd = storedBackend // the backend name IS the binary name
+			cmd = config.BackendBinary(storedBackend) // "" for custom: no binary of its own
 		}
 		if cmd == "" {
 			cmd = defaultCommand
@@ -149,9 +147,19 @@ func resolveResumeTarget(storedCommand, storedBackend, profileCommand, defaultCo
 	}
 	t := dispatchTarget{Command: stripBackendHint(cmd), Backend: storedBackend}
 	if bin := commandBinaryBackend(cmd); bin != "" && bin != storedBackend && config.IsSupportedBackend(storedBackend) {
+		binary := config.BackendBinary(storedBackend)
+		if binary == "" {
+			// A custom-protocol session has no binary to fall back to;
+			// the command keeps its own backend.
+			t.Reason = fmt.Sprintf("stored %s session cannot resume with a %q command; kept %q",
+				storedBackend, bin, bin)
+			t.Backend = bin
+			t.RunnerCommand = t.Command
+			return t
+		}
 		t.Reason = fmt.Sprintf("stored %s session cannot resume with a %q command; using the %q binary",
-			storedBackend, bin, storedBackend)
-		t.Command = storedBackend
+			storedBackend, bin, binary)
+		t.Command = binary
 	}
 	t.RunnerCommand = agent.CommandWithBackendHint(t.Command, storedBackend)
 	return t

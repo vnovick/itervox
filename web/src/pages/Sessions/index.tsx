@@ -5,6 +5,7 @@ import { EmptyState } from '../../components/ui/EmptyState';
 import { Terminal } from '../../components/ui/Terminal/Terminal';
 import { useIssueLogs } from '../../queries/logs';
 import { Button } from '../../components/ui/button';
+import { ConsoleSurface } from '../../components/ui/Console/ConsoleSurface';
 import { sessionKey, sessionLabel, useSessions } from '../../queries/sessions';
 import { useItervoxStore } from '../../store/itervoxStore';
 import type { SessionRow, TmuxStatus } from '../../types/schemas';
@@ -46,10 +47,14 @@ function SessionView({ session, tmux }: { session: SessionRow; tmux?: TmuxStatus
       id="session-panel"
       role="tabpanel"
       aria-labelledby={`session-tab-${sessionKey(session)}`}
-      className="bg-theme-panel border-theme-line flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-lg border p-3"
+      className="glass-panel flex min-h-0 min-w-0 flex-1 flex-col gap-3 rounded-[26px] px-5 py-[18px]"
     >
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="text-theme-text font-mono text-sm font-semibold">{sessionLabel(session)}</h2>
+        <h2
+          className={`text-theme-text text-[17px] font-bold ${session.identifier ? 'font-mono' : ''}`}
+        >
+          {sessionLabel(session)}
+        </h2>
         {session.title && session.identifier && (
           <span className="text-theme-text-secondary text-sm">{session.title}</span>
         )}
@@ -67,9 +72,9 @@ function SessionView({ session, tmux }: { session: SessionRow; tmux?: TmuxStatus
           </span>
         )}
       </header>
-      <div className="flex min-h-[240px] flex-1 flex-col overflow-hidden">
+      <ConsoleSurface className="flex min-h-[320px] flex-1 flex-col rounded-[18px]">
         <SessionBody session={session} />
-      </div>
+      </ConsoleSurface>
       {session.controllable ? (
         <TmuxControls key={sessionKey(session)} session={session} />
       ) : (
@@ -111,20 +116,22 @@ export default function Sessions() {
           />
         </div>
       )}
-      <div className="mt-3 flex flex-col gap-3 md:flex-row">
-        <aside className="w-full shrink-0 md:w-64">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <h1 className="text-theme-text text-sm font-semibold">
+      <div className="mt-3 flex flex-col gap-4 md:flex-row md:items-start">
+        <aside aria-label="Sessions" className="glass-panel w-full shrink-0 p-3 md:w-80">
+          <div className="mb-2 flex items-center justify-between gap-2 px-1.5 pt-1">
+            <h1 className="section-title">
               Sessions{' '}
               {waiting > 0 && (
-                <span data-testid="sessions-waiting" className="text-orange-400">
+                <span data-testid="sessions-waiting" className="text-theme-warning-text">
                   · {waiting} waiting
                 </span>
               )}
             </h1>
             {tmux && (
               <Button
-                size="sm"
+                size="md"
+                variant="glass"
+                pill
                 data-testid="new-session-button"
                 disabled={!tmux.available}
                 title={tmux.available ? 'Start an agent in a new tmux session' : TMUX_MISSING}

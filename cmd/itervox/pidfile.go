@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/vnovick/itervox/internal/config"
 
@@ -192,14 +191,7 @@ func processAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// Signal 0 performs no delivery but returns an error if the target is
-	// gone or not owned by the caller. On Windows os.FindProcess only
-	// succeeds for live processes, so Signal(nil)-like semantics aren't
-	// needed there — but Signal(syscall.Signal(0)) is still a no-op.
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		return false
-	}
-	return true
+	return probeProcess(proc)
 }
 
 // linkClaim creates target containing content, atomically, failing with

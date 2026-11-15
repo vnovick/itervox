@@ -15,11 +15,7 @@ export function SchemaDriftBanner() {
   );
   if (count < SCHEMA_DRIFT_BANNER_THRESHOLD) return null;
   return (
-    <div
-      role="alert"
-      data-testid="schema-drift-banner"
-      className="bg-theme-danger-soft text-theme-danger-text border-theme-danger sticky top-0 z-40 border-b px-4 py-2 text-sm"
-    >
+    <div role="alert" data-testid="schema-drift-banner" className="banner-danger">
       <strong className="font-semibold">Dashboard cannot read daemon updates:</strong>{' '}
       <span>
         the last {count} snapshots failed to parse

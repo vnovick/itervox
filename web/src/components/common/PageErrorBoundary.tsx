@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { reportClientError } from '../../lib/clientErrorReporter';
+import { plainButtonClass } from '../ui/button/buttonRecipe';
+import { StatusCard } from './StatusCard';
 
 interface Props {
   children: ReactNode;
@@ -39,20 +41,14 @@ export class PageErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
 
     return (
-      <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
-        <h2 className="text-theme-danger-text text-xl font-semibold">This page crashed</h2>
-        <p className="text-theme-muted max-w-md text-sm">
-          An unexpected error occurred while rendering this page.
-        </p>
-        <pre className="border-theme-line bg-theme-bg-soft text-theme-text-secondary max-w-lg overflow-auto rounded-lg border p-4 text-left text-xs">
-          {error.message}
-        </pre>
-        <a
-          href="/"
-          className="bg-theme-accent rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
-        >
-          Go to Dashboard
-        </a>
+      <div className="flex justify-center py-10">
+        <StatusCard eyebrow="Page error" title="This page crashed" level={2}>
+          <p>An unexpected error occurred while rendering this page.</p>
+          <pre className="code-block max-h-48 text-left">{error.message}</pre>
+          <a href="/" className={plainButtonClass('primary', 'lg')}>
+            Go to Dashboard
+          </a>
+        </StatusCard>
       </div>
     );
   }

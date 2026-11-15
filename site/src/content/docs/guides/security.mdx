@@ -134,6 +134,18 @@ merges, input requests, guardrail approvals) with a short-lived per-run
 grant that only that run holds. Those routes never accept dashboard tokens
 and dashboard tokens never reach agents; scopes do not change them.
 
+## Agent processes
+
+Tokens control who may call the daemon. What an agent *process* may touch on
+the machine is a separate question: by default it has the daemon user's full
+filesystem access. A profile with `isolation: process` runs its agent inside
+an operating-system sandbox that hides `~/.ssh`, `~/.aws`, `~/.config/gh`,
+the project's `.itervox/.env` and token files, the hub and dashboard token
+files and every other workspace, and lets it write only to its own workspace
+(plus its git directories, the temp directory and the CLI's own state). A run
+whose sandbox is unavailable does not start. Hooks are not sandboxed. See
+[Process isolation](/guides/isolation/).
+
 ## API scope table
 
 Every route declares its scope in `internal/server/route_scopes.go`, the one
@@ -183,6 +195,7 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/state` | viewer |
 | `GET` | `/api/v1/steering/phrases` | viewer (#218) |
 | `GET` | `/api/v1/summary` | viewer |
+| `GET` | `/api/v1/task-templates` | viewer (saved task templates, #251) |
 | `GET` | `/api/v1/tracker/labels` | viewer |
 | `GET` | `/api/v1/tracker/scope` | viewer |
 | `GET` | `/api/v1/tracker/teams` | viewer |
@@ -208,6 +221,7 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/issues/{identifier}/pr-review` | operator (one GitHub review, never merges, #238) |
 | `POST` | `/api/v1/issues/{identifier}/playbook` | operator (per-issue playbook override, #218) |
 | `POST` | `/api/v1/issues/{identifier}/review-comments` | operator (to the running agent or the PR, #238) |
+| `POST` | `/api/v1/issues/{identifier}/review-continue` | operator (the whole draft review to the agent: steer the live run, or queue it for a new run) |
 | `POST` | `/api/v1/issues/{identifier}/profile` | operator |
 | `POST` | `/api/v1/issues/{identifier}/provide-input` | operator |
 | `POST` | `/api/v1/issues/{identifier}/reanalyze` | operator |
@@ -233,6 +247,8 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
 | `POST` | `/api/v1/skills/scan` | operator |
 | `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
+| `POST` | `/api/v1/tasks` | operator (New task: creates an issue, may dispatch, #251) |
+| `PUT` | `/api/v1/tasks/{identifier}/instructions` | operator (until the task starts, #251) |
 | `POST` | `/api/v1/automations/{id}/test` | admin |
 | `PUT` | `/api/v1/projects/filter` | admin |
 | `PUT` | `/api/v1/rules/{layer}` | admin |
@@ -258,6 +274,9 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/settings/workers` | admin |
 | `POST` | `/api/v1/settings/workspace/auto-clear` | admin |
 | `POST` | `/api/v1/skills/fix` | admin (writes skill files) |
+| `POST` | `/api/v1/task-templates/{name}` | admin (writes `.itervox/tasks/<name>.md`, #251) |
+| `PUT` | `/api/v1/task-templates/{name}` | admin (#251) |
+| `DELETE` | `/api/v1/task-templates/{name}` | admin (#251) |
 | `GET` | `/api/v1/tokens` | admin |
 | `POST` | `/api/v1/tokens` | admin |
 | `DELETE` | `/api/v1/tokens/{id}` | admin |

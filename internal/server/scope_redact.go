@@ -80,6 +80,7 @@ func redactSecretValue(v any) any {
 func snapshotForScope(snap StateSnapshot, scope apitokens.Scope) StateSnapshot {
 	snap.CallerScope = string(scope)
 	snap.ProfileDefs = profileDefsForScope(snap.ProfileDefs, scope)
+	snap.Running = runningForScope(snap.Running, scope)
 	return snap
 }
 

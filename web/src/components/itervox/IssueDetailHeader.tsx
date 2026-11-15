@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router';
+import { backendFromHint } from '../../lib/backends';
 import Badge from '../ui/badge/Badge';
 import { stateBadgeColor, formatOrchestratorState } from '../../utils/format';
 import type {
@@ -20,15 +21,7 @@ import type {
  *  2. The configured profile's backend or command (covers between-runs).
  *  3. The default backend.
  */
-export default function IssueDetailHeader({
-  issue,
-  runningRows,
-  history,
-  profileDefs,
-  defaultBackend,
-  automations,
-  syncing,
-}: {
+interface IssueDetailHeaderProps {
   issue: TrackerIssue;
   runningRows: RunningRow[] | undefined;
   history?: HistoryRow[];
@@ -41,18 +34,44 @@ export default function IssueDetailHeader({
    * DraggableCard has used since Task 4 (accepted-minor D on the final
    * review: ListView/IssueDetailSlide had no equivalent marker). */
   syncing?: boolean;
-}) {
+}
+
+/**
+ * The header: badges, then the title on its own line. With `badges={false}`
+ * only the title renders — the slide draws the badges inline after the
+ * identifier (IssueDetailBadges in the panel's title row).
+ */
+export default function IssueDetailHeader({
+  badges = true,
+  ...props
+}: IssueDetailHeaderProps & { badges?: boolean }) {
+  return (
+    <div className="flex-shrink-0 space-y-3 px-6 pb-3">
+      {badges && <IssueDetailBadges {...props} />}
+      <p className="text-theme-text text-xl leading-tight font-semibold tracking-[-0.01em]">
+        {props.issue.title}
+      </p>
+    </div>
+  );
+}
+
+/** State, run state, sync / automation / sandbox markers and the backend tag. */
+export function IssueDetailBadges({
+  issue,
+  runningRows,
+  history,
+  profileDefs,
+  defaultBackend,
+  automations,
+  syncing,
+}: IssueDetailHeaderProps) {
   const runningRow = runningRows?.find((r) => r.identifier === issue.identifier);
   const runningBackend = runningRow?.backend;
   const profileHint =
     issue.agentProfile && profileDefs?.[issue.agentProfile]
       ? profileDefs[issue.agentProfile].backend || profileDefs[issue.agentProfile].command || ''
       : '';
-  const backend =
-    runningBackend ||
-    (profileHint &&
-      (/codex/i.test(profileHint) ? 'codex' : /claude/i.test(profileHint) ? 'claude' : '')) ||
-    defaultBackend;
+  const backend = runningBackend || backendFromHint(profileHint) || defaultBackend;
 
   // T-9: latest run's automation context. Live runs win; otherwise fall back
   // to the newest matching history row.
@@ -83,59 +102,63 @@ export default function IssueDetailHeader({
   };
 
   return (
-    <div className="border-theme-line flex-shrink-0 space-y-1 border-b px-5 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge color={stateBadgeColor(issue.state)} size="sm">
-          {issue.state}
-        </Badge>
-        <Badge
-          color={
-            issue.orchestratorState === 'running'
-              ? 'success'
-              : issue.orchestratorState === 'retrying' ||
-                  issue.orchestratorState === 'pending_input_resume'
-                ? 'warning'
-                : 'light'
-          }
-          size="sm"
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <Badge color={stateBadgeColor(issue.state)} size="sm">
+        {issue.state}
+      </Badge>
+      <Badge
+        color={
+          issue.orchestratorState === 'running'
+            ? 'success'
+            : issue.orchestratorState === 'retrying' ||
+                issue.orchestratorState === 'pending_input_resume'
+              ? 'warning'
+              : 'light'
+        }
+        size="sm"
+      >
+        {formatOrchestratorState(issue.orchestratorState)}
+      </Badge>
+      {syncing && (
+        <span
+          data-testid="issue-detail-syncing-badge"
+          title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
+          className="pill pill-accent flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
         >
-          {formatOrchestratorState(issue.orchestratorState)}
-        </Badge>
-        {syncing && (
-          <span
-            data-testid="issue-detail-syncing-badge"
-            title="A tracker state update for this issue is queued and not yet confirmed by the tracker"
-            className="flex-shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300"
-          >
-            ⟳ Syncing
-          </span>
-        )}
-        {latestAutomationId && (
-          <button
-            type="button"
-            data-testid="automation-source-badge"
-            onClick={onAutomationClick}
-            disabled={automationStale}
-            title={
-              automationStale
-                ? 'Rule deleted'
-                : `Triggered by automation ${latestAutomationId} — click to open the rule`
-            }
-            className={
-              'rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ' +
-              (automationStale
-                ? 'bg-theme-bg-soft text-theme-muted/60 cursor-not-allowed line-through'
-                : 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25')
-            }
-          >
-            🤖 {latestAutomationId}
-          </button>
-        )}
-        <span className="bg-theme-bg-soft text-theme-text-secondary ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium">
-          {backend}
+          ⟳ Syncing
         </span>
-      </div>
-      <p className="text-theme-text text-xl leading-tight font-semibold">{issue.title}</p>
+      )}
+      {latestAutomationId && (
+        <button
+          type="button"
+          data-testid="automation-source-badge"
+          onClick={onAutomationClick}
+          disabled={automationStale}
+          title={
+            automationStale
+              ? 'Rule deleted'
+              : `Triggered by automation ${latestAutomationId} — click to open the rule`
+          }
+          className={
+            'pill px-2 py-0.5 text-[10px] leading-4 transition-colors ' +
+            (automationStale
+              ? 'pill-neutral cursor-not-allowed line-through opacity-60'
+              : 'pill-ok hover:brightness-95')
+          }
+        >
+          🤖 {latestAutomationId}
+        </button>
+      )}
+      {runningRow?.isolation && (
+        <span
+          data-testid="issue-detail-isolation-badge"
+          title="The agent runs in an operating-system sandbox: it can write only to its workspace, and credentials and other workspaces are hidden"
+          className="pill pill-ok flex-shrink-0 px-2 py-0.5 text-[10px] leading-4"
+        >
+          Sandboxed ({runningRow.isolation})
+        </span>
+      )}
+      <span className="tag ml-auto">{backend}</span>
     </div>
   );
 }

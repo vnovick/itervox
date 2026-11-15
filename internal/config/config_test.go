@@ -198,7 +198,7 @@ func TestTildeExpansionOnWorkspaceRoot(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	home, _ := os.UserHomeDir()
-	assert.Equal(t, home+"/itervox_ws", cfg.Workspace.Root)
+	assert.Equal(t, filepath.Join(home, "itervox_ws"), cfg.Workspace.Root)
 }
 
 func TestAgentCommandNotTildeExpanded(t *testing.T) {
@@ -576,7 +576,7 @@ Prompt.
 
 	_, err := config.Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), ".itervox/agents/implementer/INSTRUCTIONS.md")
+	assert.Contains(t, err.Error(), filepath.FromSlash(".itervox/agents/implementer/INSTRUCTIONS.md"))
 }
 
 func TestSchema2ProfileValidatesFilesBeforeCommand(t *testing.T) {
@@ -601,7 +601,7 @@ Prompt.
 
 	_, err := config.Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), ".itervox/agents/implementer/SOUL.md")
+	assert.Contains(t, err.Error(), filepath.FromSlash(".itervox/agents/implementer/SOUL.md"))
 }
 
 func TestSchema2ProfileRejectsInlinePrompt(t *testing.T) {
@@ -770,6 +770,32 @@ func TestAgentProfileCreateIssueStateField(t *testing.T) {
 	require.NotNil(t, cfg.Agent.Profiles)
 	assert.Equal(t, []string{"create_issue"}, cfg.Agent.Profiles["triage"].AllowedActions)
 	assert.Equal(t, "Todo", cfg.Agent.Profiles["triage"].CreateIssueState)
+}
+
+// TestAgentProfileCreateIssueLabelsField (#253): create_issue_labels round-
+// trips from WORKFLOW.md (trimmed, blanks and case-insensitive duplicates
+// dropped, first spelling and order kept) and is empty when absent.
+func TestAgentProfileCreateIssueLabelsField(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    splitter:
+      command: claude
+      allowed_actions: [create_issue]
+      create_issue_state: Todo
+      create_issue_labels:
+        - repo:web
+        - " needs-design "
+        - Repo:Web
+        - ""
+    plain:
+      command: claude
+      allowed_actions: [create_issue]
+      create_issue_state: Todo
+`)
+	cfg, err := config.Load(workflowWithContent(t, content))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"repo:web", "needs-design"}, cfg.Agent.Profiles["splitter"].CreateIssueLabels)
+	assert.Empty(t, cfg.Agent.Profiles["plain"].CreateIssueLabels, "absent key: no labels allowed")
 }
 
 func TestAgentProfileEnabledField(t *testing.T) {

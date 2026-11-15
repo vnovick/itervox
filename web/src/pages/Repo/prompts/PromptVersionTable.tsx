@@ -20,31 +20,22 @@ export function PromptVersionTable({
   onSelect,
 }: PromptVersionTableProps) {
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
-      <p className="text-theme-text mb-2 font-mono text-sm font-medium">{profile}</p>
+    <div className="glass-panel px-5 py-[18px]">
+      <p className="section-title mb-2 font-mono">{profile}</p>
       <div className="overflow-x-auto">
-        <table
-          className="w-full min-w-[36rem] text-xs"
-          aria-label={`Prompt versions of ${profile}`}
-        >
+        <table className="data-table min-w-[36rem]" aria-label={`Prompt versions of ${profile}`}>
           <thead>
-            <tr className="text-theme-muted text-left">
-              <th scope="col" className="py-1 pr-3 font-medium">
-                Version
-              </th>
-              <th scope="col" className="py-1 pr-3 font-medium">
-                First seen
-              </th>
-              <th scope="col" className="py-1 pr-3 font-medium">
-                Last seen
-              </th>
-              <th scope="col" className="py-1 pr-3 text-right font-medium">
+            <tr>
+              <th scope="col">Version</th>
+              <th scope="col">First seen</th>
+              <th scope="col">Last seen</th>
+              <th scope="col" className="text-right">
                 Runs
               </th>
-              <th scope="col" className="py-1 pr-3 text-right font-medium">
+              <th scope="col" className="text-right">
                 Success
               </th>
-              <th scope="col" className="py-1 pr-3 text-right font-medium">
+              <th scope="col" className="text-right">
                 Avg duration
               </th>
             </tr>
@@ -55,9 +46,9 @@ export function PromptVersionTable({
               return (
                 <tr
                   key={`${profile}-${v.promptDigest}`}
-                  className={`border-theme-line border-t ${active ? 'bg-theme-accent-soft' : ''}`}
+                  className={active ? 'bg-theme-accent-soft' : undefined}
                 >
-                  <td className="py-1 pr-3">
+                  <td>
                     <button
                       type="button"
                       aria-pressed={active}
@@ -65,18 +56,16 @@ export function PromptVersionTable({
                       onClick={() => {
                         onSelect(active ? null : v.promptDigest);
                       }}
-                      className="text-theme-accent font-mono hover:underline"
+                      className="text-theme-accent-text font-mono hover:underline"
                     >
                       {shortDigest(v.promptDigest)}
                     </button>
                   </td>
-                  <td className="text-theme-muted py-1 pr-3">{fmtSeen(v.firstSeenAt)}</td>
-                  <td className="text-theme-muted py-1 pr-3">{fmtSeen(v.lastSeenAt)}</td>
-                  <td className="text-theme-text py-1 pr-3 text-right tabular-nums">{v.runs}</td>
-                  <td className="text-theme-text py-1 pr-3 text-right tabular-nums">
-                    {fmtRate(v.successRate)}
-                  </td>
-                  <td className="text-theme-muted py-1 pr-3 text-right tabular-nums">
+                  <td className="text-theme-text-secondary">{fmtSeen(v.firstSeenAt)}</td>
+                  <td className="text-theme-text-secondary">{fmtSeen(v.lastSeenAt)}</td>
+                  <td className="text-right tabular-nums">{v.runs}</td>
+                  <td className="text-right tabular-nums">{fmtRate(v.successRate)}</td>
+                  <td className="text-theme-text-secondary text-right tabular-nums">
                     {fmtMs(v.avgDurationMs ?? 0)}
                   </td>
                 </tr>

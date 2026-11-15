@@ -100,11 +100,18 @@ query ItervoxIssueComments($id: String!, $after: String) {
   }
 }`
 
-// QueryCreateIssueContext fetches the source issue's team and project so a
-// follow-up issue can be created in the same workspace context.
+// QueryCreateIssueContext fetches the source issue's team (its states and
+// labels), project and workspace labels so a follow-up issue can be created
+// in the same workspace context, and the source's identifier and state so a
+// blocked_by_source follow-up can report its blocker.
 const QueryCreateIssueContext = `
 query ItervoxResolveCreateIssueContext($id: String!) {
   issue(id: $id) {
+    id
+    identifier
+    url
+    branchName
+    state { name }
     team {
       id
       states {
@@ -113,11 +120,13 @@ query ItervoxResolveCreateIssueContext($id: String!) {
           name
         }
       }
+      labels(first: 250) { nodes { id name } }
     }
     project {
       id
     }
   }
+  issueLabels(first: 250, filter: {team: {null: true}}) { nodes { id name } }
 }`
 
 // QueryCandidateIssuesAll fetches paginated issues by state only — no project filter.

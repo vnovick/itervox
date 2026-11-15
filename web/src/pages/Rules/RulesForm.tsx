@@ -25,8 +25,13 @@ export function RulesForm({ rules, saving, onSave }: RulesFormProps) {
 
   return (
     <div className="space-y-3">
-      {rows.length === 0 && (
+      {rows.length === 0 ? (
         <p className="text-theme-muted text-sm">This layer has no rules yet.</p>
+      ) : (
+        <p className="text-theme-muted text-xs">
+          Scope lists (Projects, Profiles, Backends) are comma-separated; * and ? match any text.
+          Empty means all.
+        </p>
       )}
       {rows.map((row, i) => (
         <RuleFields
@@ -44,7 +49,8 @@ export function RulesForm({ rules, saving, onSave }: RulesFormProps) {
       ))}
       <div className="flex flex-wrap gap-2">
         <Button
-          size="sm"
+          variant="secondary"
+          pill
           onClick={() => {
             setRows((prev) => [...prev, ruleRow({ id: '', severity: 'should', text: '' })]);
           }}
@@ -53,7 +59,7 @@ export function RulesForm({ rules, saving, onSave }: RulesFormProps) {
         </Button>
         <Button
           variant="primary"
-          size="sm"
+          pill
           disabled={saving || errors !== null}
           onClick={() => {
             onSave(draft);

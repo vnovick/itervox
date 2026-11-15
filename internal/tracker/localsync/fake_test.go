@@ -305,7 +305,7 @@ func (f *fakeRemote) FindCommentByKey(_ context.Context, id, key string) (*domai
 	return nil, false, nil
 }
 
-func (f *fakeRemote) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
+func (f *fakeRemote) CreateIssue(context.Context, string, tracker.NewIssue) (*domain.Issue, error) {
 	return nil, fmt.Errorf("fake: CreateIssue is not what the sync uses")
 }
 

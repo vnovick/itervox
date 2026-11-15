@@ -173,11 +173,23 @@ func reviewStackAdmits(issue domain.Issue, state State) bool {
 // the dispatch: stacking disabled, provider without StackedProvider, no
 // single live blocker, or a blocker branch that does not exist locally all
 // end up calling plain EnsureWorkspace semantics.
+//
+// taskBase (#251) is a New task's base branch: when set, and the provider
+// can start a worktree from a ref, the worktree starts from it (its
+// StackedOn names it when the branch exists) instead of from a blocker.
 func (o *Orchestrator) ensureWorkspaceMaybeStacked(
 	ctx context.Context,
 	issue domain.Issue,
 	branchName string,
+	taskBase string,
 ) (workspace.Workspace, error) {
+	if taskBase != "" {
+		if sp, ok := o.workspace.(workspace.StackedProvider); ok {
+			return sp.EnsureWorkspaceFrom(ctx, issue.Identifier, branchName, taskBase)
+		}
+		slog.Warn("worker: the workspace cannot start from a task's base branch; using workspace.base_branch",
+			"issue_identifier", issue.Identifier, "base", taskBase)
+	}
 	if !o.stackedPRsEnabled() {
 		return o.workspace.EnsureWorkspace(ctx, issue.Identifier, branchName)
 	}
@@ -210,6 +222,23 @@ func (o *Orchestrator) prBaseBranch(stackedOn string) string {
 		return ""
 	}
 	return o.cfg.Workspace.BaseBranch
+}
+
+// buildTaskBaseBlock tells the agent which branch a New task's pull request
+// must target (#251). Empty when the task has no base branch, or its branch
+// was not found (the worktree then started from workspace.base_branch).
+func buildTaskBaseBlock(base string) string {
+	if base == "" {
+		return ""
+	}
+	return strings.Join([]string{
+		"## Base Branch",
+		"",
+		fmt.Sprintf("- run.pr_base_branch: `%s`", base),
+		"",
+		fmt.Sprintf("This task's worktree starts from `%s`. Open the pull request against it", base),
+		fmt.Sprintf("(`gh pr create --base %s`), not the default branch.", base),
+	}, "\n")
 }
 
 // buildStackedPRBlock tells the agent that its worktree is stacked and which

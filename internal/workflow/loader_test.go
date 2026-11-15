@@ -487,7 +487,8 @@ func TestPatchProfilesBlock_Create(t *testing.T) {
 		"fast":     {Command: "claude --model claude-haiku-4-5-20251001", AllowedActions: []string{"comment", "provide_input"}},
 		"thorough": {Command: "claude --model claude-opus-4-6"},
 		"codex":    {Command: "run-codex-wrapper", Backend: "codex", Enabled: &disabled},
-		"triage":   {Command: "claude --model claude-sonnet-4-6", AllowedActions: []string{"create_issue"}, CreateIssueState: "Todo"},
+		"triage": {Command: "claude --model claude-sonnet-4-6", AllowedActions: []string{"create_issue"}, CreateIssueState: "Todo",
+			CreateIssueLabels: []string{"repo:web", "needs design"}},
 	}
 	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
 
@@ -506,6 +507,7 @@ func TestPatchProfilesBlock_Create(t *testing.T) {
 	assert.Contains(t, got, "      enabled: false")
 	assert.Contains(t, got, "    triage:")
 	assert.Contains(t, got, "      create_issue_state: \"Todo\"")
+	assert.Contains(t, got, "      create_issue_labels:\n        - \"repo:web\"\n        - \"needs design\"\n")
 	assert.Contains(t, got, "    thorough:")
 	assert.Contains(t, got, "      command: claude --model claude-opus-4-6")
 	assert.NotContains(t, got, "    fast:\n      enabled: false")

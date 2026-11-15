@@ -84,6 +84,20 @@ describe('IssueSteerBox (#218)', () => {
     expect(sentBodies()[1]).toEqual({ message: 'Use the existing helper' });
   });
 
+  it('is one growing line with Send inline; Ctrl/⌘+Enter sends, Enter adds a line', async () => {
+    render(<IssueSteerBox identifier="ENG-1" />);
+    const box = await screen.findByRole('textbox', { name: 'Message to the agent on ENG-1' });
+    expect(box).toHaveAttribute('rows', '1');
+    expect(box.parentElement).toContainElement(screen.getByRole('button', { name: 'Send' }));
+    fireEvent.change(box, { target: { value: 'line one' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(sentBodies()).toEqual([]);
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
+    await waitFor(() => {
+      expect(sentBodies()).toEqual([{ message: 'line one' }]);
+    });
+  });
+
   it('is hidden without a live run and from a viewer', async () => {
     routeFetch(mockFetch, {
       '/api/v1/steering/phrases': { body: phrases },

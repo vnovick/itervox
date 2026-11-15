@@ -1,3 +1,4 @@
+import { AGENT_BACKENDS } from '../../../lib/backends';
 import { z } from 'zod';
 import { FilterGroupSchema, type AutomationDef } from '../../../types/schemas';
 import { AUTOMATION_TRIGGER_TYPES } from '../../../types/automationTriggers';
@@ -50,7 +51,7 @@ export const automationFormSchema = z
     // Gap E — rate_limited rules carry these. Validated only when
     // triggerType === 'rate_limited'.
     switchToProfile: z.string(),
-    switchToBackend: z.enum(['', 'claude', 'codex']),
+    switchToBackend: z.enum(['', ...AGENT_BACKENDS]),
     cooldownMinutes: z.string().refine((v) => v.trim() === '' || /^\d+$/.test(v.trim()), {
       message: 'Cooldown must be a non-negative integer (in minutes).',
     }),

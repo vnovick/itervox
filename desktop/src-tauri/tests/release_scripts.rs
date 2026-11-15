@@ -7,6 +7,9 @@
 //! and jq (skipped without jq unless ITERVOX_E2E_REQUIRE=1, as under `make
 //! desktop-test` and CI).
 
+// Unix only: the macOS release scripts run under bash with jq.
+#![cfg(unix)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

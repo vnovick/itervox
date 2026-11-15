@@ -93,6 +93,9 @@ func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, run
 		ApprovalCommands:  g.ApprovalCommands,
 		ApprovalsEnabled:  true,
 	}
+	if o.oneShot != nil { // #252: approvals the operator gave this run
+		opts.PreApproved = o.oneShot.PreApprovedCommands
+	}
 	token := ""
 	if o.agentActionTokens != nil && o.agentActionBaseURL != "" {
 		token, err = o.agentActionTokens.IssueScoped(identifier, runID, []string{guardrails.TokenAction}, "", "", guardrailTokenTTL(turnTimeoutMs, maxTurns))

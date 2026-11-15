@@ -69,6 +69,17 @@ describe('checkBundleBudget', () => {
     );
   });
 
+  it('caps the initial JS at 600 KiB and the total at 2200 KiB', () => {
+    expect(BUDGET.initialJsBytes).toBe(600 * KB);
+    expect(BUDGET.totalJsBytes).toBe(2200 * KB);
+    const atCap = [chunk('index-a.js', 300 * KB), chunk('vendor-b.js', 300 * KB)];
+    expect(checkBundleBudget(atCap, INDEX).violations).toEqual([]);
+    const over = [chunk('index-a.js', 300 * KB), chunk('vendor-b.js', 300 * KB + 1)];
+    expect(checkBundleBudget(over, INDEX).violations.some((m) => m.startsWith('initial JS'))).toBe(
+      true,
+    );
+  });
+
   it('keeps the #211 acceptance caps', () => {
     const dashboard = BUDGET.chunks.find((c) => c.name === 'Dashboard');
     const cron = BUDGET.chunks.find((c) => c.name === 'CronWidget');

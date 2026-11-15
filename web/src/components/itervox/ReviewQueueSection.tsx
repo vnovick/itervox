@@ -120,12 +120,12 @@ export function ReviewQueueSection() {
   if (!reviewerProfile) return null;
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
+    <div className="glass-panel overflow-hidden">
       {/* Header */}
       <div className="border-theme-line flex items-center justify-between gap-3 border-b px-4 py-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-theme-text text-sm font-semibold tracking-tight">Review Queue</h2>
-          <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+          <h2 className="section-title">Review Queue</h2>
+          <span className="count-pill">
             {q ? `${String(visibleItems)}/${String(totalItems)}` : totalItems}
           </span>
         </div>
@@ -139,7 +139,7 @@ export function ReviewQueueSection() {
             onClick={() => {
               setExpanded((prev) => !prev);
             }}
-            className="border-theme-line text-theme-text-secondary hover:text-theme-text min-h-8 rounded-[var(--radius-sm)] border px-2.5 py-1 text-[11px] font-medium"
+            className="glass-chip text-theme-text hover:bg-theme-panel-strong min-h-8 px-3 py-1 text-xs font-medium"
           >
             {expanded ? 'Collapse' : 'Expand'}
           </button>

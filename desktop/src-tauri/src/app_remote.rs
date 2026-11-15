@@ -20,7 +20,7 @@ use crate::remote_ops::{
 use crate::sessions::SessionsJob;
 use crate::shellpath::{resolve_tools_for_app, Tools};
 use crate::sysevents::{PollingSystemEvents, SystemEventSource};
-use crate::token::{CachedTokenStore, KeyringTokenStore, MemoryTokenStore, TokenStore};
+use crate::token::TokenStore;
 use crate::tunnel::{health_probe, TunnelManager, TunnelStatus, TunnelTiming};
 
 /// Keychain service for remote daemons' tokens; the account is
@@ -75,13 +75,7 @@ impl RemoteShared {
                 )
             }
         };
-        let tokens: Box<dyn TokenStore> = if cfg!(target_os = "macos") {
-            Box::new(CachedTokenStore::new(KeyringTokenStore::new(
-                REMOTE_KEYCHAIN_SERVICE,
-            )))
-        } else {
-            Box::new(MemoryTokenStore::default())
-        };
+        let tokens: Box<dyn TokenStore> = crate::token::store_for(REMOTE_KEYCHAIN_SERVICE);
         let (tx, rx) = mpsc::channel();
         let s = Arc::new(RemoteShared {
             remotes: Mutex::new(remotes),
@@ -266,8 +260,7 @@ impl RemoteShared {
             "GCP IAP — SSH through IAP (the deploy kit's setup)".to_string(),
             "GCP IAP — direct port tunnel (start-iap-tunnel)".to_string(),
         ];
-        let Some(kind) = ask_choice("How does this Mac reach the host?", &kinds, false, false)?
-        else {
+        let Some(kind) = ask_choice(crate::prompt::reach_question(), &kinds, false, false)? else {
             return Ok(None);
         };
         let transport = match kind.first() {

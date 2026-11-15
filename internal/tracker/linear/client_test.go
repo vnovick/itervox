@@ -775,7 +775,7 @@ func TestCreateIssue(t *testing.T) {
 		Endpoint: srv.URL,
 	})
 
-	issue, err := client.CreateIssue(context.Background(), "issue-1", "Follow-up", "Add regression coverage", "Todo")
+	issue, err := client.CreateIssue(context.Background(), "issue-1", tracker.NewIssue{Title: "Follow-up", Body: "Add regression coverage", State: "Todo"})
 	require.NoError(t, err)
 	require.NotNil(t, issue)
 	assert.Equal(t, "ENG-2", issue.Identifier)

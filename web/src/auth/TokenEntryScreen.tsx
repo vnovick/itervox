@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { useTokenStore } from './tokenStore';
 import { useAuthStore } from './authStore';
 import { authProbeUrl, getApiContext } from './apiBase';
+import { StatusCard, StatusScreen } from '../components/common/StatusCard';
+import { plainButtonClass } from '../components/ui/button/buttonRecipe';
+import { FIELD_CLASS } from '../components/ui/Input/fieldClass';
 
 /**
  * Shown when the server requires auth but we have no valid token.
@@ -57,66 +60,72 @@ export function TokenEntryScreen() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
+    <StatusScreen>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           void submitToken();
         }}
-        className="bg-theme-bg-soft border-theme-line w-full max-w-md rounded-[var(--radius-lg)] border p-6 shadow-xl"
+        className="w-full max-w-[440px]"
       >
-        <h1 className="mb-2 text-xl font-semibold">Sign in to Itervox</h1>
-        <p className="text-theme-muted mb-4 text-sm">
-          This dashboard requires an API token. Paste the value of{' '}
-          <code className="font-mono text-xs">ITERVOX_API_TOKEN</code> below, or open the URL
-          printed in the daemon startup banner (it carries the token).
-        </p>
+        <StatusCard as="div" brand title="Sign in to Itervox" className="max-w-none">
+          <p>
+            This dashboard requires an API token. Paste the value of{' '}
+            <code className="text-theme-text font-mono text-[13px] font-semibold">
+              ITERVOX_API_TOKEN
+            </code>{' '}
+            below, or open the URL printed in the daemon startup banner (it carries the token).
+          </p>
 
-        <label htmlFor="api-token" className="mb-1 block text-sm font-medium">
-          API token
-        </label>
-        <input
-          id="api-token"
-          type="password"
-          autoComplete="current-password"
-          // eslint-disable-next-line jsx-a11y/no-autofocus -- the token field is the only control on this screen; focusing it is the expected login behaviour
-          autoFocus
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-          }}
-          className="bg-theme-bg border-theme-line w-full rounded-[var(--radius-md)] border px-3 py-2 font-mono text-sm outline-none focus:border-[color:var(--color-accent)]"
-          placeholder="paste token here"
-        />
-
-        <label className="mt-3 flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => {
-              setRemember(e.target.checked);
-            }}
-          />
-          Remember on this device (stores token in localStorage)
-        </label>
-
-        {error && (
-          <div
-            role="alert"
-            className="mt-3 rounded-[var(--radius-sm)] border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-400"
-          >
-            {error}
+          <div>
+            <label htmlFor="api-token" className="field-label">
+              API token
+            </label>
+            <input
+              id="api-token"
+              type="password"
+              autoComplete="current-password"
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- the token field is the only control on this screen; focusing it is the expected login behaviour
+              autoFocus
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value);
+              }}
+              className={`${FIELD_CLASS} h-11 font-mono`}
+              placeholder="paste token here"
+            />
           </div>
-        )}
 
-        <button
-          type="submit"
-          disabled={submitting}
-          className="mt-4 w-full rounded-[var(--radius-md)] bg-[color:var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
-        >
-          {submitting ? 'Validating…' : 'Sign in'}
-        </button>
+          <label className="flex items-center gap-2 text-[13px]">
+            <input
+              type="checkbox"
+              className="accent-theme-accent"
+              checked={remember}
+              onChange={(e) => {
+                setRemember(e.target.checked);
+              }}
+            />
+            Remember on this device (stores token in localStorage)
+          </label>
+
+          {error && (
+            <div
+              role="alert"
+              className="bg-theme-danger-soft text-theme-danger-text rounded-[var(--radius-sm)] px-3 py-2.5 text-[13px]"
+            >
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting}
+            className={plainButtonClass('primary', 'lg', { extra: 'w-full' })}
+          >
+            {submitting ? 'Validating…' : 'Sign in'}
+          </button>
+        </StatusCard>
       </form>
-    </div>
+    </StatusScreen>
   );
 }

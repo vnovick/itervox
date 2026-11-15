@@ -55,6 +55,7 @@ export const PROFILE_VARIABLES: readonly Completion[] = [
   v('run.handoff_path', 'Where this run writes its handoff file'),
   v('run.evidence_path', 'Where this run records evidence (require_evidence)'),
   v('run.pr_base_branch', 'Branch a pull request from this run targets'),
+  v('run.port', "The workspace's TCP port (ITERVOX_PORT)"),
   v('run.previous_backend', 'Backend before a switch (empty otherwise)'),
   v('run.previous_profile', 'Profile before a switch (empty otherwise)'),
   v('run.switch_reason', 'Why the backend was switched'),

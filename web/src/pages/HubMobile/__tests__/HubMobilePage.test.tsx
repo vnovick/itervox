@@ -98,13 +98,23 @@ describe('HubMobilePage needs-attention list', () => {
     renderPage();
 
     const section = await screen.findByRole('region', { name: 'Needs attention' });
-    const links = await within(section).findAllByRole('link');
-    expect(links).toHaveLength(2);
-    expect(links[0]?.getAttribute('href')).toBe('/hub/p/alpha/m/ENG-1');
-    expect(links[0]?.textContent).toContain('Which database should I migrate?');
-    expect(links[0]?.textContent).toContain('Needs you');
-    expect(links[1]?.getAttribute('href')).toBe('/hub/p/alpha/m/ENG-3');
-    expect(links[1]?.textContent).toContain('Failed');
+    const cards = await within(section).findAllByTestId('attention-card');
+    expect(cards).toHaveLength(2);
+    // Each card: the body link to the issue; a question also gets an Answer link.
+    const [question = [], failure = []] = cards.map((c) => within(c).getAllByRole('link'));
+    expect(question[0].getAttribute('href')).toBe('/hub/p/alpha/m/ENG-1');
+    expect(question[0].textContent).toContain('Which database should I migrate?');
+    expect(question[0].textContent).toContain('Needs you');
+    expect(within(cards[0]).getByRole('link', { name: 'Answer ENG-1' })).toHaveAttribute(
+      'href',
+      '/hub/p/alpha/m/ENG-1',
+    );
+    expect(failure).toHaveLength(1);
+    expect(failure[0].getAttribute('href')).toBe('/hub/p/alpha/m/ENG-3');
+    expect(failure[0].textContent).toContain('Failed');
+    // Only the top card is tinted; links are siblings, never nested.
+    expect(cards.map((c) => c.getAttribute('data-top'))).toEqual(['true', null]);
+    expect(section.querySelector('a a')).toBeNull();
     expect(within(section).queryByText('already answered')).toBeNull();
     expect(within(section).queryByText('rate limited')).toBeNull();
 

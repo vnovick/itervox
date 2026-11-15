@@ -157,7 +157,8 @@ func (o *Orchestrator) admitClaimRead(ctx context.Context, state *State, issue d
 	// Guard: if the latest comment is an unresolved Itervox input-required
 	// comment, restore the issue to InputRequiredIssues instead of dispatching
 	// a fresh worker. This recovers from daemon restarts / state loss.
-	if entry := recoverInputRequired(issue, detailed); entry != nil {
+	// #252: `itervox run --answer/--approve` brings the answer itself.
+	if entry := recoverInputRequired(issue, detailed); entry != nil && !o.oneShotAnswers() {
 		state.InputRequiredIssues[issue.Identifier] = entry
 		// Recovery path: no live RunEntry — the previous worker is gone
 		// (daemon restart / state loss). B1 self-reentry guard does not

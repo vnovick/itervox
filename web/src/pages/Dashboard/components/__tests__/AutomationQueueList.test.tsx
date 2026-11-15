@@ -392,9 +392,12 @@ describe('AutomationQueueList', () => {
 
     const header = screen.getByText('Automation').parentElement;
     const item = screen.getByTestId('automation-queue-card-ENG-CRON');
-    expect(header?.className).toContain('lg:grid');
+    // The table layout keys off the panel's own width (a container query),
+    // not the viewport: the panel sits in a half-width column on desktop.
+    expect(header?.closest('section')?.className).toContain('@container');
+    expect(header?.className).toContain('@3xl:grid');
     expect(header?.className).not.toContain('md:grid');
-    expect(item.className).toContain('lg:grid-cols-');
+    expect(item.className).toContain('@3xl:grid-cols-');
     expect(item.className).not.toContain('md:grid-cols-');
   });
 });

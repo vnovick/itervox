@@ -88,6 +88,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				Title:            r.Issue.Title, // #240
 				Profile:          r.ProfileName, // #240
 				CostUSDEstimated: r.CostUSD,     // #240
+				Isolation:        r.Isolation,   // #258
 			})
 		}
 		sort.Slice(running, func(i, j int) bool {
@@ -173,6 +174,10 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				Playbook:      r.Playbook, // #218
 				Steers:        historySteers(r.Steers),
 				SteersDropped: r.SteersDropped,
+				// Review and continue: the run took an operator review.
+				ContinuedFromReview: r.ContinuedFromReview,
+				ReviewComments:      r.ReviewComments,
+				Resources:           r.Resources, // system visibility
 			})
 		}
 
@@ -292,7 +297,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			// CORE-175 — operator acks of worker failures + the capability
 			// that makes the dashboard offer the action.
 			FailureAcks:  failureAckRows(s),
-			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause, server.CapabilityRunContext, server.CapabilityChangeReview},
+			Capabilities: []string{server.CapabilityFailureAck, server.CapabilityDispatchPause, server.CapabilityRunContext, server.CapabilityChangeReview, server.CapabilityReviewContinue},
 			// #213 — the daemon-wide dispatch pause and the feed head.
 			DispatchPaused: dispatchPauseRow(s.DispatchPaused),
 			FeedSeq:        s.FeedSeq,
@@ -303,6 +308,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			AutoSwitches:  autoSwitchRows(s),
 			// #203 — proposed lessons waiting in the Memory page's queue.
 			ProposedLessons: lessons.Count(),
+			// Review and continue: reviews waiting for their next run.
+			QueuedReviews: queuedReviewRows(s.ReviewContinuations),
 		}
 		// Stale threshold for the dashboard badge: pick the longest
 		// MaxAgeMinutes across all enabled input_required automations. If no
@@ -329,7 +336,7 @@ func historyPromptParts(p orchestrator.PromptParts) *server.HistoryPromptParts {
 	if p == (orchestrator.PromptParts{}) {
 		return nil
 	}
-	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Template: p.Template}
+	return &server.HistoryPromptParts{Soul: p.Soul, Instructions: p.Instructions, Rules: p.Rules, Memory: p.Memory, Playbook: p.Playbook, Task: p.Task, Template: p.Template}
 }
 
 // historySteers maps a run's delivered operator messages (#186).

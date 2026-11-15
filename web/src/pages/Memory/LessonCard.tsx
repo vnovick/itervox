@@ -11,6 +11,7 @@ import {
   type MemoryEntry,
   type MemoryScope,
 } from '../../types/schemas';
+import { cn } from '../../components/ui/cn';
 import { fieldLabelCls, selectCls, textareaCls } from '../Settings/formStyles';
 import { EnforcementCard } from './EnforcementCard';
 import { LessonEvidence } from './LessonEvidence';
@@ -37,7 +38,7 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
   };
 
   return (
-    <li className="px-3 py-3 text-sm" data-testid={`lesson-${entry.id}`}>
+    <li className="glass-card px-4 py-3.5 text-sm" data-testid={`lesson-${entry.id}`}>
       {editing ? (
         <div>
           <label className={fieldLabelCls} htmlFor={`${uid}-text`}>
@@ -59,22 +60,22 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
           )}
         </div>
       ) : (
-        <p className="text-theme-text">{entry.text}</p>
+        <p className="text-theme-text text-[15px]">{entry.text}</p>
       )}
-      <p className="text-theme-muted mt-0.5 text-xs">
+      <p className="text-theme-text-secondary mt-1 text-xs">
         Proposed · not used until approved
         {entry.source?.issue ? ` · from ${entry.source.issue}` : ''}
       </p>
       <LessonEvidence entry={entry} />
       <EnforcementCard entry={entry} />
-      <div className="mt-3 flex flex-wrap items-end gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <label className="text-theme-text-secondary text-[13px]" htmlFor={`${uid}-scope`}>
+          Approve into
+        </label>
         <div>
-          <label className={fieldLabelCls} htmlFor={`${uid}-scope`}>
-            Approve into
-          </label>
           <select
             id={`${uid}-scope`}
-            className={selectCls}
+            className={cn(selectCls, 'min-h-9 w-auto rounded-full py-1')}
             value={scope}
             onChange={(e) => {
               setScope(e.target.value as MemoryScope);
@@ -87,18 +88,13 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
             ))}
           </select>
         </div>
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={busy || (editing && invalid)}
-          onClick={onApprove}
-        >
+        <Button variant="primary" pill disabled={busy || (editing && invalid)} onClick={onApprove}>
           {editing ? 'Save and approve' : 'Approve'}
         </Button>
         {editing ? (
           <Button
-            size="sm"
-            variant="ghost"
+            variant="glass"
+            pill
             onClick={() => {
               setEditing(false);
               setText(entry.text);
@@ -108,8 +104,8 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
           </Button>
         ) : (
           <Button
-            size="sm"
-            variant="ghost"
+            variant="glass"
+            pill
             onClick={() => {
               setEditing(true);
             }}
@@ -118,8 +114,8 @@ export function LessonCard({ entry }: { entry: MemoryEntry }) {
           </Button>
         )}
         <Button
-          size="sm"
-          variant="ghost"
+          variant="glass-danger"
+          pill
           disabled={busy}
           onClick={() => {
             reject.mutate(entry.id);

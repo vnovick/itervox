@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useProjects } from '../../queries/projects';
+import { buttonClass } from '../../components/ui/button/buttonStyles';
 
 interface Props {
   activeFilter: string[] | undefined;
@@ -60,15 +61,15 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const allSelected = selected.size === 0;
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
-      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
-        <h2 className="text-theme-text text-sm font-semibold">Project Filter</h2>
+    <div>
+      <div className="mb-4">
+        <h3 className="text-theme-text text-sm font-semibold">Project Filter</h3>
         <p className="text-theme-text-secondary mt-0.5 text-xs">
           Limit Itervox to specific Linear projects. Leave all unchecked to include every project.
         </p>
       </div>
 
-      <div className="space-y-4 px-5 py-5">
+      <div className="space-y-4">
         {isLoading && <p className="text-theme-muted text-sm">Loading projects…</p>}
 
         {isError && (
@@ -117,7 +118,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+                className={buttonClass('primary', 'md', undefined, true)}
               >
                 {saving ? 'Saving…' : 'Save filter'}
               </button>
@@ -125,7 +126,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
                 <button
                   onClick={handleReset}
                   disabled={saving}
-                  className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-colors hover:opacity-80 disabled:opacity-50"
+                  className={buttonClass('secondary', 'md', undefined, true)}
                 >
                   Reset to default
                 </button>

@@ -45,6 +45,20 @@ Commands:
              --workflow path to the WORKFLOW.md to migrate when using
                         --update (default: WORKFLOW.md)
 
+  run     Run one issue to completion and exit (CI): agent turns,
+          reviewers, push, PR, issue comment, tracker move. No server.
+             --issue    the issue (required)
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --worktree work in a worktree, not the checkout itself
+             --answer   TEXT|@FILE: answer the question of a run that
+                        exited 3, and continue from its handoff
+             --approve  CMD: allow this guardrail approval command for this run
+             --timeout  cap the whole run (e.g. 45m)
+             --json     print one JSON object instead of Markdown
+             --log-dir  write redacted logs here
+          Exit codes: 0 PR opened or nothing to do, 2 failed,
+          3 needs input, 4 budget exceeded, 5 configuration error.
+
   clear   Remove workspace directories created by itervox
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              [identifier ...]  specific issues to clear; omit for all
@@ -149,6 +163,16 @@ Commands:
   workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
   reply    <issue> <text>  answer an agent's question
   approve  <issue>         approve the command a guardrail is holding (once)
+  task     "<title>"       create a New task: a local task file (or a tracker
+                           issue with --tracker) in the first active state
+             --instructions <text|@file>  custom instructions for this task
+             --profile NAME  --backend claude|codex  --playbook NAME
+             --base BRANCH   the worktree's start and the PR's base
+             --start         dispatch at once (slots, guardrails, budgets
+                             and dependencies still apply)
+             --template NAME  start from .itervox/tasks/NAME.md
+             --var key=value  fill a template placeholder (repeatable)
+             --templates      list the saved templates
 
   --version  Print version information
 

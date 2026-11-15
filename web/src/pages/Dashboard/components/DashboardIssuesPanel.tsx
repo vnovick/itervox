@@ -20,6 +20,7 @@ import type {
 import { DashboardIssuesHeader } from './DashboardIssuesHeader';
 import { DashboardIssueViews } from './DashboardIssueViews';
 import { useNotificationsTotal } from './useNotificationsTotal';
+import { buildStateFilterPills } from './stateFilterPills';
 
 interface DashboardIssuesPanelProps {
   issues: TrackerIssue[];
@@ -76,18 +77,10 @@ export function DashboardIssuesPanel({
   const { upsertProfile } = useSettingsActions();
   const notificationsTotal = useNotificationsTotal(issues);
 
-  const filterPills = useMemo<FilterPill[]>(() => {
-    const pills: FilterPill[] = [{ id: 'all', label: 'All Issues', states: [] }];
-    if (activeStates.length > 0)
-      pills.push({ id: 'active', label: 'Active', states: activeStates });
-    if (backlogStates.length > 0)
-      pills.push({ id: 'backlog', label: 'Backlog', states: backlogStates });
-    if (completionState)
-      pills.push({ id: 'review', label: completionState, states: [completionState] });
-    if (terminalStates.length > 0)
-      pills.push({ id: 'done', label: 'Done', states: terminalStates });
-    return pills;
-  }, [activeStates, backlogStates, terminalStates, completionState]);
+  const filterPills = useMemo<FilterPill[]>(
+    () => buildStateFilterPills({ activeStates, backlogStates, completionState, terminalStates }),
+    [activeStates, backlogStates, terminalStates, completionState],
+  );
 
   const activePillStates = useMemo(() => {
     if (stateFilter === 'all') return null;
@@ -160,7 +153,10 @@ export function DashboardIssuesPanel({
   );
 
   return (
-    <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
+    <section
+      aria-label="Issues"
+      className="glass-panel flex flex-col gap-3 overflow-hidden rounded-[var(--radius-shell)] p-3 sm:p-4"
+    >
       <DashboardIssuesHeader
         filteredCount={filtered.length}
         availableProfileCount={availableProfiles.length}
@@ -197,6 +193,6 @@ export function DashboardIssuesPanel({
         onProfileChange={onProfileChange}
         onEditProfile={handleEditProfile}
       />
-    </div>
+    </section>
   );
 }

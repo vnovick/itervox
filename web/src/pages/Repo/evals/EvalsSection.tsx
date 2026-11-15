@@ -28,9 +28,9 @@ export function EvalsSection() {
   const regressions = cases.filter((c) => c.regression).length;
 
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
+    <div className="glass-panel px-5 py-[18px]">
       <div className="mb-3">
-        <p className="text-theme-text text-sm font-medium">Evals</p>
+        <p className="section-title">Evals</p>
         <p className="text-theme-muted text-[11px]">
           The latest result per profile and scenario from the saved eval reports.
           {cases.length > 0 &&

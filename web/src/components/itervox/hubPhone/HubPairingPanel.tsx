@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button } from '../../ui/button';
 import { validOrigin } from '../../../auth/apiBase';
 import { Card } from '../../ui/Card/Card';
+import { FIELD_CLASS } from '../../ui/Input';
 import { QrCode } from './QrCode';
 import { PushDevicePanel } from './PushDevicePanel';
 import { useCreatePairing, useHubDevices, useRevokeHubDevice } from '../../../queries/hubPhone';
@@ -26,22 +27,22 @@ export function HubPairingPanel() {
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <Card padding="md" className="flex flex-col gap-3">
-        <h2 className="text-theme-text text-sm font-semibold">Pair a phone</h2>
+      <Card variant="panel" padding="none" className="flex flex-col gap-3 px-5 py-[18px]">
+        <h2 className="section-title">Pair a phone</h2>
         <p className="text-theme-text-secondary text-xs">
           Scan with the phone's camera. The phone opens the hub at the address below, so it must
           reach it: same network, Tailscale or your own tunnel. Notifications and installing need
           https.
         </p>
-        <label className="text-theme-text-secondary flex flex-col gap-1 text-xs">
-          Hub address on the phone
+        <label className="flex flex-col">
+          <span className="field-label">Hub address on the phone</span>
           <input
             value={address}
             onChange={(e) => {
               setAddress(e.target.value);
             }}
             placeholder="https://my-mac.tailnet.ts.net"
-            className="border-theme-line bg-theme-bg-elevated text-theme-text h-9 rounded-[var(--radius-sm)] border px-2 font-mono text-xs"
+            className={`${FIELD_CLASS} h-10 font-mono text-xs`}
           />
         </label>
         {base === null && (
@@ -76,14 +77,14 @@ export function HubPairingPanel() {
           {pairing.data ? 'New code' : 'Show pairing QR code'}
         </Button>
       </Card>
-      <Card padding="md" className="flex flex-col gap-3">
-        <h2 className="text-theme-text text-sm font-semibold">Paired devices</h2>
+      <Card variant="panel" padding="none" className="flex flex-col gap-3 px-5 py-[18px]">
+        <h2 className="section-title">Paired devices</h2>
         {devices.data && devices.data.length === 0 && (
           <p className="text-theme-muted text-xs">No phone is paired yet.</p>
         )}
-        <ul aria-label="Paired devices" className="flex flex-col gap-1">
+        <ul aria-label="Paired devices" className="flex flex-col gap-2">
           {(devices.data ?? []).map((d) => (
-            <li key={d.id} className="flex items-center gap-2 text-sm">
+            <li key={d.id} className="glass-card flex items-center gap-2 px-3 py-2 text-sm">
               <span className="text-theme-text truncate">{d.name}</span>
               <span className="text-theme-muted text-xs">
                 {d.pushDevices > 0 ? 'notifications on' : 'no notifications'}

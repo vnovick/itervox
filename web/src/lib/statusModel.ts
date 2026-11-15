@@ -142,17 +142,17 @@ export function summarizeStatus(
   };
 }
 
-/** CSS colour token per tone, for surfaces that colour a number. */
-export function toneColor(tone: StatusTone): string | undefined {
+/**
+ * Text-colour class per tone, for surfaces that colour a number. Only the
+ * alerting tones colour it; success / info / neutral numbers stay in the
+ * body ink. The `-text` tokens are AA on every surface.
+ */
+export function toneTextClass(tone: StatusTone): string | undefined {
   switch (tone) {
-    case 'success':
-      return 'var(--success)';
     case 'warning':
-      return 'var(--warning)';
+      return 'text-theme-warning-text';
     case 'danger':
-      return 'var(--danger)';
-    case 'info':
-      return 'var(--accent)';
+      return 'text-theme-danger-text';
     default:
       return undefined;
   }

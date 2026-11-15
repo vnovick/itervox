@@ -36,15 +36,43 @@ export default function Memory() {
         title="Itervox | Memory"
         description="Itervox memory — what agents carry from one run to the next"
       />
-      <div className="w-full max-w-6xl space-y-6">
-        <div>
-          <h1 className="text-theme-text text-2xl font-bold tracking-tight">Memory</h1>
-          <p className="text-theme-muted mt-1 text-sm">
-            Facts, preferences, decisions and lessons carried from one run to the next. Each run
-            gets the pinned entries plus the ones that best match its issue and profile, within the
-            memory budget, as a <code>## Memory</code> block after the rules and ahead of the
-            profile’s SOUL.md. Secrets are redacted on save. Edits apply to the next run.
-          </p>
+      <div className="page-container">
+        <div className="page-header flex flex-wrap items-start gap-x-6 gap-y-3">
+          <div className="min-w-0 flex-1 basis-[28rem]">
+            <h1 className="page-title">Memory</h1>
+            <p className="text-theme-text-secondary mt-1 max-w-3xl text-sm">
+              Facts, preferences, decisions and lessons carried from one run to the next. Each run
+              gets the pinned entries plus the ones that best match its issue and profile, within
+              the memory budget, as a <code>## Memory</code> block after the rules and ahead of the
+              profile’s SOUL.md. Secrets are redacted on save. Edits apply to the next run.
+            </p>
+          </div>
+          <div role="tablist" aria-label="Memory views" className="segmented">
+            {TABS.map((t, i) => {
+              const active = t.id === tab;
+              return (
+                <button
+                  key={t.id}
+                  id={`memory-tab-${t.id}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  aria-controls="memory-panel"
+                  tabIndex={active ? 0 : -1}
+                  className="text-[15px]"
+                  onClick={() => {
+                    setTab(t.id);
+                  }}
+                  onKeyDown={(e) => {
+                    onKeyDown(e, i);
+                  }}
+                >
+                  {t.label}
+                  {t.id === 'lessons' && proposed > 0 && <span> · {proposed}</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
         {data && !data.enabled && (
           <Banner tone="warning">
@@ -52,44 +80,6 @@ export default function Memory() {
             still edit the entries here.
           </Banner>
         )}
-        <div
-          role="tablist"
-          aria-label="Memory views"
-          className="border-theme-line flex gap-1 border-b"
-        >
-          {TABS.map((t, i) => {
-            const active = t.id === tab;
-            return (
-              <button
-                key={t.id}
-                id={`memory-tab-${t.id}`}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                aria-controls="memory-panel"
-                tabIndex={active ? 0 : -1}
-                className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
-                  active
-                    ? 'border-theme-accent text-theme-text'
-                    : 'text-theme-muted hover:text-theme-text border-transparent'
-                }`}
-                onClick={() => {
-                  setTab(t.id);
-                }}
-                onKeyDown={(e) => {
-                  onKeyDown(e, i);
-                }}
-              >
-                {t.label}
-                {t.id === 'lessons' && proposed > 0 && (
-                  <span className="bg-theme-accent-soft text-theme-accent-strong ml-1.5 rounded px-1.5 text-xs">
-                    {proposed}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
         <div id="memory-panel" role="tabpanel" aria-labelledby={`memory-tab-${tab}`}>
           {isLoading && <p className="text-theme-muted text-sm">Loading memory…</p>}
           {isError && <p className="text-theme-danger-text text-sm">Could not load the memory.</p>}

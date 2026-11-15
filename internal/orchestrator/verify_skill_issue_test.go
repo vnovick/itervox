@@ -17,9 +17,9 @@ type sourceRecordingTracker struct {
 	source string
 }
 
-func (s *sourceRecordingTracker) CreateIssue(ctx context.Context, source, title, body, state string) (*domain.Issue, error) {
+func (s *sourceRecordingTracker) CreateIssue(ctx context.Context, source string, in tracker.NewIssue) (*domain.Issue, error) {
 	s.source = source
-	return s.MemoryTracker.CreateIssue(ctx, source, title, body, state)
+	return s.MemoryTracker.CreateIssue(ctx, source, in)
 }
 
 // TestCreateVerifySkillIssueGoesThroughTracker (#218): "Generate verify

@@ -114,7 +114,25 @@ impl ProjectView {
         matches!(&self.health, Health::Ok(s) if s.dispatch_paused)
     }
 
-    /// One-line status, e.g. "running · 2 agents · 1 needs input".
+    /// The tray's low-disk line for this project (system visibility), e.g.
+    /// "web-app: low disk — 3.2 GB free"; None while the disk is fine.
+    pub fn disk_warning(&self) -> Option<String> {
+        let Health::Ok(st) = &self.health else {
+            return None;
+        };
+        let d = st.disk?;
+        let free = crate::daemon_state::fmt_bytes(d.free_bytes);
+        Some(if d.critical {
+            format!(
+                "{}: disk almost full — {free} free, dispatch paused",
+                self.name
+            )
+        } else {
+            format!("{}: low disk — {free} free", self.name)
+        })
+    }
+
+    /// One-line status, e.g. "running · 2 agents · 1.2 GB · 1 needs input".
     pub fn status_line(&self) -> String {
         if let Some(op) = self.pending {
             return match op {
@@ -134,6 +152,10 @@ impl ProjectView {
                     st.running,
                     if st.running == 1 { "" } else { "s" }
                 )];
+                // System visibility: what the live runs hold in memory.
+                if st.running > 0 && st.runs_rss_bytes > 0 {
+                    parts.push(crate::daemon_state::fmt_bytes(st.runs_rss_bytes));
+                }
                 let waiting = st.waiting_for_input().count();
                 if waiting > 0 {
                     parts.push(format!(

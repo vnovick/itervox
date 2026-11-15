@@ -169,10 +169,23 @@ Codex genuinely confines filesystem writes to the workspace. Claude has no
 equivalent sandbox — `acceptEdits` bounds what the agent is asked to confirm,
 not what the process can reach.
 
-If you need real containment on the Claude side, run the daemon itself in a
-container. The mode name should not be read as promising more than the backend
-delivers.
+If you need real containment on the Claude side, use
+[process isolation](/guides/isolation/) (`isolation: process`), or run the
+daemon itself in a container. The mode name should not be read as promising
+more than the backend delivers.
 :::
+
+### Process isolation
+
+`permission_mode` changes the flags the CLI gets; it does not confine the
+process. `isolation: process` on a profile does: the agent CLI and every
+process it starts run inside an operating-system sandbox (bubblewrap or
+Landlock on Linux, sandbox-exec on macOS) that lets them write only to the
+issue's workspace, its git directories, the temp directory and the CLI's own
+state, and hides `~/.ssh`, `~/.aws`, the daemon's tokens and every other
+workspace. It works the same for Claude and Codex and combines with either
+permission mode. When no sandbox works on the machine the run does not start.
+See [Process isolation](/guides/isolation/).
 
 ## Recommended setup
 

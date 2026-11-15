@@ -1,3 +1,5 @@
+//go:build unix
+
 package main
 
 // Orphaned agent process-group ledger (CORE-042).

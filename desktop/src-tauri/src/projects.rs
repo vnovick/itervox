@@ -224,16 +224,26 @@ mod tests {
         assert!(SavedProjects::load(&path).is_err());
     }
 
+    /// An absolute path on the host: `p` itself on Unix, `C:` plus `p` with
+    /// backslashes on Windows (where `/home/me` is not absolute).
+    fn abs(p: &str) -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(format!("C:{}", p.replace('/', "\\")))
+        } else {
+            std::path::PathBuf::from(p)
+        }
+    }
+
     #[test]
     fn project_key_is_absolute_and_lexically_clean() {
-        let cwd = Path::new("/home/me");
+        let cwd = abs("/home/me");
         assert_eq!(
-            project_key(Path::new("proj/./WORKFLOW.md"), cwd),
-            "/home/me/proj/WORKFLOW.md"
+            project_key(Path::new("proj/./WORKFLOW.md"), &cwd),
+            abs("/home/me/proj/WORKFLOW.md").to_string_lossy()
         );
         assert_eq!(
-            project_key(Path::new("/x/y/../WORKFLOW.md"), cwd),
-            "/x/WORKFLOW.md"
+            project_key(&abs("/x/y/../WORKFLOW.md"), &cwd),
+            abs("/x/WORKFLOW.md").to_string_lossy()
         );
     }
 

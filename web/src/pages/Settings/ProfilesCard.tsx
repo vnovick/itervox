@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { ProfileDef } from '../../types/schemas';
-import { Card } from '../../components/ui/Card/Card';
+import { Button } from '../../components/ui/button';
 import { ProfileFormModal } from './profiles/ProfileFormModal';
 import { ProfileRow } from './profiles/ProfileRow';
 import { SuggestedProfileCard } from './profiles/SuggestedProfileCard';
@@ -32,6 +32,10 @@ interface ProfilesCardProps {
   availableModels?: Record<string, { id: string; label: string }[]>;
   supportedAgentActions?: readonly string[];
   trackerStates?: readonly string[];
+  /** Id for the section heading, so a page can link or label it. */
+  headingId?: string;
+  /** Opens this profile's editor once it is listed (the palette's Edit). */
+  focusProfileName?: string;
 }
 
 type ProfileModalState = {
@@ -54,6 +58,8 @@ export function ProfilesCard({
   availableModels,
   supportedAgentActions,
   trackerStates,
+  headingId = 'profiles-card-heading',
+  focusProfileName,
 }: ProfilesCardProps) {
   const [modalState, setModalState] = useState<ProfileModalState | null>(null);
   const [status, setStatus] = useState<ProfileStatus | null>(null);
@@ -87,6 +93,16 @@ export function ProfilesCard({
       initialValues: profileValuesFromDef(name, def),
     });
   };
+
+  // Open the editor for the focused name once per name change, adjusting
+  // state during render like AutomationsCard's focusAutomationId: only marked
+  // handled once the profile is listed, so a link that arrives before the
+  // snapshot still opens it.
+  const [lastFocused, setLastFocused] = useState<string | undefined>(undefined);
+  if (focusProfileName && focusProfileName !== lastFocused && focusProfileName in profileDefs) {
+    setLastFocused(focusProfileName);
+    openEditModal(focusProfileName, profileDefs[focusProfileName]);
+  }
 
   const openTemplateModal = (suggestion: SuggestedProfile) => {
     setModalState({
@@ -137,55 +153,55 @@ export function ProfilesCard({
 
   return (
     <>
-      <Card variant="elevated" padding="none" className="overflow-hidden">
-        <Card.Header className="bg-theme-panel-strong mb-0 flex items-center justify-between gap-4 px-5 py-4">
-          <div>
-            <h2 className="text-theme-text text-sm font-semibold">Agent Profiles</h2>
-            <p className="text-theme-text-secondary mt-0.5 text-xs">
+      <section
+        aria-labelledby={headingId}
+        className="glass-panel flex flex-col gap-2.5 rounded-[26px] px-5 py-[18px]"
+      >
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="mr-auto">
+            <h2 id={headingId} className="text-theme-text text-base font-semibold">
+              Agent Profiles
+            </h2>
+            <p className="text-theme-text-secondary text-[13px]">
               Reusable worker presets for backend, model, prompt, and agent actions.
             </p>
           </div>
-          <button
-            onClick={openAddModal}
-            className="bg-theme-accent rounded-[var(--radius-sm)] px-5 py-2 text-sm font-medium whitespace-nowrap text-white transition-colors hover:opacity-90"
-          >
+          <Button variant="primary" size="lg" pill onClick={openAddModal}>
             Add Agent Profile
-          </button>
-        </Card.Header>
+          </Button>
+        </div>
 
-        <Card.Body className="min-w-0">
-          {profileEntries.length > 0 ? (
-            <div className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-2">
-              {profileEntries.map(([name, def]) => (
-                <ProfileRow
-                  key={name}
-                  name={name}
-                  def={def}
-                  onEdit={() => {
-                    openEditModal(name, def);
-                  }}
-                  onToggleEnabled={handleToggleEnabled}
-                  onDelete={handleDelete}
-                  supportedAgentActions={supportedAgentActions}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="px-5 py-10 text-center text-sm">
-              No profiles configured yet.{' '}
-              <button onClick={openAddModal} className="text-theme-accent-text hover:underline">
-                Add one
-              </button>
-            </div>
-          )}
-        </Card.Body>
+        {profileEntries.length > 0 ? (
+          <div className="flex min-w-0 flex-col gap-2.5">
+            {profileEntries.map(([name, def]) => (
+              <ProfileRow
+                key={name}
+                name={name}
+                def={def}
+                onEdit={() => {
+                  openEditModal(name, def);
+                }}
+                onToggleEnabled={handleToggleEnabled}
+                onDelete={handleDelete}
+                supportedAgentActions={supportedAgentActions}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="glass-card text-theme-text-secondary px-5 py-8 text-center text-sm">
+            No profiles configured yet.{' '}
+            <button onClick={openAddModal} className="text-theme-accent-text hover:underline">
+              Add one
+            </button>
+          </div>
+        )}
 
         {suggestedToShow.length > 0 && (
-          <Card.Footer className="mt-0 px-5 py-4">
-            <p className="text-theme-muted mb-3 text-[11px] font-medium tracking-wider uppercase">
+          <div className="mt-2">
+            <h3 className="text-theme-text-secondary mb-2 text-[13px] font-semibold">
               Start From A Template
-            </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            </h3>
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
               {suggestedToShow.map((suggestion) => (
                 <SuggestedProfileCard
                   key={suggestion.id}
@@ -195,9 +211,9 @@ export function ProfilesCard({
                 />
               ))}
             </div>
-          </Card.Footer>
+          </div>
         )}
-      </Card>
+      </section>
 
       {status && <p className="text-theme-danger-text text-sm">{status.message}</p>}
 

@@ -61,6 +61,9 @@ func (c *CodexRunner) RunTurn(
 	if err := rejectNULPrompt(prompt); err != nil {
 		return TurnResult{Failed: true, FailureText: err.Error()}, err
 	}
+	if err := refuseRemoteIsolation(ctx, workerHost); err != nil { // #258
+		return TurnResult{Failed: true, FailureText: err.Error()}, err
+	}
 	// turnCtx is always cancellable, even when the hard turn timeout is
 	// disabled (turnTimeoutMs <= 0): on a read error we must be able to kill
 	// the subprocess immediately rather than relying on a no-op cancel that
@@ -127,14 +130,21 @@ func (c *CodexRunner) RunTurn(
 		if promptIn, err = promptFile(prompt); err != nil {
 			return TurnResult{Failed: true, FailureText: err.Error()}, err
 		}
-		if filepath.IsAbs(command) && !strings.Contains(command, " ") {
-			cmd = exec.CommandContext(turnCtx, command, buildCodexDirectArgs(sessionID, workspacePath, permissionMode)...)
+		shell := loginShell()
+		if name, head, direct := directInvocation(command, shell, "codex"); direct {
+			argv := append(append([]string{name}, head...), buildCodexDirectArgs(sessionID, workspacePath, permissionMode)...)
+			if cmd, err = agentCommand(ctx, turnCtx, argv); err != nil { // #258: sandboxed when the run asks
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
 			setPromptStdin(cmd, promptIn)
 		} else {
 			// fd 3, not stdin: a login profile that reads stdin cannot eat
 			// the prompt (see ClaudeRunner.RunTurn).
-			cmd = exec.CommandContext(turnCtx, loginShell(), "-lc",
-				RunEnvFrom(ctx).shellPrefix()+buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode))
+			argv := []string{shell, "-lc",
+				RunEnvFrom(ctx).shellPrefix() + buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode)}
+			if cmd, err = agentCommand(ctx, turnCtx, argv); err != nil { // #258
+				return TurnResult{Failed: true, FailureText: err.Error()}, err
+			}
 			setPromptFD3(cmd, promptIn)
 		}
 	}
@@ -180,7 +190,7 @@ func (c *CodexRunner) RunTurn(
 	stderrBuf := newTailBuffer(maxStderrCaptureBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
 		}

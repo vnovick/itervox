@@ -5,6 +5,7 @@ import { usePromptVersionRuns } from '../../../queries/repo';
 import { fmtMs } from '../../../utils/format';
 import { shortDigest } from '../../../utils/promptVersions';
 import { fmtSeen } from './promptVersionGroups';
+import { buttonClass } from '../../../components/ui/button/buttonStyles';
 
 interface PromptVersionRunsProps {
   digest: string;
@@ -16,18 +17,18 @@ export function PromptVersionRuns({ digest, onClear }: PromptVersionRunsProps) {
   const newestFirst = [...(runs ?? [])].reverse();
   return (
     <div
-      className="border-theme-line bg-theme-panel rounded-lg border p-4"
+      className="glass-panel px-5 py-[18px]"
       aria-label="Runs of the selected prompt version"
       role="region"
     >
       <div className="mb-2 flex items-center justify-between gap-3">
-        <p className="text-theme-text text-sm font-medium">
+        <p className="section-title">
           Runs of <span className="font-mono">{shortDigest(digest)}</span>
         </p>
         <button
           type="button"
           onClick={onClear}
-          className="border-theme-line text-theme-text rounded border px-2 py-1 text-[11px] hover:bg-[var(--bg-soft)]"
+          className={buttonClass('secondary', 'sm', undefined, true)}
         >
           Clear filter
         </button>

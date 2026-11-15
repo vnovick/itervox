@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -29,6 +28,9 @@ const inspectTimeout = 5 * time.Second
 // privacy (TCC) permission for the user's own processes. Other processes
 // are listed without cwd or files.
 func SystemProcesses() ([]Process, error) {
+	if err := processInspectionUnavailable(); err != nil {
+		return nil, err
+	}
 	if st, err := os.Stat(filepath.Join(procRoot, "self")); err == nil && st.IsDir() {
 		return procProcesses(procRoot)
 	}
@@ -100,16 +102,6 @@ func parseStatPPID(stat []byte) int {
 	}
 	n, _ := atoiOK(f[1])
 	return n
-}
-
-// sameUID reports whether st (a /proc/<pid> directory) belongs to uid.
-// Unknown ownership counts as the same user (it is inspected, not skipped).
-func sameUID(st os.FileInfo, uid int) bool {
-	sys, ok := st.Sys().(*syscall.Stat_t)
-	if !ok {
-		return true
-	}
-	return int(sys.Uid) == uid
 }
 
 // lsofCacheTTL bounds how long one lsof result of a process is reused

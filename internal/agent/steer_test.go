@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent_test
 
 // #178 step 2: operator messages reach a running Claude session mid-turn

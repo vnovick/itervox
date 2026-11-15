@@ -742,7 +742,7 @@ func TestGHCreateIssue(t *testing.T) {
 	defer ts.Close()
 
 	client := ghclient.NewClient(defaultConfig(ts.URL))
-	issue, err := client.CreateIssue(context.Background(), "123", "Follow-up", "Add regression coverage", "todo")
+	issue, err := client.CreateIssue(context.Background(), "123", tracker.NewIssue{Title: "Follow-up", Body: "Add regression coverage", State: "todo"})
 	require.NoError(t, err)
 	require.NotNil(t, issue)
 	assert.Equal(t, http.MethodPost, gotMethod)

@@ -6,10 +6,9 @@ import type { RepoEvalCase } from '../../../types/schemas';
 import { shortDigest } from '../../../utils/promptVersions';
 import { fmtSeen } from '../prompts/promptVersionGroups';
 
-const BADGE =
-  'inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase';
-const PASS_STYLE = 'border-emerald-400/40 bg-emerald-500/15 text-emerald-400';
-const FAIL_STYLE = 'border-red-400/40 bg-red-500/15 text-red-400';
+const BADGE = 'pill pill-sm';
+const PASS_STYLE = 'pill-ok';
+const FAIL_STYLE = 'pill-danger';
 
 const DIGEST_SOURCE_LABEL: Record<string, string> = {
   live: 'computed by the live run',
@@ -19,16 +18,12 @@ const DIGEST_SOURCE_LABEL: Record<string, string> = {
 export function EvalCaseRow({ c }: { c: RepoEvalCase }) {
   const failures = c.failures ?? [];
   return (
-    <li className="border-theme-line rounded border p-3" data-case={`${c.profile}/${c.scenario}`}>
+    <li className="glass-card px-3.5 py-3" data-case={`${c.profile}/${c.scenario}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className={`${BADGE} ${c.pass ? PASS_STYLE : FAIL_STYLE}`}>
           {c.pass ? 'pass' : 'fail'}
         </span>
-        {c.regression && (
-          <span className={`${BADGE} border-orange-400/40 bg-orange-500/15 text-orange-400`}>
-            regression
-          </span>
-        )}
+        {c.regression && <span className={`${BADGE} pill-warn`}>regression</span>}
         <span className="text-theme-text font-mono text-xs font-semibold">{c.scenario}</span>
         {c.stale && <span className="text-theme-muted text-[10px]">(stale recording)</span>}
         <span className="text-theme-muted ml-auto text-[11px]">
@@ -49,7 +44,7 @@ export function EvalCaseRow({ c }: { c: RepoEvalCase }) {
         )}
       </p>
       {c.regression && c.previousDigest && (
-        <p className="mt-1 text-[11px] text-orange-400">
+        <p className="text-theme-warning-text mt-1 text-[11px]">
           Passed on <code className="font-mono">{shortDigest(c.previousDigest)}</code>
           {c.previousAt && ` (${fmtSeen(c.previousAt)})`}, fails on{' '}
           <code className="font-mono">{shortDigest(c.promptDigest ?? '')}</code>.

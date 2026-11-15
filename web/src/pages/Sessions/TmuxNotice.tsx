@@ -24,7 +24,7 @@ function InstallHint({ tmux }: { tmux: TmuxStatus }) {
 /** The banner at the top of the Sessions panel. */
 export function TmuxMissingBanner({ tmux }: { tmux: TmuxStatus }) {
   return (
-    <Banner tone="warning" data-testid="tmux-missing-banner" className="rounded-lg">
+    <Banner tone="warning" data-testid="tmux-missing-banner">
       <span className="mr-2">{TMUX_MISSING}</span>
       <InstallHint tmux={tmux} />
     </Banner>
@@ -36,7 +36,7 @@ export function TmuxMissingComposer({ tmux }: { tmux: TmuxStatus }) {
   return (
     <div
       data-testid="tmux-missing-composer"
-      className="border-theme-line text-theme-text-secondary space-y-1 rounded-lg border border-dashed p-3 text-sm"
+      className="glass-card text-theme-text-secondary space-y-1 px-4 py-3 text-sm"
     >
       <p>{TMUX_MISSING} Read-only until then.</p>
       <InstallHint tmux={tmux} />

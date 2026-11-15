@@ -10,7 +10,7 @@ const ESTIMATED_ROW_HEIGHT = 120;
 const FALLBACK_VIEWPORT = 800;
 const OVERSCAN_ROWS = 8;
 
-const LIST_CLS = 'flex-1 space-y-2 overflow-y-auto px-3 pb-3';
+const LIST_CLS = 'flex-1 space-y-2 overflow-y-auto p-0.5';
 
 /**
  * The scrollable card list of a BoardColumn. Up to the threshold it renders
@@ -88,7 +88,7 @@ export function ColumnCardList({
   return (
     <div
       ref={scrollRef}
-      className="flex-1 overflow-y-auto px-3 pb-3"
+      className="flex-1 overflow-y-auto p-0.5"
       data-virtualized="true"
       onScroll={(event) => {
         setScrollTop(event.currentTarget.scrollTop);

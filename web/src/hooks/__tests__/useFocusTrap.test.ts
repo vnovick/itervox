@@ -36,7 +36,9 @@ describe('useFocusTrap', () => {
     rafCallbacks = [];
   }
 
-  it('focuses the first focusable element when isOpen is true', () => {
+  it('moves focus to the dialog container itself when isOpen is true', () => {
+    // Not the first control: a programmatic focus there lit its focus ring
+    // before the operator reached it. The container announces the dialog.
     const btn1 = document.createElement('button');
     btn1.textContent = 'First';
     const btn2 = document.createElement('button');
@@ -50,7 +52,44 @@ describe('useFocusTrap', () => {
     });
     flushRaf();
 
+    expect(document.activeElement).toBe(container);
+    expect(container.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('keeps focus on a child that already has it (autoFocus)', () => {
+    const input = document.createElement('input');
+    container.appendChild(input);
+    input.focus();
+
+    const ref = { current: container };
+    renderHook(() => {
+      useFocusTrap(ref, true);
+    });
+    flushRaf();
+
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('Tab and Shift+Tab from the focused container go to the first and last control', () => {
+    const btn1 = document.createElement('button');
+    const btn2 = document.createElement('button');
+    container.appendChild(btn1);
+    container.appendChild(btn2);
+    const ref = { current: container };
+    renderHook(() => {
+      useFocusTrap(ref, true);
+    });
+    flushRaf();
+    expect(document.activeElement).toBe(container);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
     expect(document.activeElement).toBe(btn1);
+
+    container.focus();
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }),
+    );
+    expect(document.activeElement).toBe(btn2);
   });
 
   it('does not focus anything when isOpen is false', () => {
@@ -131,7 +170,8 @@ describe('useFocusTrap', () => {
     });
     flushRaf();
 
-    // First element should be focused
+    // Focus starts on the container; put it on the first control.
+    btn1.focus();
     expect(document.activeElement).toBe(btn1);
 
     // Simulate Shift+Tab keydown
@@ -168,6 +208,8 @@ describe('useFocusTrap', () => {
     );
     flushRaf();
 
+    expect(document.activeElement).toBe(container);
+    innerBtn.focus();
     expect(document.activeElement).toBe(innerBtn);
 
     // Close the trap

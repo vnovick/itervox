@@ -61,22 +61,15 @@ export function ProjectSelector() {
     <div className="flex flex-col gap-2">
       <div
         data-testid="project-selector"
-        className="bg-theme-panel border-theme-line flex items-center gap-3 rounded-[var(--radius-md)] border px-4 py-2.5"
+        className="glass-chip flex w-fit max-w-full flex-wrap items-center gap-2.5 px-3.5 py-1.5"
       >
         {/* SOURCE label */}
-        <span className="flex-shrink-0 text-[10px] font-semibold tracking-widest uppercase">
-          Source
-        </span>
+        <span className="eyebrow flex-shrink-0">Source</span>
 
         {/* Active tracker — read-only badge, not a switcher */}
         <span
           data-testid="tracker-badge"
-          className="inline-flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 text-[12px] font-medium"
-          style={{
-            background: 'var(--bg-elevated)',
-            color: 'var(--text)',
-            border: '1px solid var(--line)',
-          }}
+          className="text-theme-text inline-flex items-center gap-1.5 text-[13px] font-medium"
         >
           <TrackerIcon kind={trackerKind} />
           {TRACKER_LABEL[trackerKind] ?? trackerKind}
@@ -93,9 +86,7 @@ export function ProjectSelector() {
                     OR
                   </span>
                 )}
-                <span className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2.5 py-0.5 text-xs font-medium">
-                  {group}
-                </span>
+                <span className="pill pill-accent py-0.5 text-xs">{group}</span>
               </Fragment>
             ))}
           </span>
@@ -105,10 +96,7 @@ export function ProjectSelector() {
         {!trackerScope && activeProjectFilter.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {activeProjectFilter.map((project) => (
-              <span
-                key={project}
-                className="bg-theme-accent-soft text-theme-accent-strong rounded-full px-2.5 py-0.5 text-xs font-medium"
-              >
+              <span key={project} className="pill pill-accent py-0.5 text-xs">
                 {project}
               </span>
             ))}
@@ -118,14 +106,7 @@ export function ProjectSelector() {
 
       {/* GitHub notice — no repositories selected means all repos are tracked */}
       {showGitHubNotice && (
-        <div
-          className="flex items-start gap-2.5 rounded-[var(--radius-md)] px-4 py-3 text-xs"
-          style={{
-            background: 'rgba(245,158,11,0.08)',
-            border: '1px solid rgba(245,158,11,0.2)',
-            color: 'var(--warning-text)',
-          }}
-        >
+        <div className="banner-warn flex items-start gap-2.5 px-4 py-3 text-xs">
           <span className="mt-px flex-shrink-0">⚠</span>
           <span>
             No GitHub projects are selected — all repositories will be tracked. To filter to

@@ -229,6 +229,15 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName, re
 			startPoint = "refs/remotes/origin/" + branchName
 		}
 	}
+	// The operator's own clone: a branch only origin has (the issue's branch
+	// pushed before auto_clear_workspace removed its worktree and local
+	// branch) continues from origin too, instead of starting over from HEAD.
+	// The fetch in resolveGitDir updated refs/remotes/origin/<branch>.
+	if !bareMode && !refResolves(ctx, gitDir, "refs/heads/"+branchName) &&
+		refResolves(ctx, gitDir, "refs/remotes/origin/"+branchName) {
+		startPoint = "refs/remotes/origin/" + branchName
+		onOrigin = true
+	}
 
 	// git -C <gitDir> worktree add --no-track <wtPath> -b <branchName> [startPoint]
 	created := true

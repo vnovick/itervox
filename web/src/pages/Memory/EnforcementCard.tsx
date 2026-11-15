@@ -20,7 +20,7 @@ export function EnforcementCard({ entry }: { entry: MemoryEntry }) {
 
   return (
     <section
-      className="border-theme-line bg-theme-bg-soft mt-3 rounded border px-3 py-2"
+      className="subtle-fill mt-3 rounded-[12px] px-3.5 py-2.5"
       aria-label="Enforcement suggestion"
       data-testid={`enforcement-${entry.id}`}
     >

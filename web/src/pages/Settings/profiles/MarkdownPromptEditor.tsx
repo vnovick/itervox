@@ -37,27 +37,24 @@ export function MarkdownPromptEditor({
   const preview = useMemo(() => deferredValue.trim(), [deferredValue]);
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <label className={fieldLabelCls}>{label}</label>
-        <div className="border-theme-line bg-theme-bg-soft inline-flex rounded-[var(--radius-sm)] border p-0.5">
-          {(['write', 'preview'] as const).map((nextTab) => (
-            <button
-              key={nextTab}
-              type="button"
-              onClick={() => {
-                setTab(nextTab);
-              }}
-              className={`rounded-[calc(var(--radius-sm)-2px)] px-3 py-1 text-[11px] font-medium transition-colors ${
-                tab === nextTab
-                  ? 'bg-theme-accent text-white'
-                  : 'text-theme-text-secondary hover:text-theme-text'
-              }`}
-            >
-              {nextTab === 'write' ? 'Write' : 'Preview'}
-            </button>
-          ))}
-        </div>
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1">
+        <label className={`${fieldLabelCls} mb-0 flex-1`}>{label}</label>
+        {(['write', 'preview'] as const).map((nextTab) => (
+          <button
+            key={nextTab}
+            type="button"
+            aria-pressed={tab === nextTab}
+            onClick={() => {
+              setTab(nextTab);
+            }}
+            className={`text-theme-text min-h-7 rounded-lg px-2.5 text-xs transition-colors ${
+              tab === nextTab ? 'bg-theme-bg-soft font-semibold' : 'hover:bg-theme-bg-soft'
+            }`}
+          >
+            {nextTab === 'write' ? 'Write' : 'Preview'}
+          </button>
+        ))}
       </div>
 
       {tab === 'write' ? (
@@ -83,7 +80,7 @@ export function MarkdownPromptEditor({
           />
         </Suspense>
       ) : (
-        <div className="border-theme-line bg-theme-panel min-h-[420px] rounded-[var(--radius-sm)] border p-4">
+        <div className="border-theme-line-strong bg-theme-panel min-h-[420px] rounded-[var(--radius-sm)] border p-4">
           {preview ? (
             <div className={proseClass}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview}</ReactMarkdown>

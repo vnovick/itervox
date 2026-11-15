@@ -22,8 +22,8 @@ export function EntriesTab({ view }: { view: MemoryView }) {
   const brokenFiles = view.files.filter((f) => f.error);
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
-      <section className="min-w-0 space-y-4" aria-label="Memory entries">
+    <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)]">
+      <section className="glass-panel min-w-0 space-y-4 px-5 py-[18px]" aria-label="Memory entries">
         {brokenFiles.map((f) => (
           <p key={f.scope} role="alert" className="text-theme-danger-text text-sm">
             {f.path}: {f.error} — its entries are not used until it is fixed.
@@ -49,7 +49,9 @@ export function EntriesTab({ view }: { view: MemoryView }) {
       {selected ? (
         <MemoryDetailPanel key={selected.id} entry={selected} />
       ) : (
-        <aside className="text-theme-muted text-sm">Select an entry to see its details.</aside>
+        <aside className="glass-panel text-theme-text-secondary px-5 py-[18px] text-sm">
+          Select an entry to see its details.
+        </aside>
       )}
     </div>
   );

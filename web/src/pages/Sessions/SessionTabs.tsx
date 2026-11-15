@@ -79,17 +79,14 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
               onSelect(key);
             }}
             className={cn(
-              'flex w-full flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left text-xs',
-              selected
-                ? 'border-theme-accent bg-theme-bg-elevated'
-                : 'border-theme-line hover:bg-theme-bg-soft',
-              external && !selected && 'border-dashed opacity-70',
+              'list-row flex-col items-start gap-0.5 py-2.5 text-xs',
+              external && !selected && 'opacity-70',
             )}
           >
             <span className="flex w-full items-center justify-between gap-2">
               <span
                 className={cn(
-                  'truncate font-semibold',
+                  'truncate text-[13px] font-semibold',
                   s.identifier ? 'font-mono' : '',
                   external ? 'text-theme-text-secondary' : 'text-theme-text',
                 )}
@@ -99,7 +96,7 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
               {waiting ? (
                 <span
                   data-testid="session-badge-input"
-                  className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-semibold text-orange-400"
+                  className="pill pill-warn shrink-0 px-2 py-0 text-[11px] font-semibold"
                 >
                   needs input
                 </span>
@@ -127,14 +124,14 @@ export function SessionTabs({ sessions, selectedKey, onSelect }: SessionTabsProp
                 <span
                   data-testid="session-badge-tmux"
                   title={s.tmuxPane ? `tmux pane ${s.tmuxPane.label}` : 'tmux'}
-                  className="bg-theme-bg-soft text-theme-text-secondary rounded px-1.5 py-0.5 font-mono text-[10px]"
+                  className="pill pill-neutral px-1.5 py-0 text-[11px]"
                 >
                   tmux
                 </span>
                 {s.controllable && (
                   <span
                     data-testid="session-badge-controllable"
-                    className="text-theme-muted text-[10px]"
+                    className="text-theme-muted text-[11px]"
                   >
                     controllable
                   </span>

@@ -25,10 +25,7 @@ const initOneShotAnalysisTimeout = 5 * time.Minute
 // canned JSON, avoiding a real claude/codex subprocess invocation. The
 // production default constructs the same MultiRunner the daemon uses.
 var initDepsAnalysisRunner = func() agent.Runner {
-	return agent.NewMultiRunner(
-		agent.NewClaudeRunner(),
-		map[string]agent.Runner{"codex": agent.NewCodexRunner()},
-	)
+	return agent.NewBackendMultiRunner()
 }
 
 // runInitDepsAnalysis attempts one analyzer pass synchronously inside
@@ -145,6 +142,9 @@ func runInitDepsAnalysis(workflowPath, requestedMode string) (issueCount, analyz
 		ReadTimeoutMs: cfg.Agent.ReadTimeoutMs,
 		TurnTimeoutMs: cfg.Agent.TurnTimeoutMs,
 		RulesBlock:    analyzerRulesBlock(cfg, profileName, profile, slog.Default()), // #157
+
+		DefaultIsolation: cfg.Agent.Isolation, // #258
+		ProjectDir:       filepath.Dir(cfg.WorkflowPath),
 	}, plan.ToAnalyze, trackerEdges, chunkSize, nil)
 	if err != nil {
 		return 0, 0, 0, "", false, fmt.Errorf("agent pass: %w", err)

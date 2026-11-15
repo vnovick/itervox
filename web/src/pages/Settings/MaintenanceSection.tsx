@@ -9,15 +9,15 @@ export function MaintenanceSection({ isAdmin }: { isAdmin: boolean }) {
   const clearAllLogs = useClearAllLogs();
   const clearAllWorkspaces = useClearAllWorkspaces();
   return (
-    <section aria-labelledby="section-logs">
-      <h2 id="section-logs" className="mb-3 text-xs font-semibold tracking-widest uppercase">
+    <section aria-labelledby="section-logs" className="glass-panel px-5 py-[18px]">
+      <h2 id="section-logs" className="section-title mb-3">
         Logs
       </h2>
-      <div className="border-theme-line bg-theme-panel space-y-3 rounded-lg border p-4">
+      <div className="space-y-3">
         <div className="flex items-center justify-between gap-4">
           <div>
             <p className="text-theme-text text-sm font-medium">Clear all logs</p>
-            <p className="text-theme-muted mt-0.5 text-xs">
+            <p className="text-theme-text-secondary mt-0.5 text-xs">
               Deletes in-memory and on-disk log buffers for all issues.
             </p>
           </div>
@@ -39,7 +39,7 @@ export function MaintenanceSection({ isAdmin }: { isAdmin: boolean }) {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-theme-text text-sm font-medium">Reset all workspaces</p>
-                <p className="text-theme-muted mt-0.5 text-xs">
+                <p className="text-theme-text-secondary mt-0.5 text-xs">
                   Deletes all cloned workspace directories under workspace.root. Does not affect
                   logs or tracker state.
                 </p>

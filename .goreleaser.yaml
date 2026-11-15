@@ -14,6 +14,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -28,6 +29,12 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
+    # Windows (#259) ships itervox.exe in a zip; the Homebrew formula below
+    # only picks the darwin and linux tar.gz archives.
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
     # CORE-064: ship deploy/ in the release archives with its tree intact —
     # bootstrap.sh resolves systemd/itervox.service, caddy/Caddyfile and
     # lib/fetch-secrets.sh relative to itself. A bare glob keeps each file's

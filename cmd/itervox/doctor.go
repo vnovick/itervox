@@ -214,6 +214,9 @@ type DoctorReport struct {
 	// GET /api/v1/repo/readiness. Its failures repeat checks above; it does
 	// not change the exit code on its own.
 	Readiness []server.RepoReadinessCheck
+	// Isolation is the process-isolation section (#258): a profile asking
+	// for a sandbox on a machine with none fails doctor.
+	Isolation IsolationCheck
 }
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
@@ -422,6 +425,9 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
+	// Process isolation (#258): local probes only.
+	report.Isolation = checkIsolation(cfg)
+
 	// Repo readiness (#200): the rows GET /api/v1/repo/readiness serves,
 	// built from the checks above.
 	report.Readiness = buildRepoReadiness(context.Background(), workflowPath, repoReadinessInputs{
@@ -469,6 +475,9 @@ func doctorExitCode(report DoctorReport) int {
 		exitCode = 1
 	case filterCheckFailed(report.Filter):
 		// #198: likewise for a tracker.filter assignee.
+		exitCode = 1
+	case report.Isolation.Failing():
+		// #258: every run of those profiles is refused.
 		exitCode = 1
 	}
 	return exitCode
@@ -563,6 +572,7 @@ func renderDoctorReport(r DoctorReport) string {
 		fmt.Fprintf(&b, "WARNING: issue file does not parse (Itervox keeps using its last good version and will not write to it until it is fixed): %s\n", p)
 	}
 	renderRepoReadiness(&b, r.Readiness)
+	renderIsolationCheck(&b, r.Isolation)
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)

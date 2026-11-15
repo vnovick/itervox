@@ -1,0 +1,137 @@
+---
+const backends = [
+  { cmd: 'claude', name: 'Claude Code — the default' },
+  { cmd: 'codex', name: 'OpenAI Codex CLI' },
+  { cmd: 'opencode', name: 'OpenCode' },
+  { cmd: 'cursor-agent', name: 'Cursor CLI' },
+];
+const trackers = [
+  { kind: 'linear', text: 'Linear, with project filters', href: '/guides/linear-setup/' },
+  { kind: 'github', text: 'GitHub Issues and labels', href: '/guides/github-issues/' },
+  { kind: 'local', text: 'Markdown files in .itervox/issues/ — no account needed', href: '/guides/local-issues/' },
+];
+---
+<section id="backends" class="wrap section">
+  <div class="section-head">
+    <div>
+      <span class="num">05 — BACKENDS &amp; TRACKERS</span>
+      <h2 class="h2">Bring your own agent. Keep your tracker.</h2>
+      <p class="lead">The backend comes from the command's program name. Route issue types to different profiles, models and machines.</p>
+    </div>
+  </div>
+  <div class="split">
+    <div class="glass panel">
+      <div class="panel-head"><h3 class="h3">Agent backends</h3><span class="pill">5 built in</span></div>
+      {backends.map((b) => (
+        <div class="glass-card backend">
+          <code class="backend-cmd">{b.cmd}</code><span class="body">{b.name}</span><span class="pill pill-ok">Active</span>
+        </div>
+      ))}
+      <div class="glass-card backend">
+        <code class="backend-cmd">custom</code><span class="body">Any command that speaks the itervox agent protocol</span><span class="pill pill-accent">JSON lines</span>
+      </div>
+      <a class="panel-link" href="/guides/backends/">How each backend is launched →</a>
+    </div>
+    <div class="side">
+      <div class="glass panel">
+        <h3 class="h3">Trackers</h3>
+        {trackers.map((t) => (
+          <a class="tracker" href={t.href}><code>{t.kind}</code><span class="body">{t.text}</span></a>
+        ))}
+      </div>
+      <pre class="term"><span class="t-dim"># .itervox/settings.jsonc</span>
+"agent": &#123;
+  "command": "claude",
+  "profiles": &#123;
+    "coder-opencode": &#123;
+      "command": "opencode --model …"
+    &#125;,
+    "coder-cursor": &#123;
+      "command": "cursor-agent --model …"
+    &#125;
+  &#125;
+&#125;</pre>
+    </div>
+  </div>
+</section>
+
+<style>
+  .split {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+  .split > .panel {
+    flex: 3 1 520px;
+  }
+  .side {
+    flex: 2 1 340px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .panel {
+    min-width: 0;
+    padding: 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .backend {
+    display: grid;
+    grid-template-columns: 140px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 13px 18px;
+    border-radius: 16px;
+  }
+  .backend-cmd {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .panel-link {
+    margin-top: 8px;
+    font-size: 14px;
+  }
+  .tracker {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 12px;
+    align-items: baseline;
+    padding: 6px 0;
+    text-decoration: none;
+  }
+  .tracker code {
+    color: var(--accent-text);
+  }
+  .tracker:hover .body {
+    color: var(--text);
+  }
+  @media (max-width: 820px) {
+    .split > .panel,
+    .side {
+      flex-basis: 100%;
+    }
+    .panel {
+      padding: 16px;
+    }
+    .backend {
+      grid-template-columns: auto minmax(0, 1fr);
+      padding: 12px 14px;
+    }
+    .backend .body {
+      text-align: right;
+      font-size: 14px;
+    }
+    .backend .pill {
+      display: none;
+    }
+  }
+</style>

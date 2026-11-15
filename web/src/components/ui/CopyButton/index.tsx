@@ -1,13 +1,13 @@
 import { useState } from 'react';
 
-/** A copy-to-clipboard button for a short value (a command, a digest). */
+/** A copy-to-clipboard pill for a short value (a command, a digest). */
 export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
       aria-label={label}
-      className="border-theme-line hover:bg-theme-bg-soft rounded border px-2 py-0.5 text-xs"
+      className="glass-chip text-theme-text hover:bg-theme-panel-strong px-2.5 py-0.5 text-xs font-medium"
       onClick={() => {
         void navigator.clipboard
           .writeText(text)

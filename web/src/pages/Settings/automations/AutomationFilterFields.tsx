@@ -108,8 +108,8 @@ export function AutomationFilterFields({
 
       <div className={fieldSurfaceCls}>
         <div>
-          <p className="text-theme-text text-[11px] font-semibold">Filter guide</p>
-          <p className="text-theme-muted mt-0.5 text-[11px]">
+          <p className="field-label mb-0">Filter guide</p>
+          <p className="field-help mt-0.5">
             Filters are optional. Use them to narrow an automation to the exact issues and contexts
             you trust it to handle.
           </p>
@@ -163,7 +163,7 @@ export function AutomationFilterFields({
           />
         )}
 
-        <div className="border-theme-line bg-theme-bg-soft text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-3 text-[11px]">
+        <div className="subtle-fill text-theme-text-secondary rounded-[var(--radius-sm)] px-3 py-3 text-xs">
           <p className="text-theme-text font-medium">Why states and labels use suggestions</p>
           <p className="mt-1">
             States come from Itervox tracker settings plus issue states it is already seeing, so the

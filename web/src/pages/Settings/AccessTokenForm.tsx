@@ -1,3 +1,4 @@
+import { buttonClass } from '../../components/ui/button/buttonStyles';
 import { useState } from 'react';
 import { SCOPES, type Scope } from '../../auth/scope';
 import type { NewApiToken } from '../../queries/tokens';
@@ -24,7 +25,7 @@ export function AccessTokenForm({
 
   return (
     <form
-      className="grid gap-3 sm:grid-cols-[2fr_1fr_1fr_auto] sm:items-end"
+      className="grid gap-3 sm:grid-cols-2 sm:items-end"
       onSubmit={(e) => {
         e.preventDefault();
         if (trimmed === '' || pending) return;
@@ -75,11 +76,11 @@ export function AccessTokenForm({
       <button
         type="submit"
         disabled={trimmed === '' || pending}
-        className="bg-theme-accent rounded-[var(--radius-sm)] px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50"
+        className={buttonClass('secondary', 'md', 'min-h-10', true)}
       >
         {pending ? 'Creating…' : 'Create token'}
       </button>
-      <p className={`${helperTextCls} sm:col-span-4`}>
+      <p className={`${helperTextCls} sm:col-span-2`}>
         {scope}: {SCOPE_HELP[scope]}.
       </p>
     </form>

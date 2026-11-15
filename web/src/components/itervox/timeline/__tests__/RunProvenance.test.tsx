@@ -81,4 +81,17 @@ describe('RunProvenance (#186)', () => {
     expect(screen.getByText('None delivered to this run')).toBeInTheDocument();
     expect(screen.queryByTestId('run-steers')).not.toBeInTheDocument();
   });
+
+  it('says when the run continued from an operator review', () => {
+    render(<RunProvenance run={run({ continuedFromReview: true, reviewComments: 3 })} />);
+    expect(screen.getByTestId('run-review-continued')).toHaveTextContent(
+      'Continued from your review (3 comments)',
+    );
+    expect(screen.queryByText('None delivered to this run')).toBeNull();
+  });
+
+  it('says "1 comment" for a single-comment review', () => {
+    render(<RunProvenance run={run({ continuedFromReview: true, reviewComments: 1 })} />);
+    expect(screen.getByTestId('run-review-continued')).toHaveTextContent('(1 comment)');
+  });
 });

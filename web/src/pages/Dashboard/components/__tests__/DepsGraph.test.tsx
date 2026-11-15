@@ -1095,7 +1095,7 @@ describe('DepsGraph', () => {
       );
       const edge = result.edges.find((e) => e.id === 'A->B');
       const style = edge?.style as { stroke?: string; strokeDasharray?: string } | undefined;
-      expect(style?.stroke).toBe('var(--danger, #ef4444)');
+      expect(style?.stroke).toBe('var(--danger)');
       expect(style?.strokeDasharray).toBeUndefined();
       expect(edge?.label).toContain('cycle');
     });
@@ -1112,7 +1112,7 @@ describe('DepsGraph', () => {
       );
       const edge = result.edges.find((e) => e.id === 'B->C');
       const style = edge?.style as { stroke?: string } | undefined;
-      expect(style?.stroke).not.toBe('var(--danger, #ef4444)');
+      expect(style?.stroke).not.toBe('var(--danger)');
       expect(edge?.label).not.toContain('cycle');
     });
 
@@ -1208,7 +1208,7 @@ describe('DepsGraph', () => {
       );
       const edge = result.edges.find((e) => e.id === 'A->B');
       const style = edge?.style as { stroke?: string } | undefined;
-      expect(style?.stroke).not.toBe('var(--danger, #ef4444)');
+      expect(style?.stroke).not.toBe('var(--danger)');
       expect(edge?.label).not.toContain('cycle');
     });
 

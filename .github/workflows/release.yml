@@ -131,10 +131,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-  # The signed, notarized Mac app, CLI and updater manifest (#130), added
-  # to the release GoReleaser just created.
+  # The signed, notarized Mac app, CLI and updater manifest (#130), and the
+  # Linux and Windows apps (#260), added to the release GoReleaser just
+  # created.
   desktop:
-    name: Mac app
+    name: Desktop apps
     needs: release
     permissions:
       contents: write

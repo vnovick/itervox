@@ -20,8 +20,8 @@ function tokensOf(row: ProfileCost, key: keyof ProfileCost): number {
 
 export function ProfileCostsTable({ costs }: { costs: readonly ProfileCost[] }) {
   return (
-    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
-      <p className="text-theme-text mb-2 text-sm font-medium">
+    <div className="glass-panel px-5 py-[18px]">
+      <p className="section-title mb-2">
         Tokens per profile <span className="text-theme-muted text-xs">(approximate)</span>
       </p>
       {costs.length === 0 ? (
@@ -31,14 +31,12 @@ export function ProfileCostsTable({ costs }: { costs: readonly ProfileCost[] }) 
         </p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[32rem] text-xs" aria-label="Tokens per profile">
+          <table className="data-table min-w-[32rem]" aria-label="Tokens per profile">
             <thead>
-              <tr className="text-theme-muted text-left">
-                <th scope="col" className="py-1 pr-3 font-medium">
-                  Profile
-                </th>
+              <tr>
+                <th scope="col">Profile</th>
                 {COLUMNS.map((c) => (
-                  <th key={c.key} scope="col" className="py-1 pr-3 text-right font-medium">
+                  <th key={c.key} scope="col" className="text-right">
                     {c.label}
                   </th>
                 ))}
@@ -46,12 +44,12 @@ export function ProfileCostsTable({ costs }: { costs: readonly ProfileCost[] }) 
             </thead>
             <tbody>
               {costs.map((row) => (
-                <tr key={row.ProfileName} className="border-theme-line border-t">
-                  <th scope="row" className="text-theme-text py-1 pr-3 text-left font-mono">
+                <tr key={row.ProfileName}>
+                  <th scope="row" className="font-mono">
                     {row.ProfileName}
                   </th>
                   {COLUMNS.map((c) => (
-                    <td key={c.key} className="text-theme-muted py-1 pr-3 text-right tabular-nums">
+                    <td key={c.key} className="text-theme-text-secondary text-right tabular-nums">
                       {fmtTokens(tokensOf(row, c.key))}
                     </td>
                   ))}

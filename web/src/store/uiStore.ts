@@ -57,6 +57,8 @@ interface UIState {
 
   // CORE-095 — command palette (Mod+K or the header button).
   commandPaletteOpen: boolean;
+  /** #251 — the New task dialog is open. */
+  newTaskOpen: boolean;
 
   // #157 — Rules editor, kept across navigation.
   rulesLayer: RulesLayerTab;
@@ -90,6 +92,7 @@ interface UIActions {
   setLogsIssueSearch: (search: string) => void;
   setTimelineAutomationOnly: (value: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setNewTaskOpen: (open: boolean) => void;
   setRulesLayer: (layer: RulesLayerTab) => void;
   setRulesView: (view: RulesEditorView) => void;
   setRulesPreviewProfile: (profile: string) => void;
@@ -114,6 +117,7 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   logsIssueSearch: '',
   timelineAutomationOnly: false,
   commandPaletteOpen: false,
+  newTaskOpen: false,
   rulesLayer: 'project',
   rulesView: 'form',
   rulesPreviewProfile: '',
@@ -155,6 +159,9 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setCommandPaletteOpen: (commandPaletteOpen) => {
     set({ commandPaletteOpen });
+  },
+  setNewTaskOpen: (newTaskOpen) => {
+    set({ newTaskOpen });
   },
   setRulesLayer: (rulesLayer) => {
     set({ rulesLayer });

@@ -44,15 +44,15 @@ export function RateLimitsFailoverCard(props: RateLimitsFailoverCardProps) {
   const rateLimitedRules = automations.filter((a) => a.trigger.type === 'rate_limited').length;
 
   return (
-    <div className="border-theme-line bg-theme-panel space-y-5 rounded-lg border p-4">
+    <div className="space-y-4">
       <div>
-        <p className="text-theme-text text-sm font-medium">Agent backends</p>
-        <p className="text-theme-muted mt-0.5 text-xs">
+        <h3 className="text-theme-text text-sm font-semibold">Agent backends</h3>
+        <p className="text-theme-text-secondary mt-0.5 text-xs">
           A backend that reports a rate limit is paused until its reset; issues wait or move to the
           fallback. Clear a breaker when you know the backend is available again.
         </p>
         {health.length === 0 ? (
-          <p className="text-theme-muted mt-2 text-xs italic">
+          <p className="text-theme-text-secondary mt-2 text-xs">
             No agent backend has been rate limited this session.
           </p>
         ) : (
@@ -61,7 +61,10 @@ export function RateLimitsFailoverCard(props: RateLimitsFailoverCardProps) {
               const key = `${row.backend}@${row.host ?? ''}`;
               const model = limitedModels.get(key);
               return (
-                <li key={key} className="flex flex-wrap items-center gap-2 text-xs">
+                <li
+                  key={key}
+                  className="glass-card flex flex-wrap items-center gap-2 rounded-[14px] px-3 py-2 text-xs"
+                >
                   <span
                     className={
                       model
@@ -91,8 +94,8 @@ export function RateLimitsFailoverCard(props: RateLimitsFailoverCardProps) {
       </div>
 
       <div className="border-theme-line border-t pt-4">
-        <p className="text-theme-text text-sm font-medium">Backend fallback</p>
-        <p className="text-theme-muted mt-0.5 text-xs">
+        <h3 className="text-theme-text text-sm font-semibold">Backend fallback</h3>
+        <p className="text-theme-text-secondary mt-0.5 text-xs">
           Set <code className="font-mono">agent.backend_fallback</code> in{' '}
           <code className="font-mono">.itervox/settings.jsonc</code> to name the backend an issue
           moves to while its own is limited. It is read when the file loads, and the daemon reloads
@@ -103,8 +106,8 @@ export function RateLimitsFailoverCard(props: RateLimitsFailoverCardProps) {
       </div>
 
       <div className="border-theme-line border-t pt-4">
-        <p className="text-theme-text text-sm font-medium">Rate-limit automations</p>
-        <p className="text-theme-muted mt-0.5 text-xs">
+        <h3 className="text-theme-text text-sm font-semibold">Rate-limit automations</h3>
+        <p className="text-theme-text-secondary mt-0.5 text-xs">
           <code className="font-mono">rate_limited</code> automations switch an issue to another
           profile when its backend is limited.{' '}
           <Link to="/automations" className="text-theme-accent-text underline underline-offset-2">

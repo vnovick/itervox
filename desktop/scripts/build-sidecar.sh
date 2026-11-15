@@ -3,12 +3,13 @@
 #
 # Tauri bundles `externalBin: binaries/itervox` from
 # desktop/src-tauri/binaries/itervox-<rust target triple>, so this script
-# builds one Go binary per requested triple and names it that way. The web
+# builds one Go binary per requested triple and names it that way (with
+# `.exe` for a Windows triple, as Tauri expects there). The web
 # dashboard must already be built into internal/server/web/dist (the daemon
 # embeds it); `make desktop-sidecar` runs `make web-build` first.
 #
 # Usage:
-#   desktop/scripts/build-sidecar.sh                 # both macOS triples (+ universal when lipo exists)
+#   desktop/scripts/build-sidecar.sh                 # macOS: both macOS triples (+ universal when lipo exists); elsewhere the host's
 #   desktop/scripts/build-sidecar.sh --host          # the current machine's triple only
 #   desktop/scripts/build-sidecar.sh <triple>...     # explicit triples
 set -euo pipefail
@@ -31,13 +32,17 @@ goos_goarch() {
     x86_64-apple-darwin) echo "darwin amd64" ;;
     x86_64-unknown-linux-gnu) echo "linux amd64" ;;
     aarch64-unknown-linux-gnu) echo "linux arm64" ;;
+    x86_64-pc-windows-msvc) echo "windows amd64" ;;
+    aarch64-pc-windows-msvc) echo "windows arm64" ;;
     *) echo "build-sidecar: unsupported target triple $1" >&2; return 1 ;;
   esac
 }
 
 triples=()
-if [ "$#" -eq 0 ]; then
+if [ "$#" -eq 0 ] && [ "$(uname -s)" = "Darwin" ]; then
   triples=(aarch64-apple-darwin x86_64-apple-darwin)
+elif [ "$#" -eq 0 ]; then
+  triples=("$(host_triple)")
 elif [ "$1" = "--host" ]; then
   triples=("$(host_triple)")
 else
@@ -54,6 +59,7 @@ mkdir -p "$OUT"
 for triple in "${triples[@]}"; do
   read -r goos goarch < <(goos_goarch "$triple")
   dest="$OUT/itervox-$triple"
+  case "$triple" in *-windows-*) dest="$dest.exe" ;; esac
   echo "build-sidecar: $triple (GOOS=$goos GOARCH=$goarch) -> ${dest#"$ROOT"/}"
   (cd "$ROOT" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -ldflags "$LDFLAGS" -o "$dest" ./cmd/itervox)

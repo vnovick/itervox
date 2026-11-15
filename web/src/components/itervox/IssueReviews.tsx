@@ -86,12 +86,9 @@ export function IssueReviews({ review, onRerun, rerunPending = false }: IssueRev
   const { outcome } = review;
 
   return (
-    <section
-      aria-label="Review"
-      className="border-theme-line bg-theme-bg-soft rounded-[var(--radius-sm)] border p-3"
-    >
+    <section aria-label="Review" className="glass-card rounded-[18px] px-3.5 py-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-theme-text text-xs font-medium tracking-wider uppercase">Review</h4>
+        <h4 className="text-theme-text text-[13px] font-semibold">Review</h4>
         <div className="flex items-center gap-2">
           {outcome && (
             <span
