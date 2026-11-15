@@ -320,6 +320,63 @@ automations:
 	assert.Contains(t, err.Error(), "unknown profile")
 }
 
+// TestAutomationWithoutProfileIsReported: an automation with no profile
+// used to be skipped by parseAutomations before validation could see it, so
+// the daemon started with the rule silently missing. It now reaches
+// ValidateDispatch, which refuses the config and names the automation; one
+// with no trigger.type is refused the same way.
+func TestAutomationWithoutProfileIsReported(t *testing.T) {
+	for _, tc := range []struct {
+		name, rule, want string
+	}{
+		{
+			name: "no profile",
+			rule: `  - id: unblock-backlog
+    trigger:
+      type: blockers_resolved
+`,
+			want: `automation "unblock-backlog" requires profile`,
+		},
+		{
+			name: "no trigger type",
+			rule: `  - id: nightly
+    profile: qa
+    trigger:
+      cron: "0 3 * * *"
+`,
+			want: `automation "nightly" requires trigger.type`,
+		},
+		{
+			name: "no id",
+			rule: `  - profile: qa
+    trigger:
+      type: run_failed
+`,
+			want: "automations[1]: each automation requires id",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := minimalV2WithProfileFiles(t, `agent:
+  profiles:
+    qa:
+      command: claude
+automations:
+  - id: comment-watch
+    profile: qa
+    trigger:
+      type: tracker_comment_added
+`+tc.rule)
+			cfg, err := config.Load(workflowWithContent(t, content))
+			require.NoError(t, err)
+			require.Len(t, cfg.Automations, 2, "the incomplete rule must reach validation, not be dropped by the parser")
+
+			err = config.ValidateDispatch(cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
 func TestValidateDispatchRejectsDisabledAutomationProfile(t *testing.T) {
 	content := minimalV2WithProfileFiles(t, `agent:
   profiles:

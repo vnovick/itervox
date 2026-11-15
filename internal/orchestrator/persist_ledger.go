@@ -69,6 +69,7 @@ const (
 	ledgerTaskSpecs
 	ledgerReviewContinuations
 	ledgerPushLanes
+	ledgerIssueProfiles
 	numLedgers
 )
 
@@ -91,6 +92,7 @@ var ledgerNames = [numLedgers]string{
 	ledgerTaskSpecs:           "task_specs",
 	ledgerReviewContinuations: "review_continuations",
 	ledgerPushLanes:           "push_lanes",
+	ledgerIssueProfiles:       "issue_profiles",
 }
 
 // ledgerOp is one full version of a ledger: write data to path, or remove it.

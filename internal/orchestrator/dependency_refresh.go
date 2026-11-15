@@ -257,7 +257,16 @@ func (o *Orchestrator) runDependencyRefresh(
 	// Identifier-only targets still fall back to a per-issue fetch: there is
 	// no by-identifier batch endpoint, and they are the rare case (a row whose
 	// tracker ID was never observed).
-	batched, perIssue := partitionRefreshTargets(order.Targets)
+	// A row the states scan just returned is not fetched again: the scan's
+	// copy is as fresh, and applying both would let the second (on GitHub a
+	// by-ID read that leaves blocker states unknown) supersede the first
+	// under the staleness guard in applyDependencyRefreshResult. The row's
+	// InFlight is still cleared through BatchKeys.
+	targets := order.Targets
+	if result.BlockersResolvedOK && len(result.BlockersResolvedIssues) > 0 {
+		targets = withoutScannedTargets(targets, result.BlockersResolvedIssues)
+	}
+	batched, perIssue := partitionRefreshTargets(targets)
 	o.fetchDependencyRefreshBatched(fetchCtx, batched, result)
 
 	for _, t := range perIssue {
@@ -281,6 +290,26 @@ func (o *Orchestrator) runDependencyRefresh(
 			})
 		}
 	}
+}
+
+// withoutScannedTargets drops the ID-keyed targets whose issue the scan
+// returned. An identifier-only target is kept: its by-identifier fetch is
+// what migrates the row to its ID key (applyDependencyRefreshResult).
+func withoutScannedTargets(targets []dependencyRefreshTarget, scanned []domain.Issue) []dependencyRefreshTarget {
+	seen := make(map[string]struct{}, len(scanned))
+	for _, issue := range scanned {
+		if issue.ID != "" {
+			seen[issue.ID] = struct{}{}
+		}
+	}
+	out := make([]dependencyRefreshTarget, 0, len(targets))
+	for _, t := range targets {
+		if _, ok := seen[t.IssueID]; ok && t.IssueID != "" && t.Key == t.IssueID {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // partitionRefreshTargets splits targets into those that can be batched (they
@@ -646,6 +675,13 @@ func (o *Orchestrator) applyDependencyRefreshResult(
 				continue
 			}
 			o.auditFetchedIssueDependenciesAndDispatch(ctx, state, issue, now)
+			// The scan read this row as freshly as a row refresh would, so it
+			// counts as one: no redundant by-ID fetch of a row the scan just
+			// created (a Backlog issue) until the interval passes again.
+			if entry := state.DependencyAudit[dependencyAuditKey(issue)]; entry != nil {
+				entry.ConsecutiveFailures = 0
+				entry.LastRefreshAttemptAt = now
+			}
 		}
 		// Gap A: advance the watermark to the seq observed at LAUNCH, not the
 		// live seq. The fetch window stays open for the whole batch, and
@@ -763,9 +799,15 @@ func (o *Orchestrator) reconcileDependencyRefresh(ctx context.Context, state *St
 	batchSize := dependencyRefreshBatchSize(o.cfg)
 
 	targets := selectDependencyRefreshBatch(state, now, interval, batchSize)
-	states := o.pendingBlockersResolvedStates(state)
+	states := o.pendingBlockersResolvedStates(state, now, interval)
 	if len(targets) == 0 && len(states) == 0 {
 		return
+	}
+	if len(states) > 0 {
+		// Stamped at launch, like LastRefreshAttemptAt: a failed scan waits
+		// one interval instead of retrying every tick against a tracker
+		// that is failing.
+		state.LastBlockersResolvedScanAt = now
 	}
 
 	state.DepsRefreshInFlight = true
@@ -787,23 +829,56 @@ func (o *Orchestrator) reconcileDependencyRefresh(ctx context.Context, state *St
 }
 
 // pendingBlockersResolvedStates returns the tracker states the blockers_resolved
-// pass must scan, or nil when the pass would find nothing.
+// pass must scan, or nil when it is not due.
 //
-// The seq check is the same short-circuit the former inline implementation used:
-// DependencyTransitionSeq advances on every blockers_resolved transition — the
-// only condition under which the scan can find new work — so a stable seq
-// guarantees the fetch would observe no actionable rows.
-func (o *Orchestrator) pendingBlockersResolvedStates(state *State) []string {
+// The scan is the only way an issue outside the candidate (active) states —
+// a Backlog issue waiting on its blockers, the documented "backlog → Todo"
+// flow — enters DependencyAudit: the per-tick audit runs over candidates
+// only, and the row refresh only revisits rows that already exist. Without a
+// row the issue is never seen blocked, so its blockers resolving is never a
+// transition. The scan is therefore due when:
+//
+//   - DependencyTransitionSeq moved since the last scan (the former, and
+//     still the fastest, trigger), or
+//   - no scan ran yet this session, or one interval
+//     (dependency_audit_refresh_interval_ms) has passed since the last one,
+//     so issues that became blocked while the seq stood still are found.
+//
+// The read stays bounded to the states the rules can fire in
+// (blockersResolvedScanStates) and runs off the loop in runDependencyRefresh.
+func (o *Orchestrator) pendingBlockersResolvedStates(state *State, now time.Time, interval time.Duration) []string {
 	automations := o.snapBlockersResolvedAutomations()
 	if len(automations) == 0 {
 		return nil
 	}
-	if state.DependencyTransitionSeq == state.LastBlockersResolvedAuditSeq {
+	seqMoved := state.DependencyTransitionSeq != state.LastBlockersResolvedAuditSeq
+	intervalDue := state.LastBlockersResolvedScanAt.IsZero() || now.Sub(state.LastBlockersResolvedScanAt) >= interval
+	if !seqMoved && !intervalDue {
 		return nil
 	}
+	// tracker.backlog_states is read-only after startup (not a cfgMu field).
+	return blockersResolvedScanStates(automations, o.cfg.Tracker.BacklogStates)
+}
+
+// blockersResolvedScanStates is the state set the blockers_resolved scan
+// fetches: each rule's filter.states, which bound the match unless the rule
+// uses match_mode any; and tracker.backlog_states for a rule whose states do
+// not bound it (no filter.states, or match_mode any). Active states are not
+// added: the candidate poll audits those issues every tick. A rule with no
+// filter.states on a tracker with no backlog states (GitHub's default)
+// therefore adds nothing; it still fires for issues the candidate poll or an
+// existing audit row covers.
+func blockersResolvedScanStates(automations []BlockersResolvedAutomation, backlogStates []string) []string {
 	var states []string
+	needBacklog := false
 	for _, automation := range automations {
 		states = append(states, automation.States...)
+		if len(automation.States) == 0 || automation.MatchMode == config.AutomationFilterMatchAny {
+			needBacklog = true
+		}
+	}
+	if needBacklog {
+		states = append(states, backlogStates...)
 	}
 	return deduplicateStringsFold(states)
 }

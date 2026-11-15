@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
+	"github.com/vnovick/itervox/internal/tracker/local"
 	"github.com/vnovick/itervox/internal/tracker/store"
 )
 
@@ -660,4 +663,43 @@ func TestAutomationPollProjectFilterChangeDoesNotFire(t *testing.T) {
 		"fired:ENG-1 prev=In Progress now=Ready for QA",
 		"fired:ENG-3 prev=Todo now=Ready for QA",
 	}, runner.fired())
+}
+
+// TestIssueEnteredStateFiresForLocalIssueWithoutCreated: with the local
+// tracker, a hand-written issue file has no `created:` (it is optional).
+// Moving it from Backlog (not polled) into the trigger state must still fire
+// issue_entered_state; a file written by hand straight into the trigger state
+// after the baseline poll is a creation and still must not.
+func TestIssueEnteredStateFiresForLocalIssueWithoutCreated(t *testing.T) {
+	cfg := pollTestConfig(enteredRule("qa-ready", "Ready for QA"))
+	cfg.Tracker.Kind = "local"
+	dir := filepath.Join(t.TempDir(), "issues")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	write := func(name, content string, mod time.Time) {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+		require.NoError(t, os.Chtimes(p, mod, mod))
+	}
+	// Written by hand well before the daemon's baseline poll, no created:.
+	written := time.Now().Add(-2 * time.Hour)
+	write("ITX-1.md", "---\ntitle: Moved\nstate: Backlog\n---\n", written)
+	write("ITX-2.md", "---\ntitle: Stays\nstate: Backlog\n---\n", written)
+	tr := local.New(local.Config{Dir: dir, ActiveStates: cfg.Tracker.ActiveStates, TerminalStates: cfg.Tracker.TerminalStates})
+	orch, runner, ctx := runPollOrchestrator(t, cfg, tr)
+
+	entries := compileAutomations(cfg).polledEvents
+	require.NotEmpty(t, entries)
+	start := time.Now()
+	state := pollAutomationEvents(ctx, cfg, tr, orch, entries, automationPollState{issues: map[string]observedAutomationIssue{}}, cfg.Tracker.ActiveStates, start)
+
+	// The operator moves ITX-1 by editing its state line; ITX-3 is a new
+	// file written straight into the trigger state.
+	write("ITX-1.md", "---\ntitle: Moved\nstate: Ready for QA\n---\n", time.Now())
+	write("ITX-3.md", "---\ntitle: Fresh\nstate: Ready for QA\n---\n", time.Now())
+	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, start.Add(15*time.Second))
+
+	require.Eventually(t, func() bool { return len(runner.fired()) >= 1 }, 5*time.Second, 25*time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, []string{"fired:ITX-1 prev= now=Ready for QA"}, runner.fired(),
+		"ITX-1 moved from an unpolled state; ITX-3 was created in the trigger state after the baseline poll")
 }

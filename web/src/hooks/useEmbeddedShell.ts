@@ -1,12 +1,13 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router';
 
-// Embedded mode: the dashboard shown inside the desktop app's window, next
-// to the app's own project rail. The app's webview initialization script
+// Embedded mode: the dashboard shown inside the desktop app's window, under
+// the app's own project tabs. The app's webview initialization script
 // (desktop/src-tauri/src/dashboard.rs) sets `window.__ITERVOX_SHELL__ =
 // 'desktop'` before this bundle runs; the flag is read once, at boot, and
-// never written back to a URL. Embedded, the shell drops its own sidebar
-// (the app has the rail and a native Go menu) and lands on the issue view.
+// never written back to a URL. Embedded, the shell keeps its sidebar (with
+// an Issue view entry), titles the top bar `project · ISSUE`, lands on the
+// issue view and exposes a navigate hook for the app's native Go menu.
 //
 // `?embedded=1` turns it on in the dev server only (the route-mocked e2e
 // harness runs `pnpm dev`); a production build ignores it, so a shared link

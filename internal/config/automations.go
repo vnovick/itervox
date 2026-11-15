@@ -204,9 +204,10 @@ func parseAutomations(raw any) []AutomationConfig {
 		profile := strField(m, "profile", "")
 		trigger := nestedMap(m, "trigger")
 		triggerType := strField(trigger, "type", "")
-		if id == "" || profile == "" || triggerType == "" {
-			continue
-		}
+		// An entry missing its id, profile or trigger.type is kept, not
+		// skipped: ValidateAutomations refuses it with an error that names
+		// the automation. Skipping it here dropped the rule silently — the
+		// compile summary never saw it, so it reported dropped=0.
 		filter := nestedMap(m, "filter")
 		// #198: a list is the group syntax alone; a map may carry groups.
 		rawGroups := filter["groups"]

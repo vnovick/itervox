@@ -741,6 +741,15 @@ type State struct {
 	// in the tracker, but have not yet been durably consumed by a resumed
 	// worker. Key: identifier.
 	PendingInputResumes map[string]*PendingInputResumeEntry
+	// DismissedInputQuestions records, per issue identifier, the question
+	// the operator dismissed (POST /issues/{id}/dismiss-input). The
+	// input-required recovery (admitClaimRead → recoverInputRequired) does
+	// not rehydrate an entry from that same tracker comment again, so a
+	// dismissal sticks when the issue returns to an active state; a NEW
+	// question (another comment) still blocks. Event-loop state, persisted
+	// in input_required.json (`dismissed`), pruned when the issue turns
+	// terminal and bounded to maxDismissedInputQuestions.
+	DismissedInputQuestions map[string]DismissedInputQuestion
 	// AutomationQueue tracks automation triggers that could not start immediately.
 	// Key: stable queue key from automationQueueKey.
 	AutomationQueue map[string]*AutomationQueueEntry
@@ -831,6 +840,15 @@ type State struct {
 	// for the next batch to do, so pendingBlockersResolvedStates skips the
 	// FetchIssuesByStates call entirely. v0.2.0 audit P1-2.
 	LastBlockersResolvedAuditSeq int64
+	// LastBlockersResolvedScanAt is when the dependency refresh last launched
+	// the blockers_resolved states scan (FetchIssuesByStates over the states
+	// the automations can fire in). The scan also runs once per
+	// dependency_audit_refresh_interval_ms, not only when the transition seq
+	// moves: an issue outside the candidate (active) states — Backlog — only
+	// enters DependencyAudit through it, and without a row it can never make
+	// the blocked → unblocked transition that advances the seq. Event-loop
+	// state, session-scoped, not persisted (zero = scan on the first tick).
+	LastBlockersResolvedScanAt time.Time
 	// DepsRefreshInFlight is the single-flight latch for the off-loop
 	// dependency-refresh worker. At most one batch is tracked as live: after
 	// a watchdog fire (reclaimStuckDependencyRefresh) the abandoned batch's
@@ -1127,6 +1145,7 @@ func NewState(cfg *config.Config) State {
 		IssueStatusHistory:          make(map[string][]IssueStatusChange),
 		DiscardingIdentifiers:       make(map[string]DiscardMarker),
 		InputRequiredIssues:         make(map[string]*InputRequiredEntry),
+		DismissedInputQuestions:     make(map[string]DismissedInputQuestion),
 		PendingInputResumes:         make(map[string]*PendingInputResumeEntry),
 		AutomationQueue:             make(map[string]*AutomationQueueEntry),
 		AutomationQueueOrder:        []string{},
