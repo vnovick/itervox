@@ -23,3 +23,14 @@ func SetPollInterval(d time.Duration) (prev time.Duration) {
 	pollInterval = d
 	return prev
 }
+
+// SetEditLockTimeout overrides how long an edit waits for the WORKFLOW.md
+// edit lock and returns the previous value. Stress tests that queue hundreds
+// of writers on one lock raise it: the last writer legitimately waits for
+// every earlier one, which on a loaded Windows runner exceeds the 10s
+// production bound meant for a stuck holder.
+func SetEditLockTimeout(d time.Duration) (prev time.Duration) {
+	prev = editLockTimeout
+	editLockTimeout = d
+	return prev
+}
