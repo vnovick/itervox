@@ -141,10 +141,13 @@ func (c Client) run(ctx context.Context, stdin string, args ...string) ([]byte, 
 	return stdout.Bytes(), nil
 }
 
-// noServer reports a tmux error meaning no server is running.
+// noServer reports a tmux error meaning no server is running, including
+// a server that is shutting down because its last session just ended
+// ("server exited unexpectedly", or "no current target" from a server
+// with no sessions left), which a command can reach in passing.
 func noServer(msg string) bool {
 	return strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to") ||
-		strings.Contains(msg, "No such file or directory")
+		strings.Contains(msg, "No such file or directory") || strings.Contains(msg, "server exited unexpectedly") || strings.Contains(msg, "no current target")
 }
 
 // Version returns tmux's version ("tmux 3.4"), or ErrUnavailable.
