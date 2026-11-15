@@ -3,6 +3,7 @@
 
 # Go build artifacts
 /itervox
+/bin/referee
 *.test
 
 # Node / Web

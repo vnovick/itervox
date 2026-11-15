@@ -48,6 +48,11 @@ type ReviewVerdict struct {
 	Comments []ReviewComment `json:"comments,omitempty"`
 	// RecordedAt is when the orchestrator ingested the verdict.
 	RecordedAt time.Time `json:"recordedAt"`
+	// Backend is the backend the reviewer ran on, stamped by the event loop
+	// when it records the verdict (never read from the verdict file): a
+	// guardrails.lanes second_opinion merge needs one other than the
+	// writer's.
+	Backend string `json:"backend,omitempty"`
 }
 
 // NormalizeReviewVerdict maps a raw verdict string to one of the two accepted

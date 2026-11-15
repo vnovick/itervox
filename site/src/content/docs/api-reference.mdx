@@ -1582,6 +1582,31 @@ bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
 
+### Model servers
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/model-servers` | — | `200 {"servers":[…]}` |
+
+Lists the model servers that profile commands point their agent at, for the
+desktop app's "Model servers" section (see
+[Local models](/guides/local-models/#in-the-desktop-app)). The daemon reads
+the same command assignments as `itervox doctor` (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, `OPENAI_API_BASE`) from the live profile configuration,
+and never probes them:
+
+```json
+{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:8000","profiles":["(default)","coder-local"],"pools":["local"],"remote":false}]}
+```
+
+One row per variable and URL. `profiles` are the enabled profiles using it
+(`(default)` is `agent.command`), `pools` their quota pools
+(`agent.profiles.<name>.pool`, `[]` when none). `remote` is `true` when
+`agent.ssh_hosts` is set, since those runs go to worker hosts. A URL taken
+from a variable (`$LOCAL_MODEL_URL`) has `"unchecked": true`. Viewer scope;
+below admin, credentials in a URL are redacted. With no model server
+configured the list is empty.
+
 ### New task and task templates (#251)
 
 Fetched on demand; none of these are on the `/state` snapshot or the SSE
@@ -1694,6 +1719,31 @@ decision.
    "runTimestamp": "2026-05-02T10-00-00.000Z", "role": "implementer",
    "decisions": [{"time": "2026-05-02T10:01:00Z", "at": "2026-05-02T10:01:00Z",
      "decision": "Diff against the merge base", "why": "main moves on", "alternative": "main's tip"}]}
+]}
+```
+
+#### `GET /api/v1/issues/{identifier}/attestations`
+
+The issue's [signed check](/guides/guardrails/#signed-checks) records
+(`agent.profiles.<name>.verify`), one entry per run, oldest first (viewer).
+They are read from `.itervox/attestations/<identifier>/<run id>.jsonl` and
+verified on each request: a record is `verified` when its ed25519 signature is
+valid for the daemon's key and its `treeHash` is the run's final tree (the
+`seal` record's tree); `reason` says why not. Commands and output tails were
+redacted when the record was made. An issue with no records answers
+`{"identifier":"ENG-1","runs":[]}`; `503 not_supported` when signed checks are
+not wired.
+
+```json
+{"identifier": "ENG-1", "keyId": "3f1c9a0b5d7e2468", "runs": [
+  {"runId": "2026-11-14T10-00-00.000Z_implementer", "profile": "implementer",
+   "finalTree": "9c1e…", "records": [
+     {"kind": "check", "name": "test", "command": "make test", "pipefail": true,
+      "exitCode": 1, "startedAt": "2026-11-14T10:20:01Z", "durationMs": 8123,
+      "outputSha256": "e3b0…", "outputTail": "FAIL ./pkg …", "treeHash": "9c1e…",
+      "head": "4b2d…", "keyId": "3f1c9a0b5d7e2468", "verified": true},
+     {"kind": "seal", "exitCode": 0, "startedAt": "2026-11-14T10:20:09Z", "durationMs": 0,
+      "treeHash": "9c1e…", "head": "4b2d…", "keyId": "3f1c9a0b5d7e2468", "verified": true}]}
 ]}
 ```
 

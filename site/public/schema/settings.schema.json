@@ -340,6 +340,17 @@
           "x-itervox-editor": "profiles",
           "x-itervox-group": "Profiles"
         },
+        "push": {
+          "default": "agent",
+          "description": "Default for profiles that do not set push: agent (the agent pushes, under the guardrails), or daemon (patches only: the agent gets no forge credentials and Itervox pushes after its checks; needs guardrails.enabled). Read at load time.",
+          "enum": [
+            "agent",
+            "daemon"
+          ],
+          "title": "Push",
+          "type": "string",
+          "x-itervox-group": "Core"
+        },
         "rate_limit_error_patterns": {
           "default": [],
           "description": "Case-insensitive substrings that mark a failure as a rate limit. Empty: the built-in list.",

@@ -173,6 +173,10 @@ type OrchestratorEvent struct { //nolint:revive
 	Via string
 	// guardrail is the payload of EventGuardrailApproval (#204).
 	guardrail *guardrailApprovalEvent
+	// guardrailLane is the payload of EventGuardrailLane (guardrails.lanes).
+	guardrailLane *guardrailLaneEvent
+	// mergeLane is the payload of EventMergeLaneCheck (guardrails.lanes).
+	mergeLane *mergeLaneQuery
 	// deferReply receives the loop's decision on an EventDeferStateMove.
 	deferReply chan bool
 	// feed is the payload of EventFeedRecorded (#213).
@@ -317,6 +321,12 @@ type InputRequiredEntry struct {
 	// reply decides the request instead of resuming a session, and the
 	// entry is never persisted (it dies with the run).
 	GuardrailApprovalID string
+	// GuardrailLanePaths are the changed files that hold a push for this
+	// approval (guardrails.lanes.human), at most guardrails.MaxLanePathsSent;
+	// GuardrailLanePathsTotal how many there were. Empty for an
+	// approval_commands command.
+	GuardrailLanePaths      []string
+	GuardrailLanePathsTotal int
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not
@@ -379,8 +389,13 @@ type RunEntry struct {
 	AgentSessionID string
 	WorkerHost     string // SSH host used for this worker, empty = local
 	Backend        string // e.g. "claude", "codex", or "" when unknown
-	ProfileName    string // resolved agent profile name, empty = default
-	Kind           string // "worker" (default) | "reviewer" | "automation"
+	// Pool is the run's quota pool (agent.profiles.<name>.pool), fixed at
+	// dispatch; "" for the backend's own quota. With Backend and WorkerHost
+	// it names the run's circuit breaker (BackendHealthKey). The runner is
+	// selected by Backend alone.
+	Pool        string
+	ProfileName string // resolved agent profile name, empty = default
+	Kind        string // "worker" (default) | "reviewer" | "automation"
 	// Isolation names the sandbox the run's agent runs in ("bubblewrap",
 	// "landlock", "sandbox-exec"; #258), empty when it runs unsandboxed.
 	// Reported by the worker once it resolved the sandbox.
@@ -743,6 +758,14 @@ type State struct {
 	// ReviewOutcomes is the quorum result once every reviewer in the chain
 	// has reported. Key: issue identifier.
 	ReviewOutcomes map[string]ReviewOutcome
+	// PushLanes is the highest guardrails.lanes lane each issue's agent
+	// pushes reached (second_opinion or human; auto is never recorded), with
+	// the paths and the writers' backends. merge_pr reads it through the
+	// loop (EventMergeLaneCheck). Key: issue identifier. Event-loop state,
+	// set only by EventGuardrailLane and an approved human-lane push,
+	// persisted to push_lanes.json (ledger writer), pruned when the issue
+	// turns terminal.
+	PushLanes map[string]PushLaneRecord
 	// PersistWriteErrors counts failed ledger writes (CORE-038). Not tracked
 	// by the event loop: Snapshot() overlays the orchestrator's atomic
 	// counter, so it is only meaningful on a Snapshot() result.
@@ -1108,6 +1131,7 @@ func NewState(cfg *config.Config) State {
 		ReviewVerdicts:      make(map[string][]ReviewVerdict),
 		ReviewChainIndex:    make(map[string]int),
 		ReviewOutcomes:      make(map[string]ReviewOutcome),
+		PushLanes:           make(map[string]PushLaneRecord),
 		PROpenedDispatched:  make(map[string]struct{}),
 		PRMergedDispatched:  make(map[string]struct{}),
 		ManagedPRs:          make(map[string]ManagedPR),

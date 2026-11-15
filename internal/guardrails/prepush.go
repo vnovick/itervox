@@ -142,23 +142,47 @@ func runPrePush(p Policy, args, env []string, stdin io.Reader, stdout, stderr io
 		_, _ = fmt.Fprintf(stderr, "guardrails: cannot resolve the repository: %v\n", err)
 		return 1
 	}
-	violations, adopt := p.CheckPush(ParseRefUpdates(string(input)), gitRepo{dir: dir})
+	updates := ParseRefUpdates(string(input))
+	repo := gitRepo{dir: dir}
+	remote := ""
+	if len(args) > 0 {
+		remote = args[0] // the remote's name; never the URL, which may carry credentials
+	}
+	if p.PatchOut && len(updates) > 0 {
+		// push: daemon: the shims refuse `git push`; this catches a git
+		// run by its absolute path. The daemon's own push goes through
+		// gitexec, which never sees this hook.
+		d := patchOutRefusal("git push")
+		_, _ = fmt.Fprintln(stderr, d.message)
+		newClient(p).report(Event{Kind: d.kind, Tool: "git push", Command: displayCommand("git", []string{"push", remote})})
+		return 1
+	}
+	violations, adopt := p.CheckPush(updates, repo)
 	if len(violations) > 0 {
-		remote := ""
-		if len(args) > 0 {
-			remote = args[0] // the remote's name; never the URL, which may carry credentials
-		}
 		for _, v := range violations {
 			_, _ = fmt.Fprintln(stderr, v.Message)
 			newClient(p).report(Event{Kind: v.Kind, Tool: "git push", Command: displayCommand("git", []string{"push", remote, v.Ref})})
 		}
 		return 1
 	}
+	// guardrails.lanes: what the push changes, after where it goes.
+	lanes := LaneResult{Lane: LaneAuto}
+	if !p.Lanes.Empty() {
+		lanes = p.classifyPush(updates, repo)
+	}
+	if lanes.Lane == LaneHuman {
+		if code, ok := holdHumanLane(p, dir, remote, updates, lanes, stderr); !ok {
+			return code
+		}
+	}
 	if adopt != "" {
 		if err := p.adopt(adopt); err != nil {
 			_, _ = fmt.Fprintf(stderr, "guardrails: cannot record branch %s: %v\n", adopt, err)
 			return 1
 		}
+	}
+	if code := reportLanes(p, lanes, stderr); code != 0 {
+		return code
 	}
 	return chainHook(p.OrigHooksDir, "pre-push", args, env, input, stdout, stderr)
 }

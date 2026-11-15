@@ -163,9 +163,13 @@ func ComposeEvalPrompt(in EvalPromptInput) (EvalPrompt, error) {
 		pb, _ = resolvePlaybookFor(cfg, in.Issue, "")
 	}
 	evidencePath, evidenceBlock := "", ""
-	if required := runEvidenceChecks(profile.RequireEvidence, pb); len(required) > 0 {
+	verifyChecks := profile.Verify
+	if in.Automation != nil || isReviewerProfile(cfg, in.ProfileName) {
+		verifyChecks = nil
+	}
+	if required := runEvidenceChecks(profile.RequireEvidence, pb); len(required) > 0 || len(verifyChecks) > 0 {
 		evidencePath = evidenceRelPathFor(in.ProfileName)
-		evidenceBlock = buildEvidenceBlock(required, evidencePath)
+		evidenceBlock = buildRunEvidenceBlock(required, verifyChecks, evidencePath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, cfg.Workspace.BaseBranch, evidencePath, nil)
 	ruleSet := resolveRulesFor(cfg, in.ProfileName, backend)

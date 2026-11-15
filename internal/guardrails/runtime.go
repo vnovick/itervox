@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/agent"
@@ -55,16 +56,30 @@ type Options struct {
 	AllowForcePush    bool
 	ApprovalCommands  []string
 	ApprovalsEnabled  bool
-	DaemonURL         string
-	Token             string
+	// EnvApprovalCommands are the environment-scoped approval commands
+	// (Policy.EnvApprovalCommands).
+	EnvApprovalCommands []EnvApproval
+	DaemonURL           string
+	Token               string
 	// PreApproved are approval commands the operator approved before the
 	// run (Policy.PreApproved).
 	PreApproved []string
+	// Lanes and BaseRefs classify pushes (Policy.Lanes, Policy.BaseRefs).
+	Lanes    Lanes
+	BaseRefs []string
+	// PatchOut is push: daemon (Policy.PatchOut): the agent's pushes and
+	// pull-request commands are refused and AgentEnv carries no forge
+	// credentials.
+	PatchOut bool
+	// StripEnv are further variable names AgentEnv removes with PatchOut
+	// (the variables holding the tracker key).
+	StripEnv []string
 }
 
 // Runtime is one run's prepared guardrails directory.
 type Runtime struct {
-	policy Policy
+	policy   Policy
+	stripEnv []string
 }
 
 // Prepare writes a run's runtime directory: the policy, a shim per
@@ -83,20 +98,27 @@ func Prepare(ctx context.Context, opts Options) (*Runtime, error) {
 		dir = resolved
 	}
 	p := Policy{
-		Identifier:        opts.Identifier,
-		IssueBranch:       opts.IssueBranch,
-		ProtectedBranches: opts.ProtectedBranches,
-		AllowForcePush:    opts.AllowForcePush,
-		ApprovalCommands:  opts.ApprovalCommands,
-		ApprovalsEnabled:  opts.ApprovalsEnabled && opts.DaemonURL != "" && opts.Token != "",
-		OrigHooksDir:      repoHooksDir(ctx, opts.WorkDir),
-		Dir:               dir,
-		BinDir:            filepath.Join(dir, "bin"),
-		DaemonURL:         opts.DaemonURL,
-		Token:             opts.Token,
-		PreApproved:       opts.PreApproved,
+		Identifier:          opts.Identifier,
+		IssueBranch:         opts.IssueBranch,
+		ProtectedBranches:   opts.ProtectedBranches,
+		AllowForcePush:      opts.AllowForcePush,
+		ApprovalCommands:    opts.ApprovalCommands,
+		EnvApprovalCommands: opts.EnvApprovalCommands,
+		ApprovalsEnabled:    opts.ApprovalsEnabled && opts.DaemonURL != "" && opts.Token != "",
+		OrigHooksDir:        repoHooksDir(ctx, opts.WorkDir),
+		Dir:                 dir,
+		BinDir:              filepath.Join(dir, "bin"),
+		DaemonURL:           opts.DaemonURL,
+		Token:               opts.Token,
+		PreApproved:         opts.PreApproved,
+		Lanes:               opts.Lanes,
+		BaseRefs:            opts.BaseRefs,
+		PatchOut:            opts.PatchOut,
 	}
 	r := &Runtime{policy: p}
+	if opts.PatchOut {
+		r.stripEnv = slices.Clone(opts.StripEnv)
+	}
 	if err := r.write(opts.Executable); err != nil {
 		r.Remove()
 		return nil, err
@@ -114,8 +136,13 @@ func (r *Runtime) write(exe string) error {
 	if err := writePolicy(p); err != nil {
 		return err
 	}
+	if p.PatchOut {
+		if err := r.writePatchOutDirs(); err != nil {
+			return fmt.Errorf("guardrails: create forge config dirs: %w", err)
+		}
+	}
 	policyPath := r.PolicyPath()
-	for _, name := range ShimNames(p.ApprovalCommands) {
+	for _, name := range ShimNames(p.approvalPatterns()) {
 		script := "#!/bin/sh\n# " + shimMarker + "\nexec " + agent.ShellQuote(exe) + " " + shimEntrypoint + " " +
 			agent.ShellQuote(policyPath) + " " + agent.ShellQuote(name) + " \"$@\"\n"
 		if err := os.WriteFile(filepath.Join(p.BinDir, name), []byte(script), 0o700); err != nil {
@@ -229,7 +256,11 @@ func (r *Runtime) Remove() {
 // gitConfigParameters is the GIT_CONFIG_PARAMETERS value that points git at
 // the runtime's hooks: the format `git -c` itself exports to subprocesses.
 func (r *Runtime) gitConfigParameters() string {
-	return gitConfigParam("core.hooksPath", r.HooksDir())
+	hooks := gitConfigParam("core.hooksPath", r.HooksDir())
+	if r.policy.PatchOut {
+		return patchOutGitConfig() + hooks // hooksPath last: withHooksPath checks the suffix
+	}
+	return hooks
 }
 
 func gitConfigParam(key, value string) string {
@@ -245,11 +276,18 @@ func sqQuote(s string) string {
 // agent runner (agent.WithRunEnv): the shims first on PATH, core.hooksPath
 // through GIT_CONFIG_PARAMETERS, and the dashboard API token blanked so the
 // agent cannot answer its own approval through the operator's API.
+//
+// With PatchOut (push: daemon) it also removes every forge and tracker
+// credential (patchOutEnv).
 func (r *Runtime) AgentEnv() agent.RunEnv {
-	return agent.RunEnv{
+	env := agent.RunEnv{
 		Vars:        []string{"GIT_CONFIG_PARAMETERS=" + r.gitConfigParameters(), "ITERVOX_API_TOKEN="},
 		PathPrepend: r.BinDir(),
 	}
+	if r.policy.PatchOut {
+		env = r.patchOutEnv(env)
+	}
+	return env
 }
 
 // CommandPrefix is AgentEnv as assignments in front of a POSIX shell

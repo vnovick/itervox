@@ -68,6 +68,7 @@ const (
 	ledgerPlaybookOverrides
 	ledgerTaskSpecs
 	ledgerReviewContinuations
+	ledgerPushLanes
 	numLedgers
 )
 
@@ -89,6 +90,7 @@ var ledgerNames = [numLedgers]string{
 	ledgerPlaybookOverrides:   "playbook_overrides",
 	ledgerTaskSpecs:           "task_specs",
 	ledgerReviewContinuations: "review_continuations",
+	ledgerPushLanes:           "push_lanes",
 }
 
 // ledgerOp is one full version of a ledger: write data to path, or remove it.

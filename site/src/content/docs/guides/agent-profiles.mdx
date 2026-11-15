@@ -326,6 +326,7 @@ Granting `merge_pr` does not mean "the agent can merge anything". Every merge re
 3. **No block label** — if the PR carries any label from `agent.merge_block_labels` (case-insensitive; default `["needs-human", "migration", "auth", "feature-flag", "breaking"]`), the merge refuses with `blocked_label:<label>`.
 4. **All required CI checks pass** — `gh pr checks --required` must exit clean; failing or pending required checks refuse with `checks_failed:<excerpt>`.
 5. **Valid strategy** — one of `squash` (default), `rebase`, or `merge`, taken from the request or `agent.merge_strategy`. The merge runs with `--delete-branch`.
+6. **Lanes allow it** — checked first, before any `gh` call. If the issue's agent pushes changed files in [`guardrails.lanes.human`](/guides/guardrails/#lanes) (CI workflows and config), the merge refuses with `lane_human:` — merging a pipeline change is a human's job. If they changed `guardrails.lanes.second_opinion` files, it refuses with `lane_second_opinion:` until a reviewer on a different backend than the writer's has approved, after the last such push.
 
 Example:
 
@@ -382,6 +383,42 @@ In v0.2.0, daemon-backed action env vars and shims are injected only for local
 workers. SSH remote workers with `allowed_actions` receive a prompt warning that
 daemon-backed actions are unavailable remotely; they do not receive
 `ITERVOX_ACTION_TOKEN`, `ITERVOX_DAEMON_URL`, or the local shim PATH.
+
+---
+
+## Patches only: the daemon pushes
+
+By default a profile's agent pushes its branch and opens the pull request
+itself. `push: daemon` turns that around: the agent emits commits, and the
+daemon publishes them after its checks.
+
+```yaml
+agent:
+  profiles:
+    coder:
+      command: claude
+      push: daemon
+      verify:
+        - { name: test, run: make test }
+```
+
+- The agent's environment carries no forge or tracker token, git sees no
+  credential helper, and `gh`/`glab` see no stored login.
+- `git push`, `gh pr create`, `gh pr merge` and other pull-request writes are
+  refused with "this profile emits patches; the daemon pushes after its
+  checks". The agent's prompt says so, so it does not try.
+- After a successful run, and after `hooks.after_run_required`, `verify` and
+  the file part of `require_evidence`, Itervox pushes the branch with its own
+  credentials and opens the pull request. With `verify`, only a commit whose
+  tree the signed checks ran on is pushed.
+- The push is classified into `guardrails.lanes` like an agent's: a
+  human-lane change waits for your approval; second-opinion is recorded for
+  merge policy.
+
+It needs `guardrails.enabled` and is refused with `agent.ssh_hosts`.
+`push` is not edited on the dashboard; a dashboard save keeps it. Reviewer
+profiles are read-only and publish nothing either way. The full description
+is in [Safety](/guides/safety/#patches-only-the-daemon-pushes).
 
 ---
 
@@ -551,6 +588,7 @@ agent:
 | `switch_window_hours` | `6` | Rolling window for the switch cap |
 | `switch_revert_hours` | `0` | TTL after which auto-applied switches revert to the original profile/backend (`0` disables) |
 | `rate_limit_error_patterns` | `[]` | Custom substrings for detecting rate-limit errors in agent stderr |
+| `push` | `"agent"` | Default push mode for profiles that set none: `agent` or `daemon` (patches only) |
 
 ### Profile fields
 
@@ -564,3 +602,4 @@ agent:
 | `allowed_actions` | `[]` | Daemon-backed actions: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input` |
 | `create_issue_state` | `""` | Tracker state for new issues (required when `create_issue` is in `allowed_actions`) |
 | `create_issue_labels` | `[]` | Labels `create_issue` may put on new issues (`--label`); any other label is refused |
+| `push` | inherits `agent.push` (`agent`) | `daemon` makes the profile patches only: the agent cannot push or open a pull request, and Itervox pushes after its checks. See [Patches only](#patches-only-the-daemon-pushes) |

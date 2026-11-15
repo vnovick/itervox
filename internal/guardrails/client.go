@@ -18,6 +18,7 @@ import (
 //	POST /api/v1/agent-actions/{identifier}/guardrail/events      Event
 //	POST /api/v1/agent-actions/{identifier}/guardrail/approvals   ApprovalRequest → ApprovalStatus
 //	GET  /api/v1/agent-actions/{identifier}/guardrail/approvals/{id}              → ApprovalStatus
+//	POST /api/v1/agent-actions/{identifier}/guardrail/lanes       LaneReport
 //
 // Without an endpoint, reports go to the run's local refusal log instead
 // (refusalLog), which the run reads back (Runtime.RefusedApprovals).
@@ -83,6 +84,25 @@ func (c client) report(ev Event) {
 	}
 	_ = c.do(http.MethodPost, c.endpoint("events"), ev, nil)
 }
+
+// reportLane records a lane a pushed change reached. Unlike report it is
+// not best effort: merge policy depends on it, so the caller refuses the
+// push when it fails. A few attempts ride out a busy event loop.
+func (c client) reportLane(rep LaneReport) error {
+	var err error
+	for attempt := 0; attempt < laneReportAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(approvalPoll)
+		}
+		if err = c.do(http.MethodPost, c.endpoint("lanes"), rep, nil); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// laneReportAttempts bounds reportLane's retries.
+const laneReportAttempts = 3
 
 // awaitDecision raises req and polls until it is decided. A run of
 // approvalMaxFailures failed calls ends the wait with an error.

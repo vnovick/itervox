@@ -17,6 +17,7 @@ import {
 } from '../../../lib/operatorQueue';
 import { ConfirmButton } from '../../../components/ui/button/ConfirmButton';
 import { InputReplyBox } from '../../../components/itervox/InputReplyBox';
+import { PipelineChangeNotice } from '../../../components/itervox/PipelineChangeNotice';
 import { ReviewSourcePill } from '../../../components/itervox/ReviewSourcePill';
 import { RequireScope } from '../../../components/itervox/RequireScope';
 import { plainButtonClass } from '../../../components/ui/button/buttonRecipe';
@@ -247,6 +248,9 @@ export function AttentionInbox({ onSelectIssue }: { onSelectIssue: (identifier: 
                 </div>
                 {replyOpen && (
                   <div id={`attention-reply-${id}`} className="mt-2 space-y-2">
+                    {/* guardrails.lanes: a held pipeline push names its files
+                        before the operator approves (nothing otherwise). */}
+                    <PipelineChangeNotice identifier={id} />
                     <RequireScope
                       scope="operator"
                       fallback={

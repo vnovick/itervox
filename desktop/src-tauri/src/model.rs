@@ -389,8 +389,12 @@ impl Core {
         tokens: &dyn TokenStore,
         read_file: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<SessionsJob> {
-        self.fetch_jobs(records, tokens, read_file)
-            .into_iter()
+        self.named_jobs(self.fetch_jobs(records, tokens, read_file))
+    }
+
+    /// `jobs` named as the menu names their projects (local daemons).
+    pub fn named_jobs(&self, jobs: Vec<FetchJob>) -> Vec<SessionsJob> {
+        jobs.into_iter()
             .map(|j| SessionsJob {
                 name: self
                     .view(&j.key)

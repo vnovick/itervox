@@ -185,6 +185,16 @@ func (s *Server) handleAgentMergePR(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// guardrails.lanes: a pull request whose pushes changed human-lane
+	// files is a human's to merge; second-opinion files need a reviewer on
+	// another backend first. Asked before any gh call.
+	if lc, ok := s.client.(MergeLaneChecker); ok {
+		if reason := lc.MergeLaneRefusal(r.Context(), identifier); reason != "" {
+			writeError(w, http.StatusConflict, "merge_blocked", reason)
+			return
+		}
+	}
+
 	gate := s.mergePRGate(req.Strategy)
 	merged, err := gate.MergeResult(r.Context(), req.PR)
 	if err != nil {

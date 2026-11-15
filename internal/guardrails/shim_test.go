@@ -63,6 +63,7 @@ func TestShimRefusesSelfMerge(t *testing.T) {
 	for _, script := range []string{
 		"gh pr merge 12 --squash",
 		"gh pr merge --auto",
+		"gh pr -R acme/app merge 12", // a flag value between the noun and merge
 		"glab mr merge 7",
 		"gh api -X PUT repos/acme/app/pulls/12/merge",
 		"gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
@@ -84,7 +85,7 @@ func TestShimRefusesSelfMerge(t *testing.T) {
 	assert.Contains(t, out, "merging into main is refused")
 	assert.Equal(t, mainBefore, git(t, r.work, "rev-parse", "HEAD"), "main did not move")
 
-	assert.Equal(t, []string{KindSelfMerge, KindSelfMerge, KindSelfMerge, KindSelfMerge, KindSelfMerge, KindSelfMerge}, d.kinds())
+	assert.Equal(t, []string{KindSelfMerge, KindSelfMerge, KindSelfMerge, KindSelfMerge, KindSelfMerge, KindSelfMerge, KindSelfMerge}, d.kinds())
 }
 
 // #204: everything else goes to the real program unchanged: the same
@@ -140,6 +141,13 @@ func TestShimRefusesHooksPathOverride(t *testing.T) {
 		"git -c core.hooksPath=/dev/null push origin HEAD",
 		"git -c CORE.HOOKSPATH=/tmp push",
 		"git --config-env=core.hooksPath=X push",
+		// Found while writing FuzzDecide: git accepts unambiguous
+		// abbreviations of --no-verify, and a config include read from the
+		// command line can set core.hooksPath after GIT_CONFIG_PARAMETERS.
+		"git push --no-verif origin HEAD",
+		"git push origin HEAD --no-veri",
+		"git -c include.path=/dev/null push",
+		"git -c includeIf.onbranch:main.path=/dev/null push",
 	} {
 		out, code := r.agent(script)
 		assert.Equal(t, 1, code, "%s: %s", script, out)
@@ -167,6 +175,23 @@ func TestMatchApproval(t *testing.T) {
 		got, _ := MatchApproval(patterns, f[0], f[1:])
 		assert.Equal(t, tc.want, got, tc.cmd)
 	}
+
+	// Found by FuzzMatchApproval: an argument with a literal `*` where the
+	// pattern has its `*` was matched character for character, so the
+	// wildcard never stretched and the approval was skipped:
+	// `gsutil rm 'gs://prod/**'` ran without asking.
+	for _, tc := range []struct{ pattern, arg string }{
+		{"gs://prod/*", "gs://prod/**"},
+		{"*.sh", "*x.sh"},
+		{"-target=*", "-target=*foo"},
+		{"*0*", "11111111111111111111111111110*11"},
+	} {
+		assert.True(t, globMatch(tc.pattern, tc.arg), "%q vs %q", tc.pattern, tc.arg)
+	}
+	got, ok := MatchApproval([]string{"gsutil rm gs://prod/*"}, "gsutil", []string{"-m", "rm", "-r", "gs://prod/**"})
+	assert.True(t, ok)
+	assert.Equal(t, "gsutil rm gs://prod/*", got)
+
 	assert.Equal(t, []string{"gh", "glab", "git", "vercel", "kubectl"}, ShimNames([]string{"vercel --prod", "kubectl apply", "./deploy.sh", "*", "git push"}))
 }
 

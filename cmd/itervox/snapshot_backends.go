@@ -17,21 +17,21 @@ import (
 // provenance for the snapshot and HEARTBEAT.md. Split out of
 // snapshot_build.go by responsibility.
 
-// knownBackends is the sorted set of backends this daemon can dispatch to:
-// agent.command's, every enabled profile's (config.ProfileRunsBackend), and
-// the backend_fallback chain when enabled. Wrapper commands with no
-// recognisable backend contribute nothing.
+// knownBackends is the sorted set of backend lanes this daemon can dispatch
+// to: agent.command's, every enabled profile's (config.ProfileRunsLane, so a
+// quota pool appears as "claude/local"), and the backend_fallback chain when
+// enabled. Wrapper commands with no recognisable backend contribute nothing.
 func knownBackends(cfg *config.Config, profiles map[string]config.AgentProfile) []string {
 	set := map[string]struct{}{}
 	add := func(b string) {
-		if config.IsSupportedBackend(b) {
+		if b != "" && config.ValidateBackendLane(b) == nil {
 			set[b] = struct{}{}
 		}
 	}
 	add(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend))
 	for _, p := range profiles {
 		if config.ProfileEnabled(p) {
-			add(config.ProfileRunsBackend(p, cfg.Agent.Command))
+			add(config.ProfileRunsLane(p, cfg.Agent.Command))
 		}
 	}
 	if cfg.Agent.BackendFallback.Enabled {
@@ -47,9 +47,12 @@ func knownBackends(cfg *config.Config, profiles map[string]config.AgentProfile) 
 	return out
 }
 
-// backendHealthRows renders one row per known backend (healthy unless it
-// has a local breaker) plus one per breaker, sorted by backend then host.
-// LimitedUntil is set only for a vendor-published reset.
+// backendHealthRows renders one row per known backend lane (healthy unless
+// it has a local breaker) plus one per breaker, sorted by backend then host.
+// A pooled breaker's row carries its lane as Backend ("claude/local"), so
+// the row's backend[@host] is still its breaker key and the dashboard's
+// Clear sends it back unchanged. LimitedUntil is set only for a
+// vendor-published reset.
 func backendHealthRows(s orchestrator.State, known []string) []server.BackendHealthRow {
 	held := map[string]int{}
 	for ident, h := range s.BackendLimitedHolds {
@@ -73,7 +76,7 @@ func backendHealthRows(s orchestrator.State, known []string) []server.BackendHea
 	}
 	for key, e := range s.BackendHealth {
 		row := server.BackendHealthRow{
-			Backend: e.Backend, Host: e.Host, Status: e.Status, Kind: e.Kind, LimitType: e.LimitType,
+			Backend: config.BackendLane(e.Backend, e.Pool), Host: e.Host, Status: e.Status, Kind: e.Kind, LimitType: e.LimitType,
 			ProbeIssue: e.ProbeIssue, HeldIssues: held[key], ReroutedIssues: rerouted[key],
 		}
 		if e.Status == orchestrator.BackendStatusLimited || e.Status == orchestrator.BackendStatusProbing {
@@ -124,7 +127,7 @@ func autoSwitchRows(s orchestrator.State) []server.AutoSwitchRow {
 
 // heartbeatBackendLine renders one "## Backends" line.
 func heartbeatBackendLine(r server.BackendHealthRow) string {
-	name := orchestrator.BackendHealthKey(r.Backend, r.Host)
+	name := orchestrator.BackendHealthKey(r.Backend, "", r.Host) // r.Backend is already the lane
 	var b strings.Builder
 	fmt.Fprintf(&b, "- %s: %s", name, r.Status)
 	switch r.Status {

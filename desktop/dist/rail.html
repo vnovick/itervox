@@ -60,6 +60,16 @@
   li.drop-before::before { top:-1px; }
   li.drop-after::after { bottom:-1px; }
   .empty { color:var(--muted); margin:10px; }
+  /* The machine's model servers and GPU (src-tauri/src/machine_health.rs). */
+  #machine { padding:0 8px; border-top:1px solid var(--hairline); }
+  #machine[hidden] { display:none; }
+  #machine ul { margin:0 0 4px; }
+  #machine li { display:flex; align-items:center; gap:8px; padding:3px 10px; font-size:12px; }
+  #machine .addr { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #machine .dot.answering { background:var(--dot-ok); }
+  #machine .dot.not_answering { background:var(--dot-down); }
+  #machine .dot.checking { background:var(--dot-pending); }
+  #machine .gpu { color:var(--muted); }
   footer { padding:8px; }
   #add-project { display:flex; align-items:center; justify-content:center; gap:6px; width:100%; min-height:40px;
     border-radius:var(--r-card); font-size:14px; }
@@ -81,6 +91,7 @@
   body.collapsed h2 { margin:8px 6px 2px; border-top:1px solid var(--hairline); height:0; }
   body.collapsed nav { padding:0 4px 10px; }
   body.collapsed footer { padding:4px; }
+  body.collapsed #machine { display:none; }
   body.collapsed button.row { justify-content:center; gap:2px; padding:0 2px; position:relative; }
   body.collapsed .name { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
   body.collapsed .initials { display:block; }
@@ -97,6 +108,11 @@
     title="Hide project names (⌥⌘S)" aria-label="Hide project names">⟨</button>
 </header>
 <nav id="rail" aria-labelledby="title"></nav>
+<section id="machine" aria-labelledby="machine-title" hidden>
+  <h2 id="machine-title"><span class="title">Model servers</span></h2>
+  <ul id="machine-servers"></ul>
+  <ul id="machine-gpu"></ul>
+</section>
 <footer>
   <button id="add-project" class="chip" type="button" aria-label="Add project" title="Add a project (its WORKFLOW.md)"><span aria-hidden="true">+</span><span class="label">Add project</span></button>
 </footer>
@@ -110,6 +126,9 @@
   var toggleEl = document.getElementById('toggle');
   var menuEl = document.getElementById('menu');
   var liveEl = document.getElementById('live');
+  var machineEl = document.getElementById('machine');
+  var machineServersEl = document.getElementById('machine-servers');
+  var machineGpuEl = document.getElementById('machine-gpu');
   var view = { collapsed: false, sections: [] };
   var active = null;
   var dragKey = null;
@@ -242,6 +261,29 @@
     var tab = again || current || list[0];
     if (tab) tab.tabIndex = 0;
     if (again) again.focus();
+    renderMachine();
+  }
+
+  // The machine's model servers and GPU: read-only labels, no actions.
+  function renderMachine() {
+    var m = view.machine;
+    machineEl.hidden = !m;
+    machineServersEl.textContent = '';
+    machineGpuEl.textContent = '';
+    if (!m) return;
+    m.servers.forEach(function (s) {
+      var li = el('li');
+      li.title = s.label + '\n' + s.uses.map(function (u) {
+        return u.project + ': ' + u.profiles.join(', ');
+      }).join('\n');
+      li.appendChild(img('dot ' + s.state, s.stateText));
+      li.appendChild(el('span', 'addr', s.name + ' ' + s.address));
+      li.appendChild(el('span', 'state', s.stateText)).setAttribute('aria-hidden', 'true');
+      machineServersEl.appendChild(li);
+    });
+    m.gpu.forEach(function (g) {
+      machineGpuEl.appendChild(el('li', 'gpu', g));
+    });
   }
 
   function choose(r) {

@@ -5,7 +5,11 @@ import type { ReactNode } from 'react';
 import { IssueNowPanel } from '../IssueNowPanel';
 import { routeFetch } from './fetchMock';
 import { useItervoxStore } from '../../../../store/itervoxStore';
-import { makeSnapshot } from '../../../../test/fixtures/snapshots';
+import {
+  makeInputRequiredRow,
+  makeRunningRow,
+  makeSnapshot,
+} from '../../../../test/fixtures/snapshots';
 import { usage } from '../../resources/__tests__/fixtures';
 
 vi.mock('../../../../auth/authedFetch', () => ({ authedFetch: vi.fn() }));
@@ -136,6 +140,60 @@ describe('IssueNowPanel (#215)', () => {
     await screen.findByText('Now');
     expect(screen.queryByTestId('issue-activity')).not.toBeInTheDocument();
     expect(screen.queryByTestId('run-resources')).not.toBeInTheDocument();
+    useItervoxStore.setState({ snapshot: null });
+  });
+
+  // guardrails.lanes — a held push belongs to a RUNNING issue: its agent
+  // waits in the guardrail shim, so the issue never reaches input_required
+  // and the input-required panel (the notice's only home before) never
+  // renders. The Now panel's "Waiting for approval" must carry the notice.
+  function heldRun(lanePaths?: string[]) {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        running: [makeRunningRow({ identifier: 'ENG-1' })],
+        inputRequired: [
+          makeInputRequiredRow({
+            identifier: 'ENG-1',
+            guardrailApproval: true,
+            ...(lanePaths
+              ? { guardrailLanePaths: lanePaths, guardrailLanePathsTotal: lanePaths.length }
+              : {}),
+          }),
+        ],
+      }),
+    });
+    routeFetch(mockFetch, {
+      '/api/v1/issues/ENG-1/context': {
+        body: {
+          ...liveContext,
+          run: {
+            ...liveContext.run,
+            pendingApproval: true,
+            pendingInput: lanePaths
+              ? 'Pipeline change: the agent wants to push changes to .github/workflows/ci.yml'
+              : 'Agent wants to run: `vercel --prod`',
+          },
+        },
+      },
+    });
+  }
+
+  it('shows the pipeline change notice for a running issue with a held human-lane push', async () => {
+    heldRun(['.github/workflows/ci.yml', 'Makefile']);
+    const { container } = render(<IssueNowPanel identifier="ENG-1" live />, { wrapper });
+    expect(await screen.findByText(/Waiting for approval: Pipeline change/)).toBeInTheDocument();
+    const notice = container.querySelector('[data-testid="pipeline-change-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice).toHaveTextContent('.github/workflows/ci.yml');
+    expect(notice).toHaveTextContent('Makefile');
+    useItervoxStore.setState({ snapshot: null });
+  });
+
+  it('shows no pipeline notice for an approval command (no lane)', async () => {
+    heldRun();
+    const { container } = render(<IssueNowPanel identifier="ENG-1" live />, { wrapper });
+    expect(await screen.findByText(/Waiting for approval: Agent wants to run/)).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="pipeline-change-notice"]')).toBeNull();
     useItervoxStore.setState({ snapshot: null });
   });
 });

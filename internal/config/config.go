@@ -434,6 +434,15 @@ type AgentProfile struct {
 	// Backend optionally overrides runner selection when it cannot be inferred
 	// from the command binary alone (for example, a wrapper script around codex).
 	Backend string
+	// Pool names a separate quota pool for the profile's backend, for a
+	// profile that points a known agent CLI at another model server (for
+	// example `ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`, pool
+	// "local"). The run's circuit breaker key is then the lane
+	// "claude/local", so a limit on plain claude does not hold it, and
+	// agent.backend_fallback can name the lane as its own step. Empty (the
+	// default) shares the backend's breaker. Matches [a-z0-9-]+. YAML key:
+	// pool. Load-time only: the dashboard profile editor carries it over.
+	Pool string
 	// Enabled controls whether the profile is selectable and dispatchable.
 	// Nil means true for backward compatibility with older tests/config literals.
 	Enabled *bool
@@ -464,6 +473,13 @@ type AgentProfile struct {
 	// IsolationExtraDeny are absolute paths (or ~/...) added to the
 	// sandbox's unreadable list. Used only with isolation "process".
 	IsolationExtraDeny []string
+	// Push is who publishes this profile's branch: "agent" (the agent
+	// pushes and opens its pull request, as before) or "daemon" (patches
+	// only: the agent gets no forge credentials, its push and pull-request
+	// commands are refused, and the daemon pushes after the run's gates).
+	// Empty inherits agent.push. See internal/config/push.go. YAML key:
+	// push. Load-time only: the dashboard profile editor carries it over.
+	Push string
 	// RequireEvidence lists the checks a run of this profile must prove
 	// before Itervox moves its issue to completion_state (#80). Each name
 	// but "ci" must appear as a passing entry in the run's evidence file
@@ -471,6 +487,15 @@ type AgentProfile struct {
 	// requires the run's pull request to have only passing checks. Empty
 	// (the default) turns the gate off. YAML key: require_evidence.
 	RequireEvidence []string
+	// Verify lists checks the daemon runs itself in the worktree after a
+	// successful run of this profile, before the run counts as succeeded
+	// (signed checks: the writer is never the judge). Each is recorded and
+	// signed by internal/attest; any non-zero exit holds the run like a
+	// failed require_evidence gate. A name also in RequireEvidence is
+	// satisfied by this run, not by the agent's evidence file. Empty (the
+	// default) runs nothing. YAML key: verify. Load-time only: the
+	// dashboard profile editor carries it over.
+	Verify []VerifyCheck
 }
 
 // AgentConfig holds agent runner settings.
@@ -714,6 +739,10 @@ type AgentConfig struct {
 	// their own (#258): "none" (the default, no sandbox) or "process" (the
 	// agent subprocess runs inside an OS sandbox). Read-only after startup.
 	Isolation string
+	// Push is the default push mode for profiles that do not set their
+	// own: "agent" (the default) or "daemon" (patches only; see
+	// AgentProfile.Push). Read-only after startup.
+	Push string
 	// AvailableModels maps backend names ("claude", "codex") to model options
 	// discovered at init time. The dashboard profile editor uses these for the
 	// model dropdown. When empty, the frontend falls back to a built-in default
@@ -1150,6 +1179,10 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	if err := ValidateIsolationMode("agent.isolation", cfg.Agent.Isolation, false); err != nil {
 		return nil, err
 	}
+	cfg.Agent.Push = strings.TrimSpace(strField(agent, "push", PushAgent))
+	if err := ValidatePushMode("agent.push", cfg.Agent.Push, false); err != nil {
+		return nil, err
+	}
 	profiles, err := parseAgentProfiles(mapField(agent, "profiles"), cfg.SchemaVersion, workflowPath)
 	if err != nil {
 		return nil, err
@@ -1242,6 +1275,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 
 	// Guardrails (#204)
 	cfg.Guardrails = parseGuardrailsConfig(nestedMap(raw, "guardrails"))
+	if err := ValidatePushDaemon(cfg); err != nil {
+		return nil, err
+	}
 
 	// Dependencies
 	deps := nestedMap(raw, "dependencies")
@@ -1541,7 +1577,19 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			verify, err := verifyChecksField(m, name)
+			if err != nil {
+				return nil, err
+			}
 			iso, err := profileIsolationFields(m, name)
+			if err != nil {
+				return nil, err
+			}
+			pool, err := profilePoolField(m, name)
+			if err != nil {
+				return nil, err
+			}
+			push, err := profilePushField(m, name)
 			if err != nil {
 				return nil, err
 			}
@@ -1552,15 +1600,18 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				Soul:                soul,
 				Instructions:        instructions,
 				Backend:             backend,
+				Pool:                pool,
 				Enabled:             boolPtr(boolField(m, "enabled", true)),
 				AllowedActions:      allowed,
 				CreateIssueState:    strField(m, "create_issue_state", ""),
 				CreateIssueLabels:   NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
 				PermissionMode:      strField(m, "permission_mode", ""),
 				RequireEvidence:     requireEvidence,
+				Verify:              verify,
 				Isolation:           iso.Isolation,
 				IsolationExtraWrite: iso.IsolationExtraWrite,
 				IsolationExtraDeny:  iso.IsolationExtraDeny,
+				Push:                push,
 			}
 			continue
 		}
@@ -1572,7 +1623,19 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 		if err != nil {
 			return nil, err
 		}
+		verify, err := verifyChecksField(m, name)
+		if err != nil {
+			return nil, err
+		}
 		iso, err := profileIsolationFields(m, name)
+		if err != nil {
+			return nil, err
+		}
+		pool, err := profilePoolField(m, name)
+		if err != nil {
+			return nil, err
+		}
+		push, err := profilePushField(m, name)
 		if err != nil {
 			return nil, err
 		}
@@ -1580,15 +1643,18 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			Command:             cmd,
 			Prompt:              strField(m, "prompt", ""),
 			Backend:             strField(m, "backend", ""),
+			Pool:                pool,
 			Enabled:             boolPtr(boolField(m, "enabled", true)),
 			AllowedActions:      NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
 			CreateIssueState:    strField(m, "create_issue_state", ""),
 			CreateIssueLabels:   NormalizeCreateIssueLabels(strSliceField(m, "create_issue_labels", nil)),
 			PermissionMode:      strField(m, "permission_mode", ""),
 			RequireEvidence:     requireEvidence,
+			Verify:              verify,
 			Isolation:           iso.Isolation,
 			IsolationExtraWrite: iso.IsolationExtraWrite,
 			IsolationExtraDeny:  iso.IsolationExtraDeny,
+			Push:                push,
 		}
 	}
 	if len(profiles) == 0 {

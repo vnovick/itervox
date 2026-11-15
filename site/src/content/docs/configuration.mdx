@@ -458,8 +458,8 @@ The totals live in `issue_spend.json` in the daemon's logs directory, so a resta
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `turn_timeout_ms` | int | `3600000` | Hard wall-clock limit for an entire agent session (all turns combined). When exceeded, the subprocess is killed and the issue is retried. `0` disables the timeout. |
-| `read_timeout_ms` | int | `30000` | Per-read timeout on the subprocess stdout pipe (30 seconds). If no bytes arrive within this window, the subprocess is killed. Catches OS-level pipe hangs before the stall detector fires. |
-| `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout (5 minutes). If no SSE events are produced within this window, the worker context is cancelled and the issue is retried. Operates on the parsed event stream and detects semantic stalls (e.g. agent looping without progress). Set to `0` or less to disable. |
+| `read_timeout_ms` | int | `30000` | Per-read timeout on the subprocess stdout pipe (30 seconds). If no bytes arrive within this window, the subprocess is killed. Catches OS-level pipe hangs before the stall detector fires. Suspended while the run waits for a [guardrail approval](/guides/guardrails/); a full window starts again from the answer. |
+| `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout (5 minutes). If no SSE events are produced within this window, the worker context is cancelled and the issue is retried. Operates on the parsed event stream and detects semantic stalls (e.g. agent looping without progress). A run waiting for a guardrail approval is not a stall; the window starts again from the answer. Set to `0` or less to disable. |
 | `deps_analyzer_timeout_ms` | int | `600000` | Wall-clock limit for one dependency-analyzer job end to end, across all chunks. Matches the dashboard's 10-minute poll deadline. `≤ 0` falls back to the default. |
 | `deps_analyzer_chunk_size` | int | `75` | Maximum issues sent to the agent in one analyzer turn. Larger backlogs are split into sequential chunks; **relations spanning two chunks are not examined** (an accepted blind spot, logged at analysis time). Raise it for full-graph fidelity on a larger backlog if you can tolerate a longer, costlier turn. `≤ 0` falls back to the default. |
 | `dependency_audit_refresh_interval_ms` | int | `600000` | How often the off-loop dependency audit refreshes blocker state from the tracker. Startup-only — not runtime-editable. See the rate-limit note below before lowering. |
@@ -506,6 +506,7 @@ Both are optional and off unless you add them.
 | `resource_sampling` | bool | `true` | Samples each local run's processes every 2 seconds for CPU, memory, process count, disk I/O and network connections, shown on the issue's Now panel, in `/metrics` and in the desktop tray. See [System visibility](/guides/system-visibility/). Read at startup. |
 | `activity_audit` | string | `sampled` | Records what each run did (commands started, files written, network connections): `off`; `sampled` (what the 2-second sampler sees: may miss short-lived activity); or `precise` (Linux only, eBPF: every exec, open-for-write and connect of the run's process tree; needs `CAP_BPF` + `CAP_PERFMON` or root and a mounted tracefs, and falls back to `sampled` with the reason when unavailable). Read at startup. |
 | `isolation` | string | `"none"` | Default [process isolation](/guides/isolation/) for profiles that do not set `isolation`: `none` (no sandbox, the long-standing behaviour) or `process` (the agent runs in an OS sandbox that lets it write only to its workspace and hides credentials and other workspaces; the run does not start when no sandbox works on the machine). Any other value fails config load, as does `process` together with `agent.ssh_hosts`. Read at load time. |
+| `push` | string | `"agent"` | Who publishes a run's branch for profiles that do not set `push`: `agent` (the agent pushes and opens its pull request, the long-standing behaviour) or `daemon` (patches only: the agent gets no forge credentials and its push and pull-request commands are refused; Itervox pushes after the run's checks and opens the pull request). Any other value fails config load; `daemon` also needs `guardrails.enabled` and is refused together with `agent.ssh_hosts`. Read at load time. See [Patches only](/guides/safety/#patches-only-the-daemon-pushes). |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `pr_footer` | bool | `false` | When `true`, Itervox appends a one-line "Shipped with [Itervox](https://github.com/vnovick/itervox)" footer to the body of each pull request an agent run opens on its own branch (after a successful worker run, not automation runs; PRs merely linked from the issue are left alone), using `gh pr edit`. The footer carries a hidden marker, so it is added once per PR and never duplicated when later runs update the same PR. See [Credit Itervox](#credit-itervox). |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for reviewer runs. Prefer `reviewer_profile`. The built-in default is read-only: it asks for a verdict, never a commit or push. |
@@ -540,7 +541,10 @@ agent:
 **Backend circuit breaker.** Itervox keeps one breaker per agent backend and
 worker host (`claude`, `codex`, `claude@build-1`, ...): a limit seen on SSH
 host A says nothing about local runs or host B, which may use other
-credentials. A breaker opens when:
+credentials. A profile with a `pool` gets its own breaker for its backend:
+`claude/local`, or `claude/local@build-1` on an SSH host (`/` separates the
+pool, `@` the host). Profiles without a pool share the backend's breaker. A
+breaker opens when:
 
 - a run stops on a usage limit (Claude `rate_limit_event` `rejected`, a
   result with API status 429/402, a Codex "You've hit your usage limit"):
@@ -594,8 +598,8 @@ agent:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` when the block is present | `false` keeps the block but turns rerouting off. Without the block there is no rerouting, but the breaker still holds issues on a limited backend. The whole block may also be a boolean: `backend_fallback: false` is off, `true` is on with the defaults. Any other shape (`"off"`, a number, a list, `enabled: "false"`) fails config loading |
-| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known (`claude`, `codex`, `opencode`, `cursor`, `custom`), distinct backends only |
-| `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). The reverse direction is implied: a target profile maps back through its source row |
+| `chain` | []string | `[claude, codex]` | Backends tried in order when the target is limited. Known (`claude`, `codex`, `opencode`, `cursor`, `custom`), distinct backends only. An entry may name a quota pool as `backend/pool` (`claude/local`); see "Quota pools as fallback steps" below |
+| `profile_map` | map | `{}` | `source_profile: {backend: target_profile}`. `default` is the key for issues that run `agent.command`. Every target must exist, be enabled and actually run that backend (its command's binary, else its `backend:` for a wrapper). A backend key may be `backend/pool`; its target must then have that `pool`. The reverse direction is implied: a target profile maps back through its source row |
 | `on_unmapped` | string | `hold` | For a profile with no mapping: `hold` (wait with `backend_limited`) or `backend_hint` (request the chain backend for the issue's own command; works only for wrapper commands — a `claude ...` command is never paired with codex) |
 | `default_cooldown_minutes` | int | `15` | How long a breaker stays limited when the vendor published no reset time (1–1440). Also used by the breaker when the block is absent |
 | `min_dwell_minutes` | int | `30` | Minimum time a switched issue stays on the fallback before it may switch back. It never blocks a further hop when the fallback itself becomes limited |
@@ -634,6 +638,36 @@ rerouted per run and leave the issue's profile alone.
 
 When both are configured, use `profile_map` for the common Claude ⇄ Codex
 pairs and keep `rate_limited` rules for custom mappings or helper runs.
+
+**Quota pools as fallback steps.** A `chain` entry or a `profile_map` backend
+key may name a pool as `backend/pool`. This lets a profile that runs Claude
+Code against a local model server take over when Anthropic's usage limit
+opens the `claude` breaker:
+
+```yaml
+agent:
+  profiles:
+    coder:
+      command: claude --model opus
+    coder-codex:
+      command: codex --model gpt-5
+    coder-local:
+      command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"
+      pool: local                   # its own breaker: claude/local
+  backend_fallback:
+    chain: [claude, codex, claude/local]
+    profile_map:
+      coder: { codex: coder-codex, "claude/local": coder-local }
+```
+
+A limited `coder` run moves to `coder-codex`, or to `coder-local` when Codex
+is limited too, and switches back per `switch_back`. The backend part must be
+a known backend and the pool must match `[a-z0-9-]+`. A `profile_map` target
+for `claude/local` must run `claude` with `pool: local`. A target with a pool
+cannot be mapped under the plain backend key, and the other way round. The
+snapshot's `backendHealth` rows report a pooled breaker with the lane as its
+`backend` (`"claude/local"`). **Clear** and
+`POST /api/v1/backend-health/clear` take the same value.
 
 ### SSH dispatch
 
@@ -697,6 +731,7 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `soul_file` | string | Path to `SOUL.md`, relative to `WORKFLOW.md` when not absolute. Holds identity, purpose, boundaries, and collaboration style. |
 | `instructions_file` | string | Path to `INSTRUCTIONS.md`, relative to `WORKFLOW.md` when not absolute. Holds operational rules, checklists, and done criteria. |
 | `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field): `claude`, `codex`, `opencode`, `cursor` or `custom`. |
+| `pool` | string | Optional, empty by default. Names a separate quota pool for the profile's backend, for a profile that points a known agent CLI at another model server, e.g. `command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"` with `pool: local`. The profile still runs the `claude` backend, but its circuit breaker is `claude/local`, so a Claude usage limit does not hold it, and `agent.backend_fallback` can name `claude/local` as its own step. Lower-case letters, digits and `-`; any other value fails config loading. Read at load time; kept as is when the profile is saved from the dashboard. See [Backend health and fallback](#backend-health-and-fallback-agentbackend_fallback). |
 | `enabled` | boolean | Optional. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
 | `allowed_actions` | string[] | Optional daemon-backed actions the profile may invoke: `comment`, `comment_pr`, `create_issue`, `move_state`, `provide_input`. |
 | `create_issue_state` | string | Required when `allowed_actions` includes `create_issue`; the tracker state/column used for follow-up issues. |
@@ -705,7 +740,9 @@ Named profiles let you configure alternative agent commands selectable per-issue
 | `isolation` | string | Optional. `process` runs this profile's agent (and every process it starts) in an OS sandbox: bubblewrap or Landlock on Linux, sandbox-exec on macOS. `none` turns it off for this profile. Unset inherits `agent.isolation`. When no sandbox works the run does not start. Refused at load together with `agent.ssh_hosts`. Kept as is when the profile is saved from the dashboard. See [Process isolation](/guides/isolation/). |
 | `isolation_extra_write` | string[] | Optional. Absolute (or `~/`) paths a sandboxed run may also write, e.g. `~/.npm`. |
 | `isolation_extra_deny` | string[] | Optional. Absolute (or `~/`) paths a sandboxed run may not read or write, on top of the built-in deny list. |
+| `push` | string | Optional. `daemon` makes this profile patches only: its agent's environment carries no forge or tracker credentials, its shims refuse `git push`, `gh pr create`, `gh pr merge` and other pull-request writes, and after a successful run (and after `hooks.after_run_required`, `verify` and the file part of `require_evidence`) Itervox pushes the branch with its own credentials, classified into `guardrails.lanes` (a human-lane change waits for approval), and opens the pull request. With `verify`, only a commit whose tree the signed checks ran on is pushed. `agent` keeps the agent pushing. Unset inherits `agent.push`. Kept as is when the profile is saved from the dashboard. See [Patches only](/guides/safety/#patches-only-the-daemon-pushes). |
 | `require_evidence` | string[] | Optional, off by default. Checks a run of this profile must prove before Itervox moves its issue to `completion_state`, e.g. `[test, lint, ci]`. See [Done needs evidence](#done-needs-evidence). Kept as is when the profile is saved from the dashboard. |
+| `verify` | list of `{name, run, timeout_ms}` | Optional, off by default. Checks the **daemon** runs itself in the worktree after a successful run, before the run counts as succeeded, e.g. `[{name: test, run: "make test"}]`. Each run is recorded and signed; a non-zero exit holds the run like failed evidence. A name also in `require_evidence` is proved by this run, never by the agent's evidence file. `timeout_ms` defaults to `600000` (10 minutes). See [Signed checks](#signed-checks). Kept as is when the profile is saved from the dashboard. |
 
 `SOUL.md` is appended before `INSTRUCTIONS.md`, and both files support the same Liquid bindings as the main `WORKFLOW.md` prompt. Automation `instructions` are appended after the selected profile files. `agent.profiles.*.prompt` is legacy input for `itervox init --update`; schema `2` rejects it at daemon startup.
 
@@ -744,6 +781,38 @@ Without the evidence, the issue is **not moved**: the run ends **input required*
 Reviewer and automation runs are not gated, since they do not move the issue. Without `require_evidence` nothing changes. The value must be a list: a single value such as `require_evidence: true` is a config error, not a silent "off".
 
 A [playbook](#playbooks) can also declare `require_evidence` in its frontmatter. Its checks are added to the profile's for runs that get that playbook: one list, one `## Evidence (required)` block, one gate.
+
+### Signed checks
+
+`require_evidence` trusts the agent to record its own checks: the writer of the fix also writes the proof. `verify` takes the pen away. Itervox runs each command itself, in the issue's worktree, after the agent's run ends and before the run counts as succeeded:
+
+```yaml
+agent:
+  profiles:
+    implementer:
+      command: claude
+      require_evidence: [test, ci]   # test is proved by verify below; ci by the PR's checks
+      verify:
+        - name: test
+          run: make test
+        - name: lint
+          run: "golangci-lint run ./... | tail -n 50"
+          timeout_ms: 300000
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | The check's name: lower-case letters, digits, `-`, `_` (up to 32). `ci` is reserved for the pull request's checks. Names must be unique. |
+| `run` | string | required | The command line. It runs as `bash -lc` with `set -o pipefail` first, so a failing command piped into `tail` or `tee` still fails. |
+| `timeout_ms` | int | `600000` | How long the check may run. Past it, the check's whole process group is killed and the check fails as timed out. |
+
+- The checks run in order and stop at the first failure. Under [`isolation: process`](/guides/isolation/) they run in the same sandbox as the agent.
+- Every check passes (exit `0`) → the run succeeds as usual. A check fails, times out, or changes the working tree → the issue is **not moved**: the run ends **input required** with a "Signed checks failed (verify)" reason naming the check, its exit code, the command and its last output lines. Reply to resume the agent; the checks run again when the resumed run ends.
+- Each check is written as a signed record to `.itervox/attestations/<identifier>/<run id>.jsonl` next to `WORKFLOW.md`: the command, its real exit code, start time and duration, the SHA-256 of the combined output and a redacted output tail, the hash of the working tree it ran on and the HEAD commit. Read them with [`GET /api/v1/issues/{identifier}/attestations`](/api-reference/#get-apiv1issuesidentifierattestations) or check a file with [`itervox attest verify`](/cli/#itervox-attest--check-signed-check-records).
+- The agent's prompt names the checks (`- signed checks: …` in the `## Evidence (required)` block) so it does not spend turns recording them; anything it writes for them in its evidence file is ignored. Other `require_evidence` names are read from the file as before.
+- Reviewer and automation runs are not checked, as with `require_evidence`. The value must be a list of maps; a malformed entry is a config error, never dropped. Load-time only.
+
+See [Signed checks](/guides/guardrails/#signed-checks) for the record format, the key and what it does and does not prove.
 
 ### Playbooks
 
@@ -1214,6 +1283,9 @@ Limits on what agents Itervox starts may do with git, the GitHub and GitLab CLIs
 | `enabled` | bool | `true` | Turn the guardrails on. On, an agent may push only to its issue branch (no tag pushes, no pushes to `main`, `master`, `develop` or the base branch), never runs `gh pr merge`, `glab mr merge` or a merge API call, never merges into the default branch, and waits for a human approval before a command in `approval_commands` runs. |
 | `allow_force_push` | bool | `false` | Let an agent force-push (`--force`, `--force-with-lease`) and delete its own issue branch. Pushes to other branches and tags stay refused. |
 | `approval_commands` | []string | `vercel --prod`, `fly deploy`, `kubectl apply`, `terraform apply`, `gcloud deploy`, `npm publish`, `cargo publish` | Commands that need a human approval. Each is a sequence of glob tokens (`*` matches anything, `/` included): the first matches the program name, the rest must each match an argument, in order, with other arguments allowed between them — `kubectl apply` matches `kubectl -n prod apply -f k8s/`, `gcloud deploy` matches `gcloud run deploy`, and a flag token also matches the flag with a value (`--prod` matches `--prod=true`). A list **replaces** the defaults, so write them out to keep them; `[]` turns approvals off. The program must be a bare name: a path or glob in the first token cannot be intercepted (a warning is logged). |
+| `approval_commands[].match`, `approval_commands[].when_env` | object entry | none | An [environment-scoped](/guides/guardrails/#environment-scoped-rules) approval command: `{match: "terraform apply", when_env: {TF_WORKSPACE: "prod*"}}` holds `match` (plain-entry syntax) only when every `when_env` variable's value matches its glob (`*`, `?`; a leading `!` negates; unset is the empty string) in the environment the command runs with — checked at exec time by the shim, and from the session's environment and the command's `VAR=value` prefix by [`itervox hook`](/guides/guardrails/#interactive-sessions-itervox-hook). Mix freely with plain strings, which keep matching in every environment. An object without `when_env` is a plain entry; one with no `match`, an unknown key or a `when_env` that is not a map of variable names to strings is a startup error. |
+| `lanes.human` | []string | `.github/**`, `.gitlab-ci.yml`, `.circleci/**`, `.itervox/**`, `!.itervox/handoff/**`, `WORKFLOW.md`, `CODEOWNERS`, `.github/CODEOWNERS`, `jest.config.*`, `vitest.config.*`, `pytest.ini`, `.coveragerc`, `codecov.yml`, `.golangci.yml`, `Makefile` | Files that decide how CI checks a change ([Lanes](/guides/guardrails/#lanes)): an agent's push that changes one waits for a human approval (shown as a **Pipeline change**, pushed once on `approve`), and `merge_pr` never merges the issue's pull request (`lane_human`). Gitignore-style patterns over repository paths: `**` spans directories, a name without `/` matches at any depth, `!` excludes. A list **replaces** the defaults; `[]` turns the lane off. A malformed pattern is a startup error. |
+| `lanes.second_opinion` | []string | none | Files whose changes need a second opinion: the push goes through, and `merge_pr` refuses (`lane_second_opinion`) until a reviewer on a different backend than the writer's has approved after the last such push. |
 
 ```yaml
 guardrails:
@@ -1228,6 +1300,10 @@ guardrails:
     - "npm publish"
     - "cargo publish"
     - "helm upgrade *-prod"   # your own
+    # - match: "terraform apply"            # instead of the plain entry:
+    #   when_env: {TF_WORKSPACE: "prod*"}   # held for prod workspaces only
+  lanes:                        # optional; absent = the default human lane
+    second_opinion: ["internal/auth/**", "migrations/**"]
 ```
 
 `itervox init` writes this block; `itervox init --update` adds it, with the defaults, to a workflow that has none. An approval reply whose first word is `approve`, `approved`, `yes`, `y`, `ok`, `okay` or `allow` approves the command once; any other reply rejects it and is passed to the agent as the reason. Runs on SSH worker hosts are not guarded in v1 (a warning is logged at startup and per run).

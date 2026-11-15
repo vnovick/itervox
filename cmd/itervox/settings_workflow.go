@@ -27,15 +27,18 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			SoulFile:            strings.TrimSpace(profile.SoulFile),
 			InstructionsFile:    strings.TrimSpace(profile.InstructionsFile),
 			Backend:             profile.Backend,
+			Pool:                strings.TrimSpace(profile.Pool),
 			Enabled:             enabledField,
 			AllowedActions:      config.NormalizeAllowedActions(profile.AllowedActions),
 			CreateIssueState:    strings.TrimSpace(profile.CreateIssueState),
 			CreateIssueLabels:   config.NormalizeCreateIssueLabels(profile.CreateIssueLabels),
 			PermissionMode:      strings.TrimSpace(profile.PermissionMode),
 			RequireEvidence:     config.NormalizeEvidenceChecks(profile.RequireEvidence),
+			Verify:              verifyEntries(profile.Verify),
 			Isolation:           strings.TrimSpace(profile.Isolation),
 			IsolationExtraWrite: profile.IsolationExtraWrite,
 			IsolationExtraDeny:  profile.IsolationExtraDeny,
+			Push:                strings.TrimSpace(profile.Push),
 		}
 	}
 	return out
@@ -233,4 +236,18 @@ func reloadPlanForRunExit(err error) (string, time.Duration) {
 		return "WORKFLOW.md changed — reloading config", 200 * time.Millisecond
 	}
 	return "run returned with error — retrying", time.Second
+}
+
+// verifyEntries is profile.verify for the WORKFLOW.md writer; the default
+// timeout is left implicit.
+func verifyEntries(checks []config.VerifyCheck) []workflow.VerifyEntry {
+	var out []workflow.VerifyEntry
+	for _, c := range checks {
+		e := workflow.VerifyEntry{Name: c.Name, Run: c.Run}
+		if c.TimeoutMs != config.DefaultVerifyTimeoutMs {
+			e.TimeoutMs = c.TimeoutMs
+		}
+		out = append(out, e)
+	}
+	return out
 }

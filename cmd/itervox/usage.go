@@ -73,6 +73,36 @@ Commands:
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              --all      also list daemons from other projects
 
+  attest  Check signed check records (agent.profiles.<name>.verify)
+             verify FILE  the .jsonl records of one run: signatures and the
+                          run's final tree
+             --tree DIR   also require each check's tree to be DIR's
+                          working tree now
+             --pubkey     public key (default: .itervox/attest.pub)
+             --workflow   path to WORKFLOW.md (default: WORKFLOW.md)
+
+  referee The CI referee: an agent may change what CI checks, never how
+          CI checks. Works with any agent and any CI; needs only git.
+             lanes    sort the diff into auto / second_opinion / human
+                      (policy read from --base, exit 0 / 10 / 20)
+             audit    list changes that weaken checks (exit 20 on findings)
+             pin      check a policy file against a pinned sha256
+             run      run a check and append a signed record
+             keygen   make the ed25519 key pair records are signed with
+             verify   verify signed records (--tree: and the tree now)
+          Errors exit 2, never 0. "itervox referee <command> -h" for flags.
+
+  hook    The guardrail policy as a PreToolUse hook for an agent session
+          you run yourself (no daemon). A convenience layer: it sees the
+          command before the shell expands it.
+             claude-pretooluse  Claude Code hook (stdin JSON → decision)
+             codex-pretooluse   Codex hook (asks become denies)
+               --workflow PATH     default: nearest WORKFLOW.md upward
+               --require-workflow  ask when no WORKFLOW.md is found
+             install claude|codex  write the hook into .claude/settings.json
+                          or .codex/hooks.json (--project, default) or
+                          your home's (--user); --print shows it only
+
   secret  Set or list .itervox/.env values without showing them
              set KEY    read the value with echo off (or from stdin)
              list       show each key as set / placeholder / empty

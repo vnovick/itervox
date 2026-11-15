@@ -57,9 +57,10 @@ confined than what you asked for.
 
 - `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.netrc`,
   `~/.docker/config.json`, `~/.kube`;
-- the daemon's own secrets: the project's `.itervox/.env` and
-  `.itervox/*token*` files, `~/.itervox/hub` and the dashboard token files
-  under `~/.itervox/logs`;
+- the daemon's own secrets: the project's `.itervox/.env`,
+  `.itervox/*token*` files and `.itervox/attest.key` (the key that signs
+  [signed checks](/guides/guardrails/#signed-checks)),
+  `~/.itervox/hub` and the dashboard token files under `~/.itervox/logs`;
 - every other workspace (the whole workspace root is hidden; this run's
   workspace is put back);
 - anything in `isolation_extra_deny`.
@@ -75,6 +76,30 @@ in the daemon's process group, so cancelling a run still stops all of it.
 
 The lists live in one place in the code (`internal/agent/isolation_policy.go`)
 and `itervox doctor` prints them.
+
+## Patches only: the daemon pushes
+
+With [`push: daemon`](/guides/safety/#patches-only-the-daemon-pushes) the
+agent's environment carries no forge credentials and its push commands are
+refused; Itervox pushes the branch itself after its checks. Process
+isolation closes the remaining gap, a credential file the agent could read
+by path. For a profile with both `isolation: process` and `push: daemon`,
+the sandbox also hides:
+
+- `~/.git-credentials` and `~/.config/git/credentials` (git's
+  `credential-store` helper);
+- `~/.config/glab-cli` and `~/.config/hub`;
+
+on top of `~/.ssh`, `~/.config/gh` and `~/.netrc`, which every sandboxed
+run already cannot read. Other profiles keep reading the first list, as
+before.
+
+Not covered: credentials kept outside files, such as the macOS keychain
+(git's `osxkeychain` helper, `gh`'s keyring login). The agent's git sees no
+credential helper and `gh` an empty configuration directory, which stops
+the CLIs from using them, but a program that asks the keychain directly is
+not stopped. With `~/.ssh` hidden, an agent cannot fetch over SSH either;
+the daemon's own git commands are not sandboxed.
 
 ## Mechanisms
 

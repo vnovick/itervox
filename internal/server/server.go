@@ -499,6 +499,16 @@ type FailureAcker interface {
 // ErrNoWorkerFailure is FailureAcker's "nothing to acknowledge" (→ 404).
 var ErrNoWorkerFailure = errors.New("server: issue has no recent worker failure")
 
+// MergeLaneChecker is optionally implemented by the orchestrator client
+// (guardrails.lanes): merge_pr asks it before merging. A non-empty reason
+// refuses the merge (409 merge_blocked) — a pull request whose pushes
+// changed human-lane files is a human's to merge, and one that changed
+// second-opinion files needs an approving review from a reviewer on a
+// different backend than the writer's.
+type MergeLaneChecker interface {
+	MergeLaneRefusal(ctx context.Context, identifier string) string
+}
+
 type PRMergedEmitter interface {
 	// headRef is the PR's head branch (trigger.pr_branch); prURL and
 	// baseRef bind trigger.pr_url and trigger.pr_base_branch (CORE-108).
@@ -1311,6 +1321,11 @@ type InputRequiredRow struct {
 	// whose first word is approve/yes/ok runs the held command once; any
 	// other reply rejects it (#240: itervox watch prints itervox approve).
 	GuardrailApproval bool `json:"guardrailApproval,omitempty"`
+	// GuardrailLanePaths are the files of a push held by
+	// guardrails.lanes.human (a "pipeline change"), at most 50;
+	// GuardrailLanePathsTotal how many there were.
+	GuardrailLanePaths      []string `json:"guardrailLanePaths,omitempty"`
+	GuardrailLanePathsTotal int      `json:"guardrailLanePathsTotal,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -1605,6 +1620,9 @@ type Config struct {
 	// Playbooks backs the playbook, decision-log and verify-skill-issue
 	// endpoints (#218). Nil answers 503.
 	Playbooks PlaybooksClient
+	// Attestations backs GET /api/v1/issues/{identifier}/attestations
+	// (signed checks). Nil answers 503.
+	Attestations AttestationsClient
 	// SteeringPhrases are the steering chips GET /api/v1/steering/phrases
 	// serves (#218, sessions.steering_phrases). Read-only after startup.
 	SteeringPhrases []config.SteeringPhrase
@@ -1690,6 +1708,8 @@ type Server struct {
 	// Config.SteeringPhrases (#218).
 	playbooks       PlaybooksClient
 	steeringPhrases []config.SteeringPhrase
+	// attestations mirrors Config.Attestations (signed checks).
+	attestations AttestationsClient
 	// tasks mirrors Config.Tasks (#251).
 	tasks TasksClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
@@ -1749,6 +1769,7 @@ func New(cfg Config) *Server {
 		changeReview:        cfg.ChangeReview,
 		github:              cfg.GitHubPRs,
 		playbooks:           cfg.Playbooks,
+		attestations:        cfg.Attestations,
 		steeringPhrases:     cfg.SteeringPhrases,
 		tasks:               cfg.Tasks,
 	}
@@ -1859,6 +1880,7 @@ func (s *Server) routes() {
 		r.Post("/agent-actions/{identifier}/guardrail/events", s.handleGuardrailEvent)
 		r.Post("/agent-actions/{identifier}/guardrail/approvals", s.handleGuardrailApprovalRequest)
 		r.Get("/agent-actions/{identifier}/guardrail/approvals/{id}", s.handleGuardrailApprovalStatus)
+		r.Post("/agent-actions/{identifier}/guardrail/lanes", s.handleGuardrailLane)
 		// Tracker webhooks (#131): signed by the webhook secret, not the
 		// bearer token.
 		r.Post("/webhooks/{tracker}", s.handleWebhook)
@@ -1913,9 +1935,10 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
 			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
 			r.Post("/issues/{identifier}/review-continue", s.handleReviewContinue)
-			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)        // #238: never merges
-			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)   // #218
-			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook) // #218
+			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
+			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
+			r.Get("/issues/{identifier}/attestations", s.handleIssueAttestations) // signed checks
+			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
@@ -1963,6 +1986,7 @@ func (s *Server) routes() {
 			r.Get("/settings/reviewer", s.handleGetReviewer)
 			r.Put("/settings/reviewer", s.handleSetReviewer)
 			r.Get("/settings/profiles", s.handleListProfiles)
+			r.Get("/model-servers", s.handleModelServers) // the desktop app probes them
 			r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
 			r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)
 			r.Put("/settings/automations", s.handleSetAutomations)

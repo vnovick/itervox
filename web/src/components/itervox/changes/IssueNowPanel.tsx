@@ -5,6 +5,7 @@ import { fmtTokens } from '../../../utils/format';
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { SYSTEM_VISIBILITY_CAPABILITY } from '../../../queries/activity';
 import { RunResources } from '../resources/RunResources';
+import { PipelineChangeNotice } from '../PipelineChangeNotice';
 // The activity section pulls in the field primitives (and their class
 // merger); this panel ships with the app shell, so load it on demand.
 const IssueActivity = lazy(() =>
@@ -86,6 +87,10 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
           {run.pendingInput}
         </p>
       )}
+      {/* A held push belongs to a running issue (its agent waits in the
+          guardrail shim), so the input-required panel never shows it; the
+          notice names the pipeline files here (nothing for other approvals). */}
+      {run?.pendingApproval && <PipelineChangeNotice identifier={identifier} />}
       {run && (run.queuedSteers > 0 || run.steers.length > 0) && (
         <p className="text-theme-text-secondary text-xs">
           Steering: {run.steers.length} delivered

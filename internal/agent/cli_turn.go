@@ -250,7 +250,7 @@ func runCLITurn(ctx context.Context, log Logger, onProgress func(TurnResult), t 
 	if workerHost == "" {
 		extra = append(RunEnvFrom(ctx).direct(), t.env...) // #204
 	}
-	cmd.Env = itervoxAgentEnv(extra...)
+	cmd.Env = RunEnvFrom(ctx).strip(itervoxAgentEnv(extra...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

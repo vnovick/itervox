@@ -280,8 +280,10 @@ func main() {
 	// M4-close D8: redacting, format-aware stderr logging from the first
 	// line, until bootLogHandlers installs the full stderr+file handler.
 	slog.SetDefault(slog.New(earlyLogHandler(os.Stderr, os.Args, os.Getenv("ITERVOX_LOG_FORMAT"))))
-	loadDotEnv()             // must run before config.LoadConfig / os.Getenv calls
-	installSupervisorToken() // #119: before anything reads ITERVOX_API_TOKEN
+	runHookEntrypoint(os.Args)    // itervox hook: the session's own environment, no daemon start-up
+	runRefereeEntrypoint(os.Args) // itervox referee: CI referee, before .env is loaded
+	loadDotEnv()                  // must run before config.LoadConfig / os.Getenv calls
+	installSupervisorToken()      // #119: before anything reads ITERVOX_API_TOKEN
 	// Drop GIT_DIR / GIT_WORK_TREE / … that git exports into hooks (and that
 	// a .env could carry): itervox may be started from a git hook, and every
 	// subprocess it spawns — git, gh, hooks, agent CLIs — must act on the
@@ -348,6 +350,9 @@ func main() {
 			return
 		case "token": // #214
 			runToken(os.Args[2:])
+			return
+		case "attest": // signed checks
+			runAttest(os.Args[2:])
 			return
 		case "mcp": // #216
 			runMCP(os.Args[2:])
@@ -856,6 +861,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	// the sidecar they dismiss edges from, independent of --log placement.
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
+	orch.SetPushLanesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "push_lanes.json"))                 // guardrails.lanes
 	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
@@ -879,6 +885,10 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		orch.SetWriteSink(orchestrator.NewOutboxWriteSink(ob))
 		orch.SetOutbox(ob)
 		wireCoalescedPush(cfg, ob, tr) // #115
+	}
+
+	if profilesUseVerify(cfg) {
+		setupAttestation(orch, workflowPath) // signed checks: key exists before any run
 	}
 
 	var agentSessionsDir string
@@ -1205,6 +1215,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			ChangeReview:    changeReviewAdapter{orch: orch, tr: tr, moveState: adapter.UpdateIssueState}, // #238: line comments, PR reviews, the diff's PR source
 			GitHubPRs:       githubPRs,                                                                    // #238: the PR-event watcher's GitHub client
 			Playbooks:       playbooksAdapter{orch: orch},                                                 // #218: playbooks, decision logs, verify-skill issue
+			Attestations:    attestationsAdapter{orch: orch},                                              // signed checks: records + verified, off the event loop
 			Tasks:           newTasksAdapter(orch, workflowPath),                                          // #251: New task and task templates
 			SteeringPhrases: cfg.Sessions.SteeringPhrases,                                                 // #218
 		})

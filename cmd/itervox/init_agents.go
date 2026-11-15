@@ -96,8 +96,10 @@ func ensureItervoxGitignore(itervoxDir string) error {
 	// ever be added. Its flock sidecar is tokens.json.lock. mcp-token.json
 	// (#216) holds the secret of `itervox mcp`'s stored token, kept ignored
 	// the same way, as are the hub's member tokens hub-<scope>-token.json
-	// (#228).
-	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "!/memory.json", "/tokens.json", "/tokens.json.lock", "/mcp-token.json", "/hub-*-token.json", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db", "evals/"}
+	// (#228). attest.key is the signed-checks private key and attestations/
+	// the per-run signed records; attest.pub, the public key, is left
+	// committable so others can verify.
+	lines := []string{".env", "HEARTBEAT.md", "daemon.pid", "dashboard_url", "STARTUP_ERROR.md", "logs/", "runtime/", "run/", "/*.json", "!/rules.json", "!/memory.json", "/tokens.json", "/tokens.json.lock", "/mcp-token.json", "/hub-*-token.json", "/rules.local.json", "/settings.local.jsonc", "bin/", "*.db", "evals/", "/attest.key", "attestations/"}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("itervox init: read %s: %w", path, err)

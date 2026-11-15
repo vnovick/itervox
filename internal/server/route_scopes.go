@@ -50,12 +50,14 @@ var routeScopes = map[string]routeAccess{
 	"POST /api/v1/agent-actions/{identifier}/guardrail/events":        accessAgentGrant,
 	"POST /api/v1/agent-actions/{identifier}/guardrail/approvals":     accessAgentGrant,
 	"GET /api/v1/agent-actions/{identifier}/guardrail/approvals/{id}": accessAgentGrant,
+	"POST /api/v1/agent-actions/{identifier}/guardrail/lanes":         accessAgentGrant,
 
 	// Viewer: reads and streams.
 	"GET /metrics":                                  accessViewer,
 	"GET /api/v1/whoami":                            accessViewer,
 	"GET /api/v1/state":                             accessViewer,
 	"GET /api/v1/summary":                           accessViewer,
+	"GET /api/v1/model-servers":                     accessViewer, // URLs redacted below admin
 	"GET /api/v1/route-scopes":                      accessViewer, // #228: this table, for the hub's proxy
 	"GET /api/v1/feed":                              accessViewer,
 	"GET /api/v1/events":                            accessViewer,
@@ -75,6 +77,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/issues/{identifier}/context":       accessViewer, // #215: redacted, never tool output
 	"GET /api/v1/issues/{identifier}/diff":          accessViewer, // #215: ?file= hunks need operator (handleIssueDiff)
 	"GET /api/v1/issues/{identifier}/decisions":     accessViewer, // #218: redacted, bounded decision logs
+	"GET /api/v1/issues/{identifier}/attestations":  accessViewer, // signed checks: redacted at record time
 	"GET /api/v1/playbooks":                         accessViewer, // #218
 	"GET /api/v1/task-templates":                    accessViewer, // #251
 	"GET /api/v1/steering/phrases":                  accessViewer, // #218

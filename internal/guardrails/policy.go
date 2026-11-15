@@ -3,7 +3,11 @@
 // force pushes, branch deletions and tag pushes (a pre-push hook installed
 // through core.hooksPath); merging their own pull request (PATH shims for
 // git, gh and glab); and deploy commands, which wait for a human approval
-// (PATH shims for the programs in guardrails.approval_commands).
+// (PATH shims for the programs in guardrails.approval_commands). The
+// pre-push hook also classifies what a push changes (guardrails.lanes,
+// lanes.go): human-lane files hold the push for an approval, and a push it
+// lets through in the second_opinion or human lane is reported so the
+// daemon's merge policy can refuse merge_pr.
 //
 // A run's guardrails live in a private runtime directory (Prepare): a
 // policy file, a bin/ directory of shims put first on the agent's PATH, and
@@ -61,12 +65,22 @@ const (
 	// channel was available (tmux sessions, no daemon endpoint, the run
 	// ended while it waited).
 	KindApprovalUnavailable = "approval_unavailable"
+	// KindLaneHuman: a push changing human-lane files (guardrails.lanes)
+	// was refused without a human answer: no approval channel (tmux
+	// sessions, no daemon endpoint), or the request ended unanswered.
+	KindLaneHuman = "lane_human"
+	// KindLaneRejected: a human rejected (or dismissed) a push changing
+	// human-lane files.
+	KindLaneRejected = "lane_rejected"
+	// KindPatchOut: an agent of a push: daemon profile tried to push or to
+	// open, merge or change a pull request; the daemon pushes for it.
+	KindPatchOut = "patch_out"
 )
 
 // Kinds lists every block kind (for metrics pre-initialisation and for
 // rejecting a report with an unknown kind).
 var Kinds = []string{KindBranch, KindForcePush, KindDelete, KindTag, KindHookBypass,
-	KindSelfMerge, KindApprovalRejected, KindApprovalUnavailable}
+	KindSelfMerge, KindApprovalRejected, KindApprovalUnavailable, KindLaneHuman, KindLaneRejected, KindPatchOut}
 
 // IsKind reports whether kind is one of Kinds.
 func IsKind(kind string) bool { return slices.Contains(Kinds, kind) }
@@ -89,6 +103,9 @@ type Policy struct {
 	AllowForcePush bool `json:"allow_force_push"`
 	// ApprovalCommands is guardrails.approval_commands.
 	ApprovalCommands []string `json:"approval_commands"`
+	// EnvApprovalCommands are guardrails.approval_commands entries with
+	// when_env: held only when the command's environment matches.
+	EnvApprovalCommands []EnvApproval `json:"env_approval_commands,omitempty"`
 	// ApprovalsEnabled is false where no human can answer an approval
 	// (tmux sessions, no daemon endpoint): matching commands are refused.
 	ApprovalsEnabled bool `json:"approvals_enabled"`
@@ -106,6 +123,19 @@ type Policy struct {
 	// approved before the run started (`itervox run --approve`, #252): a
 	// matching approval command runs without asking. Empty in the daemon.
 	PreApproved []string `json:"pre_approved,omitempty"`
+	// Lanes is guardrails.lanes: which changed files hold a push for a
+	// human (human) or mark it for a second-opinion review
+	// (second_opinion). Empty: every push is in the auto lane.
+	Lanes Lanes `json:"lanes"`
+	// BaseRefs are the refs, in order, a push is classified against: the
+	// first that has a merge base with the pushed commit is the issue's
+	// base (origin/<pull request base>, <pull request base>, agent.base_branch,
+	// origin/HEAD, origin/main, main).
+	BaseRefs []string `json:"base_refs,omitempty"`
+	// PatchOut is push: daemon (patches only): every push, and every gh or
+	// glab command that opens, merges or changes a pull request or calls
+	// a write API, is refused; the daemon pushes after its checks.
+	PatchOut bool `json:"patch_out,omitempty"`
 }
 
 // policyFileName and adoptedFileName live in the runtime directory.

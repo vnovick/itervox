@@ -180,6 +180,9 @@ type Orchestrator struct {
 	// playbookOverridesFile persists State.PlaybookOverrides (#218); guarded
 	// by depsOverridesMu like depsOverridesFile, set before Run.
 	playbookOverridesFile string
+	// pushLanesFile persists State.PushLanes (guardrails.lanes). Set before
+	// Run; read-only afterwards.
+	pushLanesFile string
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string
@@ -423,6 +426,9 @@ type Orchestrator struct {
 	// Tests replace them.
 	findOpenPRURL func(ctx context.Context, wsPath string) string
 	setPRBase     func(ctx context.Context, prURL, base string) (bool, error)
+	// createPR opens a pull request for the daemon's own push (push:
+	// daemon); nil means workspace.CreatePR. SetPRCreator replaces it.
+	createPR func(ctx context.Context, dir, head, base, title, body string) (string, error)
 	// oneShot is the `itervox run` mode (#252); nil in the daemon. Set
 	// before Run by SetOneShot. Its Resume is consumed by the event loop.
 	oneShot *OneShot
@@ -433,6 +439,10 @@ type Orchestrator struct {
 	// readPRChecks is the gh seam for require_evidence "ci" (#80); nil means
 	// workspace.ReadPRChecks.
 	readPRChecks func(ctx context.Context, prURL string) (workspace.PRChecks, error)
+	// attestation is the signed-checks signer and record store (verify);
+	// nil runs the checks and gates on them without signing or storing.
+	// Set by SetAttestation, read by workers.
+	attestation atomic.Pointer[attestationConfig]
 
 	// transitionFailed marks issues whose completion-state tracker write
 	// failed, so the event loop can record PauseReasonTransitionFailed rather

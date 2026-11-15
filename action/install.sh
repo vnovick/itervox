@@ -4,7 +4,7 @@
 # verifies the archive's SHA-256 against it, and puts the binary on the job's
 # PATH. Refuses (exit 1) on any mismatch or missing checksum.
 #
-# Inputs: ITERVOX_VERSION ("latest", "0.3.1" or "v0.3.1"), ITERVOX_REPO
+# Inputs: ITERVOX_VERSION ("latest", "0.3.3" or "v0.3.3"), ITERVOX_REPO
 # (default vnovick/itervox), RUNNER_OS, RUNNER_ARCH, RUNNER_TEMP,
 # GITHUB_PATH; GH_TOKEN for resolving "latest" (gh). Writes version=<tag>
 # to $GITHUB_OUTPUT when set. Needs sh, curl, tar and sha256sum or shasum.

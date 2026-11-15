@@ -2,14 +2,15 @@ name: Action
 
 # #252: tests of the composite action in action/ (`uses: vnovick/itervox/action@<ref>`).
 # actionlint checks this workflow, and through the dry-run job's
-# `uses: ./action`, the action's inputs; shellcheck and the trust-check
-# script test cover action/*.sh; the dry run installs a release binary with
+# `uses: ./action`, the action's inputs; shellcheck and the trust-check and
+# pipeline-check script tests cover action/*.sh; the dry run installs a release binary with
 # its checksum verified. Fork-safe: `pull_request`, a read-only token, no
 # secrets, nothing published.
 on:
   pull_request:
     paths:
       - 'action/**'
+      - 'referee/**'
       - '.github/workflows/action.yml'
   workflow_dispatch:
 
@@ -22,7 +23,7 @@ concurrency:
 
 jobs:
   lint-and-test:
-    name: actionlint, shellcheck, trust-check test
+    name: actionlint, shellcheck, script tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -32,9 +33,13 @@ jobs:
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.7 -color=false .github/workflows/action.yml
       - name: shellcheck
-        run: shellcheck -x action/*.sh
+        run: shellcheck -x action/*.sh referee/*.sh
       - name: trust-check test
         run: bash action/trust-check_test.sh
+      - name: pipeline-check test
+        run: bash action/pipeline-check_test.sh
+      - name: referee action test
+        run: bash referee/run_test.sh
 
   dry-run:
     name: dry run of the action

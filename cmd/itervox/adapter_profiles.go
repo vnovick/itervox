@@ -91,13 +91,18 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
 		// Not edited by the dashboard: carried over from the saved profile
 		// so a dashboard save does not strip them from WORKFLOW.md.
-		PermissionMode:    existingProfile.PermissionMode,
+		PermissionMode: existingProfile.PermissionMode,
+		// The quota pool (backend_fallback lanes) is load-time only.
+		Pool:              existingProfile.Pool,
 		RequireEvidence:   existingProfile.RequireEvidence,
+		Verify:            existingProfile.Verify, // signed checks: load-time, carried over
 		CreateIssueLabels: existingProfile.CreateIssueLabels,
 		// #258: likewise the sandbox settings.
 		Isolation:           existingProfile.Isolation,
 		IsolationExtraWrite: existingProfile.IsolationExtraWrite,
 		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
+		// Patches only (push: daemon): load-time, carried over.
+		Push: existingProfile.Push,
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {

@@ -637,6 +637,10 @@ export const InputRequiredEntrySchema = z.object({
   // #240 — a guardrail approval request (#204): "approve" runs the held
   // command once, any other reply rejects it.
   guardrailApproval: z.boolean().optional(),
+  // guardrails.lanes — a push held because it changes human-lane files (a
+  // "pipeline change"): the files (at most 50) and how many there were.
+  guardrailLanePaths: z.array(z.string()).optional(),
+  guardrailLanePathsTotal: z.number().optional(),
 });
 
 export const AutomationQueueBackpressureSchema = z.object({

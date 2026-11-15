@@ -295,7 +295,7 @@ func (c *ClaudeRunner) RunTurn(
 	if workerHost == "" {
 		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
 	}
-	cmd.Env = itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...)
+	cmd.Env = RunEnvFrom(ctx).strip(itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -1112,6 +1112,7 @@ func readLines(ctx context.Context, log Logger, onProgress func(TurnResult), r i
 
 	readDeadline := time.Duration(readTimeoutMs) * time.Millisecond
 	var result TurnResult
+	held := false // the last deadline found an idle hold (WithIdleHold)
 
 	for {
 		timer := time.NewTimer(readDeadline)
@@ -1121,10 +1122,28 @@ func readLines(ctx context.Context, log Logger, onProgress func(TurnResult), r i
 			return result, ctx.Err()
 
 		case <-timer.C:
+			// A run waiting for a guardrail approval prints nothing until
+			// the operator answers; that silence is not a hung CLI, so the
+			// deadline restarts while the hold lasts (the turn context
+			// still bounds the wait). The deadline after a hold is a full
+			// one: the CLI gets read_timeout_ms from the end of the hold,
+			// not what was left of the period in which it ended.
+			if idleHeld(ctx) {
+				if !held {
+					log.Info(logPrefix + ": idle while a guardrail approval is pending; read timeout suspended")
+				}
+				held = true
+				continue
+			}
+			if held {
+				held = false
+				continue
+			}
 			return result, fmt.Errorf("agent: read timeout after %dms idle", readTimeoutMs)
 
 		case sr := <-lineCh:
 			timer.Stop()
+			held = false
 			if sr.done {
 				return result, sr.err
 			}

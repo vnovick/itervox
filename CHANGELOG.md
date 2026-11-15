@@ -9,6 +9,76 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-11-15
+
+### Added
+
+- **Signed checks: the daemon runs the checks itself.** A profile can set `verify: [{name, run, timeout_ms?}]`. After the agent's run, the daemon runs each command in the worktree itself (inside the run's sandbox under `isolation: process`), with `pipefail`, a timeout and a process-group kill.
+  - **What is recorded:** the command, the real exit code, duration, the output's SHA-256 and a redacted tail, HEAD, and a hash of the working tree including untracked files. The hash is computed through a private index, so yours is never touched.
+  - **Signing and storage:** records are signed with ed25519 and stored as `.itervox/attestations/<issue>/<run>_<profile>.jsonl`, each run sealed with its final tree. The key is `.itervox/attest.key`: gitignored, in the isolation deny list, and created only when a profile uses `verify`.
+  - **What "done" means:** a failing or tree-changing check holds the run as input-required, naming the check and its exit code. For a `require_evidence` name that is also in `verify`, the agent's own evidence file is ignored, so the writer is never the judge.
+  - **Where to see them:** `GET /api/v1/issues/{identifier}/attestations` (viewer scope) lists the records with `verified` and a reason. `itervox attest verify <file.jsonl> [--tree DIR]` checks the signatures and the tree.
+- **Safety guide and a full-permissions warning.** A new [Safety](https://itervox.dev/guides/safety/) guide covers three things:
+  - what an agent can do by default (approvals bypassed, no sandbox, open network);
+  - how to confine it, from a disposable machine down to repository rules;
+  - how to keep secrets out of reach.
+
+  `itervox doctor` gains a **Permissions** section. It lists `agent.command` as `(default)` and every enabled profile, with its backend, its permission mode and its isolation, and prints a `WARNING:` naming the runs with full permissions. A run has full permissions when no operating-system sandbox wraps it and its permission mode does not confine its backend: `bypass`, or any mode on Cursor or a custom backend. The warning does not change the exit code.
+- **Local models, and a doctor check for model servers.** A new [Local models](https://itervox.dev/guides/local-models/) guide shows how to point a profile's agent at a model server on your machine. Its example is [colibri](https://github.com/JustVugg/colibri) with `ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`. The guide covers OpenCode and Codex, the timeouts to raise, and which jobs suit a slow model. `itervox doctor` gains a **Model servers** section. It probes every `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` or `OPENAI_API_BASE` assigned in a profile command, lists the profiles using each server, and warns when one does not answer. The warning does not change the exit code.
+- **Quota pools: a separate usage-limit breaker for a backend on another model server.** A profile can set `pool: <name>` (`[a-z0-9-]+`). Its runs then use their own breaker, keyed `claude/local` (or `claude/local@host` on a worker host), so a limit on Anthropic no longer holds a Claude Code profile pointed at a local server, and the other way round. `agent.backend_fallback.chain` and the `profile_map` backend keys may name such a lane. With `chain: [claude, codex, claude/local]` and `profile_map: {coder: {"claude/local": coder-local}}`, a limited `claude` reroutes to `coder-local` and switches back as usual. A lane's backend must be supported and its pool valid, and a `profile_map` target must run that lane; config load fails otherwise. Profiles without a pool keep their keys and their `backend_health.json` entries unchanged. A pooled breaker shows as `claude/local` on the dashboard and can be cleared like any other.
+- **Desktop app: model servers and GPU health.** The app collects the model servers that every running project's profiles point at, from the daemon's new viewer-scope `GET /api/v1/model-servers` (URL, variable, profiles, pools, and whether runs go to SSH worker hosts; URL credentials redacted below admin). Every 30 seconds it checks those on this machine (`127.0.0.1`, `localhost`, `::1`), with any HTTP answer counting as up. When a project lists a model server, it also reads GPU usage and memory through `nvidia-smi`. Both show in a **Model servers** section of the tray menu and a panel in the project rail. A notification fires when a server that was answering misses two checks in a row, and again when it comes back. URLs taken from a variable, servers on other hosts, and servers used only by profiles that run on SSH worker hosts are listed but not checked. The doctor check and the endpoint share one extraction (`config.ModelServerUses`).
+- **Claude Code plugin.** Install it with `/plugin marketplace add vnovick/itervox`, then `/plugin install itervox@itervox`. The plugin bundles `itervox mcp`, at viewer scope by default (switch to operator with `/plugin configure`), and eight skills:
+  - `setup`: install and `itervox init`;
+  - `issue`: agent-ready issues;
+  - `doctor`: `itervox doctor` and `config show`;
+  - `ci`: the GitHub Action and `itervox run --issue`;
+  - `deploy`: cloud VM; it moved here from `.claude/skills/deploy`;
+  - `local-models`: colibri, `pool` and fallback;
+  - `automations`: automations, dependencies and stacked PRs;
+  - `operate`: day-to-day work through the MCP tools. Guardrail approvals stay human-only.
+
+  Run a skill as `/itervox:<skill>`. `TestPluginSkillsNameRealCommandsAndFlags`, `TestPluginSkillsNameRealSettings` and `TestPluginVersionMatchesLatestRelease` fail when a skill names a command, flag or setting the CLI does not have, or when the plugin's version drifts from the latest release. New guide: [Claude Code plugin](https://itervox.dev/guides/claude-code-plugin/).
+- **`itervox config show` ends with "How agents run".** It shows the same per-profile summary after the settings table, so the command shows what the configured values add up to at dispatch, not only the values. `--json` is unchanged.
+- **Lanes: an agent may change what CI checks, never how CI checks.** The pre-push hook sorts every push by the paths it changes, against the merge base with the base branch. A push that touches the **human lane** (by default `.github/**`, `.gitlab-ci.yml`, `.circleci/**`, `.itervox/**` except handoffs, `WORKFLOW.md`, `CODEOWNERS`, test and coverage configs, `.golangci.yml` and `Makefile`) is held for operator approval, and the dashboard shows the pipeline files it changes. A path in `guardrails.lanes.second_opinion` lets the push through, but `merge_pr` refuses the PR until a reviewer on a different backend approves it. `merge_pr` always refuses a human-lane PR. Set `guardrails.lanes.human: []` to turn the lane off. If the hook can't classify a push, it treats it as human lane. `TestPrePushHumanLaneHoldsForApproval`, `TestSecondOpinionNeedsDifferentBackendReviewer` and `TestMergeRefusedForHumanLaneRun` pin the behaviour.
+- **Safer CI mode for the GitHub Action.** A new step, **Check the pipeline is out of the agent's reach**, runs before the agent and refuses the run with exit 5, listing every refusal. It refuses when:
+  - `WORKFLOW.md`, `.itervox/settings.jsonc` or `.itervox/agents/` in the checkout differ from `policy-ref` (default: the repository's default branch), so the run's policy comes from the base branch, not from the branch being worked on;
+  - `policy-sha256` is set and `WORKFLOW.md` has another hash (the actual hash is printed);
+  - the token is a classic token with the `workflow` scope;
+  - deploy credentials are in the job's environment (`AWS_SECRET_ACCESS_KEY`, `NPM_TOKEN`, `*_DEPLOY_TOKEN`, …). Only variable names are read, never values, and the agent's own API keys are not counted. `allow-env` names variables to let through, such as the cloud keys an agent on Bedrock or Vertex needs.
+
+  `safe-mode: false` turns each refusal into a warning, and `dry-run` reports without enforcing. The check is `action/pipeline-check.sh`, tested offline by `action/pipeline-check_test.sh`. The [CI guide](https://itervox.dev/guides/ci/#safer-ci-mode) has a recommended setup: an agent job with `contents`, `pull-requests` and `issues: write` and no deploy secrets, and deploys from a separate workflow after the merge.
+- **`itervox doctor` gains a Lanes section.** It prints the `guardrails.lanes` globs in effect (the default marked, `[]` shown as off) and warns when the human lane or the guardrails are off. It also warns when a profile's `verify` check is defined by a file outside the human lane, for example `make test` with no `Makefile` in the lane, or `pnpm test` and `package.json`. It lists `require_evidence` names that no `verify` check runs as agent-reported, not daemon-run. None of it changes the exit code, and `itervox config show` prints the same section after "How agents run". `TestDoctorLanesWarnsMakefileOutsideHumanLane`, `TestDoctorLanesOff` and `TestDoctorLanesSelfReportedEvidence` pin it.
+- **`itervox referee`: a CI referee for any agent and any CI.** Shipped in every release as `itervox referee <command>`, and as a standalone `referee` binary for projects that do not use Itervox (`cmd/referee`, `make referee` or `go install`; both wrap `internal/referee`). `itervox referee` starts before `.itervox/.env` is loaded, so the checks it runs never inherit those secrets. An agent may change what CI checks, never how CI checks.
+  - `referee lanes --base <ref>` sorts a pull request's files into human, second_opinion and auto (exit 20 / 10 / 0). The rules come from `.referee.yml` read from the base ref, never from the branch being judged.
+  - `referee audit` reports changes that weaken checks: removed or renamed tests, added skips and `.only`, lowered coverage thresholds, `continue-on-error: true` or `|| true` in CI config, `--no-verify`.
+  - `referee pin` checks a policy file's sha256; `referee keygen`, `run` and `verify` sign check runs in the same record format as `itervox attest verify`.
+
+  Any error exits 2, never 0. A composite GitHub Action (`referee/action.yml`) and a [guide](https://itervox.dev/guides/referee/) ship with it.
+- **`itervox hook`: the guardrails in your own Claude Code and Codex sessions.** `itervox hook claude-pretooluse` and `codex-pretooluse` read the tool call before it runs. Refusals are denied; approval commands and edits to human-lane files ask you first (Codex has no ask, so they are denied). A workflow that cannot be loaded asks. `itervox hook install claude|codex` merges the entry into the project or user settings and keeps your other keys. The hook reads the command before the shell expands it, so it is a convenience layer: the shims and the pre-push hook remain the enforcement.
+- **Approval rules scoped to an environment.** A `guardrails.approval_commands` entry may be `{match, when_env}`, held only when the environment matches, for example `terraform apply` when `TF_WORKSPACE=prod*`. The shim checks the real environment at exec time. Plain string entries are unchanged; a malformed object is a startup error.
+- **Patches only: the daemon pushes (`push: daemon`).** Set it on a profile (or `agent.push` for all of them). That profile's agent gets no forge or tracker credentials, and its shims and pre-push hook refuse `git push` and pull-request writes. After the run and its gates (`after_run_required`, `verify`, `require_evidence`), Itervox sorts the diff into lanes (a human-lane change waits for approval), pushes the commit with its own credentials and opens the pull request. With `verify`, only the tree the signed checks ran on is pushed. Needs `guardrails.enabled`; refused with `agent.ssh_hosts`. The default (`agent`) is unchanged.
+- **Pipeline-guard demo.** `scripts/pipeline-guard-demo.sh` and `scripts/pipeline-guard-capture.mjs` reproduce "an agent asked to fix a red build edits the pipeline instead" with a scripted agent doing real git work behind the guardrails: unguarded (pushed, green, tests still fail) and guarded (held in the human lane, signed check exit 1, code fixed, signed check exit 0). `demo/pipeline-guard/RECORDING.md` explains how to run it and how to record it with a real agent.
+- **Fuzz tests for the guardrails and signed checks.** `FuzzDecide`, `FuzzMatchApproval`, `FuzzLanes`, `FuzzRecordVerify` and `FuzzRecordByteFlip`, run with `make fuzz` (`FUZZTIME`, default 30s; not part of `make verify`); their seeds run under `go test`. `scripts/guardrails-shim-latency.sh` measures the git shim: about 8–9 ms per call at p50 on a loaded 4-CPU test machine.
+
+### Security
+
+- **Guardrail bypasses closed** (found by the new fuzz tests):
+  - `git push --no-verif` and git's other abbreviations of `--no-verify` no longer skip the guardrail hook;
+  - `git -c include.path=…` and `includeIf.*.path` count as replacing the hooks, since an included file can set `core.hooksPath`;
+  - `gh pr -R owner/repo merge` and `glab mr -R … merge` are refused as self-merges;
+  - an argument with a literal `*` no longer slips past a `*` in an `approval_commands` pattern (`gsutil rm 'gs://prod/**'` against `gsutil rm gs://prod/*`).
+- **Signed checks:** a record verifies only with the exact signature encoding the daemon wrote. Base64's ignored trailing bits had let an altered `sig` still verify.
+
+### Fixed
+
+- **A held push no longer fails after `agent.read_timeout_ms`.** While a guardrail approval is pending, the agent prints nothing, so the turn used to fail after 30 seconds and be retried. The idle read deadline is now suspended while the run waits for the operator and restarts in full from the answer, and a run waiting for an approval is not treated as stalled. `agent.turn_timeout_ms` still bounds the wait.
+- **A held pipeline push shows its files.** The list of pipeline files now appears in the Needs-attention reply row and in the issue's Now panel. Before, it only rendered in the input-required panel, which a held push never reaches because its issue is still running.
+- **The lane matcher is polynomial** in `**` segments (it was exponential on deep paths), and a long run of `git -C` options is linear.
+
+### Changed
+
+- `internal/attest` shares `PrintVerification`, `LoadKey` and `AppendFile` between `itervox attest verify` and `referee verify`, with no change in behaviour.
+
 ---
 
 ## [0.3.1] — 2026-11-03

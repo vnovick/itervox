@@ -48,6 +48,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadAutomationQueueFromDisk(state)
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPlaybookOverridesFromDisk(state) // #218
+	state = o.loadPushLanesFromDisk(state)         // guardrails.lanes
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
@@ -554,6 +555,7 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 	// Running workers are not cancelled — they complete naturally.
 	terminalIdents := buildTerminalIdentifierSet(&state)
 	terminalCounts := pruneTerminalRuntimeLedgers(&state, terminalIdents)
+	o.prunePushLanes(&state, func(ident string) bool { _, t := terminalIdents[ident]; return !t }) // guardrails.lanes
 	absentCounts := pruneAbsentTrackerIssues(&state, currentActive, prevActive)
 	// CORE-109 — a discard marker whose completion event was lost.
 	discardsExpired := expireDiscardMarkers(&state, now)
@@ -1242,7 +1244,8 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 		// entry.WorkerHost (never rerouted: a session id cannot cross
 		// backends). While that breaker is closed to it, keep the reply and
 		// spend no tracker request.
-		resumeKey := BackendHealthKey(entry.Backend, entry.WorkerHost)
+		resumePool := o.profilePool(entry.ProfileName, entry.Backend)
+		resumeKey := BackendHealthKey(entry.Backend, resumePool, entry.WorkerHost)
 		if blocked, until := backendKeyBlocked(state, resumeKey, identifier, now); blocked {
 			setBackendHold(&state, identifier, BackendHold{Key: resumeKey, Until: until})
 			continue
@@ -1303,6 +1306,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			AgentSessionID:     entry.SessionID,
 			WorkerHost:         entry.WorkerHost,
 			Backend:            entry.Backend,
+			Pool:               resumePool,
 			ProfileName:        entry.ProfileName,
 			PendingInputResume: true,
 			BranchName:         branchNameValue(resumeIssue.BranchName),
@@ -1469,6 +1473,7 @@ func (o *Orchestrator) dispatchRun(ctx context.Context, state State, issue domai
 		Kind:         reviewerKind(reviewerRun),
 		WorkerHost:   workerHost,
 		Backend:      backend,
+		Pool:         target.Pool,
 		ProfileName:  profileName,
 		StartedAt:    time.Now(),
 		RetryAttempt: &attempt,
@@ -1676,6 +1681,7 @@ func (o *Orchestrator) dispatchReviewer(ctx context.Context, state *State, issue
 		Kind:         "reviewer",
 		WorkerHost:   workerHost,
 		Backend:      backend,
+		Pool:         target.Pool,
 		ProfileName:  profileName,
 		StartedAt:    now,
 		RetryAttempt: &attempt,
@@ -1795,7 +1801,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// CORE-053: an advisory api_retry rate_limit/overloaded signal
 			// forwarded mid-turn counts against the run's breaker; repeated
 			// ones open it (the run itself keeps going).
-			if ev.Limit != nil && o.recordBackendThrottle(&state, entry.Backend, entry.WorkerHost, entry.Issue.Identifier, ev.Limit, now) {
+			if ev.Limit != nil && o.recordBackendThrottle(&state, entry.Backend, entry.Pool, entry.WorkerHost, entry.Issue.Identifier, ev.Limit, now) {
 				o.saveBackendHealthToDisk(&state)
 				if o.OnStateChange != nil {
 					o.OnStateChange()
@@ -2147,6 +2153,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		return o.applyClaimBatch(ctx, state, ev.ClaimBatch, time.Now())
 	case EventGuardrailApproval: // #204
 		o.handleGuardrailApproval(&state, ev)
+	case EventGuardrailLane: // guardrails.lanes
+		o.handleGuardrailLane(&state, ev, time.Now())
+	case EventMergeLaneCheck: // guardrails.lanes
+		o.handleMergeLaneCheck(state, ev)
 	case EventWorkerExited:
 		// #187: a poll in flight may have listed this issue before its run
 		// moved it; that list must not dispatch it again.
@@ -2364,8 +2374,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				// #58 — collect this reviewer's verdict and either dispatch
 				// the next reviewer in the chain or close the quorum.
 				state = o.advanceReviewChainForIssue(ctx, state, issue, finished.ProfileName, now)
-				noteReviewVerdict(state, liveEntry, issue.Identifier, finished.ProfileName) // #201
-				o.observeReviewerAsk(&state, liveEntry, issue, finished.ProfileName)        // #217
+				stampVerdictBackend(&state, issue.Identifier, finished.ProfileName, finished.Backend) // guardrails.lanes
+				noteReviewVerdict(state, liveEntry, issue.Identifier, finished.ProfileName)           // #201
+				o.observeReviewerAsk(&state, liveEntry, issue, finished.ProfileName)                  // #217
 			}
 			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
 			// completion to bound map growth across the daemon's lifetime. Unlike
@@ -2648,14 +2659,14 @@ func (o *Orchestrator) handleFailedExit(ctx context.Context, state State, ev Orc
 			limitSwitchTried = true
 			// CORE-053: open the breaker for the run's (backend, host) so no
 			// other issue rediscovers the limit.
-			failedProfile, failedBackend := "", ""
+			failedProfile, failedLane := "", ""
 			if liveEntry != nil {
-				failedProfile, failedBackend = liveEntry.ProfileName, liveEntry.Backend
-				if o.recordBackendLimit(&state, liveEntry.Backend, liveEntry.WorkerHost, issue.Identifier, ev.Limit, now) {
+				failedProfile, failedLane = liveEntry.ProfileName, config.BackendLane(liveEntry.Backend, liveEntry.Pool)
+				if o.recordBackendLimit(&state, liveEntry.Backend, liveEntry.Pool, liveEntry.WorkerHost, issue.Identifier, ev.Limit, now) {
 					o.saveBackendHealthToDisk(&state)
 				}
 			}
-			if liveEntry != nil && o.backendFallbackCovers(issue.Identifier, failedProfile, failedBackend) {
+			if liveEntry != nil && o.backendFallbackCovers(issue.Identifier, failedProfile, failedLane) {
 				// CORE-054 precedence: a profile agent.backend_fallback maps
 				// is handled by the fallback alone — the rate_limited rules
 				// are not evaluated for this exit. Re-dispatch at the same

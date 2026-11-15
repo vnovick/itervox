@@ -1,0 +1,161 @@
+---
+title: Safety
+description: What an agent started by Itervox can do on your machine by default, how to confine it, and the checks that tell you which profiles still run with full permissions.
+sidebar:
+  order: 9
+---
+
+Itervox starts coding agents that run commands and edit files with no human
+watching. By default nothing confines them. This page is the short version of
+what that means and what to do about it. The linked guides have the details.
+
+:::caution[Itervox is not your only safety control]
+Treat every agent as a program that can do anything your user account can.
+Use Itervox's controls as extra layers on top of a machine you can afford to
+lose, not instead of one.
+:::
+
+## What an agent can do by default
+
+A profile with the defaults (`permission_mode: bypass`, `isolation: none`) runs
+its agent with **full permissions**:
+
+- **Approvals are bypassed.** Itervox runs headless, so there is no one to
+  answer a prompt. See [Agent permissions](/guides/agent-permissions/).
+- **There is no sandbox.** The agent and every process it starts can read and
+  change any file the daemon's user can. That includes `~/.ssh`, `~/.aws`, the
+  `gh` CLI's token, the project's `.itervox/.env`, and other projects' code.
+- **The network is open.** An agent can download and run code, and can send
+  what it reads anywhere.
+
+On SSH worker hosts (`agent.ssh_hosts`), the same applies on those machines.
+
+## Check what yours do
+
+Both commands below list every enabled profile, plus `agent.command` as
+`(default)`. For each one they show its backend, permission mode and
+isolation, and whether anything confines it.
+
+```sh
+itervox doctor        # the Permissions section, with a warning for full permissions
+itervox config show   # every effective setting, then "How agents run"
+```
+
+```text
+Permissions
+  (default): claude, permission_mode bypass, isolation none — full permissions
+  reviewer: codex, permission_mode sandbox, isolation none — restricted permission mode, no operating-system sandbox
+  coder: claude, permission_mode bypass, isolation process — operating-system sandbox
+WARNING: (default) run with full permissions: …
+```
+
+The warning does not change doctor's exit code. Full permissions are a choice
+you can make knowingly; doctor makes sure it is not one you made by accident.
+
+## Confine your agents
+
+From strongest to weakest:
+
+1. **A disposable machine.** Run the daemon in a VM, a container or a cloud
+   VM that holds no credentials beyond the ones its agents need, and that you
+   can rebuild. This is the only layer that limits *everything*, hooks and
+   network included. See [Deployment](/guides/deployment/).
+2. **`isolation: process`.** It runs the agent inside an operating-system
+   sandbox: bubblewrap or Landlock on Linux, sandbox-exec on macOS.
+   - The agent can write only to its own workspace.
+   - Your credentials and every other workspace are hidden from it.
+   - A run whose sandbox is unavailable does not start.
+
+   Set it per profile, or for all of them with `agent.isolation: process`.
+   See [Process isolation](/guides/isolation/).
+3. **`permission_mode: sandbox`.** It limits what the agent does without asking:
+   - on Codex, it writes only to the workspace;
+   - on Claude, it auto-accepts edits only;
+   - on OpenCode, only what its permission config allows.
+
+   It does not confine the process, and on Cursor and custom backends it
+   changes nothing.
+4. **Guardrails** (on by default). They refuse force-pushes, pushes to other
+   branches and self-merges, and hold deploy commands for your approval. See
+   [Guardrails](/guides/guardrails/). With `push: daemon` the agent cannot
+   push at all; see [Patches only](#patches-only-the-daemon-pushes).
+5. **Your repository's own rules.** For example, `PreToolUse` deny hooks, branch
+   protection and required CI. See [Agent permissions](/guides/agent-permissions/).
+
+## Patches only: the daemon pushes
+
+By default an agent's worktree has git and the daemon's credentials, and the
+agent pushes its branch and opens the pull request itself. Guardrails steer
+those pushes, but the agent holds the ability. With `push: daemon` on a
+profile (or `agent.push: daemon` for all of them), the agent only emits
+commits, and Itervox is the referee that publishes them:
+
+```yaml
+guardrails:
+  enabled: true          # required; the default
+agent:
+  profiles:
+    coder:
+      command: claude
+      push: daemon       # patches only
+      isolation: process # recommended: also hides credential files
+      verify:
+        - { name: test, run: go test ./... }
+```
+
+- **The agent has no push ability.** Its environment carries no
+  `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `LINEAR_API_KEY` or other forge
+  token, nor any variable holding the tracker key, and no `SSH_AUTH_SOCK` or
+  askpass helper. They are removed again after the login shell's profile ran.
+  git sees no credential helper, and `gh` and `glab` an empty configuration
+  directory.
+- **Its push commands are refused.** The shims refuse `git push`,
+  `gh pr create`, `gh pr merge`, `gh pr edit` and other commands that publish
+  or change a pull request, and `gh api` / `glab api` writes, with "this
+  profile emits patches; the daemon pushes after its checks". The pre-push
+  hook refuses a push from a `git` run by its absolute path. Each refusal is
+  counted as `patch_out` in `itervox_guardrail_blocks_total`.
+- **The daemon pushes after its checks.** When the run succeeds, and after
+  `hooks.after_run_required`, the signed checks (`verify`) and the file part
+  of `require_evidence`, Itervox pushes the branch itself with its own
+  credentials and opens the pull request. The `ci` evidence check needs that
+  pull request, so it still gates the move to `completion_state` afterwards.
+- **Only what was checked is pushed.** With `verify`, the commit Itervox
+  pushes must have the tree the signed checks ran on. If it does not (the
+  agent left uncommitted changes, or something changed the tree after the
+  checks), nothing is pushed and the run waits for input with "the tree
+  changed after the checks".
+- **The lanes still apply.** Itervox classifies its own push into
+  [`guardrails.lanes`](/guides/guardrails/) like an agent's. A human-lane
+  change waits for your approval exactly like an agent's held push (a
+  "Pipeline change" input request); a second-opinion change is pushed and
+  recorded for merge policy.
+
+A push Itervox refuses, or that fails, ends the run waiting for input with
+the reason; reply to resume, and the checks and the push run again when the
+run ends. Limits: `push: daemon` needs `guardrails.enabled` and refuses
+`agent.ssh_hosts` (both checked at load); a run whose guardrails cannot be
+prepared does not start; automation runs that skip the issue lifecycle and
+read-only reviewers publish nothing; and the pull request is opened with
+`gh`, so on GitLab the daemon pushes but does not open a merge request.
+Without `isolation: process` an agent can still read a credential file by
+its path; see [Process isolation](/guides/isolation/#patches-only-the-daemon-pushes).
+
+## Keep secrets out of reach
+
+- Give the daemon tokens with the narrowest scopes that work, such as a
+  fine-grained GitHub token for one repository.
+- Keep secrets in `.itervox/.env` and never commit it. `itervox init` adds it
+  to `.gitignore`. A sandboxed agent cannot read it, but an unsandboxed one
+  can.
+- Protect the dashboard and API with tokens. See
+  [Security & access tokens](/guides/security/).
+
+## Keep a way back
+
+- Agents work in git worktrees on issue branches, and guardrails stop them
+  pushing anywhere else. Your default branch changes only through a merge
+  you or your merge policy approve.
+- Hooks (`hooks.*`) run outside any sandbox, with the daemon's permissions.
+  Review them like any other script you run.
+- Back up anything on the machine that is not in git.

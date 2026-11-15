@@ -28,6 +28,8 @@ type decision struct {
 	act     action
 	kind    string
 	message string
+	// pattern is the matching approval rule's display form (a quoted
+	// pattern, plus its when_env conditions for a scoped rule).
 	pattern string
 }
 
@@ -40,76 +42,82 @@ var gitGlobalsWithValue = []string{"-C", "-c", "--git-dir", "--work-tree", "--na
 // GraphQL mutations that do.
 var mergeAPIRe = regexp.MustCompile(`(^|/)(pulls/[0-9]+/merge|merge_requests/[0-9]+/merge)/?(\?|$)|mergePullRequest|enablePullRequestAutoMerge`)
 
-// decide classifies tool args… run in cwd. branchOf returns the branch
-// checked out in a directory.
-func (p Policy) decide(tool string, args []string, cwd string, branchOf func(dir string) string) decision {
+// decide classifies tool args… run in cwd with the environment lookup
+// reads. branchOf returns the branch checked out in a directory.
+func (p Policy) decide(tool string, args []string, cwd string, lookup EnvLookup, branchOf func(dir string) string) decision {
 	var d decision
 	switch tool {
 	case "git":
 		d = p.decideGit(args, cwd, branchOf)
 	case "gh":
-		d = decideMergeCLI(args, "pr", "gh pr merge")
+		if p.PatchOut {
+			d = decidePatchOutCLI("gh", args, ghPatchOutWrites)
+		}
+		if d.act == actForward {
+			d = decideMergeCLI(args, "pr", "gh pr merge")
+		}
 	case "glab":
-		d = decideMergeCLI(args, "mr", "glab mr merge")
+		if p.PatchOut {
+			d = decidePatchOutCLI("glab", args, glabPatchOutWrites)
+		}
+		if d.act == actForward {
+			d = decideMergeCLI(args, "mr", "glab mr merge")
+		}
 	}
 	if d.act != actForward {
 		return d
 	}
-	if pattern, ok := MatchApproval(p.ApprovalCommands, tool, args); ok {
-		return decision{act: actApprove, pattern: pattern}
+	if why, ok := p.matchAnyApproval(tool, args, lookup); ok {
+		return decision{act: actApprove, pattern: why}
 	}
 	return decision{}
 }
 
+// isHooksPathAssignment reports whether a `-c`/`--config-env` assignment
+// can replace the guardrail hooks: core.hooksPath itself, or a config
+// include (include.path, includeIf.<condition>.path), whose file is read
+// in the same command-line scope after GIT_CONFIG_PARAMETERS and so can set
+// core.hooksPath behind the shim's back. Section and key names are
+// case-insensitive in git, the includeIf condition is not.
 func isHooksPathAssignment(kv string) bool {
 	key, _, _ := strings.Cut(kv, "=")
-	return strings.EqualFold(strings.TrimSpace(key), "core.hooksPath")
+	key = strings.TrimSpace(key)
+	if strings.EqualFold(key, "core.hooksPath") || strings.EqualFold(key, "include.path") {
+		return true
+	}
+	section, rest, ok := strings.Cut(key, ".")
+	return ok && strings.EqualFold(section, "includeIf") && len(rest) > len(".path") &&
+		strings.EqualFold(rest[len(rest)-len(".path"):], ".path")
 }
 
+// isNoVerify reports whether a git push argument is --no-verify or one of
+// the abbreviations git's option parser accepts for it (`--no-verif`,
+// `--no-veri`; the shorter `--no-ver` and `--no-v` are ambiguous with
+// --no-verbose today and refused too, so a future git that resolves them
+// differently cannot slip past).
+func isNoVerify(arg string) bool {
+	return len(arg) > len("--no-") && strings.HasPrefix("--no-verify", arg)
+}
+
+// hookBypass refuses an attempt to skip or replace the guardrail hooks.
+var hookBypass = decision{act: actRefuse, kind: KindHookBypass, message: "guardrails: replacing or skipping Itervox's git hooks is refused (core.hooksPath, a config include, --no-verify on push). Push normally; the guardrail hook chains to the repository's own hooks."}
+
 func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) string) decision {
-	bypass := decision{act: actRefuse, kind: KindHookBypass, message: "guardrails: replacing or skipping Itervox's git hooks is refused (core.hooksPath, --no-verify on push). Push normally; the guardrail hook chains to the repository's own hooks."}
-	dir := cwd
-	i := 0
-	for i < len(args) {
-		a := args[i]
-		if !strings.HasPrefix(a, "-") {
-			break
-		}
-		name, value, hasValue := strings.Cut(a, "=")
-		switch {
-		case a == "-c" || a == "--config-env":
-			if i+1 < len(args) && isHooksPathAssignment(args[i+1]) {
-				return bypass
-			}
-		case strings.HasPrefix(a, "-c") && len(a) > 2 && !strings.HasPrefix(a, "--"):
-			if isHooksPathAssignment(a[2:]) {
-				return bypass
-			}
-		case name == "--config-env" && hasValue:
-			if isHooksPathAssignment(value) {
-				return bypass
-			}
-		}
-		if a == "-C" && i+1 < len(args) {
-			if next := args[i+1]; filepath.IsAbs(next) {
-				dir = next
-			} else {
-				dir = filepath.Join(dir, next)
-			}
-		}
-		if slices.Contains(gitGlobalsWithValue, a) {
-			i++
-		}
-		i++
+	dir, i, bypass := gitGlobals(args, cwd)
+	if bypass {
+		return hookBypass
 	}
 	if i >= len(args) {
 		return decision{}
 	}
 	sub, rest := args[i], args[i+1:]
 	switch sub {
-	case "push":
-		if slices.Contains(rest, "--no-verify") {
-			return bypass
+	case "push", "send-pack", "http-push":
+		if p.PatchOut {
+			return patchOutRefusal("git " + sub)
+		}
+		if sub == "push" && slices.ContainsFunc(rest, isNoVerify) {
+			return hookBypass
 		}
 	case "merge":
 		if slices.ContainsFunc(rest, func(a string) bool { return a == "--abort" || a == "--quit" || a == "--continue" }) {
@@ -123,11 +131,60 @@ func (p Policy) decideGit(args []string, cwd string, branchOf func(dir string) s
 	return decision{}
 }
 
+// gitGlobals reads git's global options: the directory the command acts
+// in (-C), the index of the subcommand (len(args) when none), and whether
+// an option replaces the hooks path. The -C values from the last absolute
+// one on (or cwd) are joined once at the end: joining as they come costs
+// quadratic time on a long run of -C options.
+func gitGlobals(args []string, cwd string) (dir string, sub int, bypass bool) {
+	dirs := []string{cwd}
+	defer func() { dir = filepath.Join(dirs...) }()
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			break
+		}
+		name, value, hasValue := strings.Cut(a, "=")
+		switch {
+		case a == "-c" || a == "--config-env":
+			if i+1 < len(args) && isHooksPathAssignment(args[i+1]) {
+				return "", i, true
+			}
+		case strings.HasPrefix(a, "-c") && len(a) > 2 && !strings.HasPrefix(a, "--"):
+			if isHooksPathAssignment(a[2:]) {
+				return "", i, true
+			}
+		case name == "--config-env" && hasValue:
+			if isHooksPathAssignment(value) {
+				return "", i, true
+			}
+		}
+		if a == "-C" && i+1 < len(args) {
+			if next := args[i+1]; filepath.IsAbs(next) {
+				dirs = append(dirs[:0], next)
+			} else {
+				dirs = append(dirs, next)
+			}
+		}
+		if slices.Contains(gitGlobalsWithValue, a) {
+			i++
+		}
+		i++
+	}
+	return "", min(i, len(args)), false
+}
+
 // decideMergeCLI refuses `<cli> <noun> merge` (gh pr merge, glab mr merge)
 // and API calls that merge.
 func decideMergeCLI(args []string, noun, what string) decision {
 	var pos []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-R" || a == "--repo" {
+			i++ // its value is not a command word: `gh pr -R owner/repo merge`
+			continue
+		}
 		if !strings.HasPrefix(a, "-") {
 			pos = append(pos, a)
 		}
@@ -186,7 +243,7 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 	if err != nil {
 		cwd = "."
 	}
-	d := p.decide(tool, args, cwd, currentBranch)
+	d := p.decide(tool, args, cwd, LookupIn(env), currentBranch)
 	display := displayCommand(tool, args)
 	switch d.act {
 	case actRefuse:
@@ -198,7 +255,13 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 			_, _ = fmt.Fprintf(stderr, "guardrails: `%s` was approved for this run; running it.\n", display)
 			break
 		}
-		if code, ok := waitForApproval(p, d.pattern, display, commandKey(cwd, tool, args), stderr); !ok {
+		if code, ok := waitForApproval(p, approvalAsk{
+			req:             ApprovalRequest{Key: commandKey(cwd, tool, args), Command: display},
+			why:             "(guardrails.approval_commands: " + d.pattern + ")",
+			unavailableKind: KindApprovalUnavailable,
+			unavailableHint: "Ask the operator to run it.",
+			retryHint:       "If this command times out, run it again later: an approval is kept for this exact command and runs it once.",
+		}, stderr); !ok {
 			return code
 		}
 	}
@@ -218,22 +281,35 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 	return code
 }
 
+// approvalAsk is one approval a shim or the pre-push hook waits for: the
+// request, why it needs a human (shown to the agent), the refusal kind
+// reported when no human can answer, and what the agent should do then.
+type approvalAsk struct {
+	req             ApprovalRequest
+	why             string
+	unavailableKind string
+	unavailableHint string
+	retryHint       string
+}
+
 // waitForApproval asks the daemon for an approval and waits for the
 // answer. ok means approved (run the command once); otherwise code is the
 // shim's exit status.
-func waitForApproval(p Policy, pattern, display, key string, stderr io.Writer) (code int, ok bool) {
+func waitForApproval(p Policy, ask approvalAsk, stderr io.Writer) (code int, ok bool) {
 	c := newClient(p)
+	display := ask.req.Command
+	unavailable := Event{Kind: ask.unavailableKind, Tool: firstWord(display), Command: display}
 	if !p.ApprovalsEnabled {
-		_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval (guardrails.approval_commands: %q), and approvals are not available here. Ask the operator to run it.\n", display, pattern)
-		c.report(Event{Kind: KindApprovalUnavailable, Tool: firstWord(display), Command: display})
+		_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval %s, and approvals are not available here. %s\n", display, ask.why, ask.unavailableHint)
+		c.report(unavailable)
 		return 1, false
 	}
-	_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval (guardrails.approval_commands: %q). Waiting for the operator: the request is shown as input required on the dashboard and the tracker. If this command times out, run it again later: an approval is kept for this exact command and runs it once.\n", display, pattern)
-	st, err := c.awaitDecision(ApprovalRequest{Key: key, Command: display})
+	_, _ = fmt.Fprintf(stderr, "guardrails: `%s` needs a human approval %s. Waiting for the operator: the request is shown as input required on the dashboard and the tracker. %s\n", display, ask.why, ask.retryHint)
+	st, err := c.awaitDecision(ask.req)
 	switch {
 	case err != nil:
-		_, _ = fmt.Fprintf(stderr, "guardrails: approval channel unavailable: %v. Ask the operator to run `%s`.\n", err, display)
-		c.report(Event{Kind: KindApprovalUnavailable, Tool: firstWord(display), Command: display})
+		_, _ = fmt.Fprintf(stderr, "guardrails: approval channel unavailable: %v. %s\n", err, ask.unavailableHint)
+		c.report(unavailable)
 		return 1, false
 	case st.Status == StatusApproved:
 		_, _ = fmt.Fprintf(stderr, "guardrails: approved; running `%s` once.\n", display)
@@ -247,6 +323,9 @@ func waitForApproval(p Policy, pattern, display, key string, stderr io.Writer) (
 		return 1, false
 	default:
 		_, _ = fmt.Fprintf(stderr, "guardrails: the approval request for `%s` ended without an answer (the run ended or the daemon restarted). Do not retry it without asking the operator.\n", display)
+		if ask.req.Lane != "" {
+			c.report(unavailable)
+		}
 		return 1, false
 	}
 }

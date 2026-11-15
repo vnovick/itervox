@@ -3,6 +3,7 @@ package guardrails
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"slices"
 	"sync"
 	"time"
 )
@@ -28,6 +29,13 @@ const (
 type ApprovalRequest struct {
 	Key     string `json:"key"`
 	Command string `json:"command"`
+	// Lane is LaneHuman for a push held by guardrails.lanes; empty for an
+	// approval_commands command.
+	Lane string `json:"lane,omitempty"`
+	// Paths are the changed files that put the push in its lane (at most
+	// MaxLanePathsSent); PathsTotal is how many there were.
+	Paths      []string `json:"paths,omitempty"`
+	PathsTotal int      `json:"paths_total,omitempty"`
 }
 
 // ApprovalStatus is an approval request's state as a shim sees it.
@@ -35,6 +43,15 @@ type ApprovalStatus struct {
 	ID      string `json:"id"`
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+}
+
+// LaneReport tells the daemon that a push the hook let through changed
+// files in a lane above auto (guardrails.lanes), so its merge policy can
+// require what that lane needs.
+type LaneReport struct {
+	Lane       string   `json:"lane"`
+	Paths      []string `json:"paths,omitempty"`
+	PathsTotal int      `json:"paths_total,omitempty"`
 }
 
 // Event is one refused operation a shim or hook reports to the daemon. The
@@ -53,9 +70,14 @@ type Approval struct {
 	RunID      string
 	Key        string
 	Command    string
+	Lane       string
+	Paths      []string
+	PathsTotal int
 	Status     string
 	Message    string
 	CreatedAt  time.Time
+	// DecidedAt is when a human answered (zero while pending).
+	DecidedAt time.Time
 }
 
 // Approvals holds the daemon's approval requests. Concurrency-safe: HTTP
@@ -107,7 +129,8 @@ func (a *Approvals) Request(identifier, runID string, req ApprovalRequest) (st A
 	}
 	id := a.newID()
 	a.byID[id] = &Approval{ID: id, Identifier: identifier, RunID: runID, Key: req.Key,
-		Command: req.Command, Status: StatusPending, CreatedAt: a.now()}
+		Command: req.Command, Lane: req.Lane, Paths: slices.Clone(req.Paths), PathsTotal: req.PathsTotal,
+		Status: StatusPending, CreatedAt: a.now()}
 	return ApprovalStatus{ID: id, Status: StatusPending}, true
 }
 
@@ -126,6 +149,35 @@ func (a *Approvals) Status(identifier, runID, id string) ApprovalStatus {
 	return ApprovalStatus{ID: id, Status: r.Status, Message: r.Message}
 }
 
+// decisionPickup is how long a decided request still counts as a wait
+// (Waiting): its shim reads the decision within one approval poll (a
+// second); the rest is slack for a loaded machine. A decision no shim ever
+// reads (the shim gave up or was killed) stops holding after it.
+const decisionPickup = 10 * time.Second
+
+// Waiting reports whether identifier's run runID has an agent blocked in a
+// shim on an approval: a request no human has answered yet, or one answered
+// within decisionPickup that its shim has not read yet. The agent's silence
+// is then expected; the runner's idle read deadline is suspended while this
+// is true (agent.WithIdleHold). Safe on a nil receiver (false).
+func (a *Approvals) Waiting(identifier, runID string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.now()
+	for _, r := range a.byID {
+		if r.Identifier != identifier || r.RunID != runID {
+			continue
+		}
+		if r.Status == StatusPending || now.Sub(r.DecidedAt) < decisionPickup {
+			return true
+		}
+	}
+	return false
+}
+
 // Get returns a copy of request id.
 func (a *Approvals) Get(id string) (Approval, bool) {
 	a.mu.Lock()
@@ -134,7 +186,9 @@ func (a *Approvals) Get(id string) (Approval, bool) {
 	if !ok {
 		return Approval{}, false
 	}
-	return *r, true
+	cp := *r
+	cp.Paths = slices.Clone(r.Paths)
+	return cp, true
 }
 
 // Decide answers pending request id. It reports false when the request is
@@ -151,6 +205,7 @@ func (a *Approvals) Decide(id string, approved bool, message string) bool {
 		r.Status = StatusApproved
 	}
 	r.Message = message
+	r.DecidedAt = a.now()
 	return true
 }
 

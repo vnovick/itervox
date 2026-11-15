@@ -152,6 +152,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/issues` | viewer |
 | `GET` | `/api/v1/issues/{identifier}` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/context` | viewer |
+| `GET` | `/api/v1/issues/{identifier}/attestations` | viewer (signed check records with `verified`; redacted at record time) |
 | `GET` | `/api/v1/issues/{identifier}/decisions` | viewer (redacted, bounded decision logs, #218) |
 | `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
 | `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
@@ -162,6 +163,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/logs/identifiers` | viewer |
 | `GET` | `/api/v1/memory` | viewer |
 | `GET` | `/api/v1/memory/recall` | viewer |
+| `GET` | `/api/v1/model-servers` | viewer (URL credentials redacted below admin) |
 | `GET` | `/api/v1/playbooks` | viewer (#218) |
 | `GET` | `/api/v1/projects` | viewer |
 | `GET` | `/api/v1/projects/filter` | viewer |
@@ -286,6 +288,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/agent-actions/{identifier}/guardrail/approvals` | per-run agent grant |
 | `GET` | `/api/v1/agent-actions/{identifier}/guardrail/approvals/{id}` | per-run agent grant (Viewer: reads and streams.) |
 | `POST` | `/api/v1/agent-actions/{identifier}/guardrail/events` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/guardrail/lanes` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/merge_pr` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/move-state` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/provide-input` | per-run agent grant |
@@ -305,6 +308,7 @@ API token. These routes are:
 - `POST /agent-actions/{identifier}/guardrail/events` (#204)
 - `POST /agent-actions/{identifier}/guardrail/approvals` (#204)
 - `GET /agent-actions/{identifier}/guardrail/approvals/{id}` (#204)
+- `POST /agent-actions/{identifier}/guardrail/lanes` (guardrails.lanes)
 
 Profiles opt into these capabilities with `allowed_actions`,
 `create_issue_state` and `create_issue_labels` in `WORKFLOW.md`. The guardrail routes take a separate
@@ -1908,6 +1912,31 @@ bearer token, or, in `server.allow_unauthenticated` mode, passes the
 cross-origin guard. The dashboard offers the same action as **Clear** next to
 a limited backend chip.
 
+### Model servers
+
+| Method | Path | Request body | Success response |
+|---|---|---|---|
+| `GET` | `/model-servers` | — | `200 {"servers":[…]}` |
+
+Lists the model servers that profile commands point their agent at, for the
+desktop app's "Model servers" section (see
+[Local models](/guides/local-models/#in-the-desktop-app)). The daemon reads
+the same command assignments as `itervox doctor` (`ANTHROPIC_BASE_URL`,
+`OPENAI_BASE_URL`, `OPENAI_API_BASE`) from the live profile configuration,
+and never probes them:
+
+```json
+{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:8000","profiles":["(default)","coder-local"],"pools":["local"],"remote":false}]}
+```
+
+One row per variable and URL. `profiles` are the enabled profiles using it
+(`(default)` is `agent.command`), `pools` their quota pools
+(`agent.profiles.<name>.pool`, `[]` when none). `remote` is `true` when
+`agent.ssh_hosts` is set, since those runs go to worker hosts. A URL taken
+from a variable (`$LOCAL_MODEL_URL`) has `"unchecked": true`. Viewer scope;
+below admin, credentials in a URL are redacted. With no model server
+configured the list is empty.
+
 ### New task and task templates (#251)
 
 Fetched on demand; none of these are on the `/state` snapshot or the SSE
@@ -2020,6 +2049,31 @@ decision.
    "runTimestamp": "2026-05-02T10-00-00.000Z", "role": "implementer",
    "decisions": [{"time": "2026-05-02T10:01:00Z", "at": "2026-05-02T10:01:00Z",
      "decision": "Diff against the merge base", "why": "main moves on", "alternative": "main's tip"}]}
+]}
+```
+
+#### `GET /api/v1/issues/{identifier}/attestations`
+
+The issue's [signed check](../site/src/content/docs/guides/guardrails.mdx#signed-checks) records
+(`agent.profiles.<name>.verify`), one entry per run, oldest first (viewer).
+They are read from `.itervox/attestations/<identifier>/<run id>.jsonl` and
+verified on each request: a record is `verified` when its ed25519 signature is
+valid for the daemon's key and its `treeHash` is the run's final tree (the
+`seal` record's tree); `reason` says why not. Commands and output tails were
+redacted when the record was made. An issue with no records answers
+`{"identifier":"ENG-1","runs":[]}`; `503 not_supported` when signed checks are
+not wired.
+
+```json
+{"identifier": "ENG-1", "keyId": "3f1c9a0b5d7e2468", "runs": [
+  {"runId": "2026-11-14T10-00-00.000Z_implementer", "profile": "implementer",
+   "finalTree": "9c1e…", "records": [
+     {"kind": "check", "name": "test", "command": "make test", "pipefail": true,
+      "exitCode": 1, "startedAt": "2026-11-14T10:20:01Z", "durationMs": 8123,
+      "outputSha256": "e3b0…", "outputTail": "FAIL ./pkg …", "treeHash": "9c1e…",
+      "head": "4b2d…", "keyId": "3f1c9a0b5d7e2468", "verified": true},
+     {"kind": "seal", "exitCode": 0, "startedAt": "2026-11-14T10:20:09Z", "durationMs": 0,
+      "treeHash": "9c1e…", "head": "4b2d…", "keyId": "3f1c9a0b5d7e2468", "verified": true}]}
 ]}
 ```
 
@@ -2740,10 +2794,11 @@ form reaches the daemon.
 | `POST` | `/agent-actions/{identifier}/guardrail/events` | `{"kind":"self_merge","tool":"gh","command":"gh pr merge 12"}` | `204` |
 | `POST` | `/agent-actions/{identifier}/guardrail/approvals` | `{"key":"<sha256 of the exact command>","command":"vercel --prod"}` | `{"id":"…","status":"pending"}` |
 | `GET` | `/agent-actions/{identifier}/guardrail/approvals/{id}` | — | `{"id":"…","status":"pending"\|"approved"\|"rejected"\|"unknown","message":"<reply>"}` |
+| `POST` | `/agent-actions/{identifier}/guardrail/lanes` | `{"lane":"second_opinion","paths":["internal/auth/token.go"],"paths_total":1}` | `204` |
 
 `kind` is one of `branch`, `force_push`, `delete`, `tag`, `hook_bypass`,
-`self_merge`, `approval_rejected`, `approval_unavailable` (anything else is
-`400`); a report is logged, written to the issue's log, recorded in
+`self_merge`, `approval_rejected`, `approval_unavailable`, `lane_human`,
+`lane_rejected` (anything else is `400`); a report is logged, written to the issue's log, recorded in
 `recentFailures` (kind `guardrail`, source = the kind) and counted in
 `itervox_guardrail_blocks_total{kind}`. A new approval request shows as an
 input-required entry of the running issue ("Agent wants to run: …") and is
@@ -2751,6 +2806,15 @@ posted to the tracker; a request with the same `key` as an open one joins it.
 An `approved` status is returned to exactly one read, which spends it; later
 reads answer `unknown`, as do requests of a run that has ended. Without an
 action-grant store the routes answer `501`; a full event queue answers `503`.
+
+A push held by [`guardrails.lanes.human`](https://itervox.dev/guides/guardrails/#lanes)
+raises an approval request with `"lane":"human"`, `"paths"` (at most 50) and
+`"paths_total"`; it shows as a "Pipeline change" input-required entry
+(`guardrailLanePaths` / `guardrailLanePathsTotal` on the snapshot row), and a
+rejection counts `lane_rejected`. `guardrail/lanes` records that a push the
+hook let through reached the `second_opinion` or `human` lane (any other
+`lane` is `400`); `merge_pr` then answers `409 merge_blocked` with a
+`lane_human:` or `lane_second_opinion:` reason (see the guardrails guide).
 
 When the daemon spawns a **local** agent subprocess for a profile that has any
 `allowed_actions` configured, the following environment variables are injected

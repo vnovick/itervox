@@ -253,6 +253,13 @@ only the event loop mutates them.
   running: the restack is never run under an agent, so it is deferred to the
   first dependency audit that finds the issue idle (dropped if it is blocked
   again). Event-loop state, session-scoped, not persisted.
+- **Patches only (`push: daemon`)** is worker-side, not State: `daemonPush`
+  (internal/orchestrator/patch_out.go) runs on the worker after the verify
+  gate, pushes by SHA through `workspace.PushRef` (gitexec), and reaches the
+  event loop only via `RequestGuardrailApproval` (EventGuardrailApproval),
+  `GuardrailLane` (EventGuardrailLane) and the worker's exit event.
+  `agent.push` / `AgentProfile.Push` are load-time config (Push is read via
+  the cfgMu Profiles snapshot); not in the cfgMu allowlist.
 - `SessionMessages` (#178) holds the operator messages sent from the Sessions
   panel, per issue identifier (bounded, 20). `SendSessionMessage` (HTTP
   goroutine) only classifies the target against `Snapshot()` and sends
@@ -398,6 +405,30 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   `TestNoRawGitExecOutsideGitexec` stays green. Test binaries that host
   shims (`internal/guardrails`, `internal/orchestrator`, `cmd/itervox`)
   dispatch the entrypoints in `TestMain`.
+- **Approval holds suspend the idle timeouts**: while
+  `guardrails.Approvals.Waiting(issue, run)` is true, the runner's read
+  deadline restarts instead of failing (`agent.WithIdleHold`, wired in the
+  worker) and `ReconcileStalls` skips the run. `agent.turn_timeout_ms`
+  still bounds the wait.
+- **Fuzz targets**: `FuzzDecide`, `FuzzMatchApproval`, `FuzzLanes`
+  (internal/guardrails), `FuzzRecordVerify`, `FuzzRecordByteFlip`
+  (internal/attest). `make fuzz` (`FUZZTIME`, `FUZZMINIMIZETIME`), not in
+  verify; their seeds run under `go test`. Keep crashers as corpus seeds.
+- **Lanes** (`guardrails.lanes`, `internal/guardrails/lanes.go` +
+  `prepush_lanes.go`): the pre-push hook lists each pushed ref's changed
+  files through `gitexec` (`diff --name-only -z --no-renames`; existing ref:
+  `old..new` ∩ changed-vs-base, new branch: vs. its merge base with
+  `Policy.BaseRefs`, the PR base first) and classifies them. A `human`-lane
+  push is held through the same approval flow (`ApprovalRequest.Lane`,
+  `InputRequiredEntry.GuardrailLanePaths`, "Pipeline change"); a let-through
+  push in `second_opinion`/`human` is reported (`guardrail/lanes` →
+  `EventGuardrailLane`; a failed report refuses the push). `State.PushLanes`
+  (per issue identifier — the PR carries every run's pushes; persisted to
+  `push_lanes.json`, pruned on terminal) is event-loop state; `merge_pr`
+  reads it only through the loop (`MergeLaneRefusal` → `EventMergeLaneCheck`,
+  fails closed). `ReviewVerdict.Backend` is stamped by the loop for the
+  second-opinion check. `guardrails.lanes` is load-time config, NOT in the
+  cfgMu allowlist.
 
 ### Workspace port ledger is workspace state, not `State`
 
@@ -705,11 +736,15 @@ playbook (task-type playbooks, #218 — imports config only; used by
 agent (claude/codex subprocess runners — imports domain, config, procgroup,
        logging)
 
-guardrails (agent shims, pre-push hook, approval broker — imports agent,
-            atomicfs, gitexec, logging; never orchestrator or server)
+attest (signed daemon-run checks, 0.3.3 — imports gitexec, logging,
+        procgroup, atomicfs; used by orchestrator and cmd/itervox)
+
+guardrails (agent shims, pre-push hook, approval broker, `itervox hook`
+            decisions — imports agent, atomicfs, config, gitexec, logging,
+            procgroup; never orchestrator or server)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, config, depsanalysis, domain, extsessions, guardrails,
+              atomicfs, attest, config, depsanalysis, domain, extsessions, guardrails,
               logbuffer, logging, memory, metrics, outbox, playbook, prdetector,
               procgroup, prompt, rules, sysmon, tracker, workspace)
 
@@ -733,6 +768,12 @@ hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
          cmd/itervox only)
 
 templates (WORKFLOW.md scaffolding)
+
+referee (internal/referee: the CI referee behind `itervox referee` and the
+         standalone cmd/referee — imports attest, config, gitexec,
+         guardrails; never orchestrator. Its policy is read from the base
+         ref only, never the working tree. `itervox referee` dispatches
+         before loadDotEnv so checks never inherit .itervox/.env)
 
 cmd/itervox (wires everything)
 ```

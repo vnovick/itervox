@@ -373,8 +373,11 @@ fn create(
 /// The rail as the last refresh left it.
 fn current_rail(shared: &Shared) -> RailView {
     let remotes = shared.remote.views();
+    let machine = shared.machine.panel();
     let core = lock(&shared.core);
-    build_rail(core.views(), &remotes, &core.saved.rail)
+    let mut view = build_rail(core.views(), &remotes, &core.saved.rail);
+    view.machine = machine;
+    view
 }
 
 fn eval_rail(app: &AppHandle, label: &str, view: &RailView, active: &str) {

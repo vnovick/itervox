@@ -273,6 +273,15 @@ func (a *orchestratorAdapter) RefreshAvailableModels(ctx context.Context, backen
 	return out, nil
 }
 
+// MergeLaneRefusal implements server.MergeLaneChecker (guardrails.lanes):
+// merge_pr asks the orchestrator's event loop before it merges.
+func (a *orchestratorAdapter) MergeLaneRefusal(ctx context.Context, identifier string) string {
+	if a.orch == nil {
+		return ""
+	}
+	return a.orch.MergeLaneRefusal(ctx, identifier)
+}
+
 // EmitPRMerged implements server.PRMergedEmitter so the merge_pr action
 // handler can fire pr_merged automations after a successful gh merge. P1.
 func (a *orchestratorAdapter) EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef, headRef string) error {

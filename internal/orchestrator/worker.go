@@ -357,16 +357,36 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// #204: guardrails for this run's agent (local runs). The runner applies
 	// their environment after the command's own assignments (the action
 	// bridge's PATH below), so the shims stay first on PATH.
+	// Patches only (push: daemon): the guardrails strip the agent's forge
+	// credentials and refuse its pushes; the daemon pushes after the run.
+	patchOut := o.runPatchOut(profilesSnap[profileName])
 	guardEnv, guard, guardToken := o.prepareRunGuardrails(ctx, issue.Identifier, runLogID, wsPath, workerHost,
-		activeBranchName, turnTimeoutMs, maxTurns)
+		activeBranchName, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), turnTimeoutMs, maxTurns, patchOut)
 	if guard != nil {
 		ctx = agent.WithRunEnv(ctx, guardEnv)
+		// While this run's agent is blocked in a shim waiting for an
+		// operator's approval it prints nothing; the runner's idle read
+		// deadline must not fail the turn for that. o.guardApprovals is
+		// concurrency-safe and not State, so the worker may consult it.
+		approvals, identifier, runID := o.guardApprovals, issue.Identifier, runLogID
+		ctx = agent.WithIdleHold(ctx, func() bool { return approvals.Waiting(identifier, runID) })
 	}
 	ctx = withLocalWorkspacePort(ctx, wsPort, workerHost) // #250
 	defer func() {
 		o.agentActionTokens.Revoke(guardToken)
 		guard.Remove()
 	}()
+	if patchOut && guard == nil {
+		// Fail closed: without its guardrails the agent would keep the
+		// daemon's credentials and its push ability.
+		err := errors.New("worker: push: daemon needs the run's guardrails, which could not be prepared (guardrails off, an SSH worker, or a preparation error); run not started")
+		slog.Warn(err.Error(), "issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName)
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("ERROR", err.Error(), runLogID))
+		}
+		o.sendExit(ctx, issue, attempt, TerminalFailed, err)
+		return
+	}
 
 	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
 	// Resolved once from the same cfgMu snapshot as the rest of the profile,
@@ -524,11 +544,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	pb := runPlaybook(ctx)
 	_, taskBlock := runTask(ctx) // #251
 	requiredEvidence := runEvidenceChecks(profilesSnap[profileName].RequireEvidence, pb)
+	// Signed checks: the daemon runs these itself after the run; a
+	// require_evidence name they cover is not read from the agent's file.
+	verifyChecks := profilesSnap[profileName].Verify
+	if automationRun || readOnlyReviewer {
+		verifyChecks = nil // like the evidence gate: these runs do not move the issue
+	}
 	runEvidenceRelPath := ""
 	evidenceBlock := ""
-	if len(requiredEvidence) > 0 {
+	if len(requiredEvidence) > 0 || len(verifyChecks) > 0 {
 		runEvidenceRelPath = evidenceRelPathFor(profileName)
-		evidenceBlock = buildEvidenceBlock(requiredEvidence, runEvidenceRelPath)
+		evidenceBlock = buildRunEvidenceBlock(requiredEvidence, verifyChecks, runEvidenceRelPath)
 	}
 	runVars := runBindings(runTimestamp, runHandoffRelPath, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), runEvidenceRelPath, switchNotice)
 	setRunPort(runVars, wsPort)                                                                             // #250
@@ -652,6 +678,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		if evidenceBlock != "" {
 			renderedPrompt += "\n\n" + evidenceBlock
+		}
+		if patchOut && !readOnlyReviewer && !automationRun {
+			renderedPrompt += "\n\n" + patchOutPromptBlock
 		}
 		// CORE-101: daemon-owned, after the envelope and handoffs and before
 		// every profile block, so an instructions_file cannot drop it.
@@ -1144,6 +1173,78 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		return
 	}
 
+	// Signed checks: the writer is never the judge. With a verify list the
+	// daemon runs each check itself in the worktree, signs what it saw and
+	// gates the run on it, before any success side effect (handoff, PR,
+	// completion move). A failure holds the run input-required like a
+	// failed evidence gate (#80). Off the event loop: the outcome reaches
+	// it only as this worker's exit event.
+	verifySealTree := "" // the seal's tree when the signed checks passed (push: daemon)
+	if len(verifyChecks) > 0 && wsPath != "" && ctx.Err() == nil {
+		verdict := o.runVerifyChecks(ctx, wsPath, verifyRun{
+			issue: issue, runID: attestRunID(runTimestamp, profileName), profile: profileName, runLogID: runLogID,
+		}, verifyChecks)
+		if ctx.Err() != nil {
+			o.sendExit(ctx, issue, attempt, TerminalFailed, fmt.Errorf("worker: signed checks interrupted: %w", ctx.Err()))
+			return
+		}
+		if !verdict.ok() {
+			slog.Info("worker: holding issue for failed signed checks (verify)",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "failed", len(verdict.Failed))
+			o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, claudeSessionID, backend, agentCommand,
+				workerHost, profileName, activeBranchName, verifyHoldContext(verdict), "",
+				buildInputRequiredExitRunEntry(issue, attempt, startedAt, turn, runLogID, workerHost, backend,
+					cumulativeInput, cumulativeCached, cumulativeOutput, agent.TurnResult{}))
+			return
+		}
+		verifySealTree = verdict.sealTree()
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", "worker: signed checks passed (verify)", runLogID))
+		}
+	}
+
+	// Patches only (push: daemon): the agent could not push, so the daemon
+	// does, here, after after_run_required and the signed checks above and
+	// the file part of require_evidence (its "ci" check needs the pull
+	// request this push opens, so it stays in the completion gate below).
+	// A refused push holds the run input-required.
+	daemonPushes := patchOut && wsPath != "" && !automationRun && !readOnlyReviewer
+	var daemonPushed daemonPushResult
+	holdPatchOut := func(holdContext string) {
+		o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, claudeSessionID, backend, agentCommand,
+			workerHost, profileName, activeBranchName, holdContext, "",
+			buildInputRequiredExitRunEntry(issue, attempt, startedAt, turn, runLogID, workerHost, backend,
+				cumulativeInput, cumulativeCached, cumulativeOutput, agent.TurnResult{}))
+	}
+	pushRun := daemonPushRun{
+		issue: issue, runLogID: runLogID, wsPath: wsPath,
+		baseRefs: reviewBaseCandidates(o.prBaseBranch(cmp.Or(stackedOn, taskBase)), o.cfg.Agent.BaseBranch),
+		verify:   len(verifyChecks) > 0, sealTree: verifySealTree,
+	}
+	if daemonPushes && ctx.Err() == nil {
+		o.cfgMu.RLock()
+		pushGateState := o.cfg.Tracker.CompletionState
+		o.cfgMu.RUnlock()
+		if required := withoutCI(withoutVerified(requiredEvidence, verifyChecks)); len(required) > 0 && pushGateState != "" {
+			evCtx, evCancel := context.WithTimeout(context.Background(), postRunTimeout)
+			verdict := checkEvidence(evCtx, wsPath, evidenceRelPathFor(profileName), required, "", o.prChecksReader())
+			evCancel()
+			if !verdict.ok() {
+				slog.Info("worker: holding issue for evidence before the daemon push (require_evidence)",
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "missing", len(verdict.Missing))
+				holdPatchOut(evidenceHoldContext(pushGateState, verdict))
+				return
+			}
+		}
+		if prCtx == nil { // an existing PR's branch is pushed below, after the handoff commit
+			daemonPushed = o.daemonPush(ctx, pushRun)
+			if daemonPushed.hold != "" {
+				holdPatchOut(daemonPushed.hold)
+				return
+			}
+		}
+	}
+
 	// If the agent created a PR during this run, comment its URL on the tracker
 	// issue.  This runs before the session summary so the PR link is visible even
 	// on trackers that truncate long comments.  Uses the same gh CLI check as the
@@ -1152,6 +1253,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		prURL := workspace.FindOpenPRURL(ctx, wsPath)
 		if prURL == "" && !readOnlyReviewer { // #252: `itervox run` opens the PR itself
 			prURL = o.openOneShotPR(ctx, wsPath, activeBranchName, issue)
+		}
+		if prURL == "" && daemonPushed.pushed { // push: daemon: the agent could not open it
+			prURL = o.openDaemonPR(ctx, wsPath, daemonPushed.branch, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), issue)
 		}
 		if prURL != "" {
 			detectedPRURL = prURL
@@ -1310,7 +1414,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		defer postRunCancel()
 		// Push so the remote branch reflects the agent's changes. Never for a
 		// read-only reviewer (#79): it has no changes of its own to publish.
-		if wsPath != "" && !readOnlyReviewer {
+		if daemonPushes {
+			// push: daemon: the same gated push as above (lanes, the
+			// seal's tree), after the handoff commit, which the tree
+			// comparison leaves out.
+			if res := o.daemonPush(ctx, pushRun); res.hold != "" { // ctx: a human-lane hold may wait longer than postRunTimeout
+				holdPatchOut(res.hold)
+				return
+			}
+		} else if wsPath != "" && !readOnlyReviewer {
 			pushCmd := gitexec.Command(postRunCtx, wsPath, "push", "origin", prCtx.Branch)
 			if err := pushCmd.Run(); err != nil {
 				slog.Warn("worker: git push failed (non-fatal)",
@@ -1361,7 +1473,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// the reason and the issue stays where it is. Reviewer and automation
 	// runs do not move the issue for themselves, so they are not gated.
 	// #218: a playbook's require_evidence is part of the same list.
-	if required := requiredEvidence; len(required) > 0 &&
+	// Names the signed checks above already proved are not read from the
+	// agent's evidence file.
+	if required := withoutVerified(requiredEvidence, verifyChecks); len(required) > 0 &&
 		completionState != "" && ctx.Err() == nil && !automationRun && !isReviewerRun {
 		evCtx, evCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		verdict := checkEvidence(evCtx, wsPath, evidenceRelPathFor(profileName), required, detectedPRURL, o.prChecksReader())

@@ -225,6 +225,8 @@ type ProfileEntry struct {
 	InstructionsFile string
 	// Backend is an optional explicit runner selection override.
 	Backend string
+	// Pool is the profile's quota pool ("" omits the key).
+	Pool string
 	// Enabled controls whether the profile is selectable and dispatchable.
 	// Nil means omit the field from WORKFLOW.md, which defaults to true.
 	Enabled *bool
@@ -239,11 +241,45 @@ type ProfileEntry struct {
 	PermissionMode string
 	// RequireEvidence is the profile's require_evidence list (#80).
 	RequireEvidence []string
+	// Verify is the profile's verify list (signed checks; empty omits the
+	// key). A TimeoutMs of 0 omits timeout_ms (the default applies).
+	Verify []VerifyEntry
 	// Isolation is the profile's isolation ("" omits the key, #258);
 	// IsolationExtraWrite / IsolationExtraDeny its extra path lists.
 	Isolation           string
 	IsolationExtraWrite []string
 	IsolationExtraDeny  []string
+	// Push is the profile's push mode ("" omits the key; "daemon" is
+	// patches only).
+	Push string
+}
+
+// VerifyEntry is one agent.profiles.<name>.verify check as written back to
+// WORKFLOW.md.
+type VerifyEntry struct {
+	Name      string
+	Run       string
+	TimeoutMs int
+}
+
+// appendVerifyList appends the verify: block for checks, or nothing when
+// there are none. Values are quoted so a command with ':' or '#' stays one
+// YAML string.
+func appendVerifyList(lines []string, header, itemIndent string, checks []VerifyEntry) []string {
+	var body []string
+	for _, c := range checks {
+		if c.Name == "" || c.Run == "" {
+			continue
+		}
+		body = append(body, itemIndent+"- name: "+strconv.Quote(c.Name), itemIndent+"  run: "+strconv.Quote(c.Run))
+		if c.TimeoutMs > 0 {
+			body = append(body, itemIndent+"  timeout_ms: "+strconv.Itoa(c.TimeoutMs))
+		}
+	}
+	if len(body) == 0 {
+		return lines
+	}
+	return append(append(lines, header), body...)
 }
 
 type AutomationTriggerEntry = automationdef.Trigger
@@ -331,6 +367,9 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				if entry.Backend != "" {
 					replacement = append(replacement, lvl3+"backend: "+entry.Backend)
 				}
+				if entry.Pool != "" {
+					replacement = append(replacement, lvl3+"pool: "+strconv.Quote(entry.Pool))
+				}
 				if entry.Enabled != nil && !*entry.Enabled {
 					replacement = append(replacement, lvl3+"enabled: false")
 				}
@@ -365,11 +404,15 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 						}
 					}
 				}
+				replacement = appendVerifyList(replacement, lvl3+"verify:", lvl4, entry.Verify)
 				if entry.Isolation != "" {
 					replacement = append(replacement, lvl3+"isolation: "+strconv.Quote(entry.Isolation))
 				}
 				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_write:", lvl4, entry.IsolationExtraWrite)
 				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_deny:", lvl4, entry.IsolationExtraDeny)
+				if entry.Push != "" {
+					replacement = append(replacement, lvl3+"push: "+strconv.Quote(entry.Push))
+				}
 				if entry.Prompt != "" {
 					replacement = append(replacement, lvl3+"prompt: "+strconv.Quote(entry.Prompt))
 				}

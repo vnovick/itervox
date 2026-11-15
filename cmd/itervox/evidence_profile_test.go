@@ -67,3 +67,98 @@ Prompt.
 	assert.Equal(t, "sandbox", qa.PermissionMode, "permission_mode survives a dashboard save")
 	assert.Equal(t, []string{"test", "ci", "123", "true"}, orch.ProfilesCfg()["qa"].RequireEvidence)
 }
+
+// TestUpsertProfileKeepsPool: the dashboard profile editor does not edit a
+// profile's quota pool (load-time only, like permission_mode), so a save
+// carries it over instead of stripping it from WORKFLOW.md.
+func TestUpsertProfileKeepsPool(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  profiles:
+    local:
+      command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"
+      pool: local
+` + testProfileFileFields(t, dir, "local") + `---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	require.Equal(t, "local", cfg.Agent.Profiles["local"].Pool)
+
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, cfg: cfg, tr: mt, workflowPath: workflowPath, notify: func() {}}
+	require.NoError(t, adapter.UpsertProfile("local", server.ProfileDef{
+		Command: "ANTHROPIC_BASE_URL=http://127.0.0.1:9000 claude",
+		Enabled: true,
+	}, "local"))
+
+	reloaded, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, "ANTHROPIC_BASE_URL=http://127.0.0.1:9000 claude", reloaded.Agent.Profiles["local"].Command, "the save applied")
+	assert.Equal(t, "local", reloaded.Agent.Profiles["local"].Pool, "pool survives a dashboard save")
+	assert.Equal(t, "local", orch.ProfilesCfg()["local"].Pool)
+}
+
+// TestUpsertProfileKeepsVerify (signed checks): verify is load-time only
+// and not edited by the dashboard, so a profile save carries every check —
+// a command with ':' and '|' and a non-default timeout included — over
+// instead of stripping it from WORKFLOW.md.
+func TestUpsertProfileKeepsVerify(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  profiles:
+    impl:
+      command: claude
+      require_evidence: [test]
+      verify:
+        - name: test
+          run: "go test ./... 2>&1 | tail -n 40"
+        - name: lint
+          run: "echo 'a: b' # not a comment"
+          timeout_ms: 120000
+` + testProfileFileFields(t, dir, "impl") + `---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	want := []config.VerifyCheck{
+		{Name: "test", Run: "go test ./... 2>&1 | tail -n 40", TimeoutMs: config.DefaultVerifyTimeoutMs},
+		{Name: "lint", Run: "echo 'a: b' # not a comment", TimeoutMs: 120000},
+	}
+	require.Equal(t, want, cfg.Agent.Profiles["impl"].Verify)
+
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, cfg: cfg, tr: mt, workflowPath: workflowPath, notify: func() {}}
+	require.NoError(t, adapter.UpsertProfile("impl", server.ProfileDef{
+		Command: "claude --model claude-sonnet-4-6",
+		Enabled: true,
+	}, "impl"))
+
+	reloaded, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, "claude --model claude-sonnet-4-6", reloaded.Agent.Profiles["impl"].Command, "the save applied")
+	assert.Equal(t, want, reloaded.Agent.Profiles["impl"].Verify, "verify survives a dashboard save")
+	assert.Equal(t, want, orch.ProfilesCfg()["impl"].Verify)
+}

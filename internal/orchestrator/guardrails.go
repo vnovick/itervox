@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
@@ -38,6 +39,11 @@ type guardrailApprovalEvent struct {
 	ID      string
 	RunID   string
 	Command string
+	// Lane, Paths and PathsTotal describe a push held by
+	// guardrails.lanes.human (empty for an approval command).
+	Lane       string
+	Paths      []string
+	PathsTotal int
 }
 
 // guardrailTokenTTL bounds a guardrail token: a run's turns plus slack, as
@@ -67,8 +73,12 @@ func (o *Orchestrator) SetGuardrailExecutable(path string) { o.guardrailExe = pa
 // environment the runner applies to the agent (agent.WithRunEnv), the
 // runtime and its token (nil/"" when the guardrails are off, the run is
 // remote, or preparation failed — the run then proceeds unguarded with a
-// warning). Worker goroutine; touches no State.
-func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, runID, wsPath, workerHost, branch string, turnTimeoutMs, maxTurns int) (agent.RunEnv, *guardrails.Runtime, string) {
+// warning). prBase is the branch the issue's pull request targets: pushes
+// are classified into guardrails.lanes against it. patchOut is push:
+// daemon: the agent's environment then carries no forge credentials and its
+// pushes are refused (a patch-out run whose guardrails cannot be prepared
+// must not start; the worker checks). Worker goroutine; touches no State.
+func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, runID, wsPath, workerHost, branch, prBase string, turnTimeoutMs, maxTurns int, patchOut bool) (agent.RunEnv, *guardrails.Runtime, string) {
 	g := o.cfg.Guardrails
 	if !g.Enabled {
 		return agent.RunEnv{}, nil, ""
@@ -84,14 +94,21 @@ func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, run
 		return agent.RunEnv{}, nil, ""
 	}
 	opts := guardrails.Options{
-		Executable:        exe,
-		WorkDir:           wsPath,
-		Identifier:        identifier,
-		IssueBranch:       branch,
-		ProtectedBranches: protectedBranches(o.cfg),
-		AllowForcePush:    g.AllowForcePush,
-		ApprovalCommands:  g.ApprovalCommands,
-		ApprovalsEnabled:  true,
+		Executable:          exe,
+		WorkDir:             wsPath,
+		Identifier:          identifier,
+		IssueBranch:         branch,
+		ProtectedBranches:   protectedBranches(o.cfg),
+		AllowForcePush:      g.AllowForcePush,
+		ApprovalCommands:    g.ApprovalCommands,
+		EnvApprovalCommands: guardrails.EnvApprovalsFromConfig(g.EnvApprovalCommands),
+		ApprovalsEnabled:    true,
+		Lanes:               guardrails.Lanes{Human: g.Lanes.Human, SecondOpinion: g.Lanes.SecondOpinion},
+		BaseRefs:            reviewBaseCandidates(prBase, o.cfg.Agent.BaseBranch),
+		PatchOut:            patchOut,
+	}
+	if patchOut {
+		opts.StripEnv = o.patchOutStripEnv()
 	}
 	if o.oneShot != nil { // #252: approvals the operator gave this run
 		opts.PreApproved = o.oneShot.PreApprovedCommands
@@ -144,13 +161,18 @@ func (o *Orchestrator) RequestGuardrailApproval(identifier, runID string, req gu
 		return guardrails.ApprovalStatus{}, errors.New("orchestrator: guardrail approvals are not configured")
 	}
 	req.Command = logging.RedactString(req.Command)
+	if req.Lane != "" && req.Lane != guardrails.LaneHuman {
+		return guardrails.ApprovalStatus{}, fmt.Errorf("orchestrator: only a human-lane push asks for approval, not %q", req.Lane)
+	}
+	req.Paths, req.PathsTotal = sanitizeLanePaths(req.Paths, req.PathsTotal)
 	st, created := o.guardApprovals.Request(identifier, runID, req)
 	if !created {
 		return st, nil
 	}
 	select {
 	case o.events <- OrchestratorEvent{Type: EventGuardrailApproval, Identifier: identifier,
-		guardrail: &guardrailApprovalEvent{ID: st.ID, RunID: runID, Command: req.Command}}:
+		guardrail: &guardrailApprovalEvent{ID: st.ID, RunID: runID, Command: req.Command,
+			Lane: req.Lane, Paths: req.Paths, PathsTotal: req.PathsTotal}}:
 		return st, nil
 	default:
 		o.guardApprovals.Remove(st.ID)
@@ -187,7 +209,15 @@ func (o *Orchestrator) ProvideAgentInput(identifier, message string) error {
 }
 
 // guardrailQuestion is the text a human sees for an approval request.
-func guardrailQuestion(command string) string {
+func guardrailQuestion(g *guardrailApprovalEvent) string {
+	if g.Lane == guardrails.LaneHuman {
+		return "Pipeline change: the agent wants to push changes to " +
+			guardrails.LanePathSummary(g.Paths, g.PathsTotal, guardrails.MaxLanePathsShown) +
+			" (`" + g.Command + "`)\n\nThese files are in guardrails.lanes.human: an agent may change what CI checks, never how CI checks. " +
+			"Review the change, then reply `approve` to let this push through once; any other reply rejects it and is passed to the agent as the reason. " +
+			"Itervox will not auto-merge this pull request."
+	}
+	command := g.Command
 	return "Agent wants to run: `" + command + "`\n\nThis command is in guardrails.approval_commands. " +
 		"Reply `approve` to run it once; any other reply rejects it and is passed to the agent as the reason."
 }
@@ -217,12 +247,15 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 	entry := &InputRequiredEntry{
 		IssueID:             live.Issue.ID,
 		Identifier:          ev.Identifier,
-		Context:             guardrailQuestion(g.Command),
+		Context:             guardrailQuestion(g),
 		Backend:             live.Backend,
 		WorkerHost:          live.WorkerHost,
 		ProfileName:         live.ProfileName,
 		QueuedAt:            time.Now(),
 		GuardrailApprovalID: g.ID,
+	}
+	if g.Lane == guardrails.LaneHuman {
+		entry.GuardrailLanePaths, entry.GuardrailLanePathsTotal = slices.Clone(g.Paths), g.PathsTotal
 	}
 	entry.QuestionCommentKey = o.newInputRequiredCommentKey(ev.Identifier)
 	body := tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg()))
@@ -249,12 +282,31 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 // to the tracker like any input-required reply. Event loop.
 func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequiredEntry, reply, via string) {
 	approved := guardrails.IsApproval(reply)
-	command := ""
+	command, runID := "", ""
+	lane := entry.GuardrailLanePaths != nil
+	var laneReport guardrails.LaneReport
 	if a, ok := o.guardApprovals.Get(entry.GuardrailApprovalID); ok {
-		command = a.Command // read first: the shim may spend the decision at once
+		command, runID = a.Command, a.RunID // read first: the shim may spend the decision at once
+		lane = lane || a.Lane == guardrails.LaneHuman
+		laneReport = guardrails.LaneReport{Lane: guardrails.LaneHuman, Paths: a.Paths, PathsTotal: a.PathsTotal}
+	}
+	rejectedKind := guardrails.KindApprovalRejected
+	if lane {
+		rejectedKind = guardrails.KindLaneRejected
+		if approved { // the push goes through: its pull request is a human's to merge
+			backend := ""
+			for _, r := range state.Running {
+				if r != nil && r.Issue.Identifier == entry.Identifier && r.SessionID == runID {
+					backend = laneBackend(r.Backend)
+				}
+			}
+			recordPushLane(state, entry.Identifier, runID, backend, laneReport, time.Now())
+			o.savePushLanesToDisk(clonePushLanes(state.PushLanes))
+		}
 	}
 	o.guardApprovals.Decide(entry.GuardrailApprovalID, approved, reply)
 	delete(state.InputRequiredIssues, entry.Identifier)
+	restartStallClock(state, entry.Identifier, time.Now())
 	if approved {
 		o.emitFeed(state, FeedGuardrailApproved, entry.Identifier, FeedPayload{Via: via}) // #213
 		slog.Info("guardrails: approved", "issue_identifier", entry.Identifier, "via", via, "command", command)
@@ -262,11 +314,11 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 			o.logBuf.Add(entry.Identifier, makeBufLine("INFO", "guardrails: approved via "+via+": "+command))
 		}
 	} else {
-		slog.Warn("guardrails: refused", "issue_identifier", entry.Identifier, "kind", guardrails.KindApprovalRejected, "via", via, "command", command)
-		metrics.GuardrailBlock(guardrails.KindApprovalRejected)
-		o.emitFeed(state, FeedGuardrailBlocked, entry.Identifier, FeedPayload{Kind: guardrails.KindApprovalRejected, Via: via}) // #213
+		slog.Warn("guardrails: refused", "issue_identifier", entry.Identifier, "kind", rejectedKind, "via", via, "command", command)
+		metrics.GuardrailBlock(rejectedKind)
+		o.emitFeed(state, FeedGuardrailBlocked, entry.Identifier, FeedPayload{Kind: rejectedKind, Via: via}) // #213
 		appendRecentFailure(state, FailureRecord{Kind: FailureKindGuardrail, Identifier: entry.Identifier,
-			Source: guardrails.KindApprovalRejected, Message: "rejected via " + via + ": " + command, OccurredAt: time.Now()}, time.Now())
+			Source: rejectedKind, Message: "rejected via " + via + ": " + command, OccurredAt: time.Now()}, time.Now())
 		if o.logBuf != nil {
 			o.logBuf.Add(entry.Identifier, makeBufLine("WARN", "guardrails: rejected via "+via+": "+command))
 		}
@@ -292,5 +344,30 @@ func (o *Orchestrator) dropGuardrailApprovals(state *State, identifier string) {
 	}
 	if o.guardApprovals != nil {
 		o.guardApprovals.Drop(identifier)
+	}
+}
+
+// awaitingGuardrailApproval reports whether run is blocked waiting for an
+// operator's answer to its guardrail approval: the issue's input-required
+// entry is an approval request (one is only raised for the live run, and
+// dropGuardrailApprovals removes it when the run exits). Event loop.
+func awaitingGuardrailApproval(state State, run *RunEntry) bool {
+	if run == nil {
+		return false
+	}
+	e := state.InputRequiredIssues[run.Issue.Identifier]
+	return e != nil && e.GuardrailApprovalID != ""
+}
+
+// restartStallClock restarts the stall clock of identifier's running
+// entries once their approval is answered: the wait was not inactivity
+// (ReconcileStalls skips a run while it waits), so the agent gets a full
+// agent.stall_timeout_ms from the answer. Event loop.
+func restartStallClock(state *State, identifier string, now time.Time) {
+	for _, r := range state.Running {
+		if r != nil && r.Issue.Identifier == identifier {
+			t := now
+			r.LastEventAt = &t
+		}
 	}
 }
