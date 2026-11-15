@@ -33,7 +33,8 @@ export default function MobileIssuePage() {
         )}
       </header>
       <MobileIssueDecision identifier={identifier} />
-      <IssueNowPanel identifier={identifier} live />
+      {/* The approval card above names a held push's pipeline files. */}
+      <IssueNowPanel identifier={identifier} live pipelineNotice={false} />
       <IssueSteerBox identifier={identifier} />
       <section aria-label="Project dispatch" className="grid">
         <DispatchPauseToggle />

@@ -85,6 +85,52 @@ describe('MobileIssuePage', () => {
     expect(screen.getByText('alpha')).toBeTruthy();
   });
 
+  it('names the pipeline files of a held push on the approval card, once', async () => {
+    mockFetch(context({ pendingInput: 'Pipeline change: push?', pendingApproval: true }));
+    const paths = Array.from({ length: 12 }, (_, i) =>
+      i === 0 ? '.github/workflows/ci.yml' : `.github/workflows/job-${String(i)}.yml`,
+    );
+    render(
+      <Routes>
+        <Route path="/m/:identifier" element={<MobileIssuePage />} />
+      </Routes>,
+      {
+        route: '/m/ENG-1',
+        snapshot: makeSnapshot({
+          callerScope: 'operator',
+          inputRequired: [
+            {
+              identifier: 'ENG-1',
+              sessionId: 'run-1',
+              state: 'input_required',
+              context: 'Pipeline change: push?',
+              queuedAt: '2026-10-22T10:00:00Z',
+              guardrailApproval: true,
+              guardrailLanePaths: paths,
+              guardrailLanePathsTotal: 14,
+            },
+          ],
+        }),
+      },
+    );
+    const section = await screen.findByRole('region', { name: 'Approval' });
+    const list = within(section).getByRole('list', { name: 'Pipeline files changed' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(10);
+    expect(within(list).getByText('.github/workflows/ci.yml')).toBeTruthy();
+    expect(within(section).getByText('and 4 more')).toBeTruthy();
+    expect(within(section).getByRole('button', { name: 'Approve' })).toBeTruthy();
+    // The Now panel below does not repeat it.
+    await screen.findByTestId('issue-now-panel');
+    expect(screen.getAllByTestId('pipeline-change-notice')).toHaveLength(1);
+  });
+
+  it('shows no pipeline notice for an approval that is not a held push', async () => {
+    mockFetch(context({ pendingInput: 'Run `vercel --prod`?', pendingApproval: true }));
+    renderIssue();
+    await screen.findByRole('region', { name: 'Approval' });
+    expect(screen.queryByTestId('pipeline-change-notice')).toBeNull();
+  });
+
   it('rejects a guardrail request', async () => {
     const calls = mockFetch(context({ pendingInput: 'Delete the branch?', pendingApproval: true }));
     renderIssue();
