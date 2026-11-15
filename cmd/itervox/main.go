@@ -319,6 +319,9 @@ func main() {
 		case "status":
 			runStatus(os.Args[2:])
 			return
+		case "open":
+			runOpen(os.Args[2:])
+			return
 		case "doctor":
 			runDoctor(os.Args[2:])
 			return
@@ -552,19 +555,22 @@ func main() {
 		// run. Doctor / `itervox status` rely on these files being either
 		// fresh or absent to give accurate "is it alive" verdicts.
 		defer removePIDFile(*workflowPath)
-		defer removeDashboardURLFile(*workflowPath)
 		defer removeHeartbeatFile(*workflowPath)
-		defer removeDaemonRegistryEntry() // runs first: never outlive daemon.pid
-		defer stopHub()                   // #228: hand the hub over before the record goes
+		defer removeDaemonRegistryEntry() // never outlive daemon.pid
+		// dashboard_url goes before the registry record, the reverse of
+		// startup: a process scan never sees this pid with a port but no
+		// record (a pre-registry daemon with an unknown token).
+		defer removeDashboardURLFile(*workflowPath)
+		defer stopHub() // #228: hand the hub over before the record goes
 		// os.Exit skips the defers above, so every fatalExit path — a failed
 		// rebind, an invalid config on the first iteration — used to leave
 		// these files behind and make doctor report a daemon that had died.
 		// Same cleanup, reachable from fatalExit. See exit.go's onFatalExit.
 		onFatalExit = func() {
-			removePIDFile(*workflowPath)
 			removeDashboardURLFile(*workflowPath)
-			removeHeartbeatFile(*workflowPath)
 			removeDaemonRegistryEntry()
+			removeHeartbeatFile(*workflowPath)
+			removePIDFile(*workflowPath)
 		}
 	}
 
@@ -691,7 +697,7 @@ func main() {
 		// operator edit (self-writes are suppressed by CORE-116) to the loop
 		// below, which drains before reloading instead of cancelling turns.
 		dc := newDrainControl()
-		reloadReq := make(chan struct{}, 1)
+		reloadReq := make(chan []string, 1) // the changed files
 
 		// Watch WORKFLOW.md and the settings files (#245); request a
 		// drain-then-reload on a change that loads. An edit that does not
@@ -701,11 +707,16 @@ func main() {
 			// Baselines = the bytes cfg was parsed from, not the watcher's
 			// own first readings: an edit between the load above and this
 			// start still reloads (M1-close C2).
-			onChange := func() {
+			onChange := func(changed []string) {
+				// The only sender: a pending request is merged with this
+				// one, so the drain names every file that changed. The
+				// reload re-reads all of them either way.
 				select {
-				case reloadReq <- struct{}{}:
-				default: // a reload is already pending; it re-reads the files
+				case pending := <-reloadReq:
+					changed = mergeChangedFiles(pending, changed)
+				default:
 				}
+				reloadReq <- changed
 			}
 			if err := watchConfigFiles(runCtx, *workflowPath, cfg, onChange, configWatchOptions{}); err != nil && runCtx.Err() == nil {
 				slog.Warn("workflow watcher stopped", "error", err)
@@ -727,9 +738,9 @@ func main() {
 				return // top-level shutdown already in progress
 			}
 			runErr = err
-		case <-reloadReq:
+		case changed := <-reloadReq:
 			var shutdown bool
-			runErr, shutdown = reloadDrain(ctx, dc, *shutdownGrace, sigCh, runDone, runCancel, cancel)
+			runErr, shutdown = reloadDrain(ctx, dc, changedConfigFilesLabel(*workflowPath, changed), *shutdownGrace, sigCh, runDone, runCancel, cancel)
 			if shutdown {
 				return
 			}
@@ -866,6 +877,9 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
 	orch.SetPushLanesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "push_lanes.json"))                 // guardrails.lanes
 	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
+	// Per-issue profile overrides: loaded by every generation, so they survive
+	// a WORKFLOW.md / settings reload as well as a restart.
+	orch.SetIssueProfilesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "issue_profiles.json"))
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and
 	// comments (docs/superpowers/specs/2026-08-06-write-ahead-outbox-design.md).
@@ -960,11 +974,6 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	var srvDone <-chan error
 	var actionTokenStore *agentactions.Store
 	{
-		// Persist the bound URL for Vite's dev proxy and for `itervox doctor`.
-		dashboardURL := "http://" + actualAddr + "/"
-		if err := writeDashboardURLFile(workflowPath, dashboardURL); err != nil {
-			slog.Warn("itervox: failed to write dashboard URL file", "error", err)
-		}
 		// Secure-by-default, regardless of bind address (#48): if no token is
 		// set and the user hasn't explicitly opted out via
 		// server.allow_unauthenticated, auto-generate an ephemeral token and
@@ -1013,6 +1022,16 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			})
 		}
 		writeDaemonRegistryEntry(newDaemonRecord(workflowPath, actualAddr, filepath.Dir(logFile), os.Getenv("ITERVOX_API_TOKEN"), tokenGenerated, supervisorTokenActive))
+		// Persist the bound URL for Vite's dev proxy and for `itervox doctor`.
+		// Written LAST, after the token file and the registry record: a
+		// process scan (`status --all`) that finds this pid with a port but
+		// no record reports a pre-registry daemon with an unknown token and
+		// no token_file, which made the desktop's "Add remote" ask for a
+		// token that was about to be readable.
+		dashboardURL := "http://" + actualAddr + "/"
+		if err := writeDashboardURLFile(workflowPath, dashboardURL); err != nil {
+			slog.Warn("itervox: failed to write dashboard URL file", "error", err)
+		}
 	}
 	if actualAddr != "" {
 		actionTokenStore = agentactions.NewStore()

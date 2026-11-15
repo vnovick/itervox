@@ -145,7 +145,15 @@ itervox
 
 Itervox starts polling your tracker, spawning agents for active issues, streaming logs to the terminal, and writing `.itervox/HEARTBEAT.md` with current daemon state. By default it loads `WORKFLOW.md` from the current directory; pass `-workflow <path>` only if it lives elsewhere.
 
-Open the dashboard to see the Kanban board. If you omitted `server.port` from `WORKFLOW.md`, it defaults to `http://localhost:8090` — but `itervox init` scaffolds `server.port: 0` (OS-assigned), so don't assume 8090 blindly. Find the actual URL in `.itervox/dashboard_url` or the `dashboard URL:` line of `itervox doctor` — both give the **token-free** URL (no bearer token is stored there). The dashboard also needs the bearer token, which comes from one of: the tokenised URL printed once on the startup terminal's stderr (only when stderr is a terminal), `<logs-dir>/api-token` for an auto-generated token (mode 0600; `<logs-dir>` defaults to `~/.itervox/logs/<kind>/<slug>-<project>/`), or the value you pinned as `ITERVOX_API_TOKEN` in `.itervox/.env`. See [Remote access → The API token](/guides/remote-access/#the-api-token).
+Open the dashboard to see the Kanban board. From another terminal in the project, run:
+
+```bash
+itervox open
+```
+
+It opens the running daemon's dashboard in your browser, already logged in (`open` on macOS, `xdg-open` on Linux, `rundll32` on Windows). `itervox open --print` prints that URL instead; it carries the API token as `?token=`, so treat it as a password — the dashboard stores the token and removes it from the address bar.
+
+If you omitted `server.port` from `WORKFLOW.md`, it defaults to `http://localhost:8090` — but `itervox init` scaffolds `server.port: 0` (OS-assigned), so don't assume 8090 blindly. `.itervox/dashboard_url` and the `dashboard URL:` line of `itervox doctor` give the **token-free** URL (no bearer token is stored there), which lands on the login screen; `itervox doctor`'s `API token:` line says where the token is. The dashboard needs the bearer token, which comes from one of: the tokenised URL printed once on the startup terminal's stderr (only when stderr is a terminal), `<logs-dir>/api-token` for an auto-generated token (mode 0600; `<logs-dir>` defaults to `~/.itervox/logs/<kind>/<slug>-<project>/`), or the value you pinned as `ITERVOX_API_TOKEN` in `.itervox/.env`. See [Remote access → The API token](/guides/remote-access/#the-api-token).
 
 ### 4. (Optional) Verbose mode
 

@@ -30,6 +30,11 @@ func TestMain(m *testing.M) {
 	doctorReadinessEnv = func() repoReadinessEnv {
 		return stubTrackerProbe(deploySkipped, "not probed in tests")
 	}
+	// Doctor's port-collision probe answers "free": a fixture on the default
+	// port must not fail because a developer's own daemon or hub holds 8090
+	// (TestQuickstartIgnoresBusyPort8090). TestDoctorWarnsWhenAnotherProcessHoldsThePort
+	// covers the check itself.
+	doctorPortHolder = func(int) (string, int) { return "", 0 }
 	os.Exit(m.Run())
 }
 

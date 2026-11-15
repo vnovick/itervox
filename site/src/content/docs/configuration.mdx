@@ -973,7 +973,7 @@ until the queue falls below the low-water mark.
 | `filter.mergeable_states` | string[] | Only for `pr_mergeable_changed`: fire on a move into these states. Empty = into or out of `dirty` (a conflict). |
 | `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted but prefer `policy.auto_switch`. |
 | `policy.auto_switch` | bool | Alias for `policy.auto_resume` on `rate_limited`; allows immediate profile/backend switching without a human approval step. |
-| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. |
+| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. The issue is reassigned to it (over an earlier operator pin) until the switch is reverted. |
 | `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs. |
 | `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset. |
 | `policy.move_to_state` | string | Optional for `blockers_resolved`; allows the helper profile to move matching unblocked issues to this state when the profile includes `move_state`. |
@@ -1832,7 +1832,7 @@ What earlier runs and the people you work with want remembered. Treat each item 
 
 ## `.itervox` project files
 
-`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, starter profile files and the task-type playbooks in `.itervox/playbooks/` (#218). Commit `.itervox/agents/**` and `.itervox/playbooks/**`: those files are project agent definitions. `.itervox/playbook_overrides.json` (the per-issue playbook choices) is runtime state and stays ignored. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
+`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, starter profile files and the task-type playbooks in `.itervox/playbooks/` (#218). Commit `.itervox/agents/**` and `.itervox/playbooks/**`: those files are project agent definitions. `.itervox/playbook_overrides.json` (the per-issue playbook choices) and `.itervox/issue_profiles.json` (the per-issue profile overrides) are runtime state and stay ignored. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
 
 On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next push, last sync error), capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
 

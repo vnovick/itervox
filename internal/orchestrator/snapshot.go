@@ -48,6 +48,9 @@ func (o *Orchestrator) Snapshot() State {
 		merged := make(map[string]string, len(snap.IssueProfiles)+len(o.issueProfiles))
 		maps.Copy(merged, snap.IssueProfiles)
 		for k, v := range o.issueProfiles {
+			if autoSwitchSupersedes(snap, k, o.issueProfileSetAt[k]) {
+				continue // the newer automatic switch is the issue's profile
+			}
 			if v == "" {
 				delete(merged, k)
 			} else {
@@ -63,6 +66,9 @@ func (o *Orchestrator) Snapshot() State {
 		merged := make(map[string]string, len(snap.IssueBackends)+len(o.issueBackends))
 		maps.Copy(merged, snap.IssueBackends)
 		for k, v := range o.issueBackends {
+			if autoSwitchSupersedes(snap, k, o.issueBackendSetAt[k]) {
+				continue
+			}
 			if v == "" {
 				delete(merged, k)
 			} else {
@@ -311,6 +317,16 @@ type pendingInputResumeDisk struct {
 type inputRequiredStateDisk struct {
 	Awaiting      map[string]inputRequiredDisk      `json:"awaiting,omitempty"`
 	PendingResume map[string]pendingInputResumeDisk `json:"pending_resume,omitempty"`
+	// Dismissed is State.DismissedInputQuestions. Additive and omitempty: an
+	// older file loads with no dismissals.
+	Dismissed map[string]dismissedInputQuestionDisk `json:"dismissed,omitempty"`
+}
+
+type dismissedInputQuestionDisk struct {
+	CommentID     string `json:"comment_id,omitempty"`
+	CommentKey    string `json:"comment_key,omitempty"`
+	ContextDigest string `json:"context_digest,omitempty"`
+	DismissedAt   string `json:"dismissed_at,omitempty"`
 }
 
 type automationQueueStateDisk struct {
@@ -334,7 +350,7 @@ type automationQueueStateDisk struct {
 }
 
 // saveInputRequiredToDisk writes InputRequiredIssues and PendingInputResumes to disk.
-func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequiredEntry, pending map[string]*PendingInputResumeEntry) {
+func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequiredEntry, pending map[string]*PendingInputResumeEntry, dismissed map[string]DismissedInputQuestion) {
 	o.inputRequiredMu.RLock()
 	path := o.inputRequiredFile
 	o.inputRequiredMu.RUnlock()
@@ -386,9 +402,22 @@ func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequired
 			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
 		}
 	}
+	var dismissedDisk map[string]dismissedInputQuestionDisk
+	if len(dismissed) > 0 {
+		dismissedDisk = make(map[string]dismissedInputQuestionDisk, len(dismissed))
+		for k, v := range dismissed {
+			dismissedDisk[k] = dismissedInputQuestionDisk{
+				CommentID:     v.CommentID,
+				CommentKey:    v.CommentKey,
+				ContextDigest: v.ContextDigest,
+				DismissedAt:   formatOptionalTime(v.DismissedAt),
+			}
+		}
+	}
 	data, err := json.Marshal(inputRequiredStateDisk{
 		Awaiting:      awaitingDisk,
 		PendingResume: pendingDisk,
+		Dismissed:     dismissedDisk,
 	})
 	if err != nil {
 		slog.Warn("orchestrator: failed to marshal input-required entries", "error", err)
@@ -421,7 +450,8 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 
 	var awaiting map[string]inputRequiredDisk
 	var pending map[string]pendingInputResumeDisk
-	if _, ok := raw["awaiting"]; ok || raw["pending_resume"] != nil {
+	var dismissed map[string]dismissedInputQuestionDisk
+	if _, ok := raw["awaiting"]; ok || raw["pending_resume"] != nil || raw["dismissed"] != nil {
 		var disk inputRequiredStateDisk
 		if err := json.Unmarshal(data, &disk); err != nil {
 			slog.Warn("orchestrator: failed to parse input-required state file", "path", path, "error", err)
@@ -429,6 +459,7 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 		}
 		awaiting = disk.Awaiting
 		pending = disk.PendingResume
+		dismissed = disk.Dismissed
 	} else {
 		if err := json.Unmarshal(data, &awaiting); err != nil {
 			slog.Warn("orchestrator: failed to parse legacy input-required file", "path", path, "error", err)
@@ -476,6 +507,20 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 			QuestionAuthorID:   v.QuestionAuthorID,
 			QuestionAuthorName: v.QuestionAuthorName,
 			QueuedAt:           queuedAt,
+		}
+	}
+	if len(dismissed) > 0 && state.DismissedInputQuestions == nil {
+		state.DismissedInputQuestions = make(map[string]DismissedInputQuestion, len(dismissed))
+	}
+	for k, v := range dismissed {
+		if k == "" || (v.CommentID == "" && v.CommentKey == "" && v.ContextDigest == "") {
+			continue
+		}
+		state.DismissedInputQuestions[k] = DismissedInputQuestion{
+			CommentID:     v.CommentID,
+			CommentKey:    v.CommentKey,
+			ContextDigest: v.ContextDigest,
+			DismissedAt:   parseOptionalTime(v.DismissedAt),
 		}
 	}
 	// gaps_11 G-2 — mirror loadPausedFromDisk: treat persistence-restored
@@ -1221,7 +1266,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	// indistinguishable from a user cancel again, which is the whole point of
 	// #42-F. Persisting here covers every pause site by construction.
 	o.savePauseReasonsToDisk(snap.PauseReasons)
-	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
+	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes, snap.DismissedInputQuestions)
 	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq, snap.CronCursors)
 	o.savePREventsToDisk(snap) // #173
 	if o.OnStateChange != nil {

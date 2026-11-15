@@ -240,9 +240,22 @@ func readTrim(t *testing.T, path string) string {
 
 // dashboardStatus GETs /api/v1/state on the live daemon with the bearer
 // token and returns the HTTP status.
+// dashboardURL is the URL the daemon published in dashboard_url. That file
+// is the last thing a daemon publishes, after its token file and registry
+// record, so a test that waited for either of those waits for it here.
+func (p *daemonProject) dashboardURL(t *testing.T) string {
+	t.Helper()
+	path := dashboardURLFilePath(p.Workflow)
+	waitFor(t, 30*time.Second, "dashboard_url", func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
+	return readTrim(t, path)
+}
+
 func (p *daemonProject) dashboardStatus(t *testing.T, token string) int {
 	t.Helper()
-	base := readTrim(t, dashboardURLFilePath(p.Workflow))
+	base := p.dashboardURL(t)
 	req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(base, "/")+"/api/v1/state", nil)
 	if err != nil {
 		t.Fatal(err)
