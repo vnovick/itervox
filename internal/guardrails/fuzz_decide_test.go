@@ -80,6 +80,13 @@ func FuzzDecide(f *testing.F) {
 		{4, "-n\x00prod\x00apply\x00-f\x00k8s/", "", 2, 19},
 		{5, "apply\x00-auto-approve", "", 1, 20},
 		{0, "", "", 0, 21},
+		// A hooksPath override on a hook-free builtin (Claude Code's own
+		// read-only calls), and the shapes around it that stay refused.
+		{0, "-c\x00core.hooksPath=/dev/null\x00ls-files\x00--error-unmatch\x00--\x00:(icase).claude/settings.local.json", "x", 3, 22},
+		{0, "-c\x00core.hooksPath=/dev/null\x00-c\x00alias.ls-files=!sh\x00ls-files", "x", 2, 23},
+		{0, "--no-pager\x00--config-env=core.hooksPath=E\x00-C\x00sub\x00log\x00-1", "x", 2, 24},
+		{0, "-c\x00core.hooksPath=/dev/null\x00--version\x00-c\x00core.hooksPath=x\x00push", "x", 3, 25},
+		{0, "-c\x00core.hooksPath=/dev/null\x00status\x00--short", "x", 2, 26},
 	} {
 		f.Add(seed.tool, seed.argv, seed.branch, seed.split, seed.style)
 	}
@@ -131,12 +138,36 @@ func FuzzDecide(f *testing.F) {
 		switch tool {
 		case "git":
 			// A hooksPath override in any case and any of the four
-			// spellings, ahead of whatever else, is refused.
+			// spellings, ahead of whatever else, is refused unless the
+			// strict reader resolves a hook-free builtin; then the
+			// forwarded argv decides to a forward (it overrides nothing the
+			// reader did not drop).
 			key := fuzzCase("core.hooksPath", style)
-			for _, pre := range [][]string{{"-c", key + "=" + branch}, {"-c" + key + "=" + branch},
+			for pi, pre := range [][]string{{"-c", key + "=" + branch}, {"-c" + key + "=" + branch},
 				{"--config-env", key + "=ENV"}, {"--config-env=" + key + "=ENV"}, {"-c", fuzzCase("include.path", style) + "=" + branch}} {
-				if got := p.decide("git", append(slices.Clone(pre), args...), "/repo", noEnv, branchOf); got.kind != KindHookBypass {
-					t.Fatalf("git %q %q: want a hook_bypass refusal, got %+v", pre, args, got)
+				full := append(slices.Clone(pre), args...)
+				got := p.decide("git", full, "/repo", noEnv, branchOf)
+				// The attached -cKEY form (git rejects it) and an include
+				// are refused whatever follows.
+				if _, ok := readOnlyHooksOverride(full); !ok || pi == 1 || pi == 4 {
+					if got.kind != KindHookBypass {
+						t.Fatalf("git %q %q: want a hook_bypass refusal, got %+v", pre, args, got)
+					}
+					continue
+				}
+				if got.act == actRefuse || !got.dropHooksPath {
+					t.Fatalf("git %q %q: a hook-free builtin, want a forward dropping the override, got %+v", pre, args, got)
+				}
+				if fwd := p.decide("git", forwardArgs(got, full), "/repo", noEnv, branchOf); fwd.act == actRefuse {
+					t.Fatalf("git %q: the forwarded argv %q is refused: %+v", full, forwardArgs(got, full), fwd)
+				}
+				// A hook-running command or an alias with the same
+				// override stays refused.
+				for _, cmd := range [][]string{{"commit"}, {"push"}, {"merge"}, {"rebase"}, {"checkout"}, {"status"}, {"diff"}, {"-c", "alias.x=!sh", "x"}} {
+					bad := append(append(slices.Clone(pre), cmd...), args...)
+					if g := p.decide("git", bad, "/repo", noEnv, branchOf); g.kind != KindHookBypass {
+						t.Fatalf("git %q: want a hook_bypass refusal, got %+v", bad, g)
+					}
 				}
 			}
 			// --no-verify or an abbreviation git accepts, anywhere after

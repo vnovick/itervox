@@ -124,7 +124,12 @@ const minSecretEntropyBits = 4.0
 // here; the prefix and KEY=value patterns above are the first line.
 func redactHighEntropy(s string) string {
 	return highEntropyCandidate.ReplaceAllStringFunc(s, func(tok string) string {
-		if looksRandom(tok) {
+		// An absolute path is judged segment by segment only: a path such
+		// as a macOS $TMPDIR plus a test's temp dir
+		// (/var/folders/x8/<random>/T/TestName123/001/) mixes cases and
+		// digits across its segments, so the run as a whole looked random
+		// and was masked although no segment is a secret.
+		if !isAbsolutePathRun(tok) && looksRandom(tok) {
 			return secretMask
 		}
 		// A path or URL whose one segment is a token (`/hooks/<base64>`):
@@ -152,6 +157,46 @@ func redactHighEntropy(s string) string {
 // minSegmentSecretLen is the shortest path segment redactHighEntropy judges
 // on its own.
 const minSegmentSecretLen = 24
+
+// isAbsolutePathRun reports whether a candidate run is an absolute path
+// rather than a standard-base64 secret that happens to contain '/' (about
+// half of all 40-character ones do, e.g. an AWS secret access key). It must
+// start with '/', have at least three non-empty segments, and at least one
+// segment must be a word (`home`, `folders`, `Users`: a letters-only
+// segment of four or more, lower case after an optional capital). Random base64
+// almost never has such a segment; a run that is not a path by this test
+// keeps the whole-run check, so this can only un-mask paths.
+func isAbsolutePathRun(tok string) bool {
+	if !strings.HasPrefix(tok, "/") {
+		return false
+	}
+	segments, word := 0, false
+	for _, seg := range strings.Split(tok, "/") {
+		if seg == "" {
+			continue
+		}
+		segments++
+		word = word || isWordSegment(seg)
+	}
+	return segments >= 3 && word
+}
+
+// isWordSegment reports whether seg is `[A-Z]?[a-z]{3,}`.
+func isWordSegment(seg string) bool {
+	rest := seg
+	if rest != "" && rest[0] >= 'A' && rest[0] <= 'Z' {
+		rest = rest[1:]
+	}
+	if len(rest) < 3 || len(seg) < 4 {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		if rest[i] < 'a' || rest[i] > 'z' {
+			return false
+		}
+	}
+	return true
+}
 
 // basicCredential finds `Basic <base64>` outside an Authorization header;
 // redactBasicCredentials masks it only when the value decodes to
