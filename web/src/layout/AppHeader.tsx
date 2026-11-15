@@ -1,59 +1,17 @@
-import { Link, type To } from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../store/itervoxStore';
 import { MobileMenuButton } from '../components/ui/MobileMenuButton';
 import { fmtMs } from '../utils/format';
-import { STATUS_META, type StatusKey } from '../lib/statusModel';
 import { useStatusSummary } from '../hooks/useStatusSummary';
 import { useConnectionState } from '../hooks/useConnectionState';
 import { SchemaDriftBanner } from '../components/itervox/SchemaDriftBanner';
 import { DemoModeBadge } from '../components/itervox/DemoModeBadge';
 import { HubProjectSwitcher } from '../components/itervox/HubProjectSwitcher';
-import { useDashboardHref } from '../hooks/useDashboardHref';
 import { useUIStore } from '../store/uiStore';
 import { NewTaskButton } from '../components/itervox/newTask/NewTaskButton';
 import { useEmbedded } from '../hooks/useEmbeddedShell';
-import { EmbeddedMoreMenu, EmbeddedNavLinks, EmbeddedTitle } from './EmbeddedNav';
-
-// CORE-076 — pill colour per status-model tone (one palette for all pills).
-// The `.pill-*` classes live in index.css (tokens.contrast.test.ts measures
-// them on the top bar's glass).
-const PILL_TONE_CLASS: Record<string, string> = {
-  success: 'pill-ok',
-  warning: 'pill-warn',
-  danger: 'pill-danger',
-  info: 'pill-accent',
-  neutral: 'pill-neutral',
-};
-
-// CORE-086 — every count pill links to the dashboard section behind it.
-function StatusPill({
-  statusKey,
-  count,
-  to,
-  prefix = '',
-  title,
-}: {
-  statusKey: StatusKey;
-  count: number;
-  to: To;
-  prefix?: string;
-  title?: string;
-}) {
-  const meta = STATUS_META[statusKey];
-  return (
-    <Link
-      to={to}
-      data-status-key={statusKey}
-      data-status-count={count}
-      title={title}
-      className={`pill hover:opacity-80 ${PILL_TONE_CLASS[meta.tone] ?? ''}`}
-    >
-      {prefix}
-      {count} {meta.noun}
-    </Link>
-  );
-}
+import { EmbeddedTitle } from './EmbeddedTitle';
+import { StatusPills } from './StatusPills';
 
 // #245 — the config-invalid banner names the file whose edit did not load:
 // WORKFLOW.md or one of the settings files (".itervox/settings.jsonc").
@@ -80,19 +38,9 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
       demoMode: s.snapshot?.demoMode ?? false,
     })),
   );
-  const {
-    running,
-    paused,
-    retrying,
-    needsInput: awaitingInput,
-    resuming: pendingInputResumes,
-    maxAgents,
-    capacityPct: pct,
-    headline,
-  } = useStatusSummary();
-  const dashboardHref = useDashboardHref();
-  // Embedded in the desktop app: `project · ISSUE`, Board / Sessions /
-  // New task / More; the status chips show as space allows.
+  const { running, maxAgents, capacityPct: pct } = useStatusSummary();
+  // Embedded in the desktop app: `project · ISSUE` in place of the project
+  // name (the window's project tabs name the project too).
   const embedded = useEmbedded();
 
   const liveLabel = sseConnected
@@ -143,9 +91,11 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
           </span>
         </div>
       )}
-      <header className="glass-panel glass-bar flex min-w-0 flex-wrap items-center gap-2 px-3 py-2.5 text-sm sm:gap-3 md:px-4">
+      {/* One row from md up: the status pills fold into "+N" rather than
+          wrap (phones may still take two rows). */}
+      <header className="glass-panel glass-bar flex min-w-0 flex-wrap items-center gap-2 px-3 py-2.5 text-sm sm:gap-3 md:flex-nowrap md:px-4">
         {/* Mobile menu button */}
-        {onMenuClick && !embedded && <MobileMenuButton onClick={onMenuClick} />}
+        {onMenuClick && <MobileMenuButton onClick={onMenuClick} />}
 
         {/* Live pulse — the connection status of this itervox daemon. */}
         <span className="text-theme-text flex shrink-0 items-center gap-1.5 font-semibold">
@@ -175,75 +125,14 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
         {demoMode && <DemoModeBadge />}
 
-        {/* Embedded: the status chips show from the lg breakpoint up. */}
-        <span className={embedded ? 'hidden min-w-0 items-center gap-2 lg:flex' : 'contents'}>
-          {/* Orchestrator state */}
-          <span
-            data-testid="header-orchestrator-state"
-            className={`pill shrink-0 font-semibold ${PILL_TONE_CLASS[STATUS_META[headline].tone] ?? 'pill-neutral'}`}
-          >
-            {STATUS_META[headline].label}
-          </span>
-
-          {/* Running count */}
-          {running > 0 && (
-            <Link
-              to={dashboardHref('running-sessions')}
-              data-status-key="running"
-              data-status-count={running}
-              title="Jump to the running sessions"
-              className="text-theme-text flex items-center gap-1 rounded underline-offset-2 hover:underline"
-            >
-              <strong>{running}</strong>
-              <span>{STATUS_META.running.noun}</span>
-            </Link>
-          )}
-
-          {paused > 0 && (
-            <StatusPill
-              statusKey="paused"
-              count={paused}
-              to={dashboardHref('running-sessions')}
-              title="Jump to the paused sessions"
-            />
-          )}
-
-          {awaitingInput > 0 && (
-            <StatusPill
-              statusKey="input_required"
-              count={awaitingInput}
-              to={dashboardHref('attention-inbox')}
-              title="Jump to the attention inbox"
-            />
-          )}
-
-          {pendingInputResumes > 0 && (
-            <StatusPill
-              statusKey="pending_input_resume"
-              count={pendingInputResumes}
-              to={dashboardHref('pending-resume')}
-              title="Jump to the Resuming panel"
-            />
-          )}
-
-          {retrying > 0 && (
-            <StatusPill
-              statusKey="retrying"
-              count={retrying}
-              prefix="↻ "
-              to={dashboardHref('retry-queue')}
-              title="Jump to the retry queue"
-            />
-          )}
-        </span>
+        {/* Orchestrator state and counts, one row ("+N" for the rest). */}
+        <StatusPills />
 
         <span aria-hidden="true" className="flex-1" />
 
-        {embedded && <EmbeddedNavLinks />}
-
         {/* Capacity bar — hidden on mobile */}
         {maxAgents > 0 && (
-          <span className={`hidden items-center gap-2.5 ${embedded ? 'xl:flex' : 'md:flex'}`}>
+          <span className="hidden shrink-0 items-center gap-2.5 xl:flex">
             <span className="sr-only">running/max</span>
             <span className="subtle-fill h-1.5 w-20 overflow-hidden rounded-full">
               <span
@@ -266,7 +155,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
             entry and the primitives pull in tailwind-merge (M6-close). */}
         <button
           type="button"
-          className="glass-chip text-theme-text hover:bg-theme-panel-strong inline-flex h-9 items-center gap-1.5 px-3 text-[13px] font-medium transition-colors sm:px-3.5"
+          className="glass-chip text-theme-text hover:bg-theme-panel-strong inline-flex h-9 shrink-0 items-center gap-1.5 px-3 text-[13px] font-medium transition-colors sm:px-3.5"
           aria-keyshortcuts="Control+K Meta+K"
           onClick={() => {
             useUIStore.getState().setCommandPaletteOpen(true);
@@ -292,7 +181,6 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
         {/* #251 — New task, from every page (operator scope). */}
         <NewTaskButton />
-        {embedded && <EmbeddedMoreMenu />}
       </header>
     </div>
   );
