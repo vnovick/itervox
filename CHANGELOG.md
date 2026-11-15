@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Docs: four new guides.** [Lanes](https://itervox.dev/guides/lanes/), [Signed checks](https://itervox.dev/guides/signed-checks/), [Pipeline-guard demo](https://itervox.dev/guides/pipeline-guard-demo/) (how to run `scripts/pipeline-guard-demo.sh` yourself) and [What's new in v0.3.3](https://itervox.dev/guides/whats-new-v033/) (every feature since v0.3.1, with upgrade notes), linked from the sidebar, the Guardrails, CI and referee guides and Getting started.
+
 ## [0.3.3] — 2026-11-15
 
 ### Added

@@ -124,6 +124,10 @@ guardrails:
 
 ## Lanes
 
+See [Lanes](/guides/lanes/) for the full guide, and the
+[pipeline-guard demo](/guides/pipeline-guard-demo/) to watch a held pipeline
+push on your machine.
+
 Where a push goes is one question; **what it changes** is another. An agent
 fixing a red build could add `continue-on-error: true` to
 `.github/workflows/ci.yml` on its own issue branch, and the push would be a
@@ -301,6 +305,8 @@ affected.
   itself is microseconds. Expect different numbers on your machine.
 
 ## Signed checks
+
+See [Signed checks](/guides/signed-checks/) for the full guide.
 
 The writer is never the judge. An agent saying "done" is a claim, and with
 [`require_evidence`](/configuration/#done-needs-evidence) the agent that wrote

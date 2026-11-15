@@ -1,0 +1,162 @@
+---
+title: What's new in v0.3.3 (upgrading from v0.3.1)
+description: Everything since v0.3.1 in one place — the safety guide, local models and quota pools, model servers in the desktop app, the Claude Code plugin, signed checks, lanes, safer CI mode, itervox referee, itervox hook, patches only, fuzzing and bypass fixes, the held-push fix and the pipeline-guard demo — and what to check when you upgrade.
+sidebar:
+  order: 1
+---
+
+This page lists what each feature since v0.3.1 brings and links to its
+guide. It ends with [what to check when you upgrade from
+v0.3.1](#upgrading-from-v031). The
+[CHANGELOG](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md) has
+every entry.
+
+The theme of v0.3.3 is one rule: **an agent may change what CI checks, never
+how CI checks**, and the writer is never the judge.
+
+## Safety and local models
+
+### The Safety guide and a full-permissions warning
+
+A new guide covers what an agent can do by default, how to confine it, and
+how to keep secrets out of its reach. `itervox doctor` gains a
+**Permissions** section that warns about every run with full permissions.
+→ [Safety](/guides/safety/)
+
+### Local models and quota pools
+
+Point a profile's agent at a model server on your machine, for example
+`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`. `itervox doctor` probes
+those servers in a **Model servers** section. A profile with `pool: <name>`
+gets its own usage-limit breaker (`claude/local`), which
+`agent.backend_fallback.chain` can name as a step.
+→ [Local models](/guides/local-models/)
+
+### Model servers in the desktop app
+
+The desktop app checks the model servers your projects use every 30 seconds,
+shows GPU usage through `nvidia-smi`, and notifies you when a server stops
+answering and when it comes back.
+→ [Local models: in the desktop app](/guides/local-models/#in-the-desktop-app)
+
+### The Claude Code plugin
+
+`/plugin marketplace add vnovick/itervox`, then
+`/plugin install itervox@itervox`. It bundles `itervox mcp` and eight skills,
+run as `/itervox:<skill>`.
+→ [Claude Code plugin](/guides/claude-code-plugin/)
+
+## The writer is never the judge
+
+### Signed checks
+
+A profile's `verify: [{name, run, timeout_ms}]` list makes the daemon run the
+checks itself, after the agent's run, on the tree the agent left. It signs
+each result with ed25519. A failing check holds the run, and
+`itervox attest verify` checks the records offline.
+→ [Signed checks](/guides/signed-checks/)
+
+### Lanes
+
+The pre-push hook sorts every push by the files it changes. A push that
+touches the human lane (CI workflows, test config, `WORKFLOW.md`, …) waits
+for your approval as a **Pipeline change**, and `merge_pr` never merges it. A
+second-opinion lane needs a reviewer on a different backend.
+→ [Lanes](/guides/lanes/)
+
+### Safer CI mode
+
+The GitHub Action checks that the pipeline is out of the agent's reach before
+the agent starts. It refuses the run with exit `5` when the run's policy
+differs from the base branch, the token has the `workflow` scope, or deploy
+credentials are in the job's environment. `safe-mode: false` turns refusals
+into warnings.
+→ [Running in CI: Safer CI mode](/guides/ci/#safer-ci-mode)
+
+### itervox referee
+
+A CI referee for any agent and any CI, as `itervox referee` and as a
+standalone `referee` binary. `lanes` sorts a pull request into lanes by a
+policy read from the base branch (exit `0` / `10` / `20`), `audit` reports
+weakened checks, `pin` checks a policy's hash, and `run` / `verify` sign check
+runs. A composite GitHub Action ships with it.
+→ [referee](/guides/referee/)
+
+### itervox hook
+
+The guardrails in Claude Code and Codex sessions you start yourself, as a
+PreToolUse hook. `itervox hook install claude|codex` adds it to your settings.
+→ [Guardrails: interactive sessions](/guides/guardrails/#interactive-sessions-itervox-hook)
+
+### Patches only (`push: daemon`)
+
+With `push: daemon` on a profile (or `agent.push: daemon`), the agent gets no
+forge or tracker credentials and cannot push. Itervox pushes the commit and
+opens the pull request itself, after the gates; with `verify`, only the tree
+the signed checks ran on.
+→ [Safety: patches only](/guides/safety/#patches-only-the-daemon-pushes)
+
+### Approval rules scoped to an environment
+
+A `guardrails.approval_commands` entry may be `{match, when_env}`, held only
+when the environment matches, for example `terraform apply` when
+`TF_WORKSPACE=prod*`.
+→ [Guardrails: environment-scoped rules](/guides/guardrails/#environment-scoped-rules)
+
+## Hardening
+
+### Fuzzing and bypass fixes
+
+Fuzz targets now cover the guardrail command classifier, the lane matcher and
+the signed-check records (`make fuzz`). They found bypasses, now closed:
+abbreviations of `--no-verify` such as `--no-verif`, `git -c include.path=…`,
+`gh pr -R owner/repo merge`, and a literal `*` slipping past an
+`approval_commands` pattern. A record also verifies only with the exact
+signature encoding the daemon wrote.
+→ [Guardrails: how it's tested](/guides/guardrails/#how-its-tested)
+
+### A held push no longer times out
+
+While a push or command waits for your approval, the agent prints nothing.
+The turn used to fail after `agent.read_timeout_ms` (30 seconds) and be
+retried. The idle deadline is now suspended while the run waits, and a
+waiting run is not treated as stalled. `agent.turn_timeout_ms` still bounds
+the wait. A held pipeline push also shows its files in the Needs-attention
+row and the issue's Now panel.
+→ [Lanes: a held push](/guides/lanes/#a-held-push-pipeline-change)
+
+### The pipeline-guard demo
+
+`scripts/pipeline-guard-demo.sh` reproduces "an agent asked to fix a red
+build edits the pipeline instead" with a scripted agent, offline. Unguarded,
+the run is green and the tests still fail. Guarded, the push is held, the
+signed check records exit 1, the agent fixes the code and the check records
+exit 0.
+→ [Pipeline-guard demo](/guides/pipeline-guard-demo/)
+
+## Upgrading from v0.3.1
+
+Your `WORKFLOW.md` keeps loading as it is. The CHANGELOG lists no breaking
+changes for these releases, but some new defaults change what happens:
+
+1. **Install the new version.** `brew upgrade itervox`, or download the
+   release.
+2. **Pipeline pushes now wait for you.** With the guardrails on (the
+   default), an agent's push that changes a human-lane file, such as
+   `.github/**` or `Makefile`, is held as a **Pipeline change**, and
+   `merge_pr` refuses to merge that pull request. Run `itervox doctor` to see
+   the lanes in effect. To keep the old behaviour, set
+   `guardrails.lanes.human: []`. → [Lanes](/guides/lanes/#configure)
+3. **The GitHub Action may refuse a run.** Safer CI mode is on by default
+   (`safe-mode: true`). A run whose `WORKFLOW.md`, `.itervox/settings.jsonc`
+   or `.itervox/agents/` differ from `policy-ref`, whose token has the
+   `workflow` scope, or whose job holds deploy credentials exits `5`. Try it
+   first with `dry-run: true`, name variables the agent needs in
+   `allow-env`, or set `safe-mode: false`.
+   → [Safer CI mode](/guides/ci/#safer-ci-mode)
+4. **Nothing changes until you opt in** for signed checks (`verify`; the key
+   files appear only then), quota pools (`pool`; profiles without one keep
+   their breaker keys and `backend_health.json` entries), patches only
+   (`push`; the default `agent` is unchanged) and `itervox hook`.
+5. **The deploy skill moved** from `.claude/skills/deploy` into the Claude
+   Code plugin. → [Claude Code plugin](/guides/claude-code-plugin/)

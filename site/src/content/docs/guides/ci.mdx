@@ -143,7 +143,8 @@ that touches pipeline files. Safer CI mode adds the other half: before the
 agent starts, the action checks that the job itself keeps the referee outside
 the branch. With `safe-mode: true` (the default), the step
 **Check the pipeline is out of the agent's reach** refuses the run with exit
-code `5` and lists every refusal:
+code `5` and lists every refusal. See [Lanes](/guides/lanes/) and
+[Signed checks](/guides/signed-checks/) for the rules the policy carries:
 
 | Check | Refuses when | Why |
 |---|---|---|
