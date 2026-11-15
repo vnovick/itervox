@@ -110,7 +110,7 @@ You are working on {{ issue.identifier }}.
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		_ = watchConfigFiles(runCtx, path, cfg, runCancel, configWatchOptions{})
+		_ = watchConfigFiles(runCtx, path, cfg, func([]string) { runCancel() }, configWatchOptions{})
 	}()
 	runDone := make(chan struct{})
 	go func() {

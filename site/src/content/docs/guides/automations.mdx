@@ -39,6 +39,11 @@ That means automations inherit the same:
 - workspace behavior
 - logs and history
 
+Two things differ from a worker run, because an automation's task is its own job (answer a question, triage a failure, review a PR), not the issue's implementation:
+
+- **One turn.** An automation run takes a single agent turn, whatever its trigger (`cron`, `input_required`, `issue_entered_state`, `pr_*` and the rest). A worker run keeps taking continuation turns up to `agent.max_turns` while its issue stays in an active state; an automation run does not, so a helper on an active issue does not redo its job up to `max_turns` times. A message you send it from the Sessions panel still gets it one more turn. The `rate_limited` recovery run with `auto_resume` and `switch_to_profile` is the exception: it continues the issue's implementation, so it runs as a worker, with `max_turns`.
+- **Its handoff stays.** An automation run writes and commits its handoff like a worker run (`chore(itervox): record agent handoff`, on the issue branch). With `workspace.auto_clear` on, its success does not clear the worktree while the issue is not in a terminal state, so the next run on the issue (the implementer after a researcher, in an `issue_entered_state` chain) starts in the same worktree and sees that handoff under `## Prior Agent Handoffs`. The worktree is cleared as before once a run ends with the issue terminal.
+
 ## v0.2.0 release boundary
 
 v0.2.0 automations are single-profile helper runs. They are useful for low-risk glue work such as cron grooming, input-required helpers, PR-opened reviewer dispatch, failure summaries, and rate-limit fallback. They are not a production workflow engine for deterministic downstream chains.
@@ -131,6 +136,8 @@ Important behavior:
 - the issue still enters the normal input-required state
 - the helper automation runs against that same issue
 - if the selected profile is allowed to use `provide_input`, it can resume the blocked run through the daemon
+- the helper takes one turn: once it has answered, it ends, and the blocked run resumes once, with the answer, after the helper's exit (a second `provide-input` for the same request finds nothing to answer)
+- the helper's prompt still contains the issue's task from the `WORKFLOW.md` body, so its profile must say that answering is its whole job. The `input-responder` profile `itervox init` scaffolds says so: answer once with `provide-input`, never edit files, commit, push, open a pull request or move the issue. That is guidance in the prompt, not a sandbox; for a hard stop on pushes, give the profile `push: daemon` (see [Patches only](/guides/agent-profiles/#patches-only-the-daemon-pushes)), which needs `guardrails.enabled` and no `agent.ssh_hosts`. An automation run is never pushed by the daemon.
 
 Relevant fields:
 
@@ -640,7 +647,7 @@ The `policy` block controls behavior beyond the trigger and filter:
 
 - `auto_resume` — for `input_required` triggers: if the helper agent uses `provide_input`, resume the blocked run automatically.
 - `auto_switch` — for `rate_limited` triggers: required for automatic profile/backend switching. `auto_resume: true` is accepted as a compatibility alias.
-- `switch_to_profile` — for `rate_limited` triggers: reassign the issue to this profile when rate-limited.
+- `switch_to_profile` — for `rate_limited` triggers: reassign the issue to this profile when rate-limited. The issue's `agentProfile` shows the new profile and its next runs use it, even when an operator had pinned a profile on the issue before the switch. The switch is reverted after a successful run or after `agent.switch_revert_hours`, and the operator's pin then applies again; a pin set after the switch wins over it. `agent.max_switches_per_issue_per_window` caps how often an issue is switched.
 - `switch_to_backend` — for `rate_limited` triggers: override the backend when switching.
 - `cooldown_minutes` — for `rate_limited` triggers: minimum minutes before the automation can fire again on the same issue.
 - `move_to_state` — for `blockers_resolved` triggers: opt into moving matching unblocked issues to a target state. The selected profile must allow `move_state`.

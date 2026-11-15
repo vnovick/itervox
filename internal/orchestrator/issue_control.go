@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/metrics"
@@ -128,6 +129,7 @@ func (o *Orchestrator) TerminateIssue(identifier string) error {
 	// Clean up the per-issue backend override so stale entries don't persist.
 	o.issueBackendsMu.Lock()
 	delete(o.issueBackends, identifier)
+	delete(o.issueBackendSetAt, identifier)
 	o.issueBackendsMu.Unlock()
 
 	// Read both paused and running state under a single RLock so the two
@@ -206,13 +208,27 @@ func (o *Orchestrator) ReanalyzeIssue(identifier string) error {
 // SetIssueProfile sets (or clears) a named agent profile override for a specific issue.
 // Pass an empty profileName to reset the issue to the default profile.
 // Safe to call from any goroutine.
+//
+// The override persists (issue_profiles.json) so it survives a config
+// reload and a restart. An automatic switch recorded after it takes
+// precedence until reverted (autoSwitchSupersedes); setting it again
+// afterwards makes it the newer choice.
 func (o *Orchestrator) SetIssueProfile(identifier, profileName string) {
 	o.issueProfilesMu.Lock()
+	if o.issueProfiles == nil {
+		o.issueProfiles = make(map[string]string)
+	}
+	if o.issueProfileSetAt == nil {
+		o.issueProfileSetAt = make(map[string]time.Time)
+	}
 	if profileName == "" {
 		delete(o.issueProfiles, identifier)
+		delete(o.issueProfileSetAt, identifier)
 	} else {
 		o.issueProfiles[identifier] = profileName
+		o.issueProfileSetAt[identifier] = time.Now()
 	}
+	o.saveIssueProfilesLocked()
 	o.issueProfilesMu.Unlock()
 	slog.Info("orchestrator: issue profile updated", "identifier", identifier, "profile", profileName)
 	if o.OnStateChange != nil {
@@ -225,10 +241,18 @@ func (o *Orchestrator) SetIssueProfile(identifier, profileName string) {
 // Safe to call from any goroutine.
 func (o *Orchestrator) SetIssueBackend(identifier, backend string) {
 	o.issueBackendsMu.Lock()
+	if o.issueBackends == nil {
+		o.issueBackends = make(map[string]string)
+	}
+	if o.issueBackendSetAt == nil {
+		o.issueBackendSetAt = make(map[string]time.Time)
+	}
 	if backend == "" {
 		delete(o.issueBackends, identifier)
+		delete(o.issueBackendSetAt, identifier)
 	} else {
 		o.issueBackends[identifier] = backend
+		o.issueBackendSetAt[identifier] = time.Now()
 	}
 	o.issueBackendsMu.Unlock()
 	slog.Info("orchestrator: issue backend updated", "identifier", identifier, "backend", backend)

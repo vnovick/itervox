@@ -234,7 +234,7 @@ Work on {{ issue.identifier }}.
 		return err == nil
 	})
 	token := readTrim(t, tokenFile)
-	base := strings.TrimSuffix(readTrim(t, dashboardURLFilePath(p.Workflow)), "/")
+	base := strings.TrimSuffix(p.dashboardURL(t), "/")
 	startTotal, startCounts := gh.snapshot() // startup reads are left out: the same once per start in both modes
 
 	issues := func() map[string]string {

@@ -298,15 +298,8 @@ func demoOpenWhenReady(workflowPath string, out io.Writer) {
 
 // openBrowser opens url with the platform's default handler.
 func openBrowser(url string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
+	argv := browserOpenerArgs(runtime.GOOS, url) // shared with `itervox open`
+	cmd := exec.Command(argv[0], argv[1:]...)
 	if err := cmd.Start(); err != nil {
 		return err
 	}

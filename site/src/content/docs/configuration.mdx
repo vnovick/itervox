@@ -266,7 +266,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `root` | string | `~/.itervox/workspaces/<project>` | Directory where per-issue workspaces are created, namespaced per project by default. Supports `~` expansion and `$VAR_NAME` env var references. |
-| `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are unaffected. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes (v0.2.0 breaking change from the legacy "clear after every successful run" semantics). |
+| `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted **only when the issue reaches a terminal tracker state** — `completion_state` after success, or `failed_state` after retries are exhausted. The workspace persists across retries, input-required pauses, stalls, and pipeline mid-states so chained profiles can share `.itervox/handoff/` files on the same branch. Logs live in a separate dir and are unaffected. **Compatible with `agent.auto_review`** — the clear is deferred until after the reviewer also completes (v0.2.0 breaking change from the legacy "clear after every successful run" semantics). An automation run's success clears only an issue that is terminal by then, so an `issue_entered_state` chain keeps its worktree and handoffs. |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
 | `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. With `clone_url`, new worktrees start from `origin/<base_branch>` as last fetched. |
@@ -973,7 +973,7 @@ until the queue falls below the low-water mark.
 | `filter.mergeable_states` | string[] | Only for `pr_mergeable_changed`: fire on a move into these states. Empty = into or out of `dirty` (a conflict). |
 | `policy.auto_resume` | bool | For `input_required`, allows the helper to resume the blocked run via `provide_input`. For `rate_limited`, accepted but prefer `policy.auto_switch`. |
 | `policy.auto_switch` | bool | Alias for `policy.auto_resume` on `rate_limited`; allows immediate profile/backend switching without a human approval step. |
-| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. |
+| `policy.switch_to_profile` | string | Required for `rate_limited`; profile to use for the switched run. The issue is reassigned to it (over an earlier operator pin) until the switch is reverted. |
 | `policy.switch_to_backend` | string | Optional `claude`/`codex` backend override for `rate_limited` switched runs. |
 | `policy.cooldown_minutes` | int | Optional cooldown for `rate_limited` rules on the same issue/profile tuple. Default is 30 when unset. |
 | `policy.move_to_state` | string | Optional for `blockers_resolved`; allows the helper profile to move matching unblocked issues to this state when the profile includes `move_state`. |
@@ -1832,7 +1832,7 @@ What earlier runs and the people you work with want remembered. Treat each item 
 
 ## `.itervox` project files
 
-`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, starter profile files and the task-type playbooks in `.itervox/playbooks/` (#218). Commit `.itervox/agents/**` and `.itervox/playbooks/**`: those files are project agent definitions. `.itervox/playbook_overrides.json` (the per-issue playbook choices) is runtime state and stays ignored. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
+`itervox init` creates `.itervox/.gitignore`, `.itervox/.env`, starter profile files and the task-type playbooks in `.itervox/playbooks/` (#218). Commit `.itervox/agents/**` and `.itervox/playbooks/**`: those files are project agent definitions. `.itervox/playbook_overrides.json` (the per-issue playbook choices) and `.itervox/issue_profiles.json` (the per-issue profile overrides) are runtime state and stay ignored. Do not commit `.itervox/.env`, `.itervox/HEARTBEAT.md`, logs, runtime queue files, or other generated daemon state.
 
 On startup the daemon writes `.itervox/HEARTBEAT.md` atomically with the current workflow path, schema version, dashboard URL, tracker/project, tracker sync status (`## Sync`: mode, last pull, lag, pending writes, next push, last sync error), capacity, automation queue pressure, dependency audit summary, input-required count, retry count, and last notable error. Agents can read it when they need current daemon state; it is generated runtime state, not prompt text.
 

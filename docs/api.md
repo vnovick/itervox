@@ -2110,6 +2110,21 @@ example a `codex` pin over a `claude ...` profile, which the dispatcher would
 refuse. A refused pin is not stored. A pin applies from the next run and wins
 over `agent.backend_fallback`.
 
+`profile` sets the issue's `agentProfile` from its next run. The override is
+kept in `.itervox/issue_profiles.json` (runtime state, not committed), so it
+survives a `WORKFLOW.md` or settings reload and a restart; `{"profile":""}`
+clears it. A `rate_limited` rule's `switch_to_profile` (or an
+`agent.backend_fallback` reroute) that fires after the override reassigns the
+issue until that switch is reverted, and the override applies again after
+it; an override set after the switch wins. A reply to a question rehydrated
+from the tracker (its session was lost) resumes under the issue's profile.
+
+`dismiss-input` pauses the issue and records which question was dismissed
+(its tracker comment). When the issue is active again, that same unanswered
+comment does not block it as `input_required` again; a new question does.
+The record is kept in `input_required.json` in the daemon log directory and dropped when the
+issue reaches a terminal state.
+
 `failures/ack` (CORE-175) acknowledges the issue's `worker_failed` /
 `worker_stalled` rows in `recentFailures` that occurred at or before `upTo`
 (RFC 3339), so the dashboard's attention inbox stops counting them; a newer

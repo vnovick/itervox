@@ -120,7 +120,7 @@ type upgradeState struct {
 
 func getUpgradeState(t *testing.T, p *daemonProject, token string) upgradeState {
 	t.Helper()
-	base := readTrim(t, dashboardURLFilePath(p.Workflow))
+	base := p.dashboardURL(t)
 	req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(base, "/")+"/api/v1/state", nil)
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+token)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -72,10 +74,10 @@ type configWatchOptions struct {
 }
 
 // watchConfigFiles watches WORKFLOW.md and cfg's settings files until ctx
-// ends. A settled change that loads and validates calls requestReload; one
-// that does not is reported (reportInvalidConfigEdit) and the running config
-// is kept.
-func watchConfigFiles(ctx context.Context, workflowPath string, cfg *config.Config, requestReload func(), opts configWatchOptions) error {
+// ends. A settled change that loads and validates calls requestReload with
+// the files that changed; one that does not is reported
+// (reportInvalidConfigEdit) and the running config is kept.
+func watchConfigFiles(ctx context.Context, workflowPath string, cfg *config.Config, requestReload func(changed []string), opts configWatchOptions) error {
 	w := workflow.FileSetWatch{
 		Files:    configWatchSet(workflowPath, cfg),
 		Poll:     opts.Poll,
@@ -88,8 +90,46 @@ func watchConfigFiles(ctx context.Context, workflowPath string, cfg *config.Conf
 			return
 		}
 		slog.Info("reload: config files changed", "paths", changed)
-		requestReload()
+		requestReload(changed)
 	})
+}
+
+// mergeChangedFiles is a then the paths of b not already in a.
+func mergeChangedFiles(a, b []string) []string {
+	out := slices.Clone(a)
+	for _, p := range b {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// changedConfigFilesLabel names the changed config files for the reload log
+// lines ("WORKFLOW.md", ".itervox/settings.jsonc", "WORKFLOW.md and
+// .itervox/settings.jsonc"): each relative to WORKFLOW.md's directory when
+// it is inside it (the project and local settings files), else as given
+// (the user settings file). No paths: WORKFLOW.md, the file the reload was
+// always reported for.
+func changedConfigFilesLabel(workflowPath string, changed []string) string {
+	if len(changed) == 0 {
+		return filepath.Base(workflowPath)
+	}
+	base, baseErr := filepath.Abs(filepath.Dir(workflowPath))
+	names := make([]string, 0, len(changed))
+	for _, p := range changed {
+		name := p
+		if abs, err := filepath.Abs(p); err == nil && baseErr == nil {
+			if rel, err := filepath.Rel(base, abs); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				name = filepath.ToSlash(rel)
+			}
+		}
+		names = append(names, name)
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // probeConfigReload runs the checks the reload step runs (config.Load, then

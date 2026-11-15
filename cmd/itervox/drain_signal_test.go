@@ -130,7 +130,7 @@ func TestSIGTERMDrainLetsRunningWorkerFinishWithinGrace(t *testing.T) {
 	cmd, stderrPath := p.startHeadless(t, []string{"--shutdown-grace", "40s"})
 
 	waitFor(t, 20*time.Second, "first agent turn started", func() bool { return countLines(p.startedPath) >= 1 })
-	base := readTrim(t, dashboardURLFilePath(p.Workflow))
+	base := p.dashboardURL(t)
 	if status, _, err := readyProbe(base); err != nil || status != http.StatusOK {
 		t.Fatalf("before SIGTERM /ready = %d, %v; want 200", status, err)
 	}

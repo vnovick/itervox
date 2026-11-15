@@ -283,11 +283,23 @@ type Orchestrator struct {
 	// RWMutex allows concurrent Snapshot() calls without serialising each other.
 	issueProfilesMu sync.RWMutex
 	issueProfiles   map[string]string // identifier → profile name
+	// issueProfileSetAt is when the operator set each override: an automatic
+	// switch recorded after it (rate_limited switch_to_profile,
+	// backend_fallback) takes precedence until it is reverted
+	// (autoSwitchSupersedes). Guarded by issueProfilesMu.
+	issueProfileSetAt map[string]time.Time
+	// issueProfilesFile persists issueProfiles (+ set times) across config
+	// reloads and restarts (.itervox/issue_profiles.json). Guarded by
+	// issueProfilesMu; set before Run.
+	issueProfilesFile string
 
 	// issueBackendsMu guards issueBackends, which is written by SetIssueBackend
 	// (any goroutine) and read by dispatch (event loop goroutine) and Snapshot.
 	issueBackendsMu sync.RWMutex
 	issueBackends   map[string]string // identifier → "claude"|"codex"
+	// issueBackendSetAt mirrors issueProfileSetAt for backend pins. Guarded
+	// by issueBackendsMu.
+	issueBackendSetAt map[string]time.Time
 
 	// tasks are the New task specs (#251): custom instructions, base branch
 	// and playbook per task identifier. Written by HTTP goroutines and read
@@ -519,7 +531,9 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		userCancelledIDs:  make(map[string]struct{}),
 		userTerminatedIDs: make(map[string]struct{}),
 		issueProfiles:     make(map[string]string),
+		issueProfileSetAt: make(map[string]time.Time),
 		issueBackends:     make(map[string]string),
+		issueBackendSetAt: make(map[string]time.Time),
 		commentCounts:     make(map[string]int),
 		sshHostDescs:      sshHostDescs,
 		daemonInstanceID:  newDaemonInstanceID(),
