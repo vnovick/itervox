@@ -80,6 +80,7 @@ Each release has its own section, newest first. Changes merged since the last ta
   - the needs-attention card on `/hub/m` reads "Pipeline change · changes .github/workflows/ci.yml (+N)";
   - the issue page's approval card lists the files (up to 10, then "and N more") right above Approve and Reject, as the dashboard's "Pipeline change" notice does.
 - **The lane matcher is polynomial** in `**` segments (it was exponential on deep paths), and a long run of `git -C` options is linear.
+- **Editor suggestions are readable again.** The `@`/`{{` suggestion list and its description panel in the SOUL.md, INSTRUCTIONS.md and prompt editors used the translucent glass `--panel` after the redesign, so the text behind them showed through. They now use the opaque `--surface` with a shadow, as toasts do; the editor's search panel too.
 
 ### Changed
 
