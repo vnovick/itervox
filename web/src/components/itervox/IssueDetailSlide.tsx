@@ -115,19 +115,17 @@ export default function IssueDetailSlide() {
 
   if (!selectedIdentifier || !issue) return null;
 
+  const isRunning = issue.orchestratorState === 'running';
+
   const issueAttention = dependencyAttention.find((row) => row.identifier === issue.identifier);
   // CORE-070 — the lock follows the configured working state (exact,
   // case-insensitive match), not any state name containing "progress".
-  const isProfileLocked =
-    issue.orchestratorState === 'running' ||
-    issue.state.toLowerCase() === workingState.toLowerCase();
+  const isProfileLocked = isRunning || issue.state.toLowerCase() === workingState.toLowerCase();
   // The footer carries run controls only. Review is rendered once, in the
   // body (reachable for every non-running issue, including idle backlog and
   // completion-state issues), so the footer no longer keys on a state name.
   const hasFooterActions =
-    issue.orchestratorState === 'running' ||
-    issue.orchestratorState === 'retrying' ||
-    issue.orchestratorState === 'paused';
+    isRunning || issue.orchestratorState === 'retrying' || issue.orchestratorState === 'paused';
 
   const headerProps = {
     issue,
@@ -163,7 +161,7 @@ export default function IssueDetailSlide() {
           <Suspense fallback={<p className="text-theme-muted text-sm">Loading changes…</p>}>
             <IssueChangesTab
               identifier={issue.identifier}
-              live={issue.orchestratorState === 'running'}
+              live={isRunning}
               issueState={issue.state}
             />
           </Suspense>
@@ -171,13 +169,8 @@ export default function IssueDetailSlide() {
       ) : (
         /* Scrollable body */
         <div className="flex-1 space-y-4 overflow-y-auto px-6 pt-3 pb-5">
-          {runContextSupported && (
-            <IssueNowPanel
-              identifier={issue.identifier}
-              live={issue.orchestratorState === 'running'}
-            />
-          )}
-          {runContextSupported && issue.orchestratorState === 'running' && (
+          {runContextSupported && <IssueNowPanel identifier={issue.identifier} live={isRunning} />}
+          {runContextSupported && isRunning && (
             <IssueSteerBox identifier={issue.identifier} /> // #218
           )}
           <div className="flex items-center gap-3">
@@ -211,10 +204,7 @@ export default function IssueDetailSlide() {
               when the other has nothing to show. */}
           <div className="flex flex-col gap-3 empty:hidden sm:flex-row sm:items-start [&>*]:min-w-0 [&>*]:flex-1">
             <IssueStatusChanges changes={issue.statusChanges} />
-            <DecisionsTimeline
-              identifier={issue.identifier}
-              live={issue.orchestratorState === 'running'}
-            />
+            <DecisionsTimeline identifier={issue.identifier} live={isRunning} />
           </div>
           <IssueReviews
             review={issue.review}
@@ -227,10 +217,7 @@ export default function IssueDetailSlide() {
                 : undefined
             }
           />
-          <IssueSignedChecks
-            identifier={issue.identifier}
-            live={issue.orchestratorState === 'running'}
-          />
+          <IssueSignedChecks identifier={issue.identifier} live={isRunning} />
           {/* Priority + Labels */}
           {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
             <div className="flex flex-wrap items-center gap-2">
@@ -417,7 +404,7 @@ export default function IssueDetailSlide() {
             )}
 
             {/* Running state */}
-            {issue.orchestratorState === 'running' && (
+            {isRunning && (
               <>
                 <button
                   onClick={() => {
