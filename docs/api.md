@@ -288,6 +288,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `POST` | `/api/v1/agent-actions/{identifier}/guardrail/approvals` | per-run agent grant |
 | `GET` | `/api/v1/agent-actions/{identifier}/guardrail/approvals/{id}` | per-run agent grant (Viewer: reads and streams.) |
 | `POST` | `/api/v1/agent-actions/{identifier}/guardrail/events` | per-run agent grant |
+| `POST` | `/api/v1/agent-actions/{identifier}/guardrail/lanes` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/merge_pr` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/move-state` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/provide-input` | per-run agent grant |
@@ -307,6 +308,7 @@ API token. These routes are:
 - `POST /agent-actions/{identifier}/guardrail/events` (#204)
 - `POST /agent-actions/{identifier}/guardrail/approvals` (#204)
 - `GET /agent-actions/{identifier}/guardrail/approvals/{id}` (#204)
+- `POST /agent-actions/{identifier}/guardrail/lanes` (guardrails.lanes)
 
 Profiles opt into these capabilities with `allowed_actions`,
 `create_issue_state` and `create_issue_labels` in `WORKFLOW.md`. The guardrail routes take a separate
@@ -2792,10 +2794,11 @@ form reaches the daemon.
 | `POST` | `/agent-actions/{identifier}/guardrail/events` | `{"kind":"self_merge","tool":"gh","command":"gh pr merge 12"}` | `204` |
 | `POST` | `/agent-actions/{identifier}/guardrail/approvals` | `{"key":"<sha256 of the exact command>","command":"vercel --prod"}` | `{"id":"…","status":"pending"}` |
 | `GET` | `/agent-actions/{identifier}/guardrail/approvals/{id}` | — | `{"id":"…","status":"pending"\|"approved"\|"rejected"\|"unknown","message":"<reply>"}` |
+| `POST` | `/agent-actions/{identifier}/guardrail/lanes` | `{"lane":"second_opinion","paths":["internal/auth/token.go"],"paths_total":1}` | `204` |
 
 `kind` is one of `branch`, `force_push`, `delete`, `tag`, `hook_bypass`,
-`self_merge`, `approval_rejected`, `approval_unavailable` (anything else is
-`400`); a report is logged, written to the issue's log, recorded in
+`self_merge`, `approval_rejected`, `approval_unavailable`, `lane_human`,
+`lane_rejected` (anything else is `400`); a report is logged, written to the issue's log, recorded in
 `recentFailures` (kind `guardrail`, source = the kind) and counted in
 `itervox_guardrail_blocks_total{kind}`. A new approval request shows as an
 input-required entry of the running issue ("Agent wants to run: …") and is
@@ -2803,6 +2806,15 @@ posted to the tracker; a request with the same `key` as an open one joins it.
 An `approved` status is returned to exactly one read, which spends it; later
 reads answer `unknown`, as do requests of a run that has ended. Without an
 action-grant store the routes answer `501`; a full event queue answers `503`.
+
+A push held by [`guardrails.lanes.human`](https://itervox.dev/guides/guardrails/#lanes)
+raises an approval request with `"lane":"human"`, `"paths"` (at most 50) and
+`"paths_total"`; it shows as a "Pipeline change" input-required entry
+(`guardrailLanePaths` / `guardrailLanePathsTotal` on the snapshot row), and a
+rejection counts `lane_rejected`. `guardrail/lanes` records that a push the
+hook let through reached the `second_opinion` or `human` lane (any other
+`lane` is `400`); `merge_pr` then answers `409 merge_blocked` with a
+`lane_human:` or `lane_second_opinion:` reason (see the guardrails guide).
 
 When the daemon spawns a **local** agent subprocess for a profile that has any
 `allowed_actions` configured, the following environment variables are injected

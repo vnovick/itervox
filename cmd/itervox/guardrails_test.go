@@ -159,7 +159,8 @@ func TestInitUpdateAddsGuardrailsBlock(t *testing.T) {
 	assert.Contains(t, string(data), "# Guardrails (#204)")
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
-	assert.Equal(t, config.GuardrailsConfig{Enabled: true, ApprovalCommands: config.DefaultGuardrailApprovalCommands}, cfg.Guardrails)
+	assert.Equal(t, config.GuardrailsConfig{Enabled: true, ApprovalCommands: config.DefaultGuardrailApprovalCommands,
+		Lanes: config.GuardrailLanesConfig{Human: config.DefaultGuardrailHumanLane}}, cfg.Guardrails)
 
 	again, err := migrateWorkflowToSchema2(path, false, time.Now())
 	require.NoError(t, err)

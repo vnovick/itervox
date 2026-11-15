@@ -859,6 +859,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	// the sidecar they dismiss edges from, independent of --log placement.
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
+	orch.SetPushLanesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "push_lanes.json"))                 // guardrails.lanes
 	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
 
 	// outbox Task 3 — write-ahead outbox for tracker state transitions and

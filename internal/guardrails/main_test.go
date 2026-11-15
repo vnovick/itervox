@@ -88,6 +88,18 @@ func (r *rig) commit(msg string) {
 // programs) but behind the shims.
 func (r *rig) agent(script string, extraPath ...string) (string, int) {
 	r.t.Helper()
+	out, err := r.agentCmd(script, extraPath...).CombinedOutput()
+	code := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		require.ErrorAs(r.t, err, &exitErr, "agent script: %s", out)
+		code = exitErr.ExitCode()
+	}
+	return string(out), code
+}
+
+// agentCmd is the command agent runs, not yet started.
+func (r *rig) agentCmd(script string, extraPath ...string) *exec.Cmd {
 	path := os.Getenv("PATH")
 	for _, p := range extraPath {
 		path = p + string(os.PathListSeparator) + path
@@ -96,14 +108,7 @@ func (r *rig) agent(script string, extraPath ...string) (string, int) {
 	cmd.Dir = r.work
 	cmd.Env = append(gitexec.Environ(), "PATH="+path, "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com", "GIT_CONFIG_GLOBAL=/dev/null")
-	out, err := cmd.CombinedOutput()
-	code := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		require.ErrorAs(r.t, err, &exitErr, "agent script: %s", out)
-		code = exitErr.ExitCode()
-	}
-	return string(out), code
+	return cmd
 }
 
 func (r *rig) remoteRef(ref string) string {

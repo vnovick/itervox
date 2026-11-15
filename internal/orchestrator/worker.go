@@ -358,7 +358,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// their environment after the command's own assignments (the action
 	// bridge's PATH below), so the shims stay first on PATH.
 	guardEnv, guard, guardToken := o.prepareRunGuardrails(ctx, issue.Identifier, runLogID, wsPath, workerHost,
-		activeBranchName, turnTimeoutMs, maxTurns)
+		activeBranchName, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), turnTimeoutMs, maxTurns)
 	if guard != nil {
 		ctx = agent.WithRunEnv(ctx, guardEnv)
 	}

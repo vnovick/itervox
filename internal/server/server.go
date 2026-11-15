@@ -499,6 +499,16 @@ type FailureAcker interface {
 // ErrNoWorkerFailure is FailureAcker's "nothing to acknowledge" (→ 404).
 var ErrNoWorkerFailure = errors.New("server: issue has no recent worker failure")
 
+// MergeLaneChecker is optionally implemented by the orchestrator client
+// (guardrails.lanes): merge_pr asks it before merging. A non-empty reason
+// refuses the merge (409 merge_blocked) — a pull request whose pushes
+// changed human-lane files is a human's to merge, and one that changed
+// second-opinion files needs an approving review from a reviewer on a
+// different backend than the writer's.
+type MergeLaneChecker interface {
+	MergeLaneRefusal(ctx context.Context, identifier string) string
+}
+
 type PRMergedEmitter interface {
 	// headRef is the PR's head branch (trigger.pr_branch); prURL and
 	// baseRef bind trigger.pr_url and trigger.pr_base_branch (CORE-108).
@@ -1311,6 +1321,11 @@ type InputRequiredRow struct {
 	// whose first word is approve/yes/ok runs the held command once; any
 	// other reply rejects it (#240: itervox watch prints itervox approve).
 	GuardrailApproval bool `json:"guardrailApproval,omitempty"`
+	// GuardrailLanePaths are the files of a push held by
+	// guardrails.lanes.human (a "pipeline change"), at most 50;
+	// GuardrailLanePathsTotal how many there were.
+	GuardrailLanePaths      []string `json:"guardrailLanePaths,omitempty"`
+	GuardrailLanePathsTotal int      `json:"guardrailLanePathsTotal,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -1865,6 +1880,7 @@ func (s *Server) routes() {
 		r.Post("/agent-actions/{identifier}/guardrail/events", s.handleGuardrailEvent)
 		r.Post("/agent-actions/{identifier}/guardrail/approvals", s.handleGuardrailApprovalRequest)
 		r.Get("/agent-actions/{identifier}/guardrail/approvals/{id}", s.handleGuardrailApprovalStatus)
+		r.Post("/agent-actions/{identifier}/guardrail/lanes", s.handleGuardrailLane)
 		// Tracker webhooks (#131): signed by the webhook secret, not the
 		// bearer token.
 		r.Post("/webhooks/{tracker}", s.handleWebhook)

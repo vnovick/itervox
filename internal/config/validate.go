@@ -266,6 +266,9 @@ func ValidateDispatch(cfg *Config) error {
 	if err := ValidateDepsAnalyzerProfile(cfg.Agent.Profiles, cfg.Agent.DepsAnalyzerProfile); err != nil {
 		return err
 	}
+	if err := ValidateGuardrailLanes(cfg.Guardrails.Lanes); err != nil {
+		return err
+	}
 	if err := ValidateAutoClearAutoReview(
 		cfg.Workspace.AutoClearWorkspace,
 		cfg.Agent.ReviewerProfile,

@@ -60,6 +60,9 @@ type Options struct {
 	// PreApproved are approval commands the operator approved before the
 	// run (Policy.PreApproved).
 	PreApproved []string
+	// Lanes and BaseRefs classify pushes (Policy.Lanes, Policy.BaseRefs).
+	Lanes    Lanes
+	BaseRefs []string
 }
 
 // Runtime is one run's prepared guardrails directory.
@@ -95,6 +98,8 @@ func Prepare(ctx context.Context, opts Options) (*Runtime, error) {
 		DaemonURL:         opts.DaemonURL,
 		Token:             opts.Token,
 		PreApproved:       opts.PreApproved,
+		Lanes:             opts.Lanes,
+		BaseRefs:          opts.BaseRefs,
 	}
 	r := &Runtime{policy: p}
 	if err := r.write(opts.Executable); err != nil {

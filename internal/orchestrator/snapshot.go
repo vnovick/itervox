@@ -1246,7 +1246,8 @@ func copyInputRequiredMap(m map[string]*InputRequiredEntry) map[string]*InputReq
 			cp[k] = nil
 			continue
 		}
-		e := *v // copy struct value; InputRequiredEntry has no reference fields
+		e := *v
+		e.GuardrailLanePaths = cloneSlice(v.GuardrailLanePaths) // its one reference field
 		cp[k] = &e
 	}
 	return cp

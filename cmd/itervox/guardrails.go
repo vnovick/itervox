@@ -54,6 +54,10 @@ func (a guardrailsAdapter) GuardrailApprovalStatus(identifier, runID, id string)
 	return a.orch.GuardrailApprovalStatus(identifier, runID, id)
 }
 
+func (a guardrailsAdapter) GuardrailLane(identifier, runID string, rep guardrails.LaneReport) error {
+	return mapIssueControlErr(a.orch.GuardrailLane(identifier, runID, rep))
+}
+
 func (a guardrailsAdapter) ProvideAgentInput(identifier, message string) error {
 	return mapIssueControlErr(a.orch.ProvideAgentInput(identifier, message))
 }
@@ -99,6 +103,7 @@ const tmuxGuardTokenTTL = 24 * time.Hour
 type tmuxGuardrails struct {
 	cfg       config.GuardrailsConfig
 	protected []string
+	baseRefs  []string // guardrails.lanes: what a pushed branch is compared with
 	exe       string
 	tokens    *agentactions.Store
 	daemonURL string
@@ -113,7 +118,14 @@ type tmuxGuard struct {
 }
 
 func newTmuxGuardrails(cfg *config.Config, exe string, tokens *agentactions.Store, daemonURL string) *tmuxGuardrails {
-	return &tmuxGuardrails{cfg: cfg.Guardrails, protected: guardrails.ProtectedBranches(cfg.Agent.BaseBranch, cfg.Workspace.BaseBranch),
+	var baseRefs []string
+	for _, b := range []string{cfg.Workspace.BaseBranch, cfg.Agent.BaseBranch} {
+		if b != "" {
+			baseRefs = append(baseRefs, "origin/"+b, b)
+		}
+	}
+	baseRefs = append(baseRefs, "origin/HEAD", "origin/main", "main")
+	return &tmuxGuardrails{cfg: cfg.Guardrails, baseRefs: baseRefs, protected: guardrails.ProtectedBranches(cfg.Agent.BaseBranch, cfg.Workspace.BaseBranch),
 		exe: exe, tokens: tokens, daemonURL: daemonURL, runtimes: map[string]tmuxGuard{}}
 }
 
@@ -127,6 +139,10 @@ func (g *tmuxGuardrails) prepare(ctx context.Context, id, cwd string) (string, e
 		ProtectedBranches: g.protected,
 		AllowForcePush:    g.cfg.AllowForcePush,
 		ApprovalCommands:  g.cfg.ApprovalCommands,
+		// guardrails.lanes: no approval channel here, so a human-lane push
+		// is refused; classified against the configured base branch.
+		Lanes:    guardrails.Lanes{Human: g.cfg.Lanes.Human, SecondOpinion: g.cfg.Lanes.SecondOpinion},
+		BaseRefs: g.baseRefs,
 	}
 	token := ""
 	if g.tokens != nil && g.daemonURL != "" {
