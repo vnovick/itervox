@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Button } from '../../ui/button';
 import { InputReplyBox } from '../InputReplyBox';
+import { PipelineChangeNotice } from '../PipelineChangeNotice';
 import { RequireScope } from '../RequireScope';
 import { useDismissInput, useProvideInput } from '../../../queries/issues';
 import { useRunContext } from '../../../queries/changes';
@@ -43,6 +44,9 @@ export function MobileIssueDecision({ identifier }: { identifier: string }) {
         <p className="text-theme-text text-lg leading-snug font-semibold break-words">
           {run.pendingInput}
         </p>
+        {/* A held pipeline push names its files right above Approve, so the
+            person sees what they let through (nothing for other approvals). */}
+        {run.pendingApproval && <PipelineChangeNotice identifier={identifier} />}
         {run.pendingApproval ? (
           <div className="grid grid-cols-2 gap-2">
             <Button

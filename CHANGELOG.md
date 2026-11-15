@@ -78,6 +78,9 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 - **A held push no longer fails after `agent.read_timeout_ms`.** While a guardrail approval is pending, the agent prints nothing, so the turn used to fail after 30 seconds and be retried. The idle read deadline is now suspended while the run waits for the operator and restarts in full from the answer, and a run waiting for an approval is not treated as stalled. `agent.turn_timeout_ms` still bounds the wait.
 - **A held pipeline push shows its files.** The list of pipeline files now appears in the Needs-attention reply row and in the issue's Now panel. Before, it only rendered in the input-required panel, which a held push never reaches because its issue is still running.
+- **The hub's phone view names the files of a held pipeline push.** When an agent's push changes `guardrails.lanes.human` files, the approval on a phone now shows which files it touches:
+  - the needs-attention card on `/hub/m` reads "Pipeline change · changes .github/workflows/ci.yml (+N)";
+  - the issue page's approval card lists the files (up to 10, then "and N more") right above Approve and Reject, as the dashboard's "Pipeline change" notice does.
 - **The lane matcher is polynomial** in `**` segments (it was exponential on deep paths), and a long run of `git -C` options is linear.
 
 ### Changed

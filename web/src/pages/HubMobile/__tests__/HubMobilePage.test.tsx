@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import HubMobilePage from '../index';
 import { configureApiContext, configureApiOrigin } from '../../../auth/apiBase';
-import { projectsNeedingAttention } from '../../../queries/hubPhone';
+import { pipelineChangeSummary, projectsNeedingAttention } from '../../../queries/hubPhone';
 import { HubProjectsResponseSchema } from '../../../types/schemas';
 
 const project = (name: string, counts: Record<string, number>, proxied = true) => ({
@@ -124,6 +124,49 @@ describe('HubMobilePage needs-attention list', () => {
     expect(urls.some((u) => u.includes('/hub/p/beta/'))).toBe(false); // nothing waiting
     expect(urls.some((u) => u.includes('/hub/p/legacy/'))).toBe(false); // not proxied
     expect(screen.getByRole('tab', { name: /Needs you/ }).textContent).toContain('2');
+  });
+
+  it('names the pipeline files of a held push on its card', async () => {
+    const state = {
+      ...ALPHA_STATE,
+      inputRequired: [
+        {
+          identifier: 'ENG-7',
+          sessionId: 's7',
+          state: 'input_required',
+          context: 'Pipeline change: the agent wants to push changes to …',
+          queuedAt: '2026-10-22T10:00:00Z',
+          guardrailApproval: true,
+          guardrailLanePaths: ['.github/workflows/ci.yml', 'Makefile'],
+          guardrailLanePathsTotal: 3,
+        },
+        ALPHA_STATE.inputRequired[0],
+      ],
+      recentFailures: [],
+    };
+    global.fetch = vi.fn((url: string) =>
+      Promise.resolve(
+        new Response(JSON.stringify(url.endsWith('/state') ? state : PROJECTS), { status: 200 }),
+      ),
+    ) as unknown as typeof fetch;
+    renderPage();
+    const section = await screen.findByRole('region', { name: 'Needs attention' });
+    const cards = await within(section).findAllByTestId('attention-card');
+    expect(cards).toHaveLength(2);
+    const held = cards.find((c) => c.textContent.includes('ENG-7'));
+    const plain = cards.find((c) => c.textContent.includes('ENG-1'));
+    expect(within(held as HTMLElement).getByTestId('attention-pipeline').textContent).toBe(
+      'Pipeline changechanges .github/workflows/ci.yml (+2)',
+    );
+    expect(within(plain as HTMLElement).queryByTestId('attention-pipeline')).toBeNull();
+  });
+
+  it('summarises pipeline paths for a narrow card', () => {
+    expect(pipelineChangeSummary([], 0)).toBe('');
+    expect(pipelineChangeSummary(undefined, 4)).toBe('');
+    expect(pipelineChangeSummary(['.github/workflows/ci.yml'], 1)).toBe('.github/workflows/ci.yml');
+    expect(pipelineChangeSummary(['a', 'b'], 0)).toBe('a (+1)');
+    expect(pipelineChangeSummary(['a', 'b'], 60)).toBe('a (+59)');
   });
 
   it('says nothing needs you, and switches to the projects view', async () => {

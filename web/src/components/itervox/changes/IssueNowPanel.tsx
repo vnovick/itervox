@@ -22,7 +22,16 @@ const NOW_FILES_SHOWN = 8;
  * the run is live; shows the last finished run otherwise.
  * Renders nothing when the issue has neither a run nor a worktree.
  */
-export function IssueNowPanel({ identifier, live }: { identifier: string; live: boolean }) {
+export function IssueNowPanel({
+  identifier,
+  live,
+  pipelineNotice = true,
+}: {
+  identifier: string;
+  live: boolean;
+  /** False where the page's own approval card already names the pipeline files. */
+  pipelineNotice?: boolean;
+}) {
   const { data } = useRunContext(identifier, { enabled: true, live });
   const systemVisibility = useItervoxStore(
     (s) => s.snapshot?.capabilities?.includes(SYSTEM_VISIBILITY_CAPABILITY) ?? false,
@@ -90,7 +99,7 @@ export function IssueNowPanel({ identifier, live }: { identifier: string; live: 
       {/* A held push belongs to a running issue (its agent waits in the
           guardrail shim), so the input-required panel never shows it; the
           notice names the pipeline files here (nothing for other approvals). */}
-      {run?.pendingApproval && <PipelineChangeNotice identifier={identifier} />}
+      {pipelineNotice && run?.pendingApproval && <PipelineChangeNotice identifier={identifier} />}
       {run && (run.queuedSteers > 0 || run.steers.length > 0) && (
         <p className="text-theme-text-secondary text-xs">
           Steering: {run.steers.length} delivered
