@@ -9,6 +9,12 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Fixed
+
+- **The hub's phone view names the files of a held pipeline push.** When an agent's push changes `guardrails.lanes.human` files, the approval on a phone now shows which files it touches:
+  - the needs-attention card on `/hub/m` reads "Pipeline change · changes .github/workflows/ci.yml (+N)";
+  - the issue page's approval card lists the files (up to 10, then "and N more") right above Approve and Reject, as the dashboard's "Pipeline change" notice does.
+
 ## [0.3.3] — 2026-11-15
 
 ### Added
