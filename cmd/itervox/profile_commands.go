@@ -50,11 +50,13 @@ func unresolvableProfileCommands(cfg *config.Config) []string {
 	return out
 }
 
-// firstField returns the executable portion of a command line.
+// firstField returns the executable portion of a command line: the program
+// the daemon will run, after any backend hint, leading VAR=value assignments
+// and an `env` prefix (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude` is
+// claude, as the Local models guide writes it).
 func firstField(command string) string {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
-		return ""
+	if hinted, rest := config.ParseBackendHint(command); hinted != "" {
+		command = rest
 	}
-	return fields[0]
+	return config.FirstCommandToken(strings.TrimSpace(command))
 }

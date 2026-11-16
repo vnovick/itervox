@@ -41,14 +41,17 @@ type Liveness struct {
 }
 
 // ProcessBackend is "claude" or "codex" when p runs that CLI — its
-// executable, or the script an interpreter (node, bun, deno) runs — and ""
-// otherwise.
+// executable, or the script an interpreter (node, bun, deno, or a shell
+// running a wrapper script) runs — and "" otherwise. The shells matter on
+// macOS: ps reports a script started through its shebang as
+// `/bin/sh /path/claude`, where Linux's /proc comm already names the
+// script.
 func ProcessBackend(p Process) string {
 	candidates := []string{p.Name}
 	if len(p.Args) > 0 {
 		candidates = append(candidates, p.Args[0])
 		switch filepath.Base(p.Args[0]) {
-		case "node", "bun", "deno", "nodejs":
+		case "node", "bun", "deno", "nodejs", "sh", "bash", "zsh", "dash":
 			for _, a := range p.Args[1:min(len(p.Args), 4)] {
 				if !strings.HasPrefix(a, "-") {
 					candidates = append(candidates, a)

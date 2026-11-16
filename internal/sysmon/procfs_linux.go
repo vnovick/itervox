@@ -13,6 +13,11 @@ import (
 // maxFDsScanned bounds how many fds of one process a sample inspects.
 const maxFDsScanned = 512
 
+// clockTicks is USER_HZ, the unit of utime/stime in /proc/<pid>/stat. It is
+// part of the userspace ABI and 100 on every architecture Linux supports
+// today, independent of the kernel's internal HZ.
+const clockTicks = 100
+
 // procfsSource reads /proc (root is "/proc" in production and a fixture
 // tree in tests).
 type procfsSource struct {

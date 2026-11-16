@@ -95,12 +95,15 @@ func newTmuxRig(t *testing.T, sessionsYAML string, needTmux bool) *tmuxRig {
 	if _, err := exec.LookPath("tmux"); err != nil && needTmux {
 		t.Skip("tmux is not installed")
 	}
-	root := t.TempDir()
+	// Resolved: the process filter below compares it with the cwd the OS
+	// reports, and on macOS t.TempDir() is under /var, a symlink to
+	// /private/var (lsof reports the latter).
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	r := &tmuxRig{t: t, project: filepath.Join(root, "app"), home: filepath.Join(root, "home"), bin: filepath.Join(root, "bin")}
 	for _, d := range []string{r.project, r.home, r.bin, filepath.Join(root, "out"), filepath.Join(root, "ws", "ENG-1")} {
 		require.NoError(t, os.MkdirAll(d, 0o755))
 	}
-	var err error
 	r.project, err = filepath.EvalSymlinks(r.project)
 	require.NoError(t, err)
 	claude := fakeCLI(t, r.bin, filepath.Join(root, "out"), "claude")
