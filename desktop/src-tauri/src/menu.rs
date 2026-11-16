@@ -12,6 +12,12 @@ use crate::remote_model::ConnectionView;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
     OpenDashboard(String),
+    /// Open the project's dashboard in the default browser, logged in the
+    /// way `itervox open` does (`?token=`, which the dashboard stores and
+    /// strips). Shown next to Open Dashboard with the same enable rule,
+    /// except that a remote daemon reached through its host's hub has it
+    /// disabled: that route's token is the app's own long-lived hub token.
+    OpenInBrowser(String),
     /// Open the dashboard of `project` at `url` (an issue deep link).
     OpenUrl {
         project: String,
@@ -122,6 +128,10 @@ impl Builder {
 /// tray's "New Task…" opens; the Go menu's New Task… uses the same path.
 pub const NEW_TASK_PATH: &str = "/?newTask=1";
 
+/// The label of the item that opens a project's dashboard in the default
+/// browser, next to "Open Dashboard".
+pub const OPEN_IN_BROWSER_LABEL: &str = "Open in Browser";
+
 /// The Quit item's label: quitting the app leaves the daemons running.
 pub const QUIT_LABEL: &str = "Quit Itervox (daemons keep running)";
 
@@ -213,6 +223,11 @@ pub fn build_menu<'a>(
                 "Open Dashboard",
                 v.running() && !busy,
                 MenuAction::OpenDashboard(v.key.clone()),
+            ),
+            b.item(
+                OPEN_IN_BROWSER_LABEL,
+                v.running() && !busy,
+                MenuAction::OpenInBrowser(v.key.clone()),
             ),
             b.item(
                 "Repo Analysis",
@@ -392,6 +407,11 @@ fn remote_submenu(b: &mut Builder, c: &ConnectionView) -> MenuEntry {
                 "Open Dashboard",
                 up,
                 MenuAction::OpenDashboard(d.key.clone()),
+            ),
+            b.item(
+                OPEN_IN_BROWSER_LABEL,
+                d.browser_ok(),
+                MenuAction::OpenInBrowser(d.key.clone()),
             ),
             b.item(
                 "Repo Analysis",
@@ -795,6 +815,7 @@ mod tests {
             [
                 "-",
                 "Open Dashboard",
+                "Open in Browser",
                 "Repo Analysis",
                 "Memory",
                 "New Task…",
@@ -891,10 +912,113 @@ mod tests {
             "Stop",
             "Restart",
             "Open Dashboard",
+            "Open in Browser",
             "Repo Analysis",
             "Memory",
         ] {
             assert!(!find(&spec, l, "up").unwrap().1, "{l}");
+        }
+    }
+
+    /// "Open in Browser" sits right after Open Dashboard in each local
+    /// project's submenu, follows its enable rule (running, no operation
+    /// pending) and routes to `OpenInBrowser` with the project's key.
+    #[test]
+    fn open_in_browser_follows_open_dashboard_for_local_projects() {
+        let spec = build_menu(
+            &[view("/up", true), view("/down", false)],
+            &[],
+            [].iter(),
+            None,
+        );
+        for (within, running) in [("up", true), ("down", false)] {
+            let (dash, dash_on) = find(&spec, "Open Dashboard", within).unwrap();
+            let (id, on) = find(&spec, OPEN_IN_BROWSER_LABEL, within).unwrap();
+            assert_eq!(on, dash_on, "{within}");
+            assert_eq!(on, running, "{within}");
+            assert_ne!(id, dash);
+            assert_eq!(
+                spec.actions[id],
+                MenuAction::OpenInBrowser(format!("/{within}"))
+            );
+        }
+    }
+
+    /// A remote daemon's "Open in Browser": enabled while its own tunnel
+    /// is up, like Open Dashboard; disabled while the tunnel is down, and
+    /// for a member reached through its host's hub (the app does not hand
+    /// its own hub token to a browser), where Open Dashboard stays on.
+    #[test]
+    fn open_in_browser_for_remotes_needs_a_direct_tunnel() {
+        use crate::remote_model::RemoteDaemonView;
+        use crate::tunnel::{TunnelPhase, TunnelStatus};
+        let daemon = |key: &str, phase: TunnelPhase, hub_path: Option<&str>| RemoteDaemonView {
+            key: key.into(),
+            workflow: format!("/srv/{key}/WORKFLOW.md"),
+            name: key.into(),
+            tunnel: Some(TunnelStatus {
+                id: key.into(),
+                local_port: 50001,
+                phase,
+                pid: Some(9),
+                starts: 1,
+                last_error: None,
+            }),
+            health: Health::Ok(StateSummary::default()),
+            has_token: true,
+            hub_path: hub_path.map(str::to_string),
+        };
+        let conns = vec![ConnectionView {
+            id: "prod".into(),
+            name: "Prod".into(),
+            transport: "ssh me@box".into(),
+            daemons: vec![
+                daemon("direct", TunnelPhase::Up, None),
+                daemon("down", TunnelPhase::Connecting, None),
+                daemon("member", TunnelPhase::Up, Some("hub/p/member/")),
+            ],
+            error: None,
+            hub: None,
+        }];
+        let spec = build_menu(&[], &conns, [].iter(), None);
+        let sub = |name: &str| -> Vec<(String, bool, Option<MenuAction>)> {
+            spec.entries
+                .iter()
+                .find_map(|e| match e {
+                    MenuEntry::Submenu { items, .. } => items.iter().find_map(|i| match i {
+                        MenuEntry::Submenu { label, items } if label.contains(name) => {
+                            Some(items.clone())
+                        }
+                        _ => None,
+                    }),
+                    _ => None,
+                })
+                .unwrap()
+                .into_iter()
+                .filter_map(|i| match i {
+                    MenuEntry::Item {
+                        id, label, enabled, ..
+                    } => Some((label, enabled, spec.actions.get(&id).cloned())),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (name, dash_on, browser_on) in [
+            ("direct", true, true),
+            ("down", false, false),
+            ("member", true, false),
+        ] {
+            let items = sub(name);
+            let pos = |l: &str| items.iter().position(|(il, ..)| il == l).unwrap();
+            let (dash, browser) = (pos("Open Dashboard"), pos(OPEN_IN_BROWSER_LABEL));
+            assert_eq!(browser, dash + 1, "{name}: next to Open Dashboard");
+            assert_eq!(items[dash].1, dash_on, "{name}");
+            assert_eq!(items[browser].1, browser_on, "{name}");
+            assert_eq!(
+                items[browser].2,
+                Some(MenuAction::OpenInBrowser(name.to_string())),
+                "{name}"
+            );
         }
     }
 

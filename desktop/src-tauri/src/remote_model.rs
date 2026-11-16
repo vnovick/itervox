@@ -53,6 +53,14 @@ impl RemoteDaemonView {
         })
     }
 
+    /// Whether "Open in Browser" may open this daemon: its tunnel is up
+    /// (Open Dashboard's rule) and it is not reached through the host's
+    /// hub, whose token the app created for itself and does not hand to a
+    /// browser ([`RemoteCore::browser_target`]).
+    pub fn browser_ok(&self) -> bool {
+        self.url().is_some() && self.hub_path.is_none()
+    }
+
     pub fn status_line(&self) -> String {
         let Some(t) = &self.tunnel else {
             return "not connected".into();
@@ -373,6 +381,31 @@ impl RemoteCore {
         })
     }
 
+    /// The target "Open in Browser" opens for a remote daemon: Open
+    /// Dashboard's ([`Self::dashboard_target`], same tunnel URL and token),
+    /// except for a daemon reached through its host's hub. That route's
+    /// token is the hub token the app created on the host for itself
+    /// (operator scope, every member, kept until the remote is removed); a
+    /// browser would keep it in its history, so it is not handed over.
+    pub fn browser_target(
+        &self,
+        key: &str,
+        tokens: &dyn TokenStore,
+    ) -> Result<DashboardTarget, &'static str> {
+        let d = self
+            .daemon(key)
+            .ok_or("That remote daemon is not connected yet.")?;
+        if !d.browser_ok() {
+            return Err(if d.hub_path.is_some() {
+                "Open in Browser is not available for a project reached through its host's hub. Use Open Dashboard."
+            } else {
+                "That remote daemon is not connected yet."
+            });
+        }
+        self.dashboard_target(key, tokens, None)
+            .ok_or("That remote daemon is not connected yet.")
+    }
+
     /// Applies one refresh; returns the alerts to raise.
     pub fn apply(
         &mut self,
@@ -602,6 +635,19 @@ mod tests {
         assert_eq!(t.url, format!("{hub_base}hub/p/alpha/?issue=ENG-1"));
         assert_eq!(t.origin, hub.origin);
         assert_eq!(t.token.as_deref(), Some(hub_token.as_str()));
+        // Open in Browser never hands the app's hub token to a browser:
+        // a member reached through the hub is refused (the menu disables
+        // it), while the daemon on its own tunnel opens as Open Dashboard.
+        assert!(!core.daemon(key).unwrap().browser_ok());
+        let err = core.browser_target(key, &tokens).unwrap_err();
+        assert!(err.contains("through its host's hub"), "{err}");
+        assert!(!err.contains(&hub_token), "{err}");
+        let solo_key = "remote/prod//srv/solo/WORKFLOW.md";
+        assert!(core.daemon(solo_key).unwrap().browser_ok());
+        assert_eq!(
+            core.browser_target(solo_key, &tokens),
+            Ok(core.dashboard_target(solo_key, &tokens, None).unwrap())
+        );
 
         // The hub stops answering: each member gets its own tunnel again,
         // read with its own token; the deep link moves onto that tunnel.
@@ -636,6 +682,11 @@ mod tests {
             .unwrap();
         assert_eq!(t.url, format!("{}/?issue=ENG-1", alpha.origin));
         assert_eq!(t.token.as_deref(), Some("alpha-fixture"));
+        // On its own tunnel the member opens in the browser with its own
+        // token, exactly Open Dashboard's target.
+        let b = core.browser_target(key, &tokens).unwrap();
+        assert_eq!(b.url, format!("{}/", alpha.origin));
+        assert_eq!(b.token.as_deref(), Some("alpha-fixture"));
     }
 
     fn remotes() -> Remotes {
@@ -709,6 +760,8 @@ mod tests {
         assert_eq!(t.url, "http://127.0.0.1:50001/");
         assert_eq!(t.origin, "http://127.0.0.1:50001");
         assert_eq!(t.token.as_deref(), Some("prod-token"));
+        // Open in Browser: the same tunnel URL and token.
+        assert_eq!(core.browser_target(&kp, &tokens), Ok(t.clone()));
         let t = core
             .dashboard_target(&kp, &tokens, Some("http://127.0.0.1:49999/?issue=ENG-1"))
             .unwrap();
@@ -764,6 +817,9 @@ mod tests {
             "reconnecting… (0/1 connected)"
         );
         assert!(core.dashboard_target(&kp, &tokens, None).is_none());
+        // No tunnel, no dashboard: Open in Browser is off and refused.
+        assert!(!core.daemon(&kp).unwrap().browser_ok());
+        assert!(core.browser_target(&kp, &tokens).is_err());
         assert_eq!(core.views()[1].daemons[0].status_line(), "not connected");
     }
 

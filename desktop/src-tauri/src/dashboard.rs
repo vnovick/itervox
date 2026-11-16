@@ -26,6 +26,50 @@ pub fn origin_of(base_url: &str) -> Option<String> {
     Some(format!("{scheme}://{authority}"))
 }
 
+/// The address "Open in Browser" opens: the dashboard at `base` carrying
+/// `token` as `?token=`, exactly as `itervox open` builds it
+/// (cmd/itervox/open_cmd.go, `dashboardLoginURL`): `base` without its
+/// trailing slash, `/`, then `?token=` and the query-escaped token; no
+/// query without a token. The dashboard's AuthGate stores the token in
+/// that tab's `sessionStorage` and strips it from the address bar.
+///
+/// `None` unless `base` is a plain `http(s)` address (a host, an optional
+/// path, no query, fragment, whitespace or control character): nothing
+/// else is handed to the OS opener. The result holds a credential: it
+/// goes only to the opener's argv and is never logged or shown.
+pub fn browser_login_url(base: &str, token: Option<&str>) -> Option<String> {
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return None;
+    }
+    if base.contains(['?', '#']) || base.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    origin_of(base)?;
+    let mut u = base.trim_end_matches('/').to_string();
+    u.push('/');
+    if let Some(t) = token.filter(|t| !t.is_empty()) {
+        u.push_str("?token=");
+        u.push_str(&query_escape(t));
+    }
+    Some(u)
+}
+
+/// Go's `url.QueryEscape`: unreserved bytes kept, a space as `+`, every
+/// other byte as `%XX`.
+fn query_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(b));
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// The global the dashboard reads, once at boot, to know it is embedded in
 /// the app's window (web/src/hooks/useEmbeddedShell.ts): it then titles its
 /// top bar `project · ISSUE` (the window's project tabs sit above it), lands
@@ -119,6 +163,62 @@ mod tests {
         );
         assert_eq!(origin_of("file:///x"), None);
         assert_eq!(origin_of("garbage"), None);
+    }
+
+    /// "Open in Browser" builds the address exactly as `itervox open`
+    /// does: one trailing slash, `?token=` with the escaped token, nothing
+    /// without a token.
+    #[test]
+    fn browser_login_url_matches_itervox_open() {
+        assert_eq!(
+            browser_login_url("http://127.0.0.1:8090/", Some("abc123")).as_deref(),
+            Some("http://127.0.0.1:8090/?token=abc123")
+        );
+        assert_eq!(
+            browser_login_url("http://127.0.0.1:8090", Some("abc123")).as_deref(),
+            Some("http://127.0.0.1:8090/?token=abc123")
+        );
+        // A remote daemon's tunnel address keeps any path it has.
+        assert_eq!(
+            browser_login_url("http://127.0.0.1:50001/x/", Some("t")).as_deref(),
+            Some("http://127.0.0.1:50001/x/?token=t")
+        );
+        assert_eq!(
+            browser_login_url("https://[::1]:9000/", None).as_deref(),
+            Some("https://[::1]:9000/")
+        );
+        assert_eq!(
+            browser_login_url("http://127.0.0.1:8090/", Some("")).as_deref(),
+            Some("http://127.0.0.1:8090/")
+        );
+        // url.QueryEscape: unreserved kept, space as +, the rest %XX.
+        assert_eq!(
+            browser_login_url("http://h:1/", Some("a b&c=d/e+f~g_h.i-j")).as_deref(),
+            Some("http://h:1/?token=a+b%26c%3Dd%2Fe%2Bf~g_h.i-j")
+        );
+    }
+
+    /// Only a plain http(s) address reaches the OS opener.
+    #[test]
+    fn browser_login_url_refuses_anything_but_plain_http() {
+        for bad in [
+            "",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ftp://h/",
+            "HTTP://h/",
+            "-h http://h/",
+            "http://",
+            "http:///path",
+            "http://h/?issue=ENG-1",
+            "http://h/#x",
+            "http://h/ x",
+            "http://h/\nx",
+            "http://h/\u{7}",
+            "vscode://h/",
+        ] {
+            assert_eq!(browser_login_url(bad, Some("tok")), None, "{bad:?}");
+        }
     }
 
     #[test]

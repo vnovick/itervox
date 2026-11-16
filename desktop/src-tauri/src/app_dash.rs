@@ -21,7 +21,7 @@ use tauri::{
 };
 
 use super::{error_dialog, lock, read_token_file, Shared};
-use crate::dashboard::origin_of;
+use crate::dashboard::{browser_login_url, origin_of};
 use crate::model::token_for;
 use crate::rail::{
     build_rail, menu_changed, menu_projects, move_before, nudge, overflow_menu, page_plan,
@@ -131,6 +131,30 @@ fn target(shared: &Shared, key: &str, url: Option<String>) -> Result<(DashTarget
         },
         title,
     ))
+}
+
+/// The project's dashboard as "Open in Browser" opens it: Open Dashboard's
+/// URL and token ([`target`]: the local daemon's address and the token the
+/// app hands its window; a remote daemon's tunnel and token, never through
+/// a host's hub), as one `?token=` address built like `itervox open`'s.
+fn browser_url(shared: &Shared, key: &str) -> Result<String, String> {
+    let (url, token) = if is_remote_key(key) {
+        let t = shared.remote.browser_dashboard(key)?;
+        (t.url, t.token)
+    } else {
+        let (t, _) = target(shared, key, None)?;
+        (t.url, t.token)
+    };
+    browser_login_url(&url, token.as_deref())
+        .ok_or_else(|| "That project's dashboard has no web address to open.".to_string())
+}
+
+/// Menu: Open in Browser. Opens `key`'s dashboard in the default browser,
+/// logged in. Errors are shown without the address: it holds the token.
+pub(super) fn open_in_browser(app: &AppHandle, shared: &Shared, key: &str) {
+    if let Err(e) = browser_url(shared, key).and_then(|u| crate::platform::open_web_url(&u)) {
+        error_dialog(app, &e);
+    }
 }
 
 /// Opens `key`'s dashboard (at `url`, else its home) per `mode`.
