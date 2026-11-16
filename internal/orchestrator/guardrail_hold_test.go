@@ -36,7 +36,14 @@ type holdRig struct {
 // answer within it once the stall clock restarts.
 const holdStallTimeoutMs = 1500
 
-func newHoldRig(t *testing.T, body string) *holdRig {
+// holdReadTimeoutMs is the hold test's idle read deadline. It must cover the
+// gap before the approval exists (the agent execs the shim — this race-built
+// test binary, which macOS can take hundreds of ms to start — and the shim
+// asks the daemon to hold the command), during which the deadline still
+// applies; 200ms failed that way on macOS.
+const holdReadTimeoutMs = 1000
+
+func newHoldRig(t *testing.T, body string, readTimeoutMs int) *holdRig {
 	t.Helper()
 	root := t.TempDir()
 	r := &holdRig{t: t, out: filepath.Join(root, "agent.out")}
@@ -59,7 +66,7 @@ func newHoldRig(t *testing.T, body string) *holdRig {
 	cfg.Agent.MaxRetries = 1
 	cfg.Agent.MaxRetryBackoffMs = 60_000 // a retry stays pending for the assertions
 	cfg.Agent.Command = claude
-	cfg.Agent.ReadTimeoutMs = 200
+	cfg.Agent.ReadTimeoutMs = readTimeoutMs
 	cfg.Agent.StallTimeoutMs = holdStallTimeoutMs
 	cfg.Agent.TurnTimeoutMs = 60_000
 	cfg.Tracker.CompletionState = "Done"
@@ -102,14 +109,14 @@ func (r *holdRig) retryError() string {
 // is neither failed by the idle read deadline nor killed as stalled, and
 // once approved the command runs and the run completes.
 func TestGuardrailApprovalHoldOutlastsReadTimeout(t *testing.T) {
-	r := newHoldRig(t, `vercel --prod > $OUT 2>&1; echo "exit=$?" >> $OUT`)
+	r := newHoldRig(t, `vercel --prod > $OUT 2>&1; echo "exit=$?" >> $OUT`, holdReadTimeoutMs)
 	require.Eventually(t, func() bool {
 		e := r.orch.Snapshot().InputRequiredIssues["ENG-1"]
 		return e != nil && e.GuardrailApprovalID != ""
 	}, 15*time.Second, 20*time.Millisecond, "the held command never raised an approval")
 
-	// Ten read deadlines and more than a stall timeout of silence.
-	time.Sleep(2 * time.Second)
+	// Two read deadlines and more than a stall timeout of silence.
+	time.Sleep(2*time.Duration(holdReadTimeoutMs)*time.Millisecond + 500*time.Millisecond)
 	snap := r.orch.Snapshot()
 	require.Len(t, snap.Running, 1, "the run keeps waiting for the operator")
 	assert.Empty(t, r.retryError(), "a pending approval must not fail the turn")
@@ -130,7 +137,7 @@ func TestGuardrailApprovalHoldOutlastsReadTimeout(t *testing.T) {
 // Control: a guarded run whose agent is idle with no pending approval
 // still fails its turn on the idle read deadline, as before.
 func TestGuardedRunIdleWithoutApprovalStillReadTimesOut(t *testing.T) {
-	r := newHoldRig(t, "sleep 3")
+	r := newHoldRig(t, "sleep 3", 200)
 	require.Eventually(t, func() bool {
 		return strings.Contains(r.retryError(), "read timeout after 200ms idle")
 	}, 10*time.Second, 20*time.Millisecond, "an idle agent with no approval must still read-time-out")

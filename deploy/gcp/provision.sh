@@ -41,7 +41,7 @@ gcloud compute instances create "$NAME" \
   --boot-disk-size="${DISK_GB}GB" \
   --boot-disk-type=pd-balanced \
   --scopes=cloud-platform \
-  "${NETWORK_ARGS[@]}"
+  ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} # empty with --public; bash 3.2 (macOS) + set -u calls a bare empty array unbound
 
 # CORE-062: create and attach persistent data disk for state roots
 echo "==> creating persistent data disk for state roots"

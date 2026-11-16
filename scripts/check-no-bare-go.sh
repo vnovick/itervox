@@ -30,7 +30,10 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_root"
 
 # path|statement prefix|max occurrences|reason
-ALLOWLIST=$(cat <<'ALLOW'
+# read, not $(cat <<'ALLOW' ...): bash 3.2 (macOS /bin/bash) mis-parses the
+# unbalanced ')' in these rows inside a command substitution. read exits 1
+# at the end of the heredoc, hence || true.
+read -r -d '' ALLOWLIST <<'ALLOW' || true
 cmd/itervox/main.go|go func() { orchDone <- orch.Run(ctx) }()|1|orchestrator event loop: never wrapped, fail-fast by design (CORE-008 invariant)
 internal/orchestrator/automation.go|go o.runWorker(|1|runWorker defers its own recover (worker.go) and sends EventWorkerExited as its reconcile
 internal/orchestrator/event_loop.go|go o.runWorker(|3|runWorker defers its own recover (worker.go) and sends EventWorkerExited as its reconcile
@@ -47,7 +50,6 @@ cmd/itervox/demo.go|go d.control(|1|demoRun.control defers RecoverGoroutine itse
 internal/procgroup/procgroup_windows.go|go func() {|1|Windows Job Object watcher (#259): one WaitForSingleObject on the child, then release the job and close the handle; two syscalls, no callbacks; procgroup must not import orchestrator
 internal/tracker/github/client.go|go func(i int, it T) {|1|boundedDo fan-out joined by wg.Wait in the calling goroutine (event-loop tick); fail-fast like the event loop
 ALLOW
-)
 
 files=$(find cmd internal -name '*.go' ! -name '*_test.go' -type f | sort)
 

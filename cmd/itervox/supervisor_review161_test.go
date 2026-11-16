@@ -112,7 +112,14 @@ func TestDaemonRecordPathsAreAbsolute(t *testing.T) {
 	if err := json.Unmarshal([]byte(readTrim(t, registryFile(home, pid))), &rec); err != nil {
 		t.Fatal(err)
 	}
-	wantLogs := filepath.Join(p.Dir, "relative-logs")
+	// The daemon resolves against its working directory, which the OS
+	// reports with symlinks resolved (macOS t.TempDir() is under /var, a
+	// symlink to /private/var).
+	realDir, err := filepath.EvalSymlinks(p.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLogs := filepath.Join(realDir, "relative-logs")
 	if rec.LogsDir != wantLogs || rec.TokenFile != filepath.Join(wantLogs, apiTokenFileName) {
 		t.Fatalf("logs_dir/token_file = %q/%q, want absolute under %q", rec.LogsDir, rec.TokenFile, wantLogs)
 	}

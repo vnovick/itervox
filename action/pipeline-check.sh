@@ -107,11 +107,13 @@ fi
 
 # --- secrets: deploy credentials in the job environment, by name only.
 allow=" $(printf '%s' "${ALLOW_ENV:-}" | tr ',' ' ') "
+# Case patterns inside this $( ) open with '(': bash 3.2 (macOS sh) otherwise
+# reads a pattern's ')' as the end of the substitution.
 found=$(awk 'BEGIN { for (k in ENVIRON) print k }' | sort | while IFS= read -r name; do
-	case $allow in *" $name "*) continue ;; esac
+	case $allow in (*" $name "*) continue ;; esac
 	case $name in
-	ANTHROPIC_API_KEY | OPENAI_API_KEY | CLAUDE_CODE_OAUTH_TOKEN | GH_TOKEN | GITHUB_TOKEN) continue ;;
-	AWS_SECRET_ACCESS_KEY | AWS_SESSION_TOKEN | GOOGLE_APPLICATION_CREDENTIALS | GOOGLE_CREDENTIALS | \
+	(ANTHROPIC_API_KEY | OPENAI_API_KEY | CLAUDE_CODE_OAUTH_TOKEN | GH_TOKEN | GITHUB_TOKEN) continue ;;
+	(AWS_SECRET_ACCESS_KEY | AWS_SESSION_TOKEN | GOOGLE_APPLICATION_CREDENTIALS | GOOGLE_CREDENTIALS | \
 		AZURE_CLIENT_SECRET | AZURE_CREDENTIALS | NPM_TOKEN | NODE_AUTH_TOKEN | PYPI_TOKEN | PYPI_API_TOKEN | \
 		TWINE_PASSWORD | CARGO_REGISTRY_TOKEN | DOCKER_PASSWORD | DOCKERHUB_TOKEN | KUBECONFIG | KUBE_CONFIG | \
 		CLOUDFLARE_API_TOKEN | VERCEL_TOKEN | NETLIFY_AUTH_TOKEN | FLY_API_TOKEN | HEROKU_API_KEY | \

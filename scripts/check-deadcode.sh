@@ -16,12 +16,20 @@ cd "$repo_root"
 
 DEADCODE_VERSION=${DEADCODE_VERSION:-v0.39.0}
 if [[ -n "${DEADCODE:-}" ]]; then
-  cmd=("$DEADCODE")
+  deadcode_bin=$DEADCODE
 else
-  cmd=(go run "golang.org/x/tools/cmd/deadcode@${DEADCODE_VERSION}")
+  # Built for the host first: `go run` under the GOOS below would build a
+  # binary this machine cannot execute.
+  tooldir=$(mktemp -d)
+  trap 'rm -rf "$tooldir"' EXIT
+  GOBIN="$tooldir" go install "golang.org/x/tools/cmd/deadcode@${DEADCODE_VERSION}"
+  deadcode_bin=$tooldir/deadcode
 fi
 
-findings=$("${cmd[@]}" -tags dev ./cmd/...)
+# The allowlist describes the Linux build (what CI and releases analyse).
+# Analyse that build on every host, so Linux-only callers (bubblewrap, the
+# /proc parsers) keep their callees reachable when this runs on a Mac.
+findings=$(GOOS=linux "$deadcode_bin" -tags dev ./cmd/...)
 allow=$(grep -v '^#' scripts/deadcode-allowlist.txt | sed -E 's/[[:space:]]*\|.*$//' | sed '/^[[:space:]]*$/d')
 
 status=0

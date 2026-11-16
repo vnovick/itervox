@@ -188,6 +188,12 @@ func (a *memoryAdapter) PromoteMemory(ctx context.Context, id string) (server.Me
 // it yet. Outside a repository (or when git fails) the diff is empty and the
 // note says why. Read-only: it never touches the index.
 func memoryFileDiff(ctx context.Context, path string) (diff, note string) {
+	// git prints the toplevel with symlinks resolved (macOS /var and /tmp
+	// are symlinks), so resolve path too or Rel climbs out of the repo and
+	// a tracked file reads as untracked.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	dir := filepath.Dir(path)
 	top, err := gitexec.Command(ctx, dir, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
