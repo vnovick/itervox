@@ -446,5 +446,8 @@ desktop-tauri-cli:
 # Linux bundle/appimage/*.AppImage and bundle/deb/*.deb. Releases are built
 # by .github/workflows/desktop-release.yml (#130, docs/release-mac.md; Linux
 # and Windows #260).
+# Signed ad hoc ("-") unless APPLE_SIGNING_IDENTITY names a real identity, so
+# the bundle's resources are sealed (`codesign --verify --deep --strict`
+# passes), as the release workflow does for unsigned builds. Ignored off macOS.
 desktop: desktop-sidecar desktop-tauri-cli
-	cd $(DESKTOP_DIR) && cargo tauri build
+	cd $(DESKTOP_DIR) && APPLE_SIGNING_IDENTITY="$${APPLE_SIGNING_IDENTITY:--}" cargo tauri build

@@ -31,6 +31,22 @@ func TestDecideHooksPathOverrideOnHookFreeBuiltins(t *testing.T) {
 		{"--no-optional-locks -P -c core.hooksPath=/dev/null --namespace ns --attr-source HEAD grep -n x", "--no-optional-locks -P --namespace ns --attr-source HEAD grep -n x"},
 		{"-c core.hooksPath=/dev/null -c core.hooksPath=/tmp for-each-ref refs/heads", "for-each-ref refs/heads"},
 		{"-c core.hooksPath=/dev/null --version", "--version"},
+		// Read-only forms of remote and config run no hook.
+		{"-c core.hooksPath=/dev/null remote", "remote"},
+		{"-c core.hooksPath=/dev/null remote -v", "remote -v"},
+		{"-c core.hooksPath=/dev/null remote get-url --push origin", "remote get-url --push origin"},
+		{"-c core.hooksPath=/dev/null config --get remote.origin.url", "config --get remote.origin.url"},
+		{"-c core.hooksPath=/dev/null config --local --includes -z --list", "config --local --includes -z --list"},
+		{"-c core.hooksPath=/dev/null config --file=.gitmodules --get-regexp path", "config --file=.gitmodules --get-regexp path"},
+		{"-c core.hooksPath=/dev/null config -f .gitmodules -l", "config -f .gitmodules -l"},
+		{"-c core.hooksPath=/dev/null config user.name", "config user.name"},
+		{"-c core.hooksPath=/dev/null config get user.name", "config get user.name"},
+		{"-c core.hooksPath=/dev/null config list --show-origin", "config list --show-origin"},
+		// They may run post-index-change, but the override is dropped, so
+		// their hooks run as configured.
+		{"-c core.hooksPath=/dev/null --no-optional-locks status --short", "--no-optional-locks status --short"},
+		{"-c core.hooksPath=/dev/null diff", "diff"},
+		{"-c core.hooksPath=/dev/null describe --dirty", "describe --dirty"},
 		// No subcommand: git prints its usage or an error and runs nothing.
 		{"-c core.hooksPath=/dev/null", ""},
 		{"-c core.hooksPath=/dev/null -c", "-c"},
@@ -64,10 +80,21 @@ func TestDecideHooksPathOverrideOnHookFreeBuiltins(t *testing.T) {
 		"-c core.hooksPath=/dev/null update-ref refs/heads/x HEAD",
 		"-c core.hooksPath=/dev/null worktree add ../x",
 		"-c core.hooksPath=/dev/null send-pack origin",
-		// They run post-index-change when they refresh the index.
-		"-c core.hooksPath=/dev/null status --short",
-		"-c core.hooksPath=/dev/null diff",
-		"-c core.hooksPath=/dev/null describe --dirty",
+		// remote and config only in their read-only forms.
+		"-c core.hooksPath=/dev/null remote add x ../x.git",
+		"-c core.hooksPath=/dev/null remote set-url origin ../x.git",
+		"-c core.hooksPath=/dev/null remote show origin",
+		"-c core.hooksPath=/dev/null remote -v update",
+		"-c core.hooksPath=/dev/null config core.hooksPath /tmp/x",
+		"-c core.hooksPath=/dev/null config set core.hooksPath /tmp/x",
+		"-c core.hooksPath=/dev/null config --add a.b c",
+		"-c core.hooksPath=/dev/null config --unset a.b",
+		"-c core.hooksPath=/dev/null config --get a.b --unset",
+		"-c core.hooksPath=/dev/null config --edit",
+		"-c core.hooksPath=/dev/null config -e",
+		"-c core.hooksPath=/dev/null config --local a.b c",
+		"-c core.hooksPath=/dev/null config --bogus a.b",
+		"-c core.hooksPath=/dev/null config",
 		// Names are exact: no alias, no other case, no abbreviation.
 		"-c core.hooksPath=/dev/null LS-FILES",
 		"-c core.hooksPath=/dev/null ls",
@@ -111,6 +138,50 @@ func TestDecideHooksPathOverrideOnHookFreeBuiltins(t *testing.T) {
 	}
 }
 
+// claudeCodeCompanions are the -c settings Claude Code (2.1.x) puts ahead of
+// core.hooksPath on its own git calls, captured with a logging git wrapper.
+// `hook.<name>.enabled=false` disables a config-defined hook of that name,
+// not a hooks-directory script: with git 2.50.1 a pre-push script still ran
+// under `-c hook.pre-push.enabled=false`.
+var claudeCodeCompanions = []string{
+	"-c", "core.askPass=", "-c", "protocol.ext.allow=never",
+	"-c", `core.alternateRefsCommand=f() { git --git-dir="$1" for-each-ref --format='%(objectname)'; }; f`,
+	"-c", "submodule.recurse=false", "-c", "log.showSignature=false", "-c", "format.pretty=medium",
+	"-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "diff.autoRefreshIndex=false",
+	"-c", "hook.pre-commit.enabled=false", "-c", "hook.pre-push.enabled=false",
+	"-c", "hook.post-index-change.enabled=false",
+	"-c", "core.hooksPath=/dev/null",
+	"-c", "core.fsmonitor=", "-c", "safe.bareRepository=explicit", "-c", "protocol.file.allow=never",
+}
+
+// TestDecideAllowsClaudeCodesGitCalls: every git call Claude Code made in a
+// session (captured with a logging wrapper) is let through, with only the
+// core.hooksPath override dropped; before, all but ls-files/rev-parse/log
+// were hook_bypass refusals (4 per run in Recent failures).
+func TestDecideAllowsClaudeCodesGitCalls(t *testing.T) {
+	branchOf := func(string) string { return "itervox/eng-1" }
+	for _, sub := range [][]string{
+		{"ls-files", "--error-unmatch", "--", ":(icase).claude/settings.local.json"},
+		{"remote", "get-url", "origin"},
+		{"config", "--get", "remote.origin.url"},
+		{"remote", "get-url", "--push", "origin"},
+		{"config", "--local", "--includes", "-z", "--list"},
+		{"rev-parse", "--is-inside-work-tree", "--show-cdup"},
+		{"config", "user.name"},
+		{"log", "--oneline", "-n", "5"},
+		{"config", "--worktree", "--includes", "-z", "--list"},
+		{"--no-optional-locks", "status", "--short", "--ignore-submodules=dirty"},
+	} {
+		args := append(slices.Clone(claudeCodeCompanions), sub...)
+		d := fuzzPolicy.decide("git", args, "/repo", noEnv, branchOf)
+		require.Equal(t, actForward, d.act, "git … %v: %+v", sub, d)
+		fwd := forwardArgs(d, args)
+		assert.NotContains(t, strings.Join(fwd, " "), "core.hooksPath", "git … %v", sub)
+		assert.Contains(t, fwd, "hook.pre-push.enabled=false", "companions are kept")
+		assert.Equal(t, sub, fwd[len(fwd)-len(sub):], "git … %v", sub)
+	}
+}
+
 // TestDecideKeepsApprovalForReadOnlyOverride: an approval rule still
 // applies to an allowed read-only call, and the forward still drops the
 // override.
@@ -143,6 +214,20 @@ func TestShimRunsClaudeCodeReadOnlyGitCalls(t *testing.T) {
 	out, code = r.agent("git -c core.hooksPath=/dev/null rev-parse --git-path hooks")
 	require.Zero(t, code, out)
 	assert.Equal(t, filepath.Clean(r.rt.HooksDir()), filepath.Clean(strings.TrimSpace(out)), "the override never reached git")
+
+	// Claude Code's other calls: status, remote and config reads.
+	for _, script := range []string{
+		"git -c core.hooksPath=/dev/null -c core.fsmonitor= --no-optional-locks status --short",
+		"git -c core.hooksPath=/dev/null remote -v",
+		"git -c core.hooksPath=/dev/null config --local --includes -z --list",
+	} {
+		out, code := r.agent(script)
+		require.Zero(t, code, "%s: %s", script, out)
+		assert.NotContains(t, out, "guardrails:", script)
+	}
+	out, code = r.agent("git -c core.hooksPath=/dev/null config --get core.hooksPath")
+	require.Zero(t, code, out)
+	assert.Equal(t, filepath.Clean(r.rt.HooksDir()), filepath.Clean(strings.TrimSpace(out)), "config reads see the guardrail hooks path")
 
 	assert.Empty(t, d.kinds(), "an allowed call is not a refusal")
 

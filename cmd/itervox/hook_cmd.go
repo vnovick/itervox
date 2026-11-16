@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/tailscale/hujson"
@@ -27,7 +29,7 @@ import (
 const hookUsage = `Usage:
   itervox hook claude-pretooluse [--workflow WORKFLOW.md] [--require-workflow]
   itervox hook codex-pretooluse  [--workflow WORKFLOW.md] [--require-workflow]
-  itervox hook install claude|codex [--project|--user] [--dir DIR] [--print]
+  itervox hook install claude|codex [--project|--user] [--dir DIR] [--absolute] [--print]
 
 The pretooluse commands read a PreToolUse hook's JSON on stdin and answer
 with the hook's decision: no output allows (the agent's own permission
@@ -184,6 +186,7 @@ func hookInstall(args []string, stdout, stderr io.Writer) int {
 	dir := fs.String("dir", ".", "project directory")
 	workflow := fs.String("workflow", "WORKFLOW.md", "the project's workflow, relative to --dir (with --project)")
 	printOnly := fs.Bool("print", false, "print the settings snippet; write nothing")
+	absolute := fs.Bool("absolute", false, "run this itervox binary by its path, not whatever `itervox` is on PATH")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -195,6 +198,16 @@ func hookInstall(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "itervox hook install: %v\n", err)
 		return 2
+	}
+	if *absolute {
+		self, err := hookSelfPath()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "itervox hook install: %v\n", err)
+			return 1
+		}
+		t.command = shellWord(self) + strings.TrimPrefix(t.command, "itervox")
+	} else if w := hookPathWarning(); w != "" {
+		_, _ = fmt.Fprintf(stderr, "itervox hook install: warning: %s\n", w)
 	}
 	entry := hookEntry(t)
 	if *printOnly {
@@ -300,7 +313,7 @@ func mergeHookSettings(file, marker string, entry hookGroup) (changed bool, err 
 		op = map[string]any{"op": "add", "path": "/hooks/PreToolUse/-", "value": entry}
 		for i, g := range cur.Hooks.PreToolUse {
 			for _, h := range g.Hooks {
-				if strings.HasPrefix(strings.TrimSpace(h.Command), marker) {
+				if isItervoxHookCommand(h.Command, marker) {
 					op = map[string]any{"op": "replace", "path": fmt.Sprintf("/hooks/PreToolUse/%d", i), "value": entry}
 				}
 			}
@@ -344,4 +357,83 @@ func jsonEqual(a, b []byte) bool {
 	ax, _ := json.Marshal(x)
 	by, _ := json.Marshal(y)
 	return bytes.Equal(ax, by)
+}
+
+// isItervoxHookCommand reports whether command runs the itervox hook marker
+// names ("itervox hook claude-pretooluse"), as the bare `itervox` or by a
+// path to an itervox binary (`hook install --absolute`), so a reinstall
+// replaces the entry rather than adding a second one.
+func isItervoxHookCommand(command, marker string) bool {
+	command = strings.TrimSpace(command)
+	if strings.HasPrefix(command, marker) {
+		return true
+	}
+	rest := strings.TrimPrefix(marker, "itervox")
+	i := strings.Index(command, rest)
+	if i <= 0 {
+		return false
+	}
+	prog := strings.Trim(command[:i], "'\"")
+	return filepath.Base(prog) == "itervox"
+}
+
+// hookSelfPath is the path `hook install --absolute` writes: the itervox on
+// PATH when it is this same binary (a stable path such as Homebrew's
+// /opt/homebrew/bin/itervox survives upgrades), else this binary's path.
+func hookSelfPath() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("cannot find this binary's path: %w", err)
+	}
+	if onPath, err := exec.LookPath("itervox"); err == nil && sameFile(onPath, self) {
+		if abs, err := filepath.Abs(onPath); err == nil {
+			return abs, nil
+		}
+	}
+	return self, nil
+}
+
+// hookPathWarning explains, when it matters, that an installed hook runs
+// whatever `itervox` is on PATH: missing, or a different binary (an older
+// one without `itervox hook` makes the hook fail, and Claude Code treats a
+// failing hook as non-blocking, so the guardrail silently does not apply).
+// Empty when the itervox on PATH is this binary.
+func hookPathWarning() string {
+	self, _ := os.Executable()
+	onPath, err := exec.LookPath("itervox")
+	switch {
+	case err != nil:
+		return "no `itervox` is on PATH, so the hook cannot run and the guardrail will not apply. Put this binary on PATH, or reinstall with --absolute."
+	case self != "" && !sameFile(onPath, self):
+		return fmt.Sprintf("the hook runs `itervox` from PATH, which is %s, not this binary (%s). If that one is older than 0.3.3 it has no `itervox hook`, the hook fails and the guardrail silently does not apply. Put this binary first on PATH, or reinstall with --absolute.", onPath, self)
+	}
+	return ""
+}
+
+// sameFile reports whether a and b are the same file after resolving
+// symlinks.
+func sameFile(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
+// installedBareHookFiles lists the Claude Code and Codex settings files (the
+// project's under dir, and the user's) that hold an itervox PreToolUse hook
+// run as the bare `itervox`, which depends on PATH.
+func installedBareHookFiles(dir string) []string {
+	home, _ := os.UserHomeDir()
+	var out []string
+	for _, f := range []struct{ file, agent string }{
+		{filepath.Join(dir, ".claude", "settings.json"), guardrails.HookAgentClaude},
+		{filepath.Join(dir, ".codex", "hooks.json"), guardrails.HookAgentCodex},
+		{filepath.Join(home, ".claude", "settings.json"), guardrails.HookAgentClaude},
+		{filepath.Join(home, ".codex", "hooks.json"), guardrails.HookAgentCodex},
+	} {
+		raw, err := os.ReadFile(f.file)
+		if err == nil && bytes.Contains(raw, []byte(`"`+hookMarker(f.agent))) && !slices.Contains(out, f.file) {
+			out = append(out, f.file)
+		}
+	}
+	return out
 }

@@ -161,9 +161,12 @@ func FuzzDecide(f *testing.F) {
 				if fwd := p.decide("git", forwardArgs(got, full), "/repo", noEnv, branchOf); fwd.act == actRefuse {
 					t.Fatalf("git %q: the forwarded argv %q is refused: %+v", full, forwardArgs(got, full), fwd)
 				}
-				// A hook-running command or an alias with the same
-				// override stays refused.
-				for _, cmd := range [][]string{{"commit"}, {"push"}, {"merge"}, {"rebase"}, {"checkout"}, {"status"}, {"diff"}, {"-c", "alias.x=!sh", "x"}} {
+				// A hook-running command, a config or remote write, or an
+				// alias with the same override stays refused. (status,
+				// diff and describe are let through with the override
+				// dropped: hookRunningReadCommands.)
+				for _, cmd := range [][]string{{"commit"}, {"push"}, {"merge"}, {"rebase"}, {"checkout"}, {"pull"}, {"fetch"}, {"am"},
+					{"config", "core.hooksPath", "x"}, {"config", "--unset", "a.b"}, {"remote", "add", "x", "y"}, {"-c", "alias.x=!sh", "x"}} {
 					bad := append(append(slices.Clone(pre), cmd...), args...)
 					if g := p.decide("git", bad, "/repo", noEnv, branchOf); g.kind != KindHookBypass {
 						t.Fatalf("git %q: want a hook_bypass refusal, got %+v", bad, g)
