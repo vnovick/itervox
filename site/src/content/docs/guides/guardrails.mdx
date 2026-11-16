@@ -64,17 +64,25 @@ when the git command is exactly one of these builtins:
 `show-ref`, `var`, `version`
 
 Each reads the repository without writing the index or a ref, so git runs no
-hook for it. An alias cannot stand in for one: git ignores an alias that has a
-builtin's name. The shim drops the override before it runs git, so git, and
-any program it starts (a pager, an external diff), still sees the guardrail
-hooks.
+hook for it. The read-only forms of two more builtins are allowed the same
+way: `git remote`, `git remote -v` and `git remote get-url …`, and a `git config`
+that only reads (`--get`, `--get-all`, `--get-regexp`, `--list`, the `get` and
+`list` subcommands, or one key and no value, as in `git config user.name`); a
+config or remote write is refused. An alias cannot stand in for one: git
+ignores an alias that has a builtin's name. The shim drops the override before
+it runs git, so git, and any program it starts (a pager, an external diff),
+still sees the guardrail hooks.
+
+`status`, `diff` and `describe` are allowed too, although they can run the
+`post-index-change` hook when they refresh the index: because the override is
+dropped, that hook runs as configured, so nothing is skipped. Claude Code runs
+`git status --short` this way on every turn.
 
 Everything else with a hooks-path override stays refused as `hook_bypass`:
 
 - any other git command, including `commit`, `push`, `merge`, `rebase`, `am`,
-  `checkout`, `switch`, `pull`, `fetch` — and `status`, `diff` and
-  `describe --dirty`, which run the `post-index-change` hook when they refresh
-  the index;
+  `checkout`, `switch`, `pull` and `fetch`, and a `config` or `remote` command
+  that writes;
 - a `-c alias.…`, `-c include.path=…` or `-c includeIf.….path=…` on the same
   command line;
 - a global option the shim does not recognise exactly (git does not accept
@@ -442,7 +450,18 @@ itervox hook install claude          # .claude/settings.json (this project)
 itervox hook install claude --user   # ~/.claude/settings.json (every project)
 itervox hook install codex           # .codex/hooks.json
 itervox hook install claude --print  # show the snippet, write nothing
+itervox hook install claude --user --absolute  # run this binary by its path
 ```
+
+The entry runs `itervox` from `PATH`. If that is missing, or is another
+itervox (one older than 0.3.3 has no `itervox hook`), the hook fails, and
+Claude Code and Codex treat a failing hook as non-blocking, so the guardrail
+silently does not apply. `install` warns when the `itervox` on `PATH` is not
+the binary you ran it with, and `itervox doctor` warns for every installed
+hook in that situation. `--absolute` writes this binary's path instead (the
+`PATH` path when that is the same binary, so a Homebrew upgrade keeps it
+working); prefer it for `--user`, and keep the bare `itervox` in a project
+file you commit, where each developer's path differs.
 
 `install` merges one `hooks.PreToolUse` entry into the settings file and
 keeps everything else (other hooks, permissions, key order); running it again

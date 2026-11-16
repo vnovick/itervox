@@ -133,6 +133,11 @@ type DoctorReport struct {
 	PathBinary    string
 	DriftWarning  string
 	DriftIsError  bool
+	// HookPathWarnings: an installed Claude Code / Codex PreToolUse hook
+	// runs the bare `itervox`, and the itervox on PATH is missing or is not
+	// this binary (an older one makes the hook fail, which those agents
+	// treat as non-blocking).
+	HookPathWarnings []string
 	// ItervoxBinEnv is the operator's $ITERVOX_BIN value at the time doctor
 	// ran. Doctor consults it before flagging hook-PATH drift: when the
 	// operator has pinned ITERVOX_BIN to the running binary, hooks (which
@@ -354,6 +359,11 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		// just "two installs" — annoying but not actionable. Doctor should
 		// avoid crying wolf.
 		report.DriftIsError = doctorBinaryVersionDriftIsSerious(report.RunningBinary, report.PathBinary)
+	}
+	if w := hookPathWarning(); w != "" {
+		for _, f := range installedBareHookFiles(filepath.Dir(workflowPath)) {
+			report.HookPathWarnings = append(report.HookPathWarnings, fmt.Sprintf("the itervox PreToolUse hook in %s: %s", f, w))
+		}
 	}
 
 	if dir := filepath.Dir(workflowPath); dir != "" {
@@ -594,6 +604,9 @@ func renderDoctorReport(r DoctorReport) string {
 		} else {
 			fmt.Fprintf(&b, "info: %s\n", r.DriftWarning)
 		}
+	}
+	for _, w := range r.HookPathWarnings {
+		fmt.Fprintf(&b, "WARNING: %s\n", w)
 	}
 	renderFrontMatterReport(&b, r.FrontMatter)
 	renderWatchedFiles(&b, r.WatchedFiles)

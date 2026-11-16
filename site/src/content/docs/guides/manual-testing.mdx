@@ -517,11 +517,13 @@ What the loader requires, each verified at startup:
 2. A text-pattern match switches when retries are exhausted (a structured vendor limit, such as Claude's quota error, switches on the first failure without using a retry).
 3. The rate_limited automation fires; the issue's profile switches to the fallback.
 
-**Verify** (through the API, or the issue card on the dashboard):
+**Verify while the fallback run is in progress** (through the API, or the issue card on the dashboard). Give the fallback profile a slow agent if you need time to look:
 
 - `GET /api/v1/state`: `autoSwitches[]` has a row for the issue with `"source": "automation"`, `"toProfile": "implementer-fallback"` and `"toBackend": "codex"`
 - `GET /api/v1/issues`: the issue's `agentProfile` is `implementer-fallback`, with an `autoSwitch` object
-- The next dispatch uses the fallback profile
+- The fallback run uses that profile
+
+**After the fallback run succeeds**, the switch is cleared (a `rate_limited` switch lasts until a successful run): `autoSwitches[]` has no row for the issue and `agentProfile` is back to what it was, the operator's pinned profile if there was one. A `backend_fallback` switch follows its `switch_back` setting instead.
 
 ---
 

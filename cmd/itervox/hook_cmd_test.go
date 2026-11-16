@@ -182,3 +182,96 @@ func TestHookInstallMergesSettings(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"hooks":{"PreToolUse":[{"matcher":"^(Bash|apply_patch)$","hooks":[{"type":"command","command":"itervox hook codex-pretooluse --require-workflow"}]}]}}`, string(data))
 }
+
+// TestHookInstallWarnsAboutPATHAndWritesAbsolutePath: the installed hook runs
+// whatever `itervox` is on PATH. Install warns when none is there or it is
+// another binary (an older one has no `itervox hook`, the hook fails and the
+// agent treats that as non-blocking); --absolute writes this binary's path,
+// and switching between the two forms replaces the entry rather than adding
+// one.
+func TestHookInstallWarnsAboutPATHAndWritesAbsolutePath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	settings := filepath.Join(dir, ".claude", "settings.json")
+	self, err := os.Executable()
+	require.NoError(t, err)
+
+	// No itervox on PATH.
+	t.Setenv("PATH", t.TempDir())
+	var out, errOut bytes.Buffer
+	require.Zero(t, runHook([]string{"install", "claude", "--dir", dir}, nil, &out, &errOut, nil))
+	assert.Contains(t, errOut.String(), "no `itervox` is on PATH")
+
+	// Another itervox on PATH.
+	other := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(other, "itervox"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", other)
+	errOut.Reset()
+	require.Zero(t, runHook([]string{"install", "claude", "--dir", dir}, nil, &bytes.Buffer{}, &errOut, nil))
+	assert.Contains(t, errOut.String(), "not this binary")
+
+	// This binary on PATH (as a symlink named itervox): no warning, and
+	// --absolute writes the PATH path, which survives package upgrades.
+	mine := t.TempDir()
+	link := filepath.Join(mine, "itervox")
+	require.NoError(t, os.Symlink(self, link))
+	t.Setenv("PATH", mine)
+	errOut.Reset()
+	require.Zero(t, runHook([]string{"install", "claude", "--dir", dir, "--absolute"}, nil, &bytes.Buffer{}, &errOut, nil))
+	assert.Empty(t, errOut.String())
+	commands := func() []string {
+		data, err := os.ReadFile(settings)
+		require.NoError(t, err)
+		var got struct {
+			Hooks struct {
+				PreToolUse []hookGroup `json:"PreToolUse"`
+			} `json:"hooks"`
+		}
+		require.NoError(t, json.Unmarshal(data, &got))
+		var cmds []string
+		for _, g := range got.Hooks.PreToolUse {
+			for _, h := range g.Hooks {
+				cmds = append(cmds, h.Command)
+			}
+		}
+		return cmds
+	}
+	assert.Equal(t, []string{link + ` hook claude-pretooluse --workflow "$CLAUDE_PROJECT_DIR"/WORKFLOW.md`}, commands(), "the absolute form replaced the bare entry")
+	assert.Empty(t, installedBareHookFiles(dir), "an absolute hook does not depend on PATH")
+
+	require.Zero(t, runHook([]string{"install", "claude", "--dir", dir}, nil, &bytes.Buffer{}, &bytes.Buffer{}, nil))
+	assert.Equal(t, []string{`itervox hook claude-pretooluse --workflow "$CLAUDE_PROJECT_DIR"/WORKFLOW.md`}, commands(), "and back: still one entry")
+	assert.Equal(t, []string{settings}, installedBareHookFiles(dir))
+}
+
+func TestIsItervoxHookCommand(t *testing.T) {
+	marker := hookMarker("claude")
+	for cmd, want := range map[string]bool{
+		"itervox hook claude-pretooluse":                                true,
+		"  itervox hook claude-pretooluse --workflow x":                 true,
+		"/opt/homebrew/bin/itervox hook claude-pretooluse --workflow x": true,
+		"'/Users/me/My Apps/itervox' hook claude-pretooluse":            true,
+		"/usr/local/bin/other hook claude-pretooluse":                   false,
+		"itervox hook codex-pretooluse":                                 false,
+		"echo itervox hook claude-pretooluse":                           false,
+		"other.sh":                                                      false,
+	} {
+		assert.Equal(t, want, isItervoxHookCommand(cmd, marker), cmd)
+	}
+}
+
+// TestDoctorWarnsWhenTheHookRunsAnotherItervox: doctor names each settings
+// file whose bare `itervox` hook would not run this binary.
+func TestDoctorWarnsWhenTheHookRunsAnotherItervox(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir()) // no itervox at all
+	dir := t.TempDir()
+	settings := filepath.Join(dir, ".claude", "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o755))
+	require.NoError(t, os.WriteFile(settings, []byte(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"itervox hook claude-pretooluse"}]}]}}`), 0o644))
+	require.Equal(t, []string{settings}, installedBareHookFiles(dir))
+	w := hookPathWarning()
+	require.NotEmpty(t, w)
+	out := renderDoctorReport(DoctorReport{Workflow: filepath.Join(dir, "WORKFLOW.md"), HookPathWarnings: []string{"the itervox PreToolUse hook in " + settings + ": " + w}})
+	assert.Contains(t, out, "WARNING: the itervox PreToolUse hook in "+settings+": no `itervox` is on PATH")
+}
