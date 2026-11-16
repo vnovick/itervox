@@ -38,7 +38,7 @@ Itervox is also a conforming [OpenAI Symphony](https://github.com/openai/symphon
 
 ```bash
 # Homebrew (macOS / Linux)
-brew tap vnovick/tap && brew install itervox
+brew install vnovick/tap/itervox
 
 # Or: go install
 go install github.com/vnovick/itervox/cmd/itervox@latest
@@ -345,7 +345,7 @@ hooks:
 
 ```bash
 # 1. Install
-brew tap vnovick/tap && brew install itervox
+brew install vnovick/tap/itervox
 
 # Optional: see it work first — fake issues, scripted agent, no keys needed
 itervox demo

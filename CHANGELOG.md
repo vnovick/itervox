@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docs: install and upgrade with the full Homebrew formula name.** Homebrew 7 refuses a formula from a tap it does not trust: `brew tap vnovick/tap && brew install itervox` fails with "Refusing to load formula vnovick/tap/itervox from untrusted tap", and so does `brew upgrade itervox`. Naming the formula in full (`brew install vnovick/tap/itervox`, `brew upgrade vnovick/tap/itervox`) trusts it and works. The README, Getting started, the landing page, the setup skill and the upgrade steps of the 0.3.0 and 0.3.3 notes use the full name.
+
 ## [0.3.3] — 2026-11-16
 
 ### Added
