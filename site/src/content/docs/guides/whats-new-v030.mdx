@@ -83,9 +83,10 @@ approval before deploy and publish commands such as `vercel --prod`,
 A menu-bar app lists every project's daemon, starts and stops them, notifies
 you when an agent needs input, and opens each dashboard without a terminal.
 It reaches daemons on a VM or another machine over IAP or SSH tunnels, uses
-the hub when one runs, and updates itself. Every dashboard window has a
+the hub when one runs, and updates itself from a signed release. Every dashboard window has a
 **project rail** to switch projects (⌘1…⌘9). Install it from the DMG, or with
-Homebrew: `brew install --cask vnovick/tap/itervox-app`. The app carries its
+Homebrew (`brew install --cask vnovick/tap/itervox-app`) once a signed
+release has published the cask. The app carries its
 own `itervox` daemon; `brew install vnovick/tap/itervox` stays the
 command-line tool, so install one or the other.
 → [Mac app](/guides/desktop-app/)
@@ -156,7 +157,8 @@ schema bump). Most changes need nothing from you; the steps below cover the
 ones that might.
 
 1. **Install the new version.** `brew upgrade itervox`, or download the
-   release. The Mac app updates itself.
+   release. The Mac app updates itself when the release is signed;
+   otherwise install the new disk image over the old one.
 2. **Remove `--tui`** from unit files, scripts and aliases. `itervox --tui`
    now prints a pointer to `itervox watch` and exits with code 2, so a
    service that still passes it fails to start. Watch with `itervox watch`

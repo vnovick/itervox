@@ -48,7 +48,7 @@ Pre-built binaries for macOS and Linux are available on the [latest release](htt
 
 Need only the CI referee (an agent may change what CI checks, never how CI checks) and not the daemon? `brew install vnovick/tap/referee` installs the standalone `referee` binary; every `itervox` install already includes it as `itervox referee`. See the [referee guide](https://itervox.dev/guides/referee/). **AI may change what CI checks. Never how.** Why: [Agents in CI](https://itervox.dev/guides/agents-in-ci/).
 
-On a Mac you can install the menu bar app instead: `brew install --cask vnovick/tap/itervox-app`. It carries its own `itervox` daemon, so you need only one of the two; see the [desktop app guide](https://itervox.dev/guides/desktop-app/#install). The desktop app also comes for Linux (AppImage and `.deb`, x86_64 and arm64) and Windows (MSI and setup `.exe`; local projects need WSL or a remote daemon for now) on the [latest release](https://github.com/vnovick/itervox/releases/latest).
+On a Mac you can install the menu bar app instead: the `.dmg` from the [latest release](https://github.com/vnovick/itervox/releases/latest), or `brew install --cask vnovick/tap/itervox-app` once a signed release has published the cask. It carries its own `itervox` daemon, so you need only one of the two; see the [desktop app guide](https://itervox.dev/guides/desktop-app/#install). The desktop app also comes for Linux (AppImage and `.deb`, x86_64 and arm64) and Windows (MSI and setup `.exe`; local projects need WSL or a remote daemon for now) on the [latest release](https://github.com/vnovick/itervox/releases/latest).
 
 ### Authenticating the agent CLI
 
@@ -192,7 +192,7 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
 
 ### Desktop app (macOS, Linux, Windows)
 
-A signed, notarized menu-bar app that updates itself (download the `.dmg` from the releases, `brew install --cask vnovick/tap/itervox-app`, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. The same app runs in the Linux and Windows system tray (AppImage, `.deb`, MSI and setup `.exe` on the releases). Guide: **[itervox.dev/guides/desktop-app/](https://itervox.dev/guides/desktop-app/)**.
+A menu-bar app (download the `.dmg` from the releases, `brew install --cask vnovick/tap/itervox-app` once a signed release has published the cask, or build it with `make desktop`) lists every project's daemon with its running agents, starts, stops and restarts them, notifies you when an agent needs input or a run fails, and opens each dashboard in a window, with no terminal needed. The same app runs in the Linux and Windows system tray (AppImage, `.deb`, MSI and setup `.exe` on the releases). A release is signed, notarized and updates itself only when it was built with the Apple signing secrets; until then the Mac build is unsigned (see [Opening an unsigned build](https://itervox.dev/guides/desktop-app/#opening-an-unsigned-build)) and new versions are installed by hand. Guide: **[itervox.dev/guides/desktop-app/](https://itervox.dev/guides/desktop-app/)**.
 
 ### View from your phone, anywhere
 
