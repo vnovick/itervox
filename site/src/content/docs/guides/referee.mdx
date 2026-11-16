@@ -28,8 +28,14 @@ human looks first. Three properties make that hold:
 
 ## Install
 
+```bash
+brew install vnovick/tap/referee                           # Homebrew (macOS / Linux): only the referee
+referee --version
+```
+
 Every Itervox release includes it: `itervox referee lanes --base origin/main`
-runs the same code as the standalone `referee` binary. Without Itervox:
+runs the same code as the standalone `referee` binary, so with
+`brew install vnovick/tap/itervox` you already have it. Without Homebrew:
 
 ```bash
 go install github.com/vnovick/itervox/cmd/referee@latest   # or pin a version

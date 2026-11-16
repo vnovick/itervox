@@ -24,8 +24,34 @@ builds:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
 
+  # The standalone CI referee (cmd/referee, the same code as `itervox
+  # referee`), shipped as its own archive and Homebrew formula so
+  # `brew install vnovick/tap/referee` installs only the referee.
+  - id: referee
+    main: ./cmd/referee
+    binary: referee
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
 archives:
+  # The itervox archives (itervox_<os>_<arch>) hold only the itervox build:
+  # action/install.sh, deploy/bootstrap.sh, deploy/upgrade.sh and the
+  # terraform startup script fetch them by this exact name.
   - id: default
+    ids:
+      - itervox
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz
@@ -48,6 +74,24 @@ archives:
       - README.md
       - CHANGELOG.md
 
+  # The standalone referee archives (referee_<os>_<arch>): only the referee
+  # binary plus LICENSE and README — no deploy/ tree, which is itervox's.
+  - id: referee
+    ids:
+      - referee
+    name_template: "referee_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+
+# One checksums.txt lists every archive (itervox_* and referee_*); its
+# consumers look their archive up by exact file name.
 checksum:
   name_template: checksums.txt
 
@@ -64,6 +108,10 @@ changelog:
 
 brews:
   - name: itervox
+    # Only the itervox archives: without this the formula would also see the
+    # referee archives for the same OS/arch.
+    ids:
+      - default
     repository:
       owner: vnovick
       name: homebrew-tap
@@ -75,3 +123,17 @@ brews:
       bin.install "itervox"
     test: |
       system "#{bin}/itervox", "--version"
+  - name: referee
+    ids:
+      - referee
+    repository:
+      owner: vnovick
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://itervox.dev/guides/referee/"
+    description: "CI referee for coding agents: an agent may change what CI checks, never how CI checks."
+    license: "Apache-2.0"
+    install: |
+      bin.install "referee"
+    test: |
+      system "#{bin}/referee", "--version"
