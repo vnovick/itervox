@@ -206,7 +206,18 @@ cmd_make_dmg() {
   ditto "$app" "$stage/$(basename "$app")"
   ln -s /Applications "$stage/Applications"
   rm -f "$out"
-  hdiutil create -volname Itervox -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$out" >/dev/null
+  # hdiutil on GitHub's macOS runners intermittently fails with "Resource
+  # busy" (a background scan holding the new image); it succeeds on retry.
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if hdiutil create -volname Itervox -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$out" >/dev/null; then
+      break
+    fi
+    [ "$attempt" -lt 5 ] || die "hdiutil create failed 5 times for $out"
+    echo "macos-release: hdiutil create failed (attempt $attempt of 5); retrying in $((attempt * 5))s" >&2
+    rm -f "$out"
+    sleep $((attempt * 5))
+  done
   rm -rf "$stage"
   echo "macos-release: wrote $out"
 }
