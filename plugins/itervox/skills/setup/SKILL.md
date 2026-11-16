@@ -28,7 +28,7 @@ Sources: `getting-started.mdx`, `cli.mdx` (`itervox init`, `itervox quickstart`,
 
 Check first: `itervox --version`. If it is missing:
 
-- macOS / Linux with Homebrew: `brew tap vnovick/tap && brew install itervox`
+- macOS / Linux with Homebrew: `brew install vnovick/tap/itervox`
 - Otherwise: the binary from https://github.com/vnovick/itervox/releases
   (Windows: `itervox_windows_amd64.zip`, plus Git for Windows; see
   `guides/windows.mdx`).
