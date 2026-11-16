@@ -46,7 +46,7 @@ go install github.com/vnovick/itervox/cmd/itervox@latest
 
 Pre-built binaries for macOS and Linux are available on the [latest release](https://github.com/vnovick/itervox/releases/latest).
 
-Need only the CI referee (an agent may change what CI checks, never how CI checks) and not the daemon? `brew install vnovick/tap/referee` installs the standalone `referee` binary; every `itervox` install already includes it as `itervox referee`. See the [referee guide](https://itervox.dev/guides/referee/).
+Need only the CI referee (an agent may change what CI checks, never how CI checks) and not the daemon? `brew install vnovick/tap/referee` installs the standalone `referee` binary; every `itervox` install already includes it as `itervox referee`. See the [referee guide](https://itervox.dev/guides/referee/). **AI may change what CI checks. Never how.** Why: [Agents in CI](https://itervox.dev/guides/agents-in-ci/).
 
 On a Mac you can install the menu bar app instead: `brew install --cask vnovick/tap/itervox-app`. It carries its own `itervox` daemon, so you need only one of the two; see the [desktop app guide](https://itervox.dev/guides/desktop-app/#install). The desktop app also comes for Linux (AppImage and `.deb`, x86_64 and arm64) and Windows (MSI and setup `.exe`; local projects need WSL or a remote daemon for now) on the [latest release](https://github.com/vnovick/itervox/releases/latest).
 
