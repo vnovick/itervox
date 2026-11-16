@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Docs: [Agents in CI: fix the build, not the pipeline](https://itervox.dev/guides/agents-in-ci/).** The ideas behind lanes, guardrails, signed checks and `referee` in one page, linked from the referee guide and the README.
+
 ## [0.3.3] — 2026-11-15
 
 ### Added

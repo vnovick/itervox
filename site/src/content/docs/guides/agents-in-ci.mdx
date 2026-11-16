@@ -1,0 +1,182 @@
+---
+title: 'Agents in CI: fix the build, not the pipeline'
+description: The ideas behind keeping coding agents out of the CI pipeline. Sort every change by what it touches, keep the rules where the agent cannot edit them, never let the writer judge its own work, and let tests, not AI reviewers, decide.
+---
+
+import GuideFlow from '../../../components/GuideFlow.astro';
+import GuideShot from '../../../components/GuideShot.astro';
+
+> **AI may change what CI checks. Never how.**
+
+Ask an agent to make CI green and it has two ways to get there. It can fix
+the code. Or it can change how CI checks the code: add
+`continue-on-error: true` to the failing test step, lower a coverage
+threshold, skip a test. Both end in a green check. Only one of them means
+anything.
+
+<GuideShot name="guides/agents-in-ci/referee-audit" alt="Terminal: referee audit --base main reports 2 findings that weaken checks: .github/workflows/ci.yml line 10 adds continue-on-error: true (ci_continue_on_error), and cart_test.go line 6 adds t.Skip(&quot;flaky on CI&quot;) (go_skip); exit=20" caption="An agent asked to make a red build green, in a small demo repository. referee audit finds both shortcuts it took: continue-on-error on the test step and a skipped test." />
+
+To git, both are an ordinary commit. So the question is not "did CI pass?"
+but "did anything change what passing means?". Four ideas answer it; the
+linked guides show how Itervox and the standalone `referee` apply them.
+
+## Idea 1: sort every change by what it touches
+
+A fix or a new test is **what** CI checks. A workflow file, the test
+runner's config or a coverage threshold is **how** CI checks. Sort every file
+a change touches into a lane; the highest lane decides:
+
+| Lane | Typical files | Who decides |
+|---|---|---|
+| `auto` | code and tests | CI, as usual |
+| `second_opinion` | lockfiles, tool versions, sensitive code | a reviewer other than the writer |
+| `human` | CI config, deploy tooling, test and coverage config, the lanes policy itself | a person |
+
+The default human lane covers CI config, test-runner and coverage config,
+`CODEOWNERS` and `Makefile`. The second-opinion lane is empty until you fill
+it. `referee` always adds its policy file to the human lane, so a change
+cannot loosen the rules it is judged by.
+
+Watch the files that change *how* without looking like CI. A version bump in
+a lockfile or `go.mod` can swap the linter or the test runner, and no CI file
+changes. Build manifests are not in the default human lane (by path, their
+tool sections cannot be told apart from their dependencies), so put them in
+the second-opinion lane yourself:
+
+```yaml
+# .referee.yml on your default branch
+second_opinion:
+  - "go.mod"
+  - "go.sum"
+  - "package.json"
+  - "pnpm-lock.yaml"
+```
+
+The same failing test, two branches:
+
+<GuideFlow title="One bug, two fixes, two lanes">
+  <GuideShot name="guides/agents-in-ci/referee-lanes-human" alt="Terminal: on the agent's branch, git diff --stat main shows .github/workflows/ci.yml and cart_test.go changed; referee lanes --base main prints lane: human, policy .referee.yml read at the merge base, human (1): .github/workflows/ci.yml, auto (1): cart_test.go; exit=20" caption="The agent's branch touches the CI workflow, so the whole change takes the human lane: exit 20, a person decides." />
+  <GuideShot name="guides/agents-in-ci/referee-lanes-auto" alt="Terminal: on the fix branch, git diff --stat main shows only cart.go changed; referee lanes --base main prints lane: auto, auto (1): cart.go; exit=0" caption="The real fix changes cart.go only: the auto lane, exit 0, and it ships on green." />
+</GuideFlow>
+
+See [Lanes](/guides/lanes/) for how Itervox holds a human-lane push, and
+[referee](/guides/referee/) for the policy format.
+
+## Idea 2: put the permissions outside the model
+
+A prompt that says "don't touch the pipeline" is a request, not a rule. The
+rule has to live where the agent cannot edit it:
+
+- **The policy comes from the base branch.** `referee` reads it with
+  `git show <base>:.referee.yml`, never from the branch under review. A pull
+  request that edits the policy is judged by the old one.
+- **The referee comes from outside the branch.** The Action builds it from its
+  own pinned ref.
+- **Pushes go through a hook.** For the runs it starts, Itervox puts a
+  pre-push hook and shims for `git`, `gh` and `glab` in front of the agent.
+  See [Guardrails](/guides/guardrails/).
+
+<GuideFlow title="In Itervox: the agent's pipeline change waits for you">
+  <GuideShot name="guides/lanes/01-needs-attention" alt="Needs attention panel with one row: DEMO-1, Pipeline change: the agent wants to push changes to .github/workflows/ci.yml, awaiting reply, with Reply and Open buttons" caption="The push that edits the CI workflow is held. It shows up in Needs attention with the files and the git command." />
+  <GuideShot name="guides/lanes/04-reject-with-reason" alt="The reply box with the text: Rejected: fix the code, not the pipeline. The CI config stays as it is." caption="Reject it with a reason. The agent gets your reply and fixes the code instead." />
+</GuideFlow>
+
+:::caution[Guidance, not a sandbox]
+An agent that runs git by an absolute path, rewrites its environment, or
+pushes through an API with its own token gets past the hook. **Branch
+protection and required reviews on your remote are the real control.** The
+guardrails keep honest agents honest; the CI check on the base branch's
+policy is what enforces the rule.
+:::
+
+## Idea 3: the writer never judges
+
+The agent that wrote a change does not decide that it passed. Its "tests
+pass" is a claim:
+
+- **The judge runs where the writer cannot reach.** Run the agent in one job
+  and the referee in a later job the agent's job cannot change.
+- **The second-opinion lane needs another reviewer.** In Itervox, `merge_pr`
+  refuses such a pull request until a reviewer on a different backend than
+  the writer approves it. See [Cross-review preset](/guides/cross-review/).
+- **"Done" comes with a signed record.** `referee run` (and a profile's
+  `verify` list in Itervox) runs each check itself and signs the real exit
+  code and the tree it ran on, with a key the agent cannot read.
+  `referee verify --tree .` then proves the record is about this code, not
+  an earlier version. See [Signed checks](/guides/signed-checks/).
+
+<GuideFlow title="A signed run, and two ways to fake one">
+  <GuideShot name="guides/agents-in-ci/referee-run-verify" alt="Terminal: referee run --name test on main records exit=1; on the fix branch it records exit=0 with tree c307fc7a9af5; referee verify --tree . prints ok for the check and the seal, all 2 records verify, exit=0" caption="referee run executes the tests itself and signs the real exit code and tree. On the fix branch, verify passes." />
+  <GuideShot name="guides/agents-in-ci/referee-verify-tamper" alt="Terminal: after rewriting main's record from exit 1 to 0, referee verify fails with attest: signature does not verify, exit=1; after appending a line to cart.go, verify --tree fails with attest: record is for a different tree, exit=1" caption="Edit the record's exit code and the signature fails. Change the code after the run and the tree no longer matches." />
+</GuideFlow>
+
+## Idea 4: let AI reviewers find, let tests decide
+
+An AI review is a second opinion, good at finding things. It is never what
+turns CI green. A finding is a lead; a test that fails before the fix and
+passes after it is the verdict.
+
+Two examples from Itervox's own history:
+
+- **A check that passed by running nothing.** The first version of the chaos
+  test script (pull request #140) read its package list from `go list`. When
+  `go list` failed, the script got an empty list, ran zero packages, and
+  printed `chaos: all packages passed`. A review flagged it. A run of the
+  script with a fake `go` that exits 42 proved it. The fix fails the run on a
+  failed or empty listing.
+- **Guard bypasses that passed the existing tests.** Fuzzing the guardrails
+  in 0.3.3 found holes the existing tests did not cover: `git push
+  --no-verif` (git accepts abbreviations of `--no-verify`) skipped the hook;
+  `git -c include.path=…` could load a file that replaces the hooks;
+  `gh pr -R owner/repo merge` slipped past the self-merge check; and the lane
+  matcher was exponential in `**` segments on deep paths. Each one now has a
+  test.
+
+In both cases the existing tests were green.
+
+## Start with one job
+
+Add one workflow that sorts each pull request into lanes, and make it a
+required check in branch protection:
+
+```yaml
+name: referee
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lanes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the merge base and the base branch's policy
+          persist-credentials: false
+      - uses: vnovick/itervox/referee@<sha> # pin to a commit SHA
+        with:
+          mode: lanes
+```
+
+`referee lanes` exits `0` for the auto lane, `10` for second opinion, `20` for
+the human lane and `2` on an error; it never returns `0` for an error. With
+the default `fail-on: human`, exit `20` fails the job: a person must look
+before the pull request merges. To let a maintainer approve with a label, and
+to add `mode: audit` for weakened checks, use the full example in the
+[referee guide](/guides/referee/#the-github-action).
+
+Elsewhere, `brew install vnovick/tap/referee` (or use `itervox referee`)
+and run `referee lanes --base origin/main` in any CI step.
+
+## Further reading
+
+- [referee](/guides/referee/)
+- [Lanes](/guides/lanes/)
+- [Guardrails](/guides/guardrails/)
+- [Signed checks](/guides/signed-checks/)
+- [Cross-review preset](/guides/cross-review/)
+- [Pipeline-guard demo](/guides/pipeline-guard-demo/)
+- [Running in CI](/guides/ci/) and its [safer CI mode](/guides/ci/#safer-ci-mode)

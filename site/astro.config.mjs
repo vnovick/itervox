@@ -77,6 +77,7 @@ export default defineConfig({
             { label: 'Signed checks', slug: 'guides/signed-checks' },
             { label: 'Running in CI (GitHub Actions)', slug: 'guides/ci' },
             { label: 'referee (agents in CI, any harness)', slug: 'guides/referee' },
+            { label: 'Agents in CI: fix the build, not the pipeline', slug: 'guides/agents-in-ci' },
             { label: 'Pipeline-guard demo', slug: 'guides/pipeline-guard-demo' },
             { label: 'Process isolation', slug: 'guides/isolation' },
             { label: 'Deploying on a Cloud VM', slug: 'guides/deployment' },
