@@ -16,11 +16,6 @@ import (
 // fixtures under testdata/proc exercise them on every OS; procfs_linux.go
 // reads the files.
 
-// clockTicks is USER_HZ, the unit of utime/stime in /proc/<pid>/stat. It is
-// part of the userspace ABI and 100 on every architecture Linux supports
-// today, independent of the kernel's internal HZ.
-const clockTicks = 100
-
 // statFields is what parseStat extracts from /proc/<pid>/stat.
 type statFields struct {
 	Comm       string

@@ -104,7 +104,8 @@ run() {
   STUB="$WORK/$name"; mkdir -p "$STUB/res"
   for r in ${PRE:-}; do touch "$STUB/res/$r"; done
   set +e
-  env "${envs[@]}" STUB_DIR="$STUB" PATH="$BIN:$PATH" ITERVOX_SMOKE_WAIT_SECONDS=0 \
+  # ${envs[@]+…}: bash 3.2 (macOS) + set -u calls a bare empty array unbound.
+  env ${envs[@]+"${envs[@]}"} STUB_DIR="$STUB" PATH="$BIN:$PATH" ITERVOX_SMOKE_WAIT_SECONDS=0 \
     "${AGENT_ENV-ANTHROPIC_API_KEY=$SECRET}" bash "$SMOKE" --name itervox-smoke-t --zone us-central1-a "$@" > "$STUB/run.out" 2>&1
   rc=$?
   set -e

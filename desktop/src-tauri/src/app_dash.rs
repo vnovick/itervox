@@ -332,6 +332,14 @@ fn create(
         .title(title)
         .inner_size(1280.0, 860.0)
         .min_inner_size(720.0, 480.0);
+    // Tauri's default macOS style (TitleBarStyle::Visible) turns on
+    // NSFullSizeContentView, so the content view starts at the window's top
+    // edge, under the title bar: the tab strip laid out at y = 0 was hidden
+    // behind it and the dashboard (at y = 40) covered what was left.
+    // Transparent keeps the native title bar but no full-size content view,
+    // so the content area, inner_size and window_layout all start below it.
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
     // Linux and Windows have no app menu bar: the window carries the
     // Projects menu, with Ctrl accelerators (#260).
     #[cfg(not(target_os = "macos"))]

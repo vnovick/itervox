@@ -55,4 +55,7 @@ func TestFirstField(t *testing.T) {
 	assert.Equal(t, "claude", firstField("claude --model claude-sonnet-4-6"))
 	assert.Equal(t, "codex", firstField("  codex  "))
 	assert.Equal(t, "", firstField(""))
+	assert.Equal(t, "claude", firstField("ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"),
+		"a model-server assignment is not the program")
+	assert.Equal(t, "opencode", firstField("env OPENAI_BASE_URL=http://localhost:1234/v1 opencode run"))
 }

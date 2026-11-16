@@ -65,6 +65,11 @@ func TestProcessBackendRecognisesTheCLIs(t *testing.T) {
 		{Process{Name: "node", Args: []string{"node", "/x/node_modules/@openai/codex/bin/codex.js"}}, BackendCodex},
 		{Process{Name: "vim", Args: []string{"vim", "claude.md"}}, ""},
 		{Process{Name: "zsh", Args: []string{"zsh"}}, ""},
+		// macOS ps: a wrapper script run through its shebang.
+		{Process{Name: "sh", Args: []string{"/bin/sh", "/Users/me/bin/claude", "--resume", "x"}}, BackendClaude},
+		{Process{Name: "bash", Args: []string{"/bin/bash", "/opt/tools/codex", "exec"}}, BackendCodex},
+		{Process{Name: "bash", Args: []string{"bash", "-c", "claude --resume x"}}, ""},
+		{Process{Name: "sh", Args: []string{"/bin/sh", "/usr/local/bin/deploy.sh", "claude"}}, ""},
 	} {
 		if got := ProcessBackend(c.p); got != c.want {
 			t.Fatalf("ProcessBackend(%v) = %q, want %q", c.p.Args, got, c.want)
