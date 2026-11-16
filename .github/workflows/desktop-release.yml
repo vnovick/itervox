@@ -52,7 +52,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          # The full tag ref: a bare name is resolved as a branch first, and a
+          # branch named like the tag once made the release build stale code.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           fetch-depth: 0
 
       - name: Resolve the version
@@ -387,7 +389,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          # The full tag ref: a bare name is resolved as a branch first, and a
+          # branch named like the tag once made the release build stale code.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Resolve the version
         id: version
@@ -507,7 +511,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          # The full tag ref: a bare name is resolved as a branch first, and a
+          # branch named like the tag once made the release build stale code.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Resolve the version
         id: version
