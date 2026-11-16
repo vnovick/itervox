@@ -9,11 +9,7 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
-### Added
-
-- **Docs: [Agents in CI: fix the build, not the pipeline](https://itervox.dev/guides/agents-in-ci/).** The ideas behind lanes, guardrails, signed checks and `referee` in one page, linked from the referee guide and the README.
-
-## [0.3.3] — 2026-11-15
+## [0.3.3] — 2026-11-16
 
 ### Added
 
@@ -71,6 +67,7 @@ Each release has its own section, newest first. Changes merged since the last ta
 - **Fuzz tests for the guardrails and signed checks.** `FuzzDecide`, `FuzzMatchApproval`, `FuzzLanes`, `FuzzRecordVerify` and `FuzzRecordByteFlip`, run with `make fuzz` (`FUZZTIME`, default 30s; not part of `make verify`); their seeds run under `go test`. `scripts/guardrails-shim-latency.sh` measures the git shim: about 8–9 ms per call at p50 on a loaded 4-CPU test machine.
 - **`itervox evals` in the released binary.** The profile evals no longer need a repository checkout: `itervox evals recorded` (free, no agent), `ITERVOX_EVALS_LIVE=1 itervox evals live`, `itervox evals record` and `itervox evals promote` are the commands `make evals*` runs, now shared through `internal/evals/cli` (`cmd/itervox-evals` stays as the contributor wrapper, so the Makefile targets are unchanged). Scenarios come from `-fixtures DIR`, else the project's `.itervox/evals/fixtures`, else the built-in scenarios embedded in the binary; `record` and `promote` write next to the fixtures and so refuse the built-in set. Reports go to `.itervox/evals/` next to `WORKFLOW.md`, where **Repo Analysis → Evals** reads them; its empty state, the CLI reference and the Repo Analysis guide now name `itervox evals` instead of `make evals`.
 - **`itervox open`: the dashboard, logged in.** Opens the running daemon's dashboard in your browser (`open` on macOS, `xdg-open` on Linux, `rundll32` on Windows) with its API token as `?token=`, which the dashboard keeps and removes from the address bar; the token comes from `ITERVOX_API_TOKEN`, `.itervox/.env` or the auto-generated `<logs-dir>/api-token`. `--print` prints the URL instead and says on stderr that it contains a credential. `itervox init`'s next steps point at it instead of `.itervox/dashboard_url`, whose URL has no token, and `itervox doctor` now says where the token is (`API token:`).
+- **Docs: [Agents in CI: fix the build, not the pipeline](https://itervox.dev/guides/agents-in-ci/).** The ideas behind lanes, guardrails, signed checks and `referee` in one page, linked from the referee guide and the README.
 
 ### Security
 
