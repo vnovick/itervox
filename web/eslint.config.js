@@ -51,7 +51,24 @@ export default tseslint.config(
           ],
         },
       ],
+      // #298 — a raw WebSocket cannot carry the bearer token: the live
+      // terminal's socket (ticket-authenticated) is the only one, in
+      // src/auth/terminalSocket.ts (exempted below). Everything else uses
+      // authedFetch / openAuthedEventStream.
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'WebSocket',
+          message:
+            'Open sockets only through src/auth/terminalSocket.ts (ticket auth, #298); HTTP goes through authedFetch.',
+        },
+      ],
     },
+  },
+  {
+    // The one raw WebSocket (#298): the ticketed live-terminal socket.
+    files: ['src/auth/terminalSocket.ts'],
+    rules: { 'no-restricted-globals': 'off' },
   },
   {
     files: ['src/**/*.{test,spec}.{ts,tsx}', 'src/test/**/*.{ts,tsx}'],

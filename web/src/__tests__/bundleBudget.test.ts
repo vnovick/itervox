@@ -69,15 +69,24 @@ describe('checkBundleBudget', () => {
     );
   });
 
-  it('caps the initial JS at 600 KiB and the total at 2200 KiB', () => {
+  it('caps the initial JS at 600 KiB and the total at 2260 KiB', () => {
     expect(BUDGET.initialJsBytes).toBe(600 * KB);
-    expect(BUDGET.totalJsBytes).toBe(2200 * KB);
+    expect(BUDGET.totalJsBytes).toBe(2260 * KB);
     const atCap = [chunk('index-a.js', 300 * KB), chunk('vendor-b.js', 300 * KB)];
     expect(checkBundleBudget(atCap, INDEX).violations).toEqual([]);
     const over = [chunk('index-a.js', 300 * KB), chunk('vendor-b.js', 300 * KB + 1)];
     expect(checkBundleBudget(over, INDEX).violations.some((m) => m.startsWith('initial JS'))).toBe(
       true,
     );
+  });
+
+  it('keeps the terminal renderer in its lazy chunk (#298)', () => {
+    const chunks = [...healthy, chunk('index-z.js', 10 * KB, 'xterm-helper-textarea')];
+    expect(checkBundleBudget(chunks, INDEX).violations).toContain(
+      'index chunk index-z.js contains forbidden "xterm-helper-textarea"',
+    );
+    const term = BUDGET.chunks.find((c) => c.name === 'TmuxTerminal');
+    expect(term?.maxBytes).toBeLessThanOrEqual(300 * KB);
   });
 
   it('keeps the #211 acceptance caps', () => {

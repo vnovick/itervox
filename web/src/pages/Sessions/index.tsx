@@ -15,7 +15,8 @@ import { SessionComposer } from './SessionComposer';
 import { SessionTabs } from './SessionTabs';
 import { SessionTranscriptView } from './SessionTranscript';
 import { TMUX_MISSING, TmuxMissingBanner } from './TmuxNotice';
-import { TmuxControls, TmuxScreen } from './TmuxSessionView';
+import { TmuxControls } from './TmuxSessionView';
+import { TmuxLivePanel } from './TmuxLivePanel';
 
 // Sessions panel (#178): one tab per agent session of this daemon, sessions
 // waiting for input first, sessions started outside itervox last (greyed,
@@ -32,8 +33,8 @@ function IssueLogTranscript({ session }: { session: SessionRow }) {
   return <Terminal entries={lines} follow showTime={false} resetKey={sessionKey(session)} />;
 }
 
-function SessionBody({ session }: { session: SessionRow }) {
-  if (session.controllable) return <TmuxScreen id={session.id} />;
+function SessionBody({ session, tmux }: { session: SessionRow; tmux?: TmuxStatus }) {
+  if (session.controllable) return <TmuxLivePanel id={session.id} tmux={tmux} />;
   if (session.owner === 'external') return <SessionTranscriptView id={session.id} />;
   if (session.kind === 'tmux')
     return <EmptyState title="The screen is shown once tmux is available" />;
@@ -73,7 +74,7 @@ function SessionView({ session, tmux }: { session: SessionRow; tmux?: TmuxStatus
         )}
       </header>
       <ConsoleSurface className="flex min-h-[320px] flex-1 flex-col rounded-[18px]">
-        <SessionBody session={session} />
+        <SessionBody session={session} tmux={tmux} />
       </ConsoleSurface>
       {session.controllable ? (
         <TmuxControls key={sessionKey(session)} session={session} />
