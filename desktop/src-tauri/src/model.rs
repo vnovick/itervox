@@ -404,6 +404,7 @@ impl Core {
                 key: j.key,
                 url: j.url,
                 token: j.token,
+                terminal: crate::terminal::attach_host(crate::platform::Os::current(), None),
             })
             .collect()
     }

@@ -146,6 +146,10 @@ files and every other workspace, and lets it write only to its own workspace
 whose sandbox is unavailable does not start. Hooks are not sandboxed. See
 [Process isolation](/guides/isolation/).
 
+## The desktop app's terminal
+
+**Open in Terminal** in the desktop app's Sessions window starts a terminal on your machine that runs `tmux attach` — locally, or over `ssh -t` (or `gcloud compute ssh --tunnel-through-iap`) to the remote's host — as you, with your own SSH credentials. The terminal can therefore reach whatever your SSH login on that host can, which is more than the dashboard token allows: the attached tmux client types into the session, and nothing stops you opening a shell there. It is you at your keyboard, not a new capability of the app or the daemon. It adds no write path into the daemon or into other processes: the app does not run tmux itself, the daemon is unchanged (`internal/tmuxctl` is still its only tmux caller), and the app offers the action only for sessions it may attach to — those itervox started, and hand-started ones under `sessions.tmux_control`. The command is built as separate arguments from a checked session name (`[A-Za-z0-9_-]`) and the connection's checked destination, never as a shell line from the daemon's text. See [Open in Terminal](/guides/desktop-app/#open-in-terminal).
+
 ## API scope table
 
 Every route declares its scope in `internal/server/route_scopes.go`, the one

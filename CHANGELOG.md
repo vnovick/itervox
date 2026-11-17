@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Desktop app: Open in Terminal.** In the Sessions window, a tmux session the app may attach to — one itervox started with **New session**, or one started by hand under `sessions.tmux_control` — has **Open in Terminal**, which opens the system terminal (Terminal on macOS, `$TERMINAL` or `x-terminal-emulator` on Linux, Windows Terminal) attached to it: `tmux attach -t itervox-<id>` for a local daemon, `ssh -t <host> tmux attach -t itervox-<id>` (or `gcloud compute ssh … --tunnel-through-iap`) for a remote one. The command is built as an argument list from checked names; the daemon is unchanged and still owns the session (#278).
+
 ### Fixed
 
 - **Docs: install and upgrade with the full Homebrew formula name.** Homebrew 7 refuses a formula from a tap it does not trust: `brew tap vnovick/tap && brew install itervox` fails with "Refusing to load formula vnovick/tap/itervox from untrusted tap", and so does `brew upgrade itervox`. Naming the formula in full (`brew install vnovick/tap/itervox`, `brew upgrade vnovick/tap/itervox`) trusts it and works. The README, Getting started, the landing page, the setup skill and the upgrade steps of the 0.3.0 and 0.3.3 notes use the full name.

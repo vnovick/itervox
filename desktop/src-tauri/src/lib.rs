@@ -33,6 +33,7 @@ pub mod shellpath;
 pub mod status;
 pub mod supervisor;
 pub mod sysevents;
+pub mod terminal;
 pub mod token;
 pub mod tunnel;
 pub mod update;
