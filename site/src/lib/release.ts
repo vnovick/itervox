@@ -66,6 +66,15 @@ export function resolveRelease(data: unknown): Release {
   return release;
 }
 
+/**
+ * Whether `brew install --cask vnovick/tap/itervox-app` works: the release
+ * workflow publishes the cask only for a notarized Mac build, so it exists
+ * once a release with a signed (not `-unsigned`) disk image is out.
+ */
+export function caskPublished(release: Release): boolean {
+  return release.version !== null && release.links.mac !== RELEASE_PAGE && !release.macUnsigned;
+}
+
 export type Os = 'mac' | 'windows' | 'linux';
 
 /** The visitor's OS; macOS when it cannot be told (or on a phone). */
