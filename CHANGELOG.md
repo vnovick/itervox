@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Added
+
+- **Sessions: a real terminal for tmux sessions.** A controllable tmux session's screen is now a live terminal: the daemon runs `tmux attach-session` in a pseudo-terminal it owns and streams it over a WebSocket to xterm.js, with colours, the cursor, every key and a size that follows the panel. Operators get a read-only attach (`-r`, and the daemon types nothing into it); admins can type only with the new `sessions.terminal_write: true`; viewers keep the snapshot view, which stays one click away for everyone. The socket is authenticated by a 30-second, single-use ticket from `POST /api/v1/sessions/{id}/terminal/ticket`, bound to the session, the mode and the token, and its `Origin` is checked against `server.allowed_origins`. Each attach and detach is fed as `terminal_attached` / `terminal_detached` (never the bytes). Linux and macOS only; the hub does not proxy it (`403 terminal_not_proxied`). See [Sessions](https://itervox.dev/guides/sessions/#live-terminal) and [Security](https://itervox.dev/guides/security/#the-live-terminal).
+
 ### Fixed
 
 - **Docs: install and upgrade with the full Homebrew formula name.** Homebrew 7 refuses a formula from a tap it does not trust: `brew tap vnovick/tap && brew install itervox` fails with "Refusing to load formula vnovick/tap/itervox from untrusted tap", and so does `brew upgrade itervox`. Naming the formula in full (`brew install vnovick/tap/itervox`, `brew upgrade vnovick/tap/itervox`) trusts it and works. The README, Getting started, the landing page, the setup skill and the upgrade steps of the 0.3.0 and 0.3.3 notes use the full name.

@@ -33,8 +33,8 @@ below it.
 | Scope | Can |
 |---|---|
 | `viewer` | Watch: every `GET` route and the live SSE streams (board, logs, sessions, history, settings values). Secrets are redacted: inline env-assignment values in agent and profile commands (`ANTHROPIC_API_KEY=*** claude`), credentials in URLs, known key shapes, and the raw text of settings files. |
-| `operator` | Run the fleet: dispatch and issue control (cancel, resume, terminate, move state, profile and backend overrides), steering messages, line comments and PR reviews from the Changes tab (#238), input replies and approvals, pause/resume all dispatch, memory edits, clearing logs, outbox retries. Same redaction as viewer. |
-| `admin` | Everything: settings, tokens, tmux control (New session, keys, kill), workspace reset, the automations configuration and the rules editor. Sees secrets as written. |
+| `operator` | Run the fleet: dispatch and issue control (cancel, resume, terminate, move state, profile and backend overrides), steering messages, line comments and PR reviews from the Changes tab (#238), input replies and approvals, pause/resume all dispatch, memory edits, clearing logs, outbox retries, a read-only live terminal of a tmux session. Same redaction as viewer. |
+| `admin` | Everything: settings, tokens, tmux control (New session, keys, kill), a read-write live terminal when `sessions.terminal_write` is on, workspace reset, the automations configuration and the rules editor. Sees secrets as written. |
 
 Tracker API keys and webhook secrets are never served by any route at any
 scope: `WORKFLOW.md` holds `$VAR` references that the daemon resolves in
@@ -126,6 +126,19 @@ consulted, and the token routes answer `503 tokens_unavailable`. The daemon
 logs a warning at startup. Cross-origin state-changing requests and
 DNS-rebinding Host headers are still refused. Use it only on a fully local,
 trusted machine.
+
+## The live terminal
+
+The Sessions panel's [live terminal](/guides/sessions/#live-terminal) is `tmux attach-session` in a pseudo-terminal the daemon owns, streamed over a WebSocket. What it can reach:
+
+- **Which sessions:** only the ones the panel may already control — tmux sessions itervox started with **New session**, and a hand-started session in a matched tmux pane with `sessions.tmux_control` on.
+- **Read-only** (operator, and admin by default): `tmux attach-session -r`, and the daemon writes nothing the browser sends into it.
+- **Read-write** (admin, only with `sessions.terminal_write: true`): every key reaches the session — and tmux, so a new window is a shell on the daemon's host as the daemon's user. Treat it as a remote shell; keep it off unless the admin token is yours alone.
+- **Viewer:** no terminal; the snapshot view only.
+
+How the socket is authenticated: a browser cannot send the `Authorization` header on a WebSocket, so the dashboard first calls `POST /api/v1/sessions/{id}/terminal/ticket` with its token. The daemon checks the scope (and the opt-in for `write`) and returns a ticket that is valid for 30 seconds, for one connection, to that session, in that mode. The socket (`GET /api/v1/sessions/{id}/terminal?ticket=…`) spends the ticket on its first use and checks again that the token which minted it still exists, has not expired and still holds the scope — a ticket presented together with another token's `Authorization` header is refused. Only the ticket's hash is kept, in memory. The socket's `Origin` must be the daemon's own, an origin in `server.allowed_origins`, or a same-origin browser request (`Sec-Fetch-Site: same-origin`); any other origin is refused. Each attach and detach is logged and recorded in the event feed (`terminal_attached` / `terminal_detached`); terminal contents never are.
+
+The [hub](/guides/hub/) does not proxy the live terminal: it refuses the ticket route, the socket and any WebSocket upgrade (`403 terminal_not_proxied`). On Windows the routes answer `501 terminal_unsupported`.
 
 ## Agent grants are separate
 
@@ -245,6 +258,7 @@ fails when a new route has no declaration.
 | `POST` | `/api/v1/repo/readiness/verify-skill-issue` | operator (creates a tracker issue, #218) |
 | `POST` | `/api/v1/sessions/{id}/message` | operator (steering) |
 | `GET` | `/api/v1/sessions/{id}/screen` | operator (a live terminal pane) |
+| `POST` | `/api/v1/sessions/{id}/terminal/ticket` | operator (a read-only live terminal; `write` also needs admin and `sessions.terminal_write`) |
 | `POST` | `/api/v1/skills/check-refs` | operator (read-only, but a POST) |
 | `POST` | `/api/v1/skills/scan` | operator |
 | `POST` | `/api/v1/tracker/filter/preview` | operator (read-only, but a POST) |
@@ -289,6 +303,7 @@ fails when a new route has no declaration.
 | `GET` | `/api/v1/health` | none (public) |
 | `GET` | `/api/v1/ready` | none (public) |
 | `POST` | `/api/v1/webhooks/{tracker}` | none (public) |
+| `GET` | `/api/v1/sessions/{id}/terminal` | single-use terminal ticket (the live terminal's WebSocket; the ticket needs operator, or admin for `write`) |
 | `POST` | `/api/v1/agent-actions/{identifier}/comment` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/comment_pr` | per-run agent grant |
 | `POST` | `/api/v1/agent-actions/{identifier}/create-issue` | per-run agent grant |
