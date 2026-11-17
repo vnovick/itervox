@@ -27,7 +27,7 @@ const agents = ['Claude Code', 'Codex', 'OpenCode', 'Cursor CLI'];
       <span data-copy-label>Copy</span>
     </button>
   </div>
-  <p class="body hero-alt">or <code>go install github.com/vnovick/itervox/cmd/itervox@latest</code> · binaries for macOS, Linux and Windows</p>
+  <p class="body hero-alt">or <a href="#desktop">the desktop app for macOS, Windows and Linux →</a></p>
 </section>
 
 <div class="wrap">
@@ -128,9 +128,15 @@ const agents = ['Claude Code', 'Codex', 'OpenCode', 'Cursor CLI'];
     font-size: 14px;
     color: var(--muted);
   }
-  .hero-alt code {
+  .hero-alt a {
     color: var(--text2);
-    overflow-wrap: anywhere;
+    text-decoration: underline;
+    text-decoration-color: var(--hairline);
+    text-underline-offset: 3px;
+  }
+  .hero-alt a:hover {
+    color: var(--text);
+    text-decoration-color: currentColor;
   }
   .works {
     display: flex;
