@@ -18,8 +18,10 @@ import (
 // Sessions panel invariant (#178): itervox writes input only to sessions it
 // owns — the stdin of a process it started itself — with ONE narrow
 // exception: internal/tmuxctl, which types into an agent CLI running in a
-// tmux pane through tmux's own paste buffer and key events, opt-in
-// (sessions.tmux_control) or for tmux sessions itervox started. Nothing
+// tmux pane through tmux's own paste buffer and key events, or (#298, the
+// live terminal) through a `tmux attach-session` client it starts in a
+// PTY it owns, opt-in (sessions.tmux_control) or for tmux sessions itervox
+// started. Nothing
 // ever injects into a terminal device (TIOCSTI, /dev/pts), drives another
 // app through UI automation (AppleScript System Events keystrokes, the
 // Accessibility API, CGEvent, xdotool) or opens another process's stdin
@@ -27,8 +29,12 @@ import (
 // internal/ and every Rust file of the Mac app:
 //
 //   - no forbidden token in a string literal, identifier or Rust source;
-//     the tmux write commands (send-keys, paste-buffer, load-buffer) only in
-//     internal/tmuxctl;
+//     the tmux write commands (send-keys, paste-buffer, load-buffer,
+//     attach-session) only in internal/tmuxctl, and attach-session there
+//     exactly once (AttachArgs, whose exact argv its own test pins);
+//   - a PTY (github.com/creack/pty) only in internal/tmuxctl, started only
+//     with pty.StartWithSize on a command the same function created (which
+//     there can only be `tmux`);
 //   - `tmux` is executed only by internal/tmuxctl, and internal/tmuxctl
 //     executes nothing but `tmux` (a literal program name, explicit
 //     arguments);
@@ -65,6 +71,12 @@ func TestNoWritesToProcessesItervoxDidNotStart(t *testing.T) {
 	if tmuxExecs == 0 {
 		violations = append(violations, "internal/tmuxctl: expected its exec of tmux to be found")
 	}
+	if attachSessionLiterals != 1 {
+		violations = append(violations, "internal/tmuxctl: expected exactly one \"attach-session\" literal (AttachArgs), found "+strconv.Itoa(attachSessionLiterals))
+	}
+	if ptyStarts != 1 {
+		violations = append(violations, "internal/tmuxctl: expected exactly one pty.StartWithSize (Attach), found "+strconv.Itoa(ptyStarts))
+	}
 	if len(violations) > 0 {
 		sort.Strings(violations)
 		t.Fatalf("itervox may write only to processes it started (#178); found:\n  %s", strings.Join(violations, "\n  "))
@@ -75,23 +87,39 @@ func TestNoWritesToProcessesItervoxDidNotStart(t *testing.T) {
 const tmuxctlDir = "internal/tmuxctl/"
 
 // tmuxWriteTokens are tmux's write commands: allowed in tmuxctlDir only.
-var tmuxWriteTokens = []string{"send-keys", "paste-buffer", "load-buffer"}
+// attach-session (#298) is the live terminal's client: a read-write attach
+// types into the session through the PTY tmuxctl owns.
+var tmuxWriteTokens = []string{"send-keys", "paste-buffer", "load-buffer", "attach-session"}
 
 // tmuxExecs counts tmuxctl's exec sites of tmux (at least one must exist,
 // so the check cannot pass by not finding the package).
 var tmuxExecs int
 
+// attachSessionLiterals counts "attach-session" string literals in
+// tmuxctl: exactly one, the command of AttachArgs.
+var attachSessionLiterals int
+
+// ptyImport is the one PTY package; ptyStarts counts its starts in tmuxctl
+// (exactly one: Attach), and ptyAllowedFuncs are the only names of it
+// tmuxctl uses — start a command it created, size its window.
+const ptyImport = "github.com/creack/pty"
+
+var ptyStarts int
+
+var ptyAllowedFuncs = []string{"StartWithSize", "Setsize", "Getsize", "Winsize"}
+
 // forbiddenWriteTokens name the mechanisms that write into a process
 // itervox did not start. Matched case-insensitively in Go string literals
 // and identifiers, and in Rust sources.
 var forbiddenWriteTokens = []string{
-	"tiocsti",       // push bytes into another terminal's input queue
-	"/dev/pts",      // another terminal
-	"send-keys",     // tmux / screen keystroke injection (tmuxctl only)
-	"paste-buffer",  // tmux paste (tmuxctl only)
-	"load-buffer",   // tmux paste buffer (tmuxctl only)
-	"xdotool",       // X11 keystroke injection
-	"system events", // AppleScript UI scripting (keystroke, key code)
+	"tiocsti",        // push bytes into another terminal's input queue
+	"/dev/pts",       // another terminal
+	"send-keys",      // tmux / screen keystroke injection (tmuxctl only)
+	"attach-session", // a tmux client typing into a session (tmuxctl only, #298)
+	"paste-buffer",   // tmux paste (tmuxctl only)
+	"load-buffer",    // tmux paste buffer (tmuxctl only)
+	"xdotool",        // X11 keystroke injection
+	"system events",  // AppleScript UI scripting (keystroke, key code)
 	"keystroke",
 	"axuielement", // macOS Accessibility API
 	"cgeventpost", // synthesized keyboard events
@@ -132,7 +160,7 @@ func foreignWriteViolations(t *testing.T, path string) []string {
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
-	execName, osName := "", ""
+	execName, osName, ptyName := "", "", ""
 	for _, imp := range f.Imports {
 		p, _ := strconv.Unquote(imp.Path.Value)
 		name := ""
@@ -140,6 +168,11 @@ func foreignWriteViolations(t *testing.T, path string) []string {
 			name = imp.Name.Name
 		}
 		switch p {
+		case ptyImport:
+			ptyName = "pty"
+			if name != "" {
+				ptyName = name
+			}
 		case "os/exec":
 			execName = "exec"
 			if name != "" {
@@ -154,6 +187,9 @@ func foreignWriteViolations(t *testing.T, path string) []string {
 	}
 	var out []string
 	pos := func(n ast.Node) string { return rel + ":" + strconv.Itoa(fset.Position(n.Pos()).Line) }
+	if ptyName != "" && !strings.HasPrefix(rel, tmuxctlDir) {
+		out = append(out, rel+": imports "+ptyImport+" outside internal/tmuxctl")
+	}
 
 	// Tokens in string literals and identifiers.
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -169,6 +205,9 @@ func foreignWriteViolations(t *testing.T, path string) []string {
 			return true
 		}
 		lower := strings.ToLower(text)
+		if _, isLit := n.(*ast.BasicLit); isLit && strings.HasPrefix(rel, tmuxctlDir) && strings.Contains(lower, "attach-session") {
+			attachSessionLiterals++
+		}
 		for _, tok := range forbiddenWriteTokens {
 			if strings.HasPrefix(rel, tmuxctlDir) && slices.Contains(tmuxWriteTokens, tok) {
 				continue // the one permitted writer
@@ -269,6 +308,19 @@ func foreignWriteViolations(t *testing.T, path string) []string {
 				sel, ok := n.Fun.(*ast.SelectorExpr)
 				if !ok {
 					return true
+				}
+				if pkg, ok := sel.X.(*ast.Ident); ok && ptyName != "" && pkg.Name == ptyName {
+					switch {
+					case !strings.HasPrefix(rel, tmuxctlDir):
+						out = append(out, pos(n)+": a PTY outside internal/tmuxctl")
+					case !slices.Contains(ptyAllowedFuncs, sel.Sel.Name):
+						out = append(out, pos(n)+": pty."+sel.Sel.Name+" in internal/tmuxctl (only StartWithSize on its own tmux command, Setsize and Getsize)")
+					case sel.Sel.Name == "StartWithSize":
+						ptyStarts++
+						if id, ok := n.Args[0].(*ast.Ident); !ok || !created[id.Name] {
+							out = append(out, pos(n)+": pty.StartWithSize on a command "+fn.Name.Name+" did not create")
+						}
+					}
 				}
 				if sel.Sel.Name == "StdinPipe" {
 					if id, ok := sel.X.(*ast.Ident); !ok || (!created[id.Name] && !helper) {
