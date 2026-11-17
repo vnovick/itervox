@@ -1,0 +1,193 @@
+---
+// Desktop-app downloads: a primary button for the visitor's OS, the version,
+// and links for the other platforms. Links come from the latest GitHub
+// release at build time (src/lib/releaseBuild.ts) and are refreshed on page
+// load, so a release published after the last deploy still shows. Anything
+// that cannot be resolved links the release page. Used on the landing page
+// (Desktop section) and at the top of the desktop app guide.
+import { latestRelease } from '../lib/releaseBuild';
+
+const r = await latestRelease();
+const unsignedGuide = '/guides/desktop-app/#opening-an-unsigned-build';
+---
+<div class="dl not-content" data-downloads>
+  <div class="dl-row">
+    <a class="btn btn-primary dl-primary" href={r.links.mac} data-dl-primary>
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"></path></svg>
+      <span data-dl-label>Download for macOS</span>
+    </a>
+    <div class="dl-meta">
+      <span class="dl-version" data-dl-version hidden={!r.version}>{r.version}</span>
+      <span data-dl-kind>Universal .dmg</span>
+      <a class="dl-note" href={unsignedGuide} data-dl-unsigned data-mac-unsigned={String(r.macUnsigned)} hidden={!r.macUnsigned}>Unsigned for now</a>
+    </div>
+  </div>
+  <p class="dl-also">
+    <span class="dl-also-label">Also for:</span>
+    <span class="dl-os" data-dl-os="mac" hidden>macOS <a href={r.links.mac} data-dl-asset="mac">.dmg</a></span>
+    <span class="dl-os" data-dl-os="windows">Windows <a href={r.links.winMsi} data-dl-asset="winMsi">.msi</a> · <a href={r.links.winExe} data-dl-asset="winExe">.exe</a></span>
+    <span class="dl-os" data-dl-os="linux">Linux AppImage <a href={r.links.appImageX64} data-dl-asset="appImageX64" aria-label="Linux AppImage, x86_64">x86_64</a> · <a href={r.links.appImageArm} data-dl-asset="appImageArm" aria-label="Linux AppImage, arm64">arm64</a> · .deb <a href={r.links.debX64} data-dl-asset="debX64" aria-label="Linux .deb, x86_64">x86_64</a> · <a href={r.links.debArm} data-dl-asset="debArm" aria-label="Linux .deb, arm64">arm64</a></span>
+  </p>
+  <a class="dl-all" href={r.page} data-dl-page>All downloads and checksums →</a>
+</div>
+
+<script>
+  import { RELEASE_API, RELEASE_PAGE, detectOs, resolveRelease, type AssetKey, type Os, type Release } from '../lib/release';
+
+  const primary: Record<Os, { key: AssetKey; label: string; kind: string }> = {
+    mac: { key: 'mac', label: 'Download for macOS', kind: 'Universal .dmg' },
+    windows: { key: 'winExe', label: 'Download for Windows', kind: 'x64 installer (.exe)' },
+    linux: { key: 'appImageX64', label: 'Download for Linux', kind: 'x86_64 AppImage' },
+  };
+
+  function apply(block: HTMLElement, os: Os, release: Release | null) {
+    const pick = primary[os];
+    const link = block.querySelector<HTMLAnchorElement>('[data-dl-primary]');
+    const label = block.querySelector('[data-dl-label]');
+    const kind = block.querySelector('[data-dl-kind]');
+    const unsigned = block.querySelector<HTMLElement>('[data-dl-unsigned]');
+    if (label) label.textContent = pick.label;
+    if (kind) kind.textContent = pick.kind;
+    for (const group of block.querySelectorAll<HTMLElement>('[data-dl-os]')) {
+      group.hidden = group.dataset.dlOs === os;
+    }
+    if (release) {
+      for (const a of block.querySelectorAll<HTMLAnchorElement>('[data-dl-asset]')) {
+        a.href = release.links[a.dataset.dlAsset as AssetKey];
+      }
+      const page = block.querySelector<HTMLAnchorElement>('[data-dl-page]');
+      if (page) page.href = release.page;
+      const version = block.querySelector<HTMLElement>('[data-dl-version]');
+      if (version && release.version) {
+        version.textContent = release.version;
+        version.hidden = false;
+      }
+      if (unsigned) unsigned.dataset.macUnsigned = String(release.macUnsigned);
+    }
+    if (link) {
+      const asset = block.querySelector<HTMLAnchorElement>(`[data-dl-asset="${pick.key}"]`);
+      if (asset) link.href = asset.href;
+    }
+    if (unsigned) unsigned.hidden = !(os === 'mac' && unsigned.dataset.macUnsigned === 'true');
+  }
+
+  const blocks = [...document.querySelectorAll<HTMLElement>('[data-downloads]')];
+  if (blocks.length) {
+    const os = detectOs();
+    for (const b of blocks) apply(b, os, null);
+    fetch(RELEASE_API, { headers: { Accept: 'application/vnd.github+json' } })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+      .then((data) => {
+        const release = resolveRelease(data);
+        // A release without desktop assets (yet) keeps the built links.
+        if (!release.version || release.links.mac === RELEASE_PAGE) return;
+        for (const b of blocks) apply(b, os, release);
+      })
+      .catch(() => {});
+  }
+</script>
+
+<style>
+  .dl {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+    color: var(--text2);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .dl-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 16px;
+  }
+  /* Self-contained so the block looks the same in the Starlight docs, which
+     do not load landing.css's .btn rules. */
+  .dl .dl-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    min-height: 48px;
+    padding: 0 24px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    text-decoration: none;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      0 10px 28px -6px var(--accent-glow);
+  }
+  .dl .dl-primary:hover {
+    color: #fff;
+    filter: brightness(1.08);
+  }
+  .dl-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    color: var(--muted);
+  }
+  .dl-version {
+    padding: 3px 11px;
+    border-radius: 999px;
+    background: var(--subtle);
+    color: var(--text2);
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+  .dl .dl-note {
+    padding: 3px 11px;
+    border-radius: 999px;
+    background: var(--subtle);
+    color: var(--warn);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .dl-also {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 18px;
+    color: var(--muted);
+  }
+  .dl-also-label {
+    color: var(--text2);
+    font-weight: 500;
+  }
+  .dl-os[hidden],
+  .dl [hidden] {
+    display: none;
+  }
+  .dl .dl-also a,
+  .dl .dl-all {
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-decoration-color: var(--hairline);
+    text-underline-offset: 3px;
+  }
+  .dl .dl-also a:hover,
+  .dl .dl-all:hover {
+    color: var(--text);
+    text-decoration-color: currentColor;
+  }
+  .dl .dl-all {
+    align-self: flex-start;
+    font-weight: 500;
+  }
+  .dl a:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+  .dl .dl-primary:focus-visible {
+    border-radius: 999px;
+  }
+</style>

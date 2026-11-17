@@ -9,6 +9,10 @@ Each release has its own section, newest first. Changes merged since the last ta
 
 ## [Unreleased]
 
+### Changed
+
+- **Site: desktop app downloads.** The landing page's Desktop section and the top of the [Desktop app guide](https://itervox.dev/guides/desktop-app/) have a download block: a **Download for macOS / Windows / Linux** button for the visitor's OS, the version, "Unsigned for now" (linking [Opening an unsigned build](https://itervox.dev/guides/desktop-app/#opening-an-unsigned-build)) while the Mac disk image is `-unsigned`, links for the other platforms (Windows `.msi` and `.exe`; Linux AppImage and `.deb`, each x86_64 and arm64) and the release page with its checksums. The links are resolved from the latest GitHub release when the site is built and again when the page loads, and fall back to the release page. They replace the `brew install --cask vnovick/tap/itervox-app` chip, which named a cask that is not published yet. The hero points at the desktop app instead of `go install`, the nav's **Desktop app** link reads **Download**, and the site deploys again after each release run.
+
 ### Fixed
 
 - **Docs: install and upgrade with the full Homebrew formula name.** Homebrew 7 refuses a formula from a tap it does not trust: `brew tap vnovick/tap && brew install itervox` fails with "Refusing to load formula vnovick/tap/itervox from untrusted tap", and so does `brew upgrade itervox`. Naming the formula in full (`brew install vnovick/tap/itervox`, `brew upgrade vnovick/tap/itervox`) trusts it and works. The README, Getting started, the landing page, the setup skill and the upgrade steps of the 0.3.0 and 0.3.3 notes use the full name.
