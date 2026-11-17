@@ -1,0 +1,381 @@
+---
+// Desktop-app downloads: a macOS / Windows / Linux switcher that opens on the
+// visitor's OS, a primary button and the other files for each, the version,
+// and the Homebrew commands. Links come from the latest GitHub release at
+// build time (src/lib/releaseBuild.ts) and are refreshed on page load, so a
+// release published after the last deploy still shows. Anything that cannot
+// be resolved links the release page. Used on the landing page (Desktop
+// section) and at the top of the desktop app guide.
+import { latestRelease } from '../lib/releaseBuild';
+import { caskPublished } from '../lib/release';
+
+const r = await latestRelease();
+const cask = caskPublished(r);
+const unsignedGuide = '/guides/desktop-app/#opening-an-unsigned-build';
+const brewCli = 'brew install vnovick/tap/itervox';
+const brewCask = 'brew install --cask vnovick/tap/itervox-app';
+const tabs = [
+  { os: 'mac', label: 'macOS' },
+  { os: 'windows', label: 'Windows' },
+  { os: 'linux', label: 'Linux' },
+] as const;
+let n = 0;
+const uid = () => `dl-${Math.random().toString(36).slice(2, 8)}-${n++}`;
+const ids = Object.fromEntries(tabs.map((t) => [t.os, { tab: uid(), panel: uid() }]));
+const download = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"></path></svg>';
+const copy = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>';
+---
+<div class="dl not-content" data-downloads>
+  <div class="dl-tabs" role="tablist" aria-label="Operating system">
+    {tabs.map((t) => (
+      <button type="button" role="tab" class="dl-tab" id={ids[t.os].tab} aria-controls={ids[t.os].panel} aria-selected={t.os === 'mac' ? 'true' : 'false'} tabindex={t.os === 'mac' ? 0 : -1} data-dl-tab={t.os}>{t.label}</button>
+    ))}
+    <span class="dl-version" data-dl-version hidden={!r.version}>{r.version}</span>
+  </div>
+
+  <div class="dl-panel" role="tabpanel" id={ids.mac.panel} aria-labelledby={ids.mac.tab} data-dl-panel="mac">
+    <div class="dl-row">
+      <a class="dl-primary" href={r.links.mac} data-dl-asset="mac"><Fragment set:html={download} />Download for macOS</a>
+      <span class="dl-kind">Universal .dmg · Apple silicon and Intel</span>
+      <a class="dl-note" href={unsignedGuide} data-dl-unsigned hidden={!r.macUnsigned}>Unsigned for now</a>
+    </div>
+    <div class="dl-brew">
+      <div class="dl-brew-item" data-dl-cask hidden={!cask}>
+        <span class="dl-cmd-label">Homebrew</span>
+        <div class="dl-cmd">
+          <code>brew install --cask <span class="dl-nb">vnovick/tap/itervox-app</span></code>
+          <button type="button" class="dl-copy" data-dl-copy={brewCask} aria-label="Copy the Homebrew command for the app"><Fragment set:html={copy} /><span data-dl-copy-label>Copy</span></button>
+        </div>
+      </div>
+      <p class="dl-small" data-dl-nocask hidden={cask}>The app’s Homebrew cask comes with the first signed release; until then, use the .dmg.</p>
+      <div class="dl-brew-item">
+        <span class="dl-cmd-label">Command line only (the daemon, no app)</span>
+        <div class="dl-cmd">
+          <code>brew install <span class="dl-nb">vnovick/tap/itervox</span></code>
+          <button type="button" class="dl-copy" data-dl-copy={brewCli} aria-label="Copy the Homebrew command for the command-line tool"><Fragment set:html={copy} /><span data-dl-copy-label>Copy</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dl-panel" role="tabpanel" id={ids.windows.panel} aria-labelledby={ids.windows.tab} data-dl-panel="windows" hidden>
+    <div class="dl-row">
+      <a class="dl-primary" href={r.links.winExe} data-dl-asset="winExe"><Fragment set:html={download} />Download for Windows</a>
+      <span class="dl-kind">x64 installer (.exe)</span>
+    </div>
+    <p class="dl-small">Also as an <a href={r.links.winMsi} data-dl-asset="winMsi">.msi package</a> for managed installs.</p>
+  </div>
+
+  <div class="dl-panel" role="tabpanel" id={ids.linux.panel} aria-labelledby={ids.linux.tab} data-dl-panel="linux" hidden>
+    <div class="dl-row">
+      <a class="dl-primary" href={r.links.appImageX64} data-dl-asset="appImageX64"><Fragment set:html={download} />Download for Linux</a>
+      <span class="dl-kind">AppImage · x86_64</span>
+    </div>
+    <p class="dl-also">
+      <span>AppImage <a href={r.links.appImageArm} data-dl-asset="appImageArm" aria-label="AppImage, arm64">arm64</a></span>
+      <span>.deb <a href={r.links.debX64} data-dl-asset="debX64" aria-label=".deb, x86_64">x86_64</a> · <a href={r.links.debArm} data-dl-asset="debArm" aria-label=".deb, arm64">arm64</a></span>
+    </p>
+    <div class="dl-brew">
+      <div class="dl-brew-item">
+        <span class="dl-cmd-label">Command line only (the daemon, no app)</span>
+        <div class="dl-cmd">
+          <code>brew install <span class="dl-nb">vnovick/tap/itervox</span></code>
+          <button type="button" class="dl-copy" data-dl-copy={brewCli} aria-label="Copy the Homebrew command for the command-line tool"><Fragment set:html={copy} /><span data-dl-copy-label>Copy</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <a class="dl-all" href={r.page} data-dl-page>All downloads and checksums →</a>
+</div>
+
+<script>
+  import { RELEASE_API, RELEASE_PAGE, caskPublished, detectOs, resolveRelease, type AssetKey, type Os, type Release } from '../lib/release';
+
+  function select(block: HTMLElement, os: Os, focus = false) {
+    for (const tab of block.querySelectorAll<HTMLButtonElement>('[data-dl-tab]')) {
+      const on = tab.dataset.dlTab === os;
+      tab.setAttribute('aria-selected', String(on));
+      tab.tabIndex = on ? 0 : -1;
+      if (on && focus) tab.focus();
+    }
+    for (const panel of block.querySelectorAll<HTMLElement>('[data-dl-panel]')) {
+      panel.hidden = panel.dataset.dlPanel !== os;
+    }
+  }
+
+  function applyRelease(block: HTMLElement, release: Release) {
+    for (const a of block.querySelectorAll<HTMLAnchorElement>('[data-dl-asset]')) {
+      a.href = release.links[a.dataset.dlAsset as AssetKey];
+    }
+    const page = block.querySelector<HTMLAnchorElement>('[data-dl-page]');
+    if (page) page.href = release.page;
+    const version = block.querySelector<HTMLElement>('[data-dl-version]');
+    if (version && release.version) {
+      version.textContent = release.version;
+      version.hidden = false;
+    }
+    const cask = caskPublished(release);
+    const show = (sel: string, on: boolean) => {
+      const el = block.querySelector<HTMLElement>(sel);
+      if (el) el.hidden = !on;
+    };
+    show('[data-dl-unsigned]', release.macUnsigned);
+    show('[data-dl-cask]', cask);
+    show('[data-dl-nocask]', !cask);
+  }
+
+  const order: Os[] = ['mac', 'windows', 'linux'];
+  const blocks = [...document.querySelectorAll<HTMLElement>('[data-downloads]')];
+  if (blocks.length) {
+    const os = detectOs();
+    for (const b of blocks) {
+      select(b, os);
+      for (const tab of b.querySelectorAll<HTMLButtonElement>('[data-dl-tab]')) {
+        tab.addEventListener('click', () => select(b, tab.dataset.dlTab as Os));
+        tab.addEventListener('keydown', (e) => {
+          const i = order.indexOf(tab.dataset.dlTab as Os);
+          const next =
+            e.key === 'ArrowRight' ? order[(i + 1) % 3]
+            : e.key === 'ArrowLeft' ? order[(i + 2) % 3]
+            : e.key === 'Home' ? order[0]
+            : e.key === 'End' ? order[2]
+            : null;
+          if (!next) return;
+          e.preventDefault();
+          select(b, next, true);
+        });
+      }
+      for (const button of b.querySelectorAll<HTMLButtonElement>('[data-dl-copy]')) {
+        button.addEventListener('click', async () => {
+          const label = button.querySelector('[data-dl-copy-label]');
+          try {
+            await navigator.clipboard.writeText(button.dataset.dlCopy ?? '');
+            if (label) label.textContent = 'Copied';
+          } catch {
+            if (label) label.textContent = 'Select and copy';
+          }
+          setTimeout(() => label && (label.textContent = 'Copy'), 1500);
+        });
+      }
+    }
+    fetch(RELEASE_API, { headers: { Accept: 'application/vnd.github+json' } })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+      .then((data) => {
+        const release = resolveRelease(data);
+        // A release without desktop assets (yet) keeps the built links.
+        if (!release.version || release.links.mac === RELEASE_PAGE) return;
+        for (const b of blocks) applyRelease(b, release);
+      })
+      .catch(() => {});
+  }
+</script>
+
+<style>
+  .dl {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+    color: var(--text2);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .dl [hidden] {
+    display: none !important;
+  }
+  .dl-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+  }
+  .dl .dl-tab {
+    min-height: 36px;
+    padding: 0 14px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .dl .dl-tab:hover {
+    color: var(--text);
+  }
+  .dl .dl-tab[aria-selected='true'] {
+    border-color: var(--hairline);
+    background: var(--subtle);
+    color: var(--text);
+  }
+  .dl-version {
+    margin-left: auto;
+    padding: 3px 11px;
+    border-radius: 999px;
+    background: var(--subtle);
+    color: var(--text2);
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+  .dl-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+  .dl-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+  }
+  /* Self-contained so the block looks the same in the Starlight docs, which
+     do not load landing.css's .btn rules. */
+  .dl .dl-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    min-height: 48px;
+    padding: 0 24px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    text-decoration: none;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      0 10px 28px -6px var(--accent-glow);
+  }
+  .dl .dl-primary:hover {
+    color: #fff;
+    filter: brightness(1.08);
+  }
+  .dl-kind {
+    color: var(--muted);
+  }
+  .dl .dl-note {
+    padding: 3px 11px;
+    border-radius: 999px;
+    background: var(--subtle);
+    color: var(--warn);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .dl-also {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 18px;
+    color: var(--muted);
+  }
+  .dl-brew {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .dl-brew-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .dl-cmd {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 6px 6px 6px 14px;
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    background: var(--subtle);
+  }
+  .dl-cmd-label {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .dl-cmd code {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: 0;
+    background: none;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+  .dl-nb {
+    white-space: nowrap;
+  }
+  .dl .dl-copy {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .dl .dl-copy:hover {
+    color: var(--text);
+  }
+  .dl-small {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .dl .dl-also a,
+  .dl .dl-small a,
+  .dl .dl-all {
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-decoration-color: var(--hairline);
+    text-underline-offset: 3px;
+  }
+  .dl .dl-also a:hover,
+  .dl .dl-small a:hover,
+  .dl .dl-all:hover {
+    color: var(--text);
+    text-decoration-color: currentColor;
+  }
+  .dl .dl-all {
+    align-self: flex-start;
+    font-weight: 500;
+  }
+  .dl a:focus-visible,
+  .dl button:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+  .dl .dl-primary:focus-visible,
+  .dl .dl-tab:focus-visible,
+  .dl .dl-copy:focus-visible {
+    border-radius: 999px;
+  }
+  @media (max-width: 480px) {
+    .dl .dl-copy [data-dl-copy-label] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+    .dl .dl-copy {
+      padding: 0 10px;
+    }
+  }
+</style>
