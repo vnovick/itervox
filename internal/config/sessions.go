@@ -43,6 +43,15 @@ type SessionsConfig struct {
 	// into your terminals. Sessions itervox starts in tmux itself ("New
 	// session") are controllable either way.
 	TmuxControl bool
+	// TerminalWrite lets an admin-scope caller type into the live terminal
+	// of a tmux session (sessions.terminal_write, #298): a read-write
+	// `tmux attach-session` in a PTY the daemon owns, which is effectively a
+	// remote shell on the daemon's host. Off by default: without it the
+	// live terminal is read-only for every scope (operator and admin), and
+	// viewers get no terminal at all. It never widens which sessions can be
+	// attached: itervox's own tmux sessions, and hand-started ones only with
+	// TmuxControl. Read at startup; no effect on Windows (no tmux).
+	TerminalWrite bool
 	// SteeringPhrases are the one-click steering chips (#218) of the
 	// Sessions composer and the issue steer box. Default
 	// DefaultSteeringPhrases; an empty list shows none.
@@ -57,6 +66,7 @@ func parseSessionsConfig(m map[string]any) SessionsConfig {
 		ExternalWindowHours: positiveIntField(m, "external_window_hours", DefaultSessionsExternalWindowHours),
 		ExternalScope:       strings.TrimSpace(strField(m, "external_scope", SessionsScopeProject)),
 		TmuxControl:         boolField(m, "tmux_control", false),
+		TerminalWrite:       boolField(m, "terminal_write", false),
 		SteeringPhrases:     parseSteeringPhrases(m),
 	}
 	for _, r := range strSliceField(m, "external_roots", nil) {

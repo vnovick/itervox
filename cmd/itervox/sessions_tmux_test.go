@@ -152,7 +152,7 @@ func (r *tmuxRig) boot() {
 	}
 	r.orch = orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), nil, nil)
 	detect := &tmuxDetector{client: r.tmux}
-	r.ts = &tmuxSessions{orch: r.orch, detect: detect, control: cfg.Sessions.TmuxControl, projectRoot: r.project,
+	r.ts = &tmuxSessions{orch: r.orch, detect: detect, control: cfg.Sessions.TmuxControl, terminalWrite: cfg.Sessions.TerminalWrite, projectRoot: r.project,
 		workspaceRoot: cfg.Workspace.Root, agentCommand: r.claude, processes: r.procs}
 	r.src = &pausableSource{inner: sessionSource{
 		scanner: &extsessions.Scanner{Options: extsessions.Options{ClaudeProjectsDir: filepath.Join(r.home, "projects"),

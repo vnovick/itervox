@@ -1687,6 +1687,12 @@ type Server struct {
 	prEventWebhooks   WebhookHandler
 	clientErrors      *ClientErrorLimiter
 	sessions          SessionsClient
+	// terminalTickets, terminalsOpen and allowedOrigins back the live
+	// terminal (#298): its single-use socket tickets, the attachments open
+	// now, and server.allowed_origins for the socket's Origin check.
+	terminalTickets *terminalTickets
+	terminalsOpen   atomic.Int32
+	allowedOrigins  []string
 	// repoReadiness mirrors Config.RepoReadiness (#200).
 	repoReadiness RepoReadinessFunc
 	// repoEvals / repoHotspots mirror Config.RepoEvals / RepoHotspots (#201).
@@ -1759,6 +1765,8 @@ func New(cfg Config) *Server {
 		prEventWebhooks:     cfg.PREventWebhooks,
 		clientErrors:        cfg.ClientErrorLimiter,
 		sessions:            cfg.Sessions,
+		terminalTickets:     newTerminalTickets(),
+		allowedOrigins:      cfg.AllowedOrigins,
 		repoReadiness:       cfg.RepoReadiness,
 		repoEvals:           cfg.RepoEvals,
 		repoHotspots:        cfg.RepoHotspots,
@@ -1884,6 +1892,11 @@ func (s *Server) routes() {
 		// Tracker webhooks (#131): signed by the webhook secret, not the
 		// bearer token.
 		r.Post("/webhooks/{tracker}", s.handleWebhook)
+		// #298: the live terminal's WebSocket. A browser cannot send the
+		// bearer header on a socket: it carries a single-use ticket minted
+		// by the authenticated POST …/terminal/ticket (route class
+		// "ticket"; the hub refuses it).
+		r.Get("/sessions/{id}/terminal", s.handleSessionTerminal)
 
 		// If an API token is configured, all remaining routes require it.
 		// Use r.Group to create a sub-router so middleware is applied only to
@@ -1925,6 +1938,7 @@ func (s *Server) routes() {
 			r.Post("/sessions/{id}/stop", s.handleStopSession)
 			r.Get("/sessions/{id}/screen", s.handleSessionScreen)
 			r.Post("/sessions/{id}/keys", s.handleSessionKeys)
+			r.Post("/sessions/{id}/terminal/ticket", s.handleTerminalTicket) // #298
 			r.Get("/issues", s.handleIssues)
 			r.Get("/issues/{identifier}", s.handleIssueDetail)
 			r.Get("/issues/{identifier}/logs", s.handleIssueLogs)

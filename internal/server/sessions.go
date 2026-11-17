@@ -146,6 +146,15 @@ type SessionsClient interface {
 	// ErrSessionNotFound, ErrSessionNotOwned (force on a hand-started
 	// session), ErrNotControllable, ErrTmuxUnavailable, ErrPaneGone.
 	StopSession(id string, force bool) (SessionStopResult, error)
+	// CheckTerminal reports whether the session's tmux pane can be attached
+	// now (#298), with the errors of SessionScreen. It attaches nothing.
+	CheckTerminal(id string) error
+	// AttachTerminal attaches a live terminal (#298) to the session's tmux
+	// pane: `tmux attach-session` (read-only unless req.Write) in a PTY the
+	// daemon owns. The caller has already checked the scope and
+	// sessions.terminal_write. Errors: those of SessionScreen, and
+	// ErrTerminalUnsupported.
+	AttachTerminal(req TerminalAttachRequest) (TerminalConn, error)
 }
 
 // SessionStopResult is the POST /api/v1/sessions/{id}/stop body.

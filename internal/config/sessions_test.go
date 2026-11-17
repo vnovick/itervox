@@ -12,7 +12,7 @@ import (
 
 // #178 step 3: the sessions: block configures discovery of hand-started
 // sessions. Absent, discovery is on, 24h, project-scoped, and tmux control
-// is off; an unknown scope falls back to the private project scope.
+// and the read-write live terminal (#298, terminal_write) are off; an unknown scope falls back to the private project scope.
 func TestSessionsConfigRoundTrip(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -20,8 +20,8 @@ func TestSessionsConfigRoundTrip(t *testing.T) {
 		want  config.SessionsConfig
 	}{
 		{"absent uses defaults", "", config.SessionsConfig{External: true, ExternalWindowHours: 24, ExternalScope: "project", SteeringPhrases: config.DefaultSteeringPhrases}},
-		{"all set", "sessions:\n  external: false\n  external_window_hours: 6\n  external_scope: all\n  tmux_control: true\n  external_roots:\n    - /srv/other\n",
-			config.SessionsConfig{External: false, ExternalWindowHours: 6, ExternalScope: "all", ExternalRoots: []string{"/srv/other"}, TmuxControl: true, SteeringPhrases: config.DefaultSteeringPhrases}},
+		{"all set", "sessions:\n  external: false\n  external_window_hours: 6\n  external_scope: all\n  tmux_control: true\n  terminal_write: true\n  external_roots:\n    - /srv/other\n",
+			config.SessionsConfig{External: false, ExternalWindowHours: 6, ExternalScope: "all", ExternalRoots: []string{"/srv/other"}, TmuxControl: true, TerminalWrite: true, SteeringPhrases: config.DefaultSteeringPhrases}},
 		{"unknown scope is private", "sessions:\n  external_scope: everything\n  external_window_hours: 0\n",
 			config.SessionsConfig{External: true, ExternalWindowHours: 24, ExternalScope: "project", SteeringPhrases: config.DefaultSteeringPhrases}},
 	}

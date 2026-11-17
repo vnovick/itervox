@@ -20,6 +20,11 @@ const (
 	// accessAgentGrant: the per-run agent-action / guardrail grant the
 	// handler validates itself (internal/agentactions).
 	accessAgentGrant routeAccess = "agent_grant"
+	// accessTicket: a WebSocket that a browser cannot open with a bearer
+	// header; the handler validates a short-lived, single-use ticket that
+	// an authenticated route minted (#298, terminal_tickets.go). Not a
+	// token scope, so the hub's proxy refuses it (fail closed).
+	accessTicket routeAccess = "ticket"
 )
 
 // anyMethod keys a route registered with Handle (every method).
@@ -37,10 +42,11 @@ const anyMethod = "*"
 // workspace deletion and the automations configuration.
 var routeScopes = map[string]routeAccess{
 	// Outside the bearer group.
-	"GET /api/v1/health":              accessPublic,
-	"GET /api/v1/ready":               accessPublic,
-	"* /*":                            accessPublic, // the embedded SPA shell and its assets
-	"POST /api/v1/webhooks/{tracker}": accessPublic,
+	"GET /api/v1/health":                 accessPublic,
+	"GET /api/v1/ready":                  accessPublic,
+	"* /*":                               accessPublic, // the embedded SPA shell and its assets
+	"POST /api/v1/webhooks/{tracker}":    accessPublic,
+	"GET /api/v1/sessions/{id}/terminal": accessTicket, // #298: the live terminal's socket; its ticket needs operator (read) or admin (write)
 	"POST /api/v1/agent-actions/{identifier}/comment":                 accessAgentGrant,
 	"POST /api/v1/agent-actions/{identifier}/comment_pr":              accessAgentGrant,
 	"POST /api/v1/agent-actions/{identifier}/merge_pr":                accessAgentGrant,
@@ -109,6 +115,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/sessions/{id}/screen":                       accessOperator, // a live terminal pane
 	"GET /api/v1/issues/{identifier}/activity":               accessOperator, // command lines, paths, remote addresses
 	"POST /api/v1/sessions/{id}/message":                     accessOperator, // steering
+	"POST /api/v1/sessions/{id}/terminal/ticket":             accessOperator, // #298: a read-only live terminal; "write" also needs admin + sessions.terminal_write
 	"POST /api/v1/dispatch/pause":                            accessOperator,
 	"POST /api/v1/dispatch/resume":                           accessOperator,
 	"POST /api/v1/refresh":                                   accessOperator,
@@ -213,7 +220,7 @@ func scopedRouteScope(method, pattern string) (apitokens.Scope, bool) {
 }
 
 // RouteScopes returns the route scope table as "METHOD pattern" → access
-// ("viewer", "operator", "admin", "public" or "agent_grant"), the body of
+// ("viewer", "operator", "admin", "public", "agent_grant" or "ticket"), the body of
 // GET /api/v1/route-scopes. The hub (#228) checks a hub token against it
 // before proxying a request to this daemon. A copy: callers cannot change
 // the table.

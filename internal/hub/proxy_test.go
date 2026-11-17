@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -175,4 +176,54 @@ func TestHubProxyPassesSSE(t *testing.T) {
 	snapshotEvent() // the member's snapshot arrives while the stream stays open
 	alpha.srv.Notify()
 	snapshotEvent() // a later event is flushed through as it happens
+}
+
+// TestHubRefusesTheLiveTerminal (#298): the hub never proxies a member's
+// live terminal — the ticket route, the ticketed socket, or any WebSocket
+// upgrade — whatever the hub token's scope, and nothing reaches the member.
+func TestHubRefusesTheLiveTerminal(t *testing.T) {
+	alpha := newFakeMember(t, "alpha", time.Now().Add(-time.Hour))
+	reg := &memberList{}
+	reg.add(alpha.rec)
+	th := startTestHub(t, Config{Members: reg.list})
+	waitProxied(t, th, "alpha")
+	m, _ := th.h.members.get("alpha")
+	access, ok := m.routes.match(http.MethodGet, "/api/v1/sessions/x/terminal")
+	require.True(t, ok, "the member's table declares the socket")
+	assert.Equal(t, accessTicket, access)
+
+	base := th.ts.URL + "/hub/p/alpha"
+	seen := alpha.requests.Load()
+	for _, tc := range []struct {
+		method, path string
+		upgrade      bool
+	}{
+		{http.MethodPost, "/api/v1/sessions/itervox-abc123/terminal/ticket", false},
+		{http.MethodGet, "/api/v1/sessions/itervox-abc123/terminal?ticket=itvt_x", false},
+		{http.MethodGet, "/api/v1/sessions/itervox-abc123/terminal?ticket=itvt_x", true},
+		{http.MethodGet, "/api/v1/events", true},
+	} {
+		for _, scope := range []apitokens.Scope{apitokens.ScopeOperator, apitokens.ScopeAdmin} {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			req, err := http.NewRequestWithContext(ctx, tc.method, base+tc.path, strings.NewReader("{}"))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer "+th.secrets[scope])
+			if tc.upgrade {
+				req.Header.Set("Connection", "Upgrade")
+				req.Header.Set("Upgrade", "websocket")
+				req.Header.Set("Sec-WebSocket-Version", "13")
+				req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+			}
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode, "%s %s upgrade=%v", tc.method, tc.path, tc.upgrade)
+			assert.Contains(t, readBody(t, resp), "terminal_not_proxied", "%s %s", tc.method, tc.path)
+			_ = resp.Body.Close()
+			cancel()
+		}
+	}
+	assert.Equal(t, seen, alpha.requests.Load(), "the hub refuses before proxying")
+	assert.True(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/terminal"))
+	assert.False(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/screen"))
+	assert.False(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/terminal/other"))
 }

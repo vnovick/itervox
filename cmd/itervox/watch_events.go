@@ -77,6 +77,14 @@ func (w *watcher) eventText(ev server.FeedEvent) (line, command string) {
 		if pl.Outcome != "" {
 			what += ": " + pl.Outcome
 		}
+	case "terminal_attached", "terminal_detached":
+		what = "live terminal attached"
+		if ev.Kind == "terminal_detached" {
+			what = "live terminal detached"
+		}
+		if pl.Reason != "" {
+			what += " (" + strings.ReplaceAll(pl.Reason, "_", "-") + ")"
+		}
 	}
 	what = redactLine(what)
 	if who != "" && ev.Kind != "dispatch_paused" && ev.Kind != "dispatch_resumed" {

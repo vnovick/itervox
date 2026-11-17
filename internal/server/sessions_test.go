@@ -45,6 +45,12 @@ func (f *fakeSessions) SessionScreen(id string, lines int) (server.ScreenRespons
 	return f.screen, f.tmuxErr
 }
 
+func (f *fakeSessions) CheckTerminal(string) error { return f.tmuxErr }
+
+func (f *fakeSessions) AttachTerminal(server.TerminalAttachRequest) (server.TerminalConn, error) {
+	return nil, server.ErrTerminalUnsupported
+}
+
 func (f *fakeSessions) SendSessionKey(id, key string) error {
 	f.keyArgs = []string{id, key}
 	return f.tmuxErr

@@ -54,6 +54,11 @@ const (
 	// on its interrupt), "killed" (tmux kill-session) or "interrupted"
 	// (keys sent to a hand-started session that is still running).
 	FeedSessionStopped = "session_stopped"
+	// #298: a live terminal attached to / detached from a tmux session (the
+	// identifier is the session id): reason "read_only" or "read_write",
+	// via the caller ("dashboard:<token id>"). Never a terminal byte.
+	FeedTerminalAttached = "terminal_attached"
+	FeedTerminalDetached = "terminal_detached"
 )
 
 // FeedCap and FeedMaxAge bound the feed: the newest FeedCap events, none
