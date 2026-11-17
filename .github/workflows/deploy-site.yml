@@ -4,11 +4,20 @@ on:
   push:
     branches: [main]
     paths: ['site/**', '.github/workflows/deploy-site.yml']
+  # The landing page and the desktop app guide link the latest release's
+  # desktop downloads, resolved at build time (site/src/lib/releaseBuild.ts).
+  # Rebuild once a release run has finished uploading them. Not `release:
+  # published`: GoReleaser publishes the release with GITHUB_TOKEN, which
+  # starts no workflow, and the desktop assets are uploaded after it.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
       deployments: write
@@ -29,10 +38,13 @@ jobs:
         run: cd site && pnpm install --frozen-lockfile
 
       - name: Build
+        env:
+          # Raises the API rate limit for the latest-release read.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: cd site && pnpm build
 
       - name: Deploy to Cloudflare Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_run') && github.ref == 'refs/heads/main'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
