@@ -5,7 +5,9 @@ name: Action
 # `uses: ./action`, the action's inputs; shellcheck and the trust-check and
 # pipeline-check script tests cover action/*.sh; the dry run installs a release binary with
 # its checksum verified; referee-e2e runs referee/action.yml itself against a
-# fixture repository and asserts each mode's outcome and outputs. Fork-safe: `pull_request`, a read-only token, no
+# fixture repository (referee/testdata/fixture.sh) and asserts each mode's outcome and
+# outputs, then runs the GitLab CI, CircleCI and Buildkite templates
+# (referee/ci/templates_test.sh) on the same fixture. Fork-safe: `pull_request`, a read-only token, no
 # secrets, nothing published.
 on:
   pull_request:
@@ -36,7 +38,7 @@ jobs:
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.7 -color=false .github/workflows/action.yml
       - name: shellcheck
-        run: shellcheck -x action/*.sh referee/*.sh
+        run: shellcheck -x action/*.sh referee/*.sh referee/ci/*.sh referee/testdata/*.sh
       - name: trust-check test
         run: bash action/trust-check_test.sh
       - name: pipeline-check test
@@ -77,26 +79,11 @@ jobs:
           persist-credentials: false
       - id: fixture
         name: build the fixture repository
+        # referee/testdata/fixture.sh: the same branches referee/ci/templates_test.sh judges.
         run: |
           set -euo pipefail
-          g() { git -c user.email=ci@example.invalid -c user.name=ci -c commit.gpgsign=false "$@"; }
-          git init -q -b main .
-          echo /itervox/ >>.git/info/exclude
-          mkdir -p .github/workflows src/auth
-          printf 'human:\n  - ".github/**"\nsecond_opinion:\n  - "src/auth/**"\n' >.referee.yml
-          printf 'name: ci\non: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n' >.github/workflows/ci.yml
-          printf 'package app\n\nfunc Add(a, b int) int { return a + b }\n' >src/app.go
-          printf 'package app\n\nimport "testing"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal("add")\n\t}\n}\n' >src/app_test.go
-          printf 'package auth\n\nfunc Check(token string) bool { return token != "" }\n' >src/auth/auth.go
-          g add -A && g commit -qm base
+          sh itervox/referee/testdata/fixture.sh . /itervox/
           echo "policy-sha256=$(sha256sum .referee.yml | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
-          branch() { local name=$1; shift; g checkout -qb "$name" main; "$@"; g commit -qam "$name"; }
-          branch human sed -i 's/go test/go test -race/' .github/workflows/ci.yml
-          branch second-opinion sed -i 's/!= ""/!= "" \&\& len(token) > 8/' src/auth/auth.go
-          branch code-only sed -i 's/a + b/b + a/' src/app.go
-          branch audit-skip sed -i 's/^func TestAdd(t \*testing.T) {$/&\n\tt.Skip("flaky")/' src/app_test.go
-          branch pin-edited sed -i 's|src/auth/\*\*|src/**|' .referee.yml
-          g checkout -q main
           git log --oneline --all
       - run: git checkout -q human
       - id: lanes-human
@@ -251,3 +238,8 @@ jobs:
           WANT: failure lane= exit-code=1
           GOT: ${{ steps.verify-changed.outcome }} lane=${{ steps.verify-changed.outputs.lane }} exit-code=${{ steps.verify-changed.outputs.exit-code }}
         run: '[ "$GOT" = "$WANT" ] || { echo "::error::verify-changed: want $WANT, got $GOT"; exit 1; }'
+      # The GitLab CI, CircleCI and Buildkite templates (referee/ci/), run
+      # locally with the referee binary the Action built, on the same
+      # fixture: the exit codes run.sh reports, and each CI's approval step.
+      - name: referee CI templates
+        run: REFEREE_BIN="$(command -v referee)" bash itervox/referee/ci/templates_test.sh

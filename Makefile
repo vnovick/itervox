@@ -1,4 +1,4 @@
-.PHONY: all build referee referee-action-test verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark settings-schema size-budget no-os-exit no-bare-go deadcode dco-test check-changelog-split e2e fuzz
+.PHONY: all build referee referee-action-test referee-ci-test verify evals evals-fast evals-live evals-record evals-promote chaos release-check release-hooks-clean govulncheck-check goreleaser-check dev test lint lint-go fmt vet web-deps web-typecheck web-lint web-format web-build web-bundle-budget web-test web-coverage web-spelling coverage clean benchmark settings-schema size-budget no-os-exit no-bare-go deadcode dco-test check-changelog-split e2e fuzz
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.26.11, even on machines where /usr/local/go is an older version.
@@ -33,6 +33,12 @@ referee:
 # referee binary (fail-on mapping, outputs). Needs bash.
 referee-action-test:
 	@bash referee/run_test.sh
+
+# referee-ci-test runs the GitLab CI, CircleCI and Buildkite templates in
+# referee/ci/ locally against the Action's fixture repository (builds
+# cmd/referee; needs bash, git, ruby, tar and curl).
+referee-ci-test:
+	@bash referee/ci/templates_test.sh
 
 # verify mirrors the gates CI runs (Web CI + Go CI). web-deps installs once,
 # then each web target consumes the installed node_modules. The leaf web

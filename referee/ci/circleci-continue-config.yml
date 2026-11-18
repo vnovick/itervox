@@ -1,0 +1,46 @@
+# referee for CircleCI: the part of the continued config. Merge into
+# .circleci/continue-config.yml, next to your own jobs and workflows (see
+# referee/ci/circleci-config.yml, the setup config that continues with it).
+#
+# The setup workflow's `referee` job sets `referee-needs-approval`:
+#   false  the `referee` workflow runs referee-gate, which passes.
+#   true   the `referee-approval` workflow runs referee-gate only after a
+#          maintainer approves `pipeline-approval` (type: approval).
+# Require the `referee-gate` status check in branch protection: both
+# workflows report it, so a change cannot merge until it passes.
+version: 2.1
+
+parameters:
+  referee-needs-approval:
+    type: boolean
+    default: false
+
+jobs:
+  referee-gate:
+    docker:
+      - image: cimg/base:2024.12
+    resource_class: small
+    steps:
+      - run:
+          name: referee gate
+          command: echo "referee-gate passed"
+
+workflows:
+  referee:
+    when:
+      not: << pipeline.parameters.referee-needs-approval >>
+    jobs:
+      - referee-gate
+  referee-approval:
+    when: << pipeline.parameters.referee-needs-approval >>
+    jobs:
+      - pipeline-approval:
+          type: approval
+      - referee-gate:
+          requires:
+            - pipeline-approval
+          # A restricted context: only members of its security group can
+          # approve pipeline-approval (it is the job the approval unblocks).
+          context: pipeline-approval
+
+  # Your own workflows go here, as before (build, test, ...).
