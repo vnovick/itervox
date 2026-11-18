@@ -1,0 +1,4 @@
+{
+  "name": "fixture-site",
+  "devDependencies": { "vercel": "^1.0.0" }
+}
