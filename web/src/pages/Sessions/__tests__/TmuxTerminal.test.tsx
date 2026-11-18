@@ -174,5 +174,47 @@ describe('TmuxTerminal', () => {
     expect(m.ticket).toHaveBeenCalledTimes(2);
     expect(m.terms[0].disposed).toBe(true);
     expect(screen.getByTestId('tmux-terminal-status')).toHaveTextContent('Connecting…');
+    expect(screen.queryByTestId('tmux-terminal-closed-reason')).toBeNull();
+  });
+
+  it('says why the daemon closed the terminal when access changed', async () => {
+    m.ticket.mockResolvedValue(ticket('write'));
+    render(<TmuxTerminal id="itervox-a" mode="write" onSnapshot={vi.fn()} />);
+    await waitFor(() => {
+      expect(m.sockets).toHaveLength(1);
+    });
+    act(() => {
+      m.sockets[0].handlers.onOpen?.();
+      m.sockets[0].handlers.onClose?.({ code: 4403, reason: 'scope_insufficient' });
+    });
+    expect(screen.getByTestId('tmux-terminal-status')).toHaveTextContent('Detached');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Your access token no longer has the scope this terminal needs',
+    );
+    // A reconnect starts over without the old reason.
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => {
+      expect(m.sockets).toHaveLength(2);
+    });
+    expect(screen.queryByTestId('tmux-terminal-closed-reason')).toBeNull();
+    act(() => {
+      m.sockets[1].handlers.onClose?.({ code: 4403, reason: 'token_revoked' });
+    });
+    expect(screen.getByTestId('tmux-terminal-closed-reason')).toHaveTextContent(
+      'Your access token was revoked',
+    );
+  });
+
+  it('shows no reason for an ordinary detach', async () => {
+    m.ticket.mockResolvedValue(ticket('read'));
+    render(<TmuxTerminal id="itervox-a" mode="read" onSnapshot={vi.fn()} />);
+    await waitFor(() => {
+      expect(m.sockets).toHaveLength(1);
+    });
+    act(() => {
+      m.sockets[0].handlers.onClose?.({ code: 1006, reason: '' });
+    });
+    expect(screen.getByTestId('tmux-terminal-status')).toHaveTextContent('Detached');
+    expect(screen.queryByTestId('tmux-terminal-closed-reason')).toBeNull();
   });
 });

@@ -74,6 +74,44 @@ func TestInvalidStoreFailsClosed(t *testing.T) {
 	}
 }
 
+func fired(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// TestChangedFiresOnEveryIndexChange: Changed closes on a mutation through
+// the store at once, and on another process's write once a read notices
+// it; a read that finds nothing new leaves it open.
+func TestChangedFiresOnEveryIndexChange(t *testing.T) {
+	daemon := tempStore(t)
+	tok, secret, err := daemon.Create("ci", ScopeAdmin, nil, "test")
+	require.NoError(t, err)
+	ch := daemon.Changed()
+	assert.True(t, ch == daemon.Changed(), "one channel until it fires")
+	_, ok := daemon.Authenticate(secret)
+	require.True(t, ok)
+	_, err = daemon.List()
+	require.NoError(t, err)
+	assert.False(t, fired(ch), "a read of an unchanged file is no change")
+
+	_, _, err = daemon.Create("other", ScopeViewer, nil, "test")
+	require.NoError(t, err)
+	assert.True(t, fired(ch), "a mutation through the store")
+
+	ch = daemon.Changed()
+	assert.False(t, fired(ch), "a fresh channel after it fired")
+	_, err = Open(daemon.FilePath()).Revoke(tok.ID, "cli")
+	require.NoError(t, err)
+	assert.False(t, fired(ch), "another process's write is not seen before a read")
+	_, err = daemon.List()
+	require.NoError(t, err)
+	assert.True(t, fired(ch), "another process's write, once a read noticed it")
+}
+
 // TestExpiredTokenRefused: a token past its expiry is refused.
 func TestExpiredTokenRefused(t *testing.T) {
 	s := tempStore(t)

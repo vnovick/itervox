@@ -146,3 +146,32 @@ func TestLiveTerminalFollowsTheTmuxControlRules(t *testing.T) {
 	defer func() { _ = ws.Close() }()
 	readTerminalUntil(t, ws, "ready")
 }
+
+// A terminal the daemon ends because its token lost access feeds the
+// detach with that reason as its outcome, and `itervox watch` prints it.
+func TestLiveTerminalDetachFeedsTheAccessReason(t *testing.T) {
+	r := newTmuxRig(t, "", true)
+	s := r.startSession()
+	r.screenShows(s.ID, "ready")
+	conn, err := r.ts.attachTerminal(server.TerminalAttachRequest{ID: s.ID, Actor: "dashboard:tok_1"})
+	require.NoError(t, err)
+	require.NoError(t, conn.CloseWithReason("token_revoked"))
+	require.NoError(t, conn.Close(), "a second close records nothing more")
+	var detached []orchestrator.FeedEvent
+	require.Eventually(t, func() bool {
+		detached = detached[:0]
+		for _, ev := range r.orch.Snapshot().Feed {
+			if ev.Identifier == s.ID && ev.Kind == orchestrator.FeedTerminalDetached {
+				detached = append(detached, ev)
+			}
+		}
+		return len(detached) == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, "token_revoked", detached[0].Payload.Outcome)
+	assert.Equal(t, "read_only", detached[0].Payload.Reason)
+	assert.True(t, r.tmuxHas(s.ID), "the session keeps running")
+
+	line, _ := (&watcher{p: paint(false)}).eventText(server.FeedEvent{Kind: "terminal_detached", Identifier: s.ID,
+		Payload: server.FeedPayload{Reason: "read_only", Outcome: "token_revoked", Via: "dashboard:tok_1"}})
+	assert.Contains(t, line, "live terminal detached (read-only): token revoked")
+}

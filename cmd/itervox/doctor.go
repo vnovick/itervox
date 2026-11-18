@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -238,7 +239,15 @@ type DoctorReport struct {
 	// verify check is defined by a file outside the human lane. Never
 	// changes the exit code.
 	Lanes LanesCheck
+	// TerminalWriteWarning: sessions.terminal_write is set on Windows,
+	// which has no live terminal, so the setting does nothing. Never
+	// changes the exit code.
+	TerminalWriteWarning string
 }
+
+// doctorGOOS is the platform doctor reports for; a variable so tests can
+// pretend to be Windows.
+var doctorGOOS = runtime.GOOS
 
 func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 	report, _ := collectDoctorReport(workflowPath)
@@ -494,6 +503,9 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 	report.Permissions = checkPermissions(cfg)
 	report.ModelServers = checkModelServers(cfg)
 	report.Lanes = checkLanes(cfg)
+	if cfg != nil {
+		report.TerminalWriteWarning = config.TerminalWriteIgnored(cfg.Sessions, doctorGOOS)
+	}
 
 	// Repo readiness (#200): the rows GET /api/v1/repo/readiness serves,
 	// built from the checks above.
@@ -649,6 +661,9 @@ func renderDoctorReport(r DoctorReport) string {
 	renderPermissionsCheck(&b, r.Permissions)
 	renderModelServerCheck(&b, r.ModelServers)
 	renderLanesCheck(&b, r.Lanes)
+	if r.TerminalWriteWarning != "" {
+		fmt.Fprintf(&b, "WARNING: %s\n", r.TerminalWriteWarning)
+	}
 	if len(r.GitignoreMissingLines) > 0 {
 		fmt.Fprintf(&b, "WARNING: .itervox/.gitignore missing lines (add to prevent accidental commits): %s — run `itervox init --update --workflow %s` to fix\n",
 			strings.Join(r.GitignoreMissingLines, ", "), r.Workflow)

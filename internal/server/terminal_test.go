@@ -64,6 +64,7 @@ type fakeTerminalConn struct {
 	mu     sync.Mutex
 	typed  []byte
 	sizes  [][2]int
+	reason string
 	closed chan struct{}
 	once   sync.Once
 }
@@ -97,9 +98,23 @@ func (c *fakeTerminalConn) Resize(cols, rows int) error {
 	return nil
 }
 
-func (c *fakeTerminalConn) Close() error {
-	c.once.Do(func() { close(c.closed) })
+func (c *fakeTerminalConn) Close() error { return c.CloseWithReason("") }
+
+func (c *fakeTerminalConn) CloseWithReason(reason string) error {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.reason = reason
+		c.mu.Unlock()
+		close(c.closed)
+	})
 	return nil
+}
+
+// closeReason is the reason the conn was closed with ("" for a plain Close).
+func (c *fakeTerminalConn) closeReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reason
 }
 
 func (c *fakeTerminalConn) snapshot() (string, [][2]int) {
@@ -165,7 +180,7 @@ func TestTerminalTicketIsSingleUseExpiresAndIsBoundToItsSession(t *testing.T) {
 	store.now = func() time.Time { return now }
 	p := Principal{Scope: apitokens.ScopeOperator, Source: principalToken, TokenID: "tok1"}
 
-	secret, expires, err := store.mint("s1", false, p)
+	secret, expires, err := store.mint("s1", false, p, "")
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(secret, terminalTicketPrefix))
 	assert.Equal(t, now.Add(terminalTicketTTL), expires)
@@ -176,14 +191,14 @@ func TestTerminalTicketIsSingleUseExpiresAndIsBoundToItsSession(t *testing.T) {
 	_, err = store.redeem(secret, "s1")
 	assert.ErrorIs(t, err, errTicketInvalid, "a ticket redeems once")
 
-	secret, _, err = store.mint("s1", true, p)
+	secret, _, err = store.mint("s1", true, p, "")
 	require.NoError(t, err)
 	_, err = store.redeem(secret, "s2")
 	assert.ErrorIs(t, err, errTicketWrongSession)
 	_, err = store.redeem(secret, "s1")
 	assert.ErrorIs(t, err, errTicketInvalid, "a ticket tried on the wrong session is spent")
 
-	secret, _, err = store.mint("s1", false, p)
+	secret, _, err = store.mint("s1", false, p, "")
 	require.NoError(t, err)
 	now = now.Add(terminalTicketTTL)
 	_, err = store.redeem(secret, "s1")
@@ -193,13 +208,13 @@ func TestTerminalTicketIsSingleUseExpiresAndIsBoundToItsSession(t *testing.T) {
 	assert.ErrorIs(t, err, errTicketInvalid)
 
 	for range maxTerminalTickets {
-		_, _, err = store.mint("s1", false, p)
+		_, _, err = store.mint("s1", false, p, "")
 		require.NoError(t, err)
 	}
-	_, _, err = store.mint("s1", false, p)
+	_, _, err = store.mint("s1", false, p, "")
 	assert.ErrorIs(t, err, errTicketStoreFull)
 	now = now.Add(terminalTicketTTL)
-	_, _, err = store.mint("s1", false, p)
+	_, _, err = store.mint("s1", false, p, "")
 	assert.NoError(t, err, "expired tickets are pruned")
 }
 
