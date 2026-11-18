@@ -46,7 +46,9 @@ go install github.com/vnovick/itervox/cmd/referee@latest   # or pin a version
 make referee                                              # writes bin/referee
 ```
 
-In GitHub Actions, use [the Action](#the-github-action), which builds it.
+In GitHub Actions, use [the Action](#the-github-action), which builds it. On
+GitLab CI, CircleCI and Buildkite, use [the templates](#gitlab-ci-circleci-and-buildkite),
+which install a pinned release and check its SHA-256.
 
 ## The commands
 
@@ -283,13 +285,125 @@ check the label event's actor and permission through the API, or use
 CODEOWNERS with required reviews on the same paths instead of a label. referee
 itself does not authenticate labels: it only decides the lane.
 
+## GitLab CI, CircleCI and Buildkite
+
+[`referee/ci/`](https://github.com/vnovick/itervox/tree/main/referee/ci) has a
+copy-paste template for each. They run the same shell, which:
+
+1. **installs a pinned release**: `referee_<os>_<arch>.tar.gz` of
+   `REFEREE_VERSION` from the GitHub release, refused unless its SHA-256 is
+   the one the release's `checksums.txt` lists **and** the one
+   `REFEREE_SHA256` pins (no `curl | sh`, no "latest");
+2. **fetches the base branch** (`origin/<base>`, unshallowing a shallow
+   clone), so the policy is read from it, never from the branch;
+3. runs `referee lanes` and `referee audit` on the change and maps their
+   exit codes exactly like the Action does with `fail-on: human`;
+4. hands an exit `20` to **the CI's own approval step** instead of a label.
+
+| Result | Job |
+|---|---|
+| `0` auto, no audit findings | passes |
+| `10` second_opinion | reported, passes; `REFEREE_FAIL_ON: second_opinion` fails it with `10` |
+| `20` human lane or audit findings | waits for the CI's approval step; `REFEREE_APPROVAL: none` fails it with `20`, like the Action |
+| `2` any error (base not fetchable, malformed policy, checksum mismatch) | fails; never approvable |
+
+`REFEREE_FAIL_ON: never` reports without asking for an approval (the Action's
+`fail-on: never`). Update `REFEREE_VERSION` and `REFEREE_SHA256` together,
+both from the release's `checksums.txt`; the templates pin the
+`linux_amd64` archive and name the `linux_arm64` hash in a comment.
+
+Each template's file is also part of how CI checks, and it lives in the branch
+it judges: a change could delete the referee job. Each section below says how
+to keep it out of the branch's reach.
+
+### GitLab CI
+
+[`referee/ci/gitlab-ci.yml`](https://github.com/vnovick/itervox/blob/main/referee/ci/gitlab-ci.yml)
+runs in merge request pipelines. The base is
+`CI_MERGE_REQUEST_TARGET_BRANCH_NAME` (with `GIT_DEPTH: "0"`); referee works
+out the merge base itself, which is what `CI_MERGE_REQUEST_DIFF_BASE_SHA`
+holds. The `referee` job writes a child pipeline that the `referee-approval`
+job runs with `strategy: depend`: one passing job, or, for exit `20`, the
+manual job `approve-pipeline-change` (`allow_failure: false`) in the
+`pipeline-approval` environment. The merge request's pipeline does not
+succeed until someone runs it.
+
+- Turn on **Pipelines must succeed** for merge requests.
+- Protect the `pipeline-approval` environment and allow only maintainers to
+  deploy to it: otherwise anyone who can run jobs can approve, the agent's
+  token included.
+- `.gitlab-ci.yml` is in the default human lane, but a merge request that
+  deletes the job is never judged. Point the project's **CI/CD configuration
+  file** at a file in a project the agent cannot push to, or give
+  `.gitlab-ci.yml` code owners.
+
+### CircleCI
+
+[`referee/ci/circleci-config.yml`](https://github.com/vnovick/itervox/blob/main/referee/ci/circleci-config.yml)
+is a setup config (`setup: true`, with dynamic config enabled in the project
+settings). Its `referee` job decides, then continues the pipeline with
+`.circleci/continue-config.yml` and the parameter `referee-needs-approval`.
+Merge
+[`circleci-continue-config.yml`](https://github.com/vnovick/itervox/blob/main/referee/ci/circleci-continue-config.yml)
+into that file: it runs `referee-gate` at once, or after the
+`pipeline-approval` job (`type: approval`).
+
+**The base branch.** CircleCI has no variable for the branch a pull request
+merges into: `CIRCLE_PULL_REQUEST` is only its URL, and
+`pipeline.git.base_revision` is the previous pipeline's commit, not the pull
+request's base. The template uses `REFEREE_BASE_BRANCH` (default `main`): a
+pull request into another branch is judged by the default branch's policy,
+on its diff from the merge base with the default branch. Set
+`REFEREE_BASE_BRANCH` in the job or a context if your pull requests merge
+elsewhere.
+
+- Require the `referee-gate` status check in branch protection; a change that
+  removes the job never reports it.
+- Run `referee-gate` in a restricted context (`pipeline-approval` in the
+  template), so only that context's group can approve the job before it. Never
+  give the agent a CircleCI token: it could approve through the API.
+- `.circleci/**` is in the default human lane.
+
+### Buildkite
+
+[`referee/ci/buildkite-pipeline.yml`](https://github.com/vnovick/itervox/blob/main/referee/ci/buildkite-pipeline.yml)
+is one command step. The base is `BUILDKITE_PULL_REQUEST_BASE_BRANCH` in a
+pull request build, else `BUILDKITE_PIPELINE_DEFAULT_BRANCH`. On exit `20` it
+uploads (`buildkite-agent pipeline upload --no-interpolation`) a `block` step,
+**Approve pipeline change**, with `blocked_state: running`, so the build is
+not reported as passed while it waits, and a `referee-gate` step after it.
+Every `$` in the command is written `$$`, since Buildkite interpolates
+variables when it uploads steps.
+
+- Put the step in the pipeline's settings (**Pipeline Settings > Steps**),
+  not in `.buildkite/pipeline.yml`, which the branch can change. Add
+  `".buildkite/**"` to the human lane of your `.referee.yml`: it is not in the
+  default one.
+- Uncomment `allowed_teams` in the uploaded block step so only those teams
+  can unblock it, and never give the agent a Buildkite API token.
+
+### Testing the templates
+
+`make referee-ci-test` (`bash referee/ci/templates_test.sh`) parses each
+YAML file, checks that the shared install, fetch and check blocks are the same
+in all three, and runs each template's shell locally on the fixture repository
+the Action's end-to-end job uses
+([`referee/testdata/fixture.sh`](https://github.com/vnovick/itervox/blob/main/referee/testdata/fixture.sh)),
+with referee installed by the template's own install step from a local
+release. On every branch the codes match what the Action's step script
+reports: audit `20` on the agent branch (a `continue-on-error: true`), lanes
+`0` on the fix, `10` on the second-opinion branch, `2` for a missing base or a
+checksum mismatch. The Action workflow's end-to-end job runs it with the
+referee binary the Action built.
+
 ## With any harness
 
 The enforcement is the CI job on the base branch's policy. Anything run next
 to the agent is early feedback the agent can read; it is not a control,
 because the agent can edit or skip it.
 
-**A plain shell CI step** (GitLab, Jenkins, Buildkite, anything with git):
+**A plain shell CI step** (Jenkins, or anything with git; GitLab CI, CircleCI
+and Buildkite have [templates](#gitlab-ci-circleci-and-buildkite)):
 
 ```bash
 git fetch --no-tags origin main

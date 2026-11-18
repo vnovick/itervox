@@ -1,0 +1,163 @@
+# referee for Buildkite. Paste these steps into the pipeline's steps in
+# Pipeline Settings > Steps, ahead of your own upload step (see "Keep the
+# pipeline outside the branch" below), or into .buildkite/pipeline.yml.
+#
+# The `referee` step installs a pinned referee release (its SHA-256 checked
+# against the release's checksums.txt and against REFEREE_SHA256), fetches
+# the base branch (BUILDKITE_PULL_REQUEST_BASE_BRANCH in a pull request
+# build, else the pipeline's default branch), and runs `referee lanes` and
+# `referee audit` on the build's changes. The policy (.referee.yml) is read
+# from the base branch, never from the branch. Exit codes are the referee
+# GitHub Action's:
+#
+#   exit 0   auto lane, no audit findings: the step passes.
+#   exit 10  second_opinion lane: reported, passes like exit 0
+#            (REFEREE_FAIL_ON: second_opinion fails the step with 10).
+#   exit 20  human lane, or audit found weakened checks: the step uploads a
+#            `block` step ("Approve pipeline change") and a `referee-gate`
+#            step after it. The build stays running (blocked_state: running,
+#            so it is not reported as passed) until someone unblocks it.
+#            REFEREE_APPROVAL: none fails the step with 20 instead, like the
+#            Action's default.
+#   exit 2   any error (a base that cannot be fetched, a malformed policy, a
+#            checksum mismatch): the step fails. Never approvable.
+#
+# Every $ in the command is written $$: Buildkite interpolates $VAR when the
+# steps are uploaded, and $$ leaves a $ for the shell at run time.
+#
+# Set up:
+# - Require the build's status check in branch protection.
+# - Uncomment allowed_teams in the uploaded block step (the YAML in the
+#   command) so only those teams can unblock it. Never give the agent a
+#   Buildkite API token: it could unblock through the API.
+# - Keep the pipeline outside the branch. Steps uploaded from
+#   .buildkite/pipeline.yml come from the branch under review, and
+#   .buildkite/** is not in referee's default human lane: put the referee
+#   step in Pipeline Settings > Steps, which the branch cannot change, and
+#   add ".buildkite/**" to the human lane of your .referee.yml.
+# - The agent needs git and curl. Update REFEREE_VERSION and REFEREE_SHA256
+#   together (both from the release's checksums.txt).
+steps:
+  - label: ":shield: referee"
+    key: referee
+    env:
+      REFEREE_VERSION: "0.3.3"
+      # referee_linux_amd64.tar.gz in v0.3.3's checksums.txt
+      # (referee_linux_arm64.tar.gz: 0573b6cbc8e00393bafa1edd0542d31fa2ac81427890aaba150da4d46e7fa87f).
+      REFEREE_SHA256: "81718e5be5bfabcc2fdff4ce0e4052371dda3c36df87b70bc4660d581b7d820d"
+      REFEREE_FAIL_ON: human # human, second_opinion or never (report only)
+      REFEREE_APPROVAL: step # step (the block step) or none (fail with 20)
+    command: |
+      if [ "$${BUILDKITE_PULL_REQUEST:-false}" != false ]; then
+        referee_base_branch=$${BUILDKITE_PULL_REQUEST_BASE_BRANCH:-}
+      else
+        referee_base_branch=$${BUILDKITE_PIPELINE_DEFAULT_BRANCH:-}
+      fi
+
+      # >>> referee install (keep in sync across referee/ci/*.yml)
+      set -eu
+      : "$${REFEREE_VERSION:?set REFEREE_VERSION, a referee release such as 0.3.3}"
+      : "$${REFEREE_SHA256:?set REFEREE_SHA256, the archive line of the release checksums.txt}"
+      case $$(uname -s) in
+        Linux) referee_os=linux ;;
+        Darwin) referee_os=darwin ;;
+        *) echo "referee: unsupported OS $$(uname -s)" >&2; exit 2 ;;
+      esac
+      case $$(uname -m) in
+        x86_64 | amd64) referee_arch=amd64 ;;
+        aarch64 | arm64) referee_arch=arm64 ;;
+        *) echo "referee: unsupported architecture $$(uname -m)" >&2; exit 2 ;;
+      esac
+      referee_asset="referee_$${referee_os}_$${referee_arch}.tar.gz"
+      referee_url="$${REFEREE_DOWNLOAD_URL:-https://github.com/vnovick/itervox/releases/download}/v$${REFEREE_VERSION#v}"
+      referee_dir=$$(mktemp -d) || exit 2
+      curl -fsSL --retry 3 -o "$$referee_dir/$$referee_asset" "$$referee_url/$$referee_asset" || exit 2
+      curl -fsSL --retry 3 -o "$$referee_dir/checksums.txt" "$$referee_url/checksums.txt" || exit 2
+      referee_listed=$$(awk -v f="$$referee_asset" '$$2 == f || $$2 == "*" f { print $$1 }' "$$referee_dir/checksums.txt")
+      if command -v sha256sum >/dev/null 2>&1; then
+        referee_got=$$(sha256sum "$$referee_dir/$$referee_asset" | awk '{ print $$1 }')
+      else
+        referee_got=$$(shasum -a 256 "$$referee_dir/$$referee_asset" | awk '{ print $$1 }')
+      fi
+      if [ "$$referee_listed" != "$$REFEREE_SHA256" ] || [ "$$referee_got" != "$$REFEREE_SHA256" ]; then
+        echo "referee: $$referee_asset: checksums.txt lists '$$referee_listed', the download is $$referee_got, REFEREE_SHA256 is $$REFEREE_SHA256" >&2
+        exit 2
+      fi
+      tar -xzf "$$referee_dir/$$referee_asset" -C "$$referee_dir" referee || exit 2
+      PATH="$$referee_dir:$$PATH"
+      referee --version
+      # <<< referee install
+
+      # >>> referee fetch base (keep in sync across referee/ci/*.yml)
+      case $$referee_base_branch in
+        '' | -* | *..*) echo "referee: invalid base branch '$$referee_base_branch'" >&2; exit 2 ;;
+      esac
+      if [ "$$(git rev-parse --is-shallow-repository)" = true ]; then
+        git fetch --quiet --no-tags --unshallow origin || exit 2
+      fi
+      git fetch --quiet --no-tags origin "+refs/heads/$$referee_base_branch:refs/remotes/origin/$$referee_base_branch" ||
+        { echo "referee: cannot fetch the base branch '$$referee_base_branch' from origin" >&2; exit 2; }
+      referee_base="origin/$$referee_base_branch"
+      # <<< referee fetch base
+
+      referee_code=0
+      (
+        # >>> referee check (keep in sync across referee/ci/*.yml): exits like the referee GitHub Action
+        referee_fail_on=$${REFEREE_FAIL_ON:-human}
+        case $$referee_fail_on in
+          human | second_opinion | never) ;;
+          *) echo "referee: REFEREE_FAIL_ON must be human, second_opinion or never (got '$$referee_fail_on')" >&2; exit 2 ;;
+        esac
+        referee_lanes=0
+        referee lanes --base "$$referee_base" --policy "$${REFEREE_POLICY:-.referee.yml}" || referee_lanes=$$?
+        referee_audit=0
+        referee audit --base "$$referee_base" || referee_audit=$$?
+        echo "referee: lanes exit $$referee_lanes, audit exit $$referee_audit"
+        case $$referee_lanes in
+          0 | 10 | 20) ;;
+          *) echo "referee: lanes failed (exit $$referee_lanes)" >&2; exit "$$referee_lanes" ;;
+        esac
+        case $$referee_audit in
+          0 | 20) ;;
+          *) echo "referee: audit failed (exit $$referee_audit)" >&2; exit "$$referee_audit" ;;
+        esac
+        if [ "$$referee_fail_on" != never ]; then
+          if [ "$$referee_lanes" = 20 ] || [ "$$referee_audit" = 20 ]; then
+            echo "referee: this change touches how CI checks (human lane, or weakened checks): a maintainer must approve it" >&2
+            exit 20
+          fi
+          if [ "$$referee_lanes" = 10 ] && [ "$$referee_fail_on" = second_opinion ]; then
+            echo "referee: second_opinion lane" >&2
+            exit 10
+          fi
+        fi
+        exit 0
+        # <<< referee check
+      ) || referee_code=$$?
+
+      case $${REFEREE_APPROVAL:-step} in
+        step | none) ;;
+        *) echo "referee: REFEREE_APPROVAL must be step or none (got '$$REFEREE_APPROVAL')" >&2; exit 2 ;;
+      esac
+      case $$referee_code in
+        0) ;;
+        20)
+          [ "$${REFEREE_APPROVAL:-step}" = step ] || exit 20
+          referee_steps=$$(mktemp)
+          cat >"$$referee_steps" <<'YAML'
+      steps:
+        - block: ":shield: Approve pipeline change"
+          key: pipeline-approval
+          prompt: "referee: this change touches how CI checks (human lane, or weakened checks). Review it before you unblock."
+          blocked_state: running
+          # allowed_teams: ["pipeline-owners"] # only these teams can unblock
+        - label: "referee-gate"
+          key: referee-gate
+          depends_on: pipeline-approval
+          command: echo "referee-gate passed"
+      YAML
+          buildkite-agent pipeline upload --no-interpolation "$$referee_steps"
+          echo "referee: unblock the pipeline-approval step to approve"
+          ;;
+        *) exit "$$referee_code" ;;
+      esac
