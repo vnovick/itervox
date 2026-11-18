@@ -49,7 +49,10 @@ type tmuxSessions struct {
 	// tmux is shared with the detector (same server / socket).
 	detect *tmuxDetector
 	// control is sessions.tmux_control (read at startup).
-	control       bool
+	control bool
+	// terminalWrite is sessions.terminal_write (#298, read at startup): an
+	// admin may type into the live terminal.
+	terminalWrite bool
 	projectRoot   string
 	workspaceRoot string
 	agentCommand  string
@@ -86,7 +89,8 @@ func (t *tmuxSessions) listProcesses() ([]extsessions.Process, error) {
 // status is the "tmux" object of GET /api/v1/sessions.
 func (t *tmuxSessions) status() server.TmuxStatusRow {
 	st := t.detect.current()
-	return server.TmuxStatusRow{Available: st.Available, Version: st.Version, InstallHint: tmuxInstallHint(), Control: t.control}
+	return server.TmuxStatusRow{Available: st.Available, Version: st.Version, InstallHint: tmuxInstallHint(), Control: t.control,
+		Terminal: tmuxctl.AttachSupported, TerminalWrite: tmuxctl.AttachSupported && t.terminalWrite}
 }
 
 // attachCommand is what a terminal runs to attach to itervox's session id.

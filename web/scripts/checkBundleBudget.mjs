@@ -19,9 +19,11 @@ export const BUDGET = {
    * and its lazy issue-detail and query chunks took the total to ~1901 KiB.
    * Raised from 1920 KiB for the issue view, the embedded desktop shell and
    * the diff review upgrades, which together leave the visual refresh no
-   * headroom under the old cap.
+   * headroom under the old cap. Raised from 2200 KiB by #298: the live
+   * terminal's renderer (@xterm/xterm + fit, ~286 KiB) in its own lazy
+   * TmuxTerminal chunk, loaded only when a live terminal opens.
    */
-  totalJsBytes: 2200 * KB,
+  totalJsBytes: 2260 * KB,
   /**
    * The entry script plus its modulepreloads from index.html (before #211:
    * 499,682). Raised from 520 KiB with the total: the visual refresh's shell
@@ -39,6 +41,20 @@ export const BUDGET = {
       pattern: /^Dashboard-[\w-]+\.js$/,
       maxBytes: 200 * KB,
       forbid: ['react-flow__', '@xyflow'],
+    },
+    {
+      // #298: the terminal renderer stays in its lazy chunk, and only there.
+      name: 'TmuxTerminal',
+      pattern: /^TmuxTerminal-[\w-]+\.js$/,
+      maxBytes: 300 * KB,
+      forbid: [],
+    },
+    {
+      // #298: the entry and page chunks never carry the terminal renderer.
+      name: 'index',
+      pattern: /^index-[\w-]+\.js$/,
+      maxBytes: 410 * KB,
+      forbid: ['xterm-helper-textarea'],
     },
     {
       // Before #211: 295,055 bytes of antd + react-js-cron. The light cron

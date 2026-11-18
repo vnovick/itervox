@@ -2,18 +2,22 @@
 // panes, captures a pane's screen, pastes text, sends a short allowlist of
 // keys, and starts, tags (sessions.go: @itervox-* user options, listed back
 // for re-adoption after a daemon restart) and kills itervox's own tmux
-// sessions.
+// sessions. The live terminal (#298, attach*.go) runs one more client:
+// `tmux attach-session [-r]` inside a PTY the daemon owns.
 //
 // It is the ONLY package that may write to a process itervox did not start:
 // an operator's agent CLI running in a tmux pane, reached through tmux's own
-// paste buffer and key events (never a terminal device, never ptrace). The
-// structural guard TestNoWritesToProcessesItervoxDidNotStart
+// paste buffer and key events, or through an attach client itervox started
+// (never another terminal device, never ptrace). The structural guard
+// TestNoWritesToProcessesItervoxDidNotStart
 // (internal/agent/no_foreign_writes_test.go) holds every other package to
 // "processes itervox started only", and holds this one to running `tmux`
 // and nothing else, with explicit arguments (never a shell string of ours).
 //
-// Stdlib only. Every call is a short-lived `tmux` client process bounded by
-// Client.Timeout; nothing here runs on the orchestrator's event loop.
+// Stdlib only, plus github.com/creack/pty for the attach's PTY (Unix). Every
+// call but an attach is a short-lived `tmux` client process bounded by
+// Client.Timeout; an attach lives until Close. Nothing here runs on the
+// orchestrator's event loop.
 package tmuxctl
 
 import (

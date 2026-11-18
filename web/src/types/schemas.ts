@@ -1651,6 +1651,11 @@ export const TmuxStatusSchema = z.object({
   installHint: z.string(),
   // sessions.tmux_control: hand-started sessions in tmux may be controlled.
   control: z.boolean(),
+  // #298: the daemon's platform runs the live terminal (absent: older
+  // daemons, which have none).
+  terminal: z.boolean().optional(),
+  // #298 sessions.terminal_write: an admin may type into the live terminal.
+  terminalWrite: z.boolean().optional(),
 });
 
 export const NewSessionOptionsSchema = z.object({
@@ -1666,6 +1671,16 @@ export const SessionsResponseSchema = z.object({
   // Absent from daemons before tmux control.
   tmux: TmuxStatusSchema.optional(),
   newSession: NewSessionOptionsSchema.optional(),
+});
+
+// POST /api/v1/sessions/{id}/terminal/ticket — internal/server/terminal.go
+// (#298): a single-use, 30-second ticket for the live terminal's socket.
+export const TerminalTicketSchema = z.object({
+  ticket: z.string(),
+  mode: z.enum(['read', 'write']),
+  expiresAt: z.string(),
+  // The socket's path and query, `/api/v1/sessions/{id}/terminal?ticket=…`.
+  url: z.string(),
 });
 
 // GET /api/v1/sessions/{id}/screen — internal/server/sessions_tmux.go.
@@ -1703,6 +1718,7 @@ export type SessionMessageRow = z.infer<typeof SessionMessageRowSchema>;
 export type TmuxStatus = z.infer<typeof TmuxStatusSchema>;
 export type NewSessionOptions = z.infer<typeof NewSessionOptionsSchema>;
 export type SessionScreen = z.infer<typeof SessionScreenSchema>;
+export type TerminalTicket = z.infer<typeof TerminalTicketSchema>;
 export type SessionsResponse = z.infer<typeof SessionsResponseSchema>;
 export type SessionRow = z.infer<typeof SessionRowSchema>;
 // ─── Rules (#157) ────────────────────────────────────────────────────────────

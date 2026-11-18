@@ -33,14 +33,15 @@ func TestSessionsEndpointCarriesTmuxStatus(t *testing.T) {
 				AttachCommand: "tmux attach -t itervox-abc123"},
 			{ID: "hand", Owner: "external", Status: "exited"},
 		},
-		tmux: server.TmuxStatusRow{Available: false, InstallHint: "brew install tmux", Control: true},
+		tmux: server.TmuxStatusRow{Available: false, InstallHint: "brew install tmux", Control: true, Terminal: true},
 		opts: server.NewSessionOptions{ProjectRoot: "/w", Folders: []string{"/w"}, Max: 8},
 	}
 	w := sessionsReq(t, f, http.MethodGet, "/api/v1/sessions", "")
 	require.Equal(t, http.StatusOK, w.Code)
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Equal(t, map[string]any{"available": false, "installHint": "brew install tmux", "control": true}, body["tmux"])
+	assert.Equal(t, map[string]any{"available": false, "installHint": "brew install tmux", "control": true,
+		"terminal": true, "terminalWrite": false}, body["tmux"])
 	opts := body["newSession"].(map[string]any)
 	assert.Equal(t, []any{"/w"}, opts["folders"])
 	assert.Equal(t, []any{}, opts["profiles"])

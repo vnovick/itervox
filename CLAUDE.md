@@ -287,11 +287,31 @@ only the event loop mutates them.
   itervox writes only to agent processes it started (no TTY injection, no
   Accessibility/AppleScript automation) — with ONE narrow exception,
   `internal/tmuxctl`, which types into a CLI in a tmux pane through tmux's
-  paste buffer and key events (hand-started sessions only with
-  `sessions.tmux_control`, plus the tmux sessions itervox started). Enforced
-  by `internal/agent/no_foreign_writes_test.go::TestNoWritesToProcessesItervoxDidNotStart`:
-  no other package may run `tmux` or name its write commands, and tmuxctl
-  runs nothing but a literal `tmux`.
+  paste buffer and key events, or (#298, the live terminal) through a
+  `tmux attach-session` client it starts in a PTY it owns (hand-started
+  sessions only with `sessions.tmux_control`, plus the tmux sessions
+  itervox started). Enforced by
+  `internal/agent/no_foreign_writes_test.go::TestNoWritesToProcessesItervoxDidNotStart`:
+  no other package may run `tmux`, name its write commands
+  (`send-keys`, `paste-buffer`, `load-buffer`, `attach-session`) or import
+  the PTY package (`creack/pty`); tmuxctl runs nothing but a literal `tmux`,
+  names `attach-session` exactly once (`AttachArgs`: exactly
+  `attach-session [-r] -t <target>`) and starts exactly one PTY, on its own
+  `tmux` command.
+- **Live terminal (#298)** is not `State`: `internal/server/terminal*.go`
+  mints a single-use, 30 s ticket (`POST /api/v1/sessions/{id}/terminal/ticket`,
+  operator; mode `write` also needs admin AND `sessions.terminal_write`,
+  load-time, NOT in the cfgMu allowlist) bound to the session, mode and
+  principal (re-checked on redemption), and the socket
+  (`GET /api/v1/sessions/{id}/terminal`, route class `ticket`, Origin
+  checked by `cors.WebSocketOriginAllowed`) runs on HTTP goroutines,
+  never the loop. cmd/itervox/sessions_terminal.go reaches the same panes as
+  screen/keys (`tmuxSessions.target`), drops nothing into the loop but
+  `RecordFeedEvent` (`terminal_attached` / `terminal_detached`, never
+  terminal bytes). A read-only attach is `tmux attach-session -r` AND the
+  daemon writes nothing to it. The hub refuses the ticket route, the socket
+  and any WebSocket upgrade (`terminal_not_proxied`). Unix only
+  (`tmuxctl.AttachSupported`).
 - `ExternalSessions` (#178 step 3) is event-loop state.
   Discovery of sessions started by hand (`internal/extsessions`, read-only:
   transcript files, `/proc` or `ps`/`lsof`) runs on its own goroutine
@@ -716,9 +736,11 @@ extsessions (stdlib + logging — discovery, transcripts and read-only
             liveness of agent sessions started by hand, #178; imported by
             orchestrator and cmd/itervox)
 
-tmuxctl (stdlib only — the tmux CLI: list/capture panes, paste text, an
-         allowlist of keys, new/kill session; the ONLY package that writes to
-         processes itervox did not start; imported by cmd/itervox)
+tmuxctl (stdlib, plus creack/pty on Unix for the live terminal's PTY —
+         the tmux CLI: list/capture panes, paste text, an allowlist of keys,
+         new/kill session, attach-session in a PTY (#298); the ONLY package
+         that writes to processes itervox did not start; imported by
+         cmd/itervox)
 
 procgroup (stdlib, plus golang.org/x/sys/windows on Windows — own process
            group + group SIGKILL re-sent until ESRCH on Unix, a kill-on-close
@@ -1126,7 +1148,7 @@ the canonical text.
 - **Do not add `.env` files** — secrets are injected at runtime via env vars (`.itervox/.env` is gitignored and loaded by the daemon on startup)
 - **Do not mock `orchestrator.State`** in tests that check state transitions — pass real State values
 - **Do not call `patchSnapshot` from settings mutations** — they must call `refreshSnapshot()` to get the authoritative server state
-- **Do not call `fetch()` or `new EventSource()` directly in `web/src`** — use `authedFetch` from `web/src/auth/authedFetch.ts` and `openAuthedEventStream` from `web/src/auth/authedEventStream.ts`. The only exceptions are inside the auth module itself (`AuthGate` health/state probes and `TokenEntryScreen` token validation), which bootstrap before a token is stored.
+- **Do not call `fetch()` or `new EventSource()` directly in `web/src`** — use `authedFetch` from `web/src/auth/authedFetch.ts` and `openAuthedEventStream` from `web/src/auth/authedEventStream.ts`. The only exceptions are inside the auth module itself (`AuthGate` health/state probes and `TokenEntryScreen` token validation), which bootstrap before a token is stored. The same goes for `new WebSocket()`: the one raw socket is `web/src/auth/terminalSocket.ts` (#298, the live terminal, authenticated by a ticket an authed POST minted, never the bearer token); ESLint's `no-restricted-globals` refuses `WebSocket` anywhere else.
 - **Do not call `os.Exit()` directly in `cmd/itervox/`** — use `fatalExit(code)` from `cmd/itervox/exit.go`. It runs the `onFatalExit` runtime-file cleanup (`daemon.pid`, `dashboard_url`, `HEARTBEAT.md`) that `os.Exit` would skip. (It no longer runs `stty sane`: since the terminal UI was removed in #240 nothing in `cmd/itervox` puts the terminal into raw mode — keep it that way; `itervox watch` must never read stdin or change a terminal mode.) The CI guard `make no-os-exit` (run by `make verify`) fails the build if a new `os.Exit()` appears outside `exit.go`. Tests and the `exit.go` file itself are the only exceptions.
 - **Do not declare anything done by inference.** See "Verification before completion — MANDATORY" above. Every named test, counter, field, CLI subcommand, route, and UI surface in an acceptance section MUST be grepped or run, and the result MUST appear in a `Verified by:` annotation. Marking an item done without that annotation is a contract violation, not a style preference. The common evasions enumerated above (symbol-exists-but-callless, one-sub-criterion-of-N, test-body-is-skip, counter-declared-never-incremented, component-imported-never-rendered, route-registered-handler-is-501) are explicitly refused.
 - **Do not move agent guidance into AGENTS.md if it is not codex-specific.** AGENTS.md is a thin pointer at CLAUDE.md plus a small "Codex-specific notes" section. Architecture invariants, the `cfgMu` allowlist, verification rules, conventions, false-positive patterns, the Never-do list — all of those live ONLY in CLAUDE.md and AGENTS.md tells codex to read them there. If you find yourself duplicating a CLAUDE.md section into AGENTS.md, stop: either the content belongs in CLAUDE.md (where it already is) or it's genuinely codex-specific (in which case it shouldn't be in CLAUDE.md). Picking only one home is the contract.

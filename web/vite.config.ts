@@ -95,6 +95,8 @@ export default defineConfig({
         // Disable timeout for SSE (Server-Sent Events) long-lived connections.
         timeout: 0,
         proxyTimeout: 0,
+        // #298: the live terminal's WebSocket (/api/v1/sessions/{id}/terminal).
+        ws: true,
       },
     },
   },

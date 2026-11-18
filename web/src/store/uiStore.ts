@@ -50,6 +50,10 @@ interface UIState {
 
   // Logs page chip — restrict to AUTOMATION FIRED entries.
   logsAutomationOnly: boolean;
+
+  // #298 Sessions: show a tmux session as the live terminal (true) or the
+  // polled snapshot (false) when both are available.
+  sessionsLiveTerminal: boolean;
   logsIssueSearch: string;
 
   // Timeline page chip — restrict to runs with an automationId.
@@ -89,6 +93,7 @@ interface UIActions {
   setExpandedPausedId: (id: string | null) => void;
   setAutomationsTab: (tab: AutomationsTab) => void;
   setLogsAutomationOnly: (value: boolean) => void;
+  setSessionsLiveTerminal: (value: boolean) => void;
   setLogsIssueSearch: (search: string) => void;
   setTimelineAutomationOnly: (value: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
@@ -114,6 +119,7 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   expandedPausedId: null,
   automationsTab: 'configure',
   logsAutomationOnly: false,
+  sessionsLiveTerminal: true,
   logsIssueSearch: '',
   timelineAutomationOnly: false,
   commandPaletteOpen: false,
@@ -150,6 +156,9 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setLogsAutomationOnly: (logsAutomationOnly) => {
     set({ logsAutomationOnly });
+  },
+  setSessionsLiveTerminal: (sessionsLiveTerminal) => {
+    set({ sessionsLiveTerminal });
   },
   setLogsIssueSearch: (logsIssueSearch) => {
     set({ logsIssueSearch });

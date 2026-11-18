@@ -23,6 +23,12 @@ import (
 //   - a path the member's table does not declare: 404; an agent-grant
 //     route, a public non-GET route (tracker webhooks) or an unknown access
 //     class: 403 not_proxied;
+//   - the live terminal (#298): any WebSocket upgrade, a "ticket" route (the
+//     terminal's socket) and the terminal ticket route: 403
+//     terminal_not_proxied. The hub holds an operator member token and
+//     cannot carry a ticket's principal or the socket's Origin check, so a
+//     terminal is reached only on the project's own dashboard (a follow-up
+//     may add a scoped pass-through);
 //   - a public GET route (probes) needs at least viewer; any other route the scope it
 //     declares; a member admin route is refused (the hub holds an operator
 //     token, never an admin one);
@@ -38,6 +44,11 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 	rest := "/api/" + chi.URLParam(r, "*")
 	if !cleanAPIPath(r, rest) {
 		writeError(w, http.StatusBadRequest, "bad_path", "the path must be a plain /api/v1/... path")
+		return
+	}
+	if isTerminalRequest(r, rest) {
+		writeError(w, http.StatusForbidden, "terminal_not_proxied",
+			"the live terminal is not reachable through the hub; open the project's own dashboard")
 		return
 	}
 	if m.routes == nil {
@@ -56,6 +67,10 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	required := apitokens.Scope(access)
 	switch {
+	case access == accessTicket:
+		writeError(w, http.StatusForbidden, "terminal_not_proxied",
+			"the live terminal is not reachable through the hub; open the project's own dashboard")
+		return
 	case access == accessPublic && r.Method == http.MethodGet:
 		required = apitokens.ScopeViewer // health and readiness probes
 	case !required.Valid():
@@ -119,6 +134,22 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// isTerminalRequest reports a request the hub never proxies because it is
+// (or leads to) a member's live terminal (#298): a WebSocket upgrade of any
+// path, or the terminal ticket and socket routes by their shape
+// (/api/v1/sessions/{id}/terminal[/ticket]), checked before the member's
+// table so a table that mis-declares them changes nothing.
+func isTerminalRequest(r *http.Request, rest string) bool {
+	if r.Header.Get("Upgrade") != "" || strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+		return true
+	}
+	segs := strings.Split(strings.TrimPrefix(rest, "/api/v1/"), "/")
+	if len(segs) < 3 || segs[0] != "sessions" || segs[2] != "terminal" {
+		return false
+	}
+	return len(segs) == 3 || (len(segs) == 4 && segs[3] == "ticket")
 }
 
 // cleanAPIPath accepts only a plain /api/v1/... path: no escaped bytes

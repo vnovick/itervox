@@ -15,7 +15,7 @@ const RouteScopesPath = "/api/v1/route-scopes"
 
 // RouteScopesResponse is the body of GET /api/v1/route-scopes: every route
 // as "METHOD /full/chi/pattern" → "viewer" | "operator" | "admin" |
-// "public" | "agent_grant".
+// "public" | "agent_grant" | "ticket".
 type RouteScopesResponse struct {
 	Routes map[string]string `json:"routes"`
 }
@@ -24,6 +24,9 @@ type RouteScopesResponse struct {
 const (
 	accessPublic     = "public"
 	accessAgentGrant = "agent_grant"
+	// accessTicket is a member route authenticated by a single-use ticket
+	// instead of a bearer token: the live terminal's WebSocket (#298).
+	accessTicket = "ticket"
 )
 
 // routeEntry is one parsed route of a member's table.

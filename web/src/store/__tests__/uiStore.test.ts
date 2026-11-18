@@ -46,6 +46,7 @@ describe('uiStore', () => {
       'rulesPreviewIssue',
       'rulesPreviewProfile',
       'rulesView',
+      'sessionsLiveTerminal', // #298 — live terminal vs snapshot
       'settingsLayer',
       'settingsView',
       'timelineAutomationOnly',

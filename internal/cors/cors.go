@@ -113,6 +113,30 @@ func Middleware(allowed []string) func(http.Handler) http.Handler {
 	}
 }
 
+// WebSocketOriginAllowed decides a WebSocket handshake's Origin (#298). CORS
+// does not apply to WebSockets — a browser opens one to any origin and
+// sends the page's Origin — so a socket endpoint must check it itself.
+// Allowed: no Origin header (not a browser: a page cannot open a socket
+// without one), the request's own host, an origin on the allow-list
+// (already normalized), or Sec-Fetch-Site: same-origin (set by the browser,
+// not the page: the Vite dev proxy rewrites Host but the page is
+// same-origin). Everything else, "null" included, is refused.
+func WebSocketOriginAllowed(r *http.Request, allowed []string) bool {
+	origin := r.Header.Get("Origin")
+	switch {
+	case origin == "":
+		return true
+	case origin == "null":
+		return false
+	case sameOrigin(origin, r.Host):
+		return true
+	}
+	if n, err := NormalizeOrigin(origin); err == nil && slices.Contains(allowed, n) {
+		return true
+	}
+	return r.Header.Get("Sec-Fetch-Site") == "same-origin"
+}
+
 // sameOrigin compares the Origin's host[:port] with the request's Host,
 // not the scheme: behind a TLS-terminating proxy the server sees plain
 // HTTP while the browser sends an https Origin.

@@ -783,6 +783,7 @@ startup.
 | `external_roots` | []string | `[]` | Extra directories (absolute, `~`, `$VAR`, or relative to the `WORKFLOW.md` directory) whose sessions the project scope lists, e.g. a sibling checkout. |
 | `steering_phrases` | list | six defaults | One-click steering chips in the Sessions composer and the issue steer box (#218): `{label, message}` entries or bare default labels; `[]` shows none. See the site's [Steering phrases](https://itervox.dev/guides/playbooks/#steering-phrases). |
 | `tmux_control` | bool | `false` | Let the Sessions panel show the screen of, and type into, a hand-started session running in a tmux pane ([Sessions in tmux](https://itervox.dev/guides/sessions/#sessions-in-tmux)). **Anyone holding the dashboard token can then type into those sessions**; every write is audited (`sessions: tmux send`, never the text). Sessions itervox starts with **New session** are controllable either way. Read at startup. Not available on Windows, where tmux does not run: `true` there stops the workflow from loading ([Running on Windows](https://itervox.dev/guides/windows/)). |
+| `terminal_write` | bool | `false` | Let an admin token type into the Sessions panel's [live terminal](/guides/sessions/#live-terminal) (a read-write `tmux attach-session`). **This is effectively a remote shell on the daemon's host.** Off, the live terminal is read-only for operator and admin tokens; viewers never get one. It reaches only the sessions `tmux_control` and New session already allow. Read at startup; ignored on Windows. |
 
 ```yaml
 sessions:

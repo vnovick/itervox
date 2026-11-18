@@ -135,6 +135,14 @@ func (c sessionsClient) TmuxStatus() server.TmuxStatusRow { return c.tmux.status
 // NewSessionOptions lists what "New session" offers.
 func (c sessionsClient) NewSessionOptions() server.NewSessionOptions { return c.tmux.options() }
 
+// CheckTerminal reports whether the session's live terminal can attach (#298).
+func (c sessionsClient) CheckTerminal(id string) error { return c.tmux.checkTerminal(id) }
+
+// AttachTerminal attaches the session's live terminal (#298).
+func (c sessionsClient) AttachTerminal(req server.TerminalAttachRequest) (server.TerminalConn, error) {
+	return c.tmux.attachTerminal(req)
+}
+
 // SessionScreen captures a controllable session's pane.
 func (c sessionsClient) SessionScreen(id string, lines int) (server.ScreenResponse, error) {
 	return c.tmux.screen(id, lines)
@@ -195,7 +203,8 @@ func wireSessions(orch *orchestrator.Orchestrator, cfg *config.Config, workflowP
 		project = abs
 	}
 	t := &tmuxSessions{orch: orch, detect: &tmuxDetector{}, control: cfg.Sessions.TmuxControl,
-		projectRoot: project, workspaceRoot: cfg.Workspace.Root, agentCommand: cfg.Agent.Command,
+		terminalWrite: cfg.Sessions.TerminalWrite,
+		projectRoot:   project, workspaceRoot: cfg.Workspace.Root, agentCommand: cfg.Agent.Command,
 		isolation: cfg.Agent.Isolation}
 	if demo {
 		return t

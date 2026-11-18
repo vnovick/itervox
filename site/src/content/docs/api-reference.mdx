@@ -2044,6 +2044,34 @@ Presses one key: `{"key": "Enter"}`. Only `Enter`, `Escape`, `Up`, `Down`,
 `Left`, `Right`, `Tab`, `C-c` and the digits `1`–`9` are accepted
 (`400 key_not_allowed` otherwise). `202 {"ok": true, "key": "Enter"}`.
 
+#### `POST /api/v1/sessions/{id}/terminal/ticket`
+
+A ticket for the session's live terminal (#298): `{"mode": "read"}`
+(operator; the default) or `{"mode": "write"}` (admin, and only with
+`sessions.terminal_write: true`). Valid for 30 seconds, for one connection,
+to this session in this mode, for the token that asked.
+
+```json
+{"ticket": "itvt_…", "mode": "read", "expiresAt": "2026-11-17T10:00:30Z", "url": "/api/v1/sessions/itervox-3f9a1c/terminal?ticket=itvt_…"}
+```
+
+`403 insufficient_scope` (viewer, or `write` below admin),
+`403 terminal_write_disabled`, `501 terminal_unsupported` (Windows),
+`429 too_many_terminals` (16 open), plus the errors of the screen route.
+
+#### `GET /api/v1/sessions/{id}/terminal?ticket=…&cols=…&rows=…`
+
+The live terminal's WebSocket, authenticated by the ticket (no bearer
+header; the hub refuses it). The daemon runs `tmux attach-session` (`-r`
+for a read ticket) in a pseudo-terminal sized `cols` x `rows` and sends
+what it draws as binary frames. The client sends binary frames whose first
+byte is the op: `0x00` + bytes typed (ignored for a read ticket), `0x01` +
+cols + rows (uint16, big-endian) to resize. Closing the socket detaches;
+the session keeps running. Refusals before the upgrade:
+`401 ticket_invalid` / `ticket_expired`, `403 ticket_wrong_session`,
+`403 ticket_wrong_principal` (the token was revoked or lost the scope, or
+another token's header came with it), `403 origin_not_allowed`.
+
 #### `POST /api/v1/sessions`
 
 Starts an interactive agent CLI in a new tmux session `itervox-<id>` (New

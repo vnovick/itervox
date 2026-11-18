@@ -30,6 +30,12 @@ type TmuxStatusRow struct {
 	// Control is sessions.tmux_control: hand-started sessions in tmux may
 	// be controlled.
 	Control bool `json:"control"`
+	// Terminal: the daemon's platform runs the live terminal (#298): Unix,
+	// not Windows.
+	Terminal bool `json:"terminal"`
+	// TerminalWrite is sessions.terminal_write: an admin may type into the
+	// live terminal (read-write attach). Off, it is read-only for everyone.
+	TerminalWrite bool `json:"terminalWrite"`
 }
 
 // NewSessionOptions is what the "New session" form offers.

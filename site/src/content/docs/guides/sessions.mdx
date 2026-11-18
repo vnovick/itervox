@@ -93,6 +93,29 @@ A controllable session's tab shows the pane's screen instead of the transcript �
 
 Before every write the daemon checks again that the pane still exists and still runs that session's process; if not, the write is refused (`409 pane_gone`). Without `tmux_control`, a session in tmux is still badged but stays read-only, and its tab says: *Run claude inside tmux and enable sessions.tmux_control to control it from here.*
 
+### Live terminal
+
+On Linux and macOS, a controllable session's screen is a real terminal: the daemon runs `tmux attach-session` inside a pseudo-terminal it owns and streams it to the panel over a WebSocket, where [xterm.js](https://xtermjs.org/) draws it — colours, the cursor, live output with no polling, and a size that follows the panel. **Snapshot view** switches back to the plain-text screen above (and **Live terminal** to the terminal again); the snapshot view and the composer below stay available either way.
+
+What you get depends on your token's scope:
+
+| Scope | Live terminal |
+|---|---|
+| `viewer` | None: the snapshot view only. |
+| `operator` | Read-only (`tmux attach-session -r`): you watch the session; nothing you type reaches it — the daemon drops it before tmux, so even tmux's own key bindings cannot reach another session. |
+| `admin` | Read-only, unless `sessions.terminal_write` is on: then every key you type goes to the session, as at your own keyboard. |
+
+Typing into the terminal is off by default. Turn it on in `WORKFLOW.md` (read at startup):
+
+```yaml
+sessions:
+  terminal_write: true
+```
+
+The terminal reaches exactly the sessions the screen and keys reach: the ones itervox started with **New session**, and a hand-started one only in a matched pane with `sessions.tmux_control` on. Detaching (closing the tab, switching sessions, **Snapshot view**) ends only the attach: the tmux session keeps running. A read-only attach still counts as a tmux client, so tmux may size the window to the smallest attached client. Each attach and detach is logged (`sessions: terminal attached` / `detached`, with the session, the mode and the token) and recorded in the event feed as `terminal_attached` / `terminal_detached` (reason `read_only` or `read_write`) — never what was typed or drawn. At most 16 live terminals are open on one daemon at a time. See [Security → The live terminal](/guides/security/#the-live-terminal) for how the socket is authenticated.
+
+The live terminal is not available through the [hub](/guides/hub/) (open the project's own dashboard) or on Windows, where tmux does not run: the snapshot view is shown instead.
+
 ### New session
 
 **New session** (top of the tab list) starts an agent in a new tmux session on the daemon's host. Choose the agent (Claude Code or Codex), the folder — the project folder (default) or one of itervox's workspaces; a folder outside the project and the workspace root is refused — an optional profile and an optional first prompt. The daemon runs the **interactive** CLI (no `-p`, no stream-json) in `tmux new-session -d -s itervox-<id>` with:
@@ -133,9 +156,11 @@ If `tmux` is not on the daemon's `PATH`, the panel stays read-only for tmux: a b
 
 **Anyone holding the dashboard's API token can type into your opted-in tmux sessions** — and into every session started with New session — as if at your keyboard, including answering an agent's permission prompts. Keep `sessions.tmux_control` off on a daemon whose token is shared, and treat the token like a shell login. Every write is audited: the daemon logs `sessions: tmux send` at info level with the session ID, the pane, the kind (`text` or `key`) and the size in bytes — never the text itself — and counts it in the `itervox_tmux_sends_total{kind}` metric. The screen is served as the pane shows it — unlike transcripts it is not redacted — and only to clients holding the token.
 
+**A read-write live terminal is a remote shell.** With `sessions.terminal_write` on, an admin token can type anything into the attached session, and from there into tmux itself (a new window is a shell on the daemon's host). Keep it off unless the admin token is yours alone. Without it the live terminal is read-only for every scope.
+
 ## What itervox writes to
 
-Itervox writes to the agent processes it started — the stdin of the process this daemon started for a run, or the prompt of that run's next resumed turn — and, through tmux only, to sessions running in a tmux pane: ones it started with New session, and hand-started ones you opted in with `sessions.tmux_control`. It never writes to a terminal device, never pushes bytes into another terminal's input, and never uses macOS Accessibility or AppleScript automation to drive another app. A static test (`TestNoWritesToProcessesItervoxDidNotStart`) fails the build if code that could appears, if any package but `internal/tmuxctl` runs `tmux` or names its write commands, or if `internal/tmuxctl` runs anything but `tmux`. A session started by hand is only read — its transcript file and the process list — and another static test (`TestExternalSessionInspectionIsReadOnly`) keeps that code free of writes, signals and any command but `ps` and `lsof`.
+Itervox writes to the agent processes it started — the stdin of the process this daemon started for a run, or the prompt of that run's next resumed turn — and, through tmux only, to sessions running in a tmux pane: ones it started with New session, and hand-started ones you opted in with `sessions.tmux_control` — by tmux's paste buffer and key events, or by the live terminal's `tmux attach-session` client, which runs in a pseudo-terminal the daemon itself opened. It never writes to a terminal device, never pushes bytes into another terminal's input, and never uses macOS Accessibility or AppleScript automation to drive another app. A static test (`TestNoWritesToProcessesItervoxDidNotStart`) fails the build if code that could appears, if any package but `internal/tmuxctl` runs `tmux`, names its write commands (`attach-session` among them) or opens a pseudo-terminal, or if `internal/tmuxctl` runs anything but `tmux`. A session started by hand is only read — its transcript file and the process list — and another static test (`TestExternalSessionInspectionIsReadOnly`) keeps that code free of writes, signals and any command but `ps` and `lsof`.
 
 ## API
 
@@ -143,6 +168,7 @@ Itervox writes to the agent processes it started — the stdin of the process th
 - `POST /api/v1/sessions/{id}/message` — message a running session, or type into a controllable tmux session (`{text, submit}`).
 - `GET /api/v1/sessions/{id}/transcript` — a page of a hand-started session's transcript.
 - `GET /api/v1/sessions/{id}/screen` and `POST /api/v1/sessions/{id}/keys` — a controllable session's screen and keys.
+- `POST /api/v1/sessions/{id}/terminal/ticket` (`{mode: "read"|"write"}`) and `GET /api/v1/sessions/{id}/terminal?ticket=…` — the live terminal: a single-use ticket, then its WebSocket.
 - `POST /api/v1/sessions` — New session.
 - `POST /api/v1/sessions/{id}/stop` — stop a session (`{force}`; returns `{id, outcome}`); `DELETE /api/v1/sessions/{id}` is the same as a force stop.
 
