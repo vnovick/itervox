@@ -2063,14 +2063,20 @@ to this session in this mode, for the token that asked.
 
 The live terminal's WebSocket, authenticated by the ticket (no bearer
 header; the hub refuses it). The daemon runs `tmux attach-session` (`-r`
-for a read ticket) in a pseudo-terminal sized `cols` x `rows` and sends
+for a read ticket, with `-f ignore-size` on tmux 3.2+ so it never resizes
+the window) in a pseudo-terminal sized `cols` x `rows` and sends
 what it draws as binary frames. The client sends binary frames whose first
 byte is the op: `0x00` + bytes typed (ignored for a read ticket), `0x01` +
 cols + rows (uint16, big-endian) to resize. Closing the socket detaches;
 the session keeps running. Refusals before the upgrade:
 `401 ticket_invalid` / `ticket_expired`, `403 ticket_wrong_session`,
 `403 ticket_wrong_principal` (the token was revoked or lost the scope, or
-another token's header came with it), `403 origin_not_allowed`.
+another token's header came with it), `403 origin_not_allowed`. While it
+is open the daemon re-checks the ticket's token (every 30 s, and when the
+token store changes); a token that is revoked, expires, is rotated or no
+longer holds the mode's scope ends the socket with close code `4403` and
+the reason `token_revoked`, `token_expired`, `token_rotated`,
+`scope_insufficient` or `token_store_invalid`.
 
 #### `POST /api/v1/sessions`
 

@@ -18,7 +18,7 @@ var ErrReadOnly = errors.New("tmuxctl: the attachment is read-only")
 type Attachment struct{}
 
 // Attach always fails with ErrAttachUnsupported here.
-func (c Client) Attach(context.Context, string, bool, int, int) (*Attachment, error) {
+func (c Client) Attach(context.Context, string, AttachMode, int, int) (*Attachment, error) {
 	return nil, ErrAttachUnsupported
 }
 

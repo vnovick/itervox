@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ import (
 // An attach is the one tmux client of this package that outlives a call:
 // the daemon starts it, owns its PTY, and ends it on detach (the session
 // keeps running). It drives nothing but `tmux attach-session`, with `-r`
-// for a read-only attach, and the structural guard
+// (plus `-f ignore-size` where tmux has it) for a read-only attach, and the structural guard
 // TestNoWritesToProcessesItervoxDidNotStart holds the PTY to this package.
 
 // Errors of an attach.
@@ -58,23 +59,76 @@ func validAttachTarget(target string) bool {
 	return ValidPaneID(target)
 }
 
+// AttachMode is how an attach joins the session.
+type AttachMode struct {
+	// ReadOnly attaches with -r: tmux ignores the client's keys (except
+	// its own detach and switch-client keys), and the daemon types nothing.
+	ReadOnly bool
+	// IgnoreSize adds the client flag ignore-size (`-f ignore-size`, tmux
+	// 3.2+; see ClientFlagsSupported) to a read-only attach, so a small
+	// browser panel never shrinks the window everyone else sees. Ignored
+	// for a read-write attach, which sizes the window like any client.
+	// (tmux 3.2+ already gives a -r client this flag; naming it keeps the
+	// behaviour explicit rather than resting on that default.)
+	IgnoreSize bool
+}
+
 // AttachArgs is the argv after "tmux" of an attach to target: exactly
-// `attach-session [-r] -t <target>`, preceded by `-S <socket>` for a
-// private server. Nothing else: no shell, no other command, no -d (which
-// would detach the operator's own terminal from the session).
-func (c Client) AttachArgs(target string, readOnly bool) ([]string, error) {
+// `attach-session [-r [-f ignore-size]] -t <target>`, preceded by
+// `-S <socket>` for a private server. Nothing else: no shell, no other
+// command, no -d (which would detach the operator's own terminal from the
+// session).
+func (c Client) AttachArgs(target string, mode AttachMode) ([]string, error) {
 	if !validAttachTarget(target) {
 		return nil, ErrBadTarget
 	}
 	args := []string{"attach-session"}
-	if readOnly {
+	if mode.ReadOnly {
 		args = append(args, "-r")
+		if mode.IgnoreSize {
+			args = append(args, "-f", "ignore-size")
+		}
 	}
 	args = append(args, "-t", target)
 	if c.Socket != "" {
 		args = append([]string{"-S", c.Socket}, args...)
 	}
 	return args, nil
+}
+
+// ClientFlagsSupported reports whether the tmux of version (the `tmux -V`
+// answer: "tmux 3.4", "tmux 3.2a", "tmux next-3.6", "tmux master",
+// "tmux openbsd-7.5") takes attach-session's client flags (`-f`, tmux
+// 3.2; OpenBSD 6.9 shipped it). An older tmux refuses -f and the client
+// exits, so anything this cannot read is "no": the attach then runs with
+// plain -r, which on tmux before 3.2 may size the window to the panel.
+func ClientFlagsSupported(version string) bool {
+	v := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(version), "tmux"))
+	switch {
+	case v == "master":
+		return true
+	case strings.HasPrefix(v, "openbsd-"):
+		return versionAtLeast(strings.TrimPrefix(v, "openbsd-"), 6, 9)
+	}
+	return versionAtLeast(strings.TrimPrefix(v, "next-"), 3, 2)
+}
+
+// versionAtLeast reports whether v ("3.2a", "3.10") is at least major.minor.
+func versionAtLeast(v string, major, minor int) bool {
+	maj, rest, ok := strings.Cut(v, ".")
+	if !ok {
+		return false
+	}
+	n := 0
+	for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+		n++
+	}
+	ma, err1 := strconv.Atoi(maj)
+	mi, err2 := strconv.Atoi(rest[:n])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return ma > major || ma == major && mi >= minor
 }
 
 // clampSize bounds a terminal size; 0 picks the default.

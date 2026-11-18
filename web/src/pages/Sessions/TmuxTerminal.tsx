@@ -62,6 +62,15 @@ export default function TmuxTerminal({ id, mode, onSnapshot }: TmuxTerminalProps
           {error} The snapshot view still works.
         </p>
       )}
+      {status === 'closed' && error && (
+        <p
+          data-testid="tmux-terminal-closed-reason"
+          role="status"
+          className="text-theme-warning-text px-4 pt-2 text-sm"
+        >
+          {error}
+        </p>
+      )}
       <div
         ref={host}
         role="application"

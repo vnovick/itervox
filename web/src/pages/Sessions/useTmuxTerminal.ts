@@ -4,6 +4,7 @@ import type { TerminalSocket } from '../../auth/terminalSocket';
 import { UnauthorizedError } from '../../auth/UnauthorizedError';
 import { requestTerminalTicket, type TerminalMode } from '../../queries/sessionsTerminal';
 import { createTerminal } from './createTerminal';
+import { terminalCloseMessage } from './terminalCloseReason';
 
 /** Where a live terminal is: connecting, attached, detached, or refused. */
 export type TerminalStatus = 'connecting' | 'live' | 'closed' | 'error';
@@ -14,6 +15,8 @@ export type TerminalStatus = 'connecting' | 'live' | 'closed' | 'error';
  * output in and (read-write only) keys out, and keeps the session's size
  * in step with the panel. Bumping `attempt` reconnects. Everything is torn
  * down (socket closed = detached; the session keeps running) on unmount.
+ * `error` is the refusal ('error'), or, once 'closed', why the daemon
+ * closed the terminal when the caller's access changed ('' otherwise).
  */
 export function useTmuxTerminal(
   host: RefObject<HTMLElement | null>,
@@ -65,8 +68,8 @@ export function useTmuxTerminal(
             setStatus('live');
             term.focus();
           },
-          onClose: () => {
-            setStatus('closed');
+          onClose: ({ code, reason }) => {
+            setStatus('closed', terminalCloseMessage(code, reason));
           },
         });
       })

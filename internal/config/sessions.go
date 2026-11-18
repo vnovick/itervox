@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -81,7 +82,25 @@ func parseSessionsConfig(m map[string]any) SessionsConfig {
 			"value", c.ExternalScope, "default", SessionsScopeProject)
 		c.ExternalScope = SessionsScopeProject
 	}
+	if msg := TerminalWriteIgnored(c, sessionsGOOS); msg != "" {
+		slog.Warn("config: " + msg)
+	}
 	return c
+}
+
+// sessionsGOOS is the platform parseSessionsConfig warns for; a variable so
+// tests can pretend to be Windows.
+var sessionsGOOS = runtime.GOOS
+
+// TerminalWriteIgnored is the notice for sessions.terminal_write set on a
+// platform without the live terminal (Windows: no tmux, no PTY attach), or
+// "" when there is nothing to say. Logged at config load and printed by
+// `itervox doctor`.
+func TerminalWriteIgnored(c SessionsConfig, goos string) string {
+	if !c.TerminalWrite || goos != "windows" {
+		return ""
+	}
+	return "sessions.terminal_write has no effect on Windows: the live terminal needs tmux, which does not run there (remove the setting, or run the daemon under WSL)"
 }
 
 // SteeringPhrase is one one-click steering chip of the Sessions composer and
