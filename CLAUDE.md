@@ -309,8 +309,16 @@ only the event loop mutates them.
   screen/keys (`tmuxSessions.target`), drops nothing into the loop but
   `RecordFeedEvent` (`terminal_attached` / `terminal_detached`, never
   terminal bytes). A read-only attach is `tmux attach-session -r` AND the
-  daemon writes nothing to it. The hub refuses the ticket route, the socket
-  and any WebSocket upgrade (`terminal_not_proxied`). Unix only
+  daemon writes nothing to it. Through the hub the terminal is READ-ONLY and
+  brokered (`internal/hub/terminal*.go`, `internal/server/terminal_hub.go`):
+  the hub mints a read ticket with its operator member token, which is
+  marked `apitokens.KindHub` (set only at hub enrolment); the member trusts
+  the caller header (`X-Itervox-Hub-Caller`) only on a KindHub token, never
+  issues one a write ticket, and names the person (`hub:<name>`). The hub
+  checks the socket's Origin itself, dials the member with no browser
+  credentials, relays only resize and control frames from the browser, and
+  closes with 4403 when the hub token or the member token loses access. Any
+  other WebSocket upgrade is still `terminal_not_proxied`. Unix only
   (`tmuxctl.AttachSupported`).
 - `ExternalSessions` (#178 step 3) is event-loop state.
   Discovery of sessions started by hand (`internal/extsessions`, read-only:
@@ -814,7 +822,7 @@ mcpserver (`itervox mcp` stdio MCP server — an HTTP client of the daemon's
 
 hub (the itervox hub, #228 — election, member set, scoped proxy, merged feed,
      Notifier; #229 notification settings, channel registry, digests and
-     snooze, all hub-side state; imports apitokens, atomicfs, metrics, chi and fsnotify only,
+     snooze, all hub-side state; imports apitokens, atomicfs, cors, logging, metrics, winflock, chi and fsnotify only,
      never orchestrator, server or config: it reaches every member, its own
      project included, over HTTP. Its tests import server for real members)
      └── hub/slack (#230 Slack channel over Socket Mode — imports hub,
