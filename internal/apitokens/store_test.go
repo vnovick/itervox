@@ -194,3 +194,23 @@ func TestParseExpiry(t *testing.T) {
 	_, err = ParseExpiry("soon", now)
 	assert.Error(t, err)
 }
+
+// TestCreateKindMarksTheHubToken: only CreateKind sets a kind (KindHub
+// only); Create never does, rotation keeps it, and it round-trips the file.
+func TestCreateKindMarksTheHubToken(t *testing.T) {
+	s := tempStore(t)
+	plain, _, err := s.Create("ci", ScopeOperator, nil, "test")
+	require.NoError(t, err)
+	assert.Empty(t, plain.Kind)
+	_, _, err = s.CreateKind("x", ScopeOperator, "other", "test")
+	require.Error(t, err)
+	hub, secret, err := s.CreateKind("hub-operator", ScopeOperator, KindHub, "test")
+	require.NoError(t, err)
+	assert.Equal(t, KindHub, hub.Kind)
+	got, ok := Open(s.FilePath()).Authenticate(secret)
+	require.True(t, ok)
+	assert.Equal(t, KindHub, got.Kind, "read back from the file")
+	rotated, _, err := s.Rotate(hub.ID, "test")
+	require.NoError(t, err)
+	assert.Equal(t, KindHub, rotated.Kind, "rotation keeps the kind")
+}

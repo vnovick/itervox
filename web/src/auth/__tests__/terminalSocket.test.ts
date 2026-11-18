@@ -84,6 +84,18 @@ describe('terminalSocketUrl', () => {
     );
     expect(url).toBe('wss://daemon.example/api/v1/sessions/s/terminal?ticket=t&cols=80&rows=24');
   });
+
+  it("under the hub, opens the hub's socket route for the project", () => {
+    configureApiContext('/hub/p/alpha/sessions');
+    const url = terminalSocketUrl(
+      '/api/v1/sessions/s/terminal?ticket=t',
+      { cols: 80, rows: 24 },
+      'http://127.0.0.1:8095/hub/p/alpha/sessions',
+    );
+    expect(url).toBe(
+      'ws://127.0.0.1:8095/hub/p/alpha/api/v1/sessions/s/terminal?ticket=t&cols=80&rows=24',
+    );
+  });
 });
 
 describe('openTerminalSocket', () => {

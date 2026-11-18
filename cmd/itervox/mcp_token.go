@@ -66,14 +66,17 @@ type storedTokenSpec struct {
 	name  string // the token's name in the store
 	actor string // the audit actor of create / revoke
 	label string // the client, in log lines
+	// kind is the token's apitokens Kind ("" or apitokens.KindHub); a
+	// remembered token of another kind is replaced.
+	kind string
 }
 
 // ensureStoredToken returns the secret of the token spec describes, of
 // scope, creating one through the project's token store and remembering it
 // in .itervox/<spec.file> (mode 0600) when there is no usable one. A
 // remembered token that was revoked, expired, rotated or has another scope
-// is replaced, the old one revoked when it is still stored. The secret is
-// never printed or logged.
+// or kind is replaced, the old one revoked when it is still stored. The
+// secret is never printed or logged.
 func ensureStoredToken(workflowPath string, spec storedTokenSpec, scope apitokens.Scope) (secret string, created bool, err error) {
 	store := apitokens.Open(apitokens.Path(workflowPath))
 	path := storedTokenPath(workflowPath, spec.file)
@@ -94,11 +97,17 @@ func ensureStoredToken(workflowPath string, spec storedTokenSpec, scope apitoken
 	stored := slices.IndexFunc(tokens, func(t apitokens.Token) bool { return old.ID != "" && t.ID == old.ID })
 	if stored >= 0 {
 		t := tokens[stored]
-		if old.Scope == scope && t.Scope == scope && !t.Expired(time.Now()) && t.Hash == apitokens.HashSecret(old.Secret) {
+		if old.Scope == scope && t.Scope == scope && t.Kind == spec.kind && !t.Expired(time.Now()) &&
+			t.Hash == apitokens.HashSecret(old.Secret) {
 			return old.Secret, false, nil
 		}
 	}
-	t, secret, err := store.Create(spec.name, scope, nil, spec.actor)
+	var t apitokens.Token
+	if spec.kind != "" {
+		t, secret, err = store.CreateKind(spec.name, scope, spec.kind, spec.actor)
+	} else {
+		t, secret, err = store.Create(spec.name, scope, nil, spec.actor)
+	}
 	if err != nil {
 		return "", false, fmt.Errorf("create the %s token: %w", spec.label, err)
 	}

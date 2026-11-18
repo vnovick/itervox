@@ -178,9 +178,12 @@ func TestHubProxyPassesSSE(t *testing.T) {
 	snapshotEvent() // a later event is flushed through as it happens
 }
 
-// TestHubRefusesTheLiveTerminal (#298): the hub never proxies a member's
-// live terminal — the ticket route, the ticketed socket, or any WebSocket
-// upgrade — whatever the hub token's scope, and nothing reaches the member.
+// TestHubRefusesTheLiveTerminal (#298): apart from the brokered read-only
+// pass-through (terminal_test.go), the hub never proxies a member's live
+// terminal — any WebSocket upgrade through the proxy, the terminal routes
+// reached as an upgrade or by another method, the socket without a ticket
+// the hub brokered — whatever the hub token's scope, and nothing of it
+// reaches the member.
 func TestHubRefusesTheLiveTerminal(t *testing.T) {
 	alpha := newFakeMember(t, "alpha", time.Now().Add(-time.Hour))
 	reg := &memberList{}
@@ -197,11 +200,19 @@ func TestHubRefusesTheLiveTerminal(t *testing.T) {
 	for _, tc := range []struct {
 		method, path string
 		upgrade      bool
+		status       int
+		code         string
 	}{
-		{http.MethodPost, "/api/v1/sessions/itervox-abc123/terminal/ticket", false},
-		{http.MethodGet, "/api/v1/sessions/itervox-abc123/terminal?ticket=itvt_x", false},
-		{http.MethodGet, "/api/v1/sessions/itervox-abc123/terminal?ticket=itvt_x", true},
-		{http.MethodGet, "/api/v1/events", true},
+		// An upgrade of the ticket route is not the brokered POST.
+		{http.MethodPost, "/api/v1/sessions/itervox-abc123/terminal/ticket", true, http.StatusForbidden, "terminal_not_proxied"},
+		{http.MethodGet, "/api/v1/sessions/itervox-abc123/terminal/ticket", true, http.StatusForbidden, "terminal_not_proxied"},
+		// The socket path: the hub's own socket route, which wants a
+		// WebSocket and a ticket it brokered (a bearer is no credential).
+		{http.MethodGet, "/api/v1/sessions/itervox-abc123/terminal?ticket=itvt_x", false, http.StatusBadRequest, "websocket_required"},
+		{http.MethodGet, "/api/v1/sessions/itervox-abc123/terminal?ticket=itvt_x", true, http.StatusUnauthorized, "ticket_invalid"},
+		// Any other WebSocket upgrade.
+		{http.MethodGet, "/api/v1/events", true, http.StatusForbidden, "terminal_not_proxied"},
+		{http.MethodGet, "/api/v1/state", true, http.StatusForbidden, "terminal_not_proxied"},
 	} {
 		for _, scope := range []apitokens.Scope{apitokens.ScopeOperator, apitokens.ScopeAdmin} {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -216,14 +227,17 @@ func TestHubRefusesTheLiveTerminal(t *testing.T) {
 			}
 			resp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err)
-			assert.Equal(t, http.StatusForbidden, resp.StatusCode, "%s %s upgrade=%v", tc.method, tc.path, tc.upgrade)
-			assert.Contains(t, readBody(t, resp), "terminal_not_proxied", "%s %s", tc.method, tc.path)
+			assert.Equal(t, tc.status, resp.StatusCode, "%s %s upgrade=%v", tc.method, tc.path, tc.upgrade)
+			assert.Contains(t, readBody(t, resp), tc.code, "%s %s", tc.method, tc.path)
 			_ = resp.Body.Close()
 			cancel()
 		}
 	}
 	assert.Equal(t, seen, alpha.requests.Load(), "the hub refuses before proxying")
 	assert.True(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/terminal"))
+	assert.True(t, isTerminalTicketRequest(&http.Request{Method: http.MethodPost, Header: http.Header{}}, "/api/v1/sessions/a/terminal/ticket"))
+	assert.False(t, isTerminalTicketRequest(&http.Request{Method: http.MethodGet, Header: http.Header{}}, "/api/v1/sessions/a/terminal/ticket"))
+	assert.False(t, isTerminalTicketRequest(&http.Request{Method: http.MethodPost, Header: http.Header{"Upgrade": {"websocket"}}}, "/api/v1/sessions/a/terminal/ticket"))
 	assert.False(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/screen"))
 	assert.False(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/terminal/other"))
 }

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -45,6 +46,16 @@ type Hub struct {
 	self   LockInfo
 	router chi.Router
 	wg     sync.WaitGroup
+	// terminals are the brokered live-terminal tickets, terminalsOpen the
+	// pass-throughs open, terminalRecheck terminalRecheckInterval when the
+	// hub was made (terminal.go). life ends when the hub stops, which ends
+	// every pass-through (their connections are hijacked, so the HTTP
+	// server's shutdown does not).
+	terminals       *hubTerminalTickets
+	terminalsOpen   atomic.Int32
+	terminalRecheck time.Duration
+	life            context.Context
+	endLife         context.CancelFunc
 }
 
 // newHub builds a hub over cfg's state directory (created 0700; a symlink
@@ -63,7 +74,11 @@ func newHub(cfg Config) (*Hub, error) {
 		cursors: loadCursors(filepath.Join(cfg.StateDir, CursorFileName)),
 		vapid:   newVAPIDKeys(filepath.Join(cfg.StateDir, VAPIDKeyFileName)),
 		pairing: newPairingCodes(),
+
+		terminals:       newHubTerminalTickets(),
+		terminalRecheck: terminalRecheckInterval,
 	}
+	h.life, h.endLife = context.WithCancel(context.Background())
 	h.push = newPushChannel(cfg, h.vapid, loadPushStore(filepath.Join(cfg.StateDir, PushSubscriptionsFileName)), h.tokens)
 	h.feed = newFeed(h.cursors.headSeq())
 	h.setupChannels(cfg)
@@ -120,6 +135,10 @@ func (h *Hub) routes() chi.Router {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "hub": true})
 	})
 	r.Post("/hub/api/v1/pairing/exchange", h.handlePairingExchange)
+	// The read-only live terminal's socket (terminal.go): no bearer (a
+	// browser cannot send one on a WebSocket); the brokered ticket is the
+	// credential.
+	r.Get("/hub/p/{project}/api/v1/sessions/{id}/terminal", h.handleTerminalSocket)
 	r.Group(func(r chi.Router) {
 		r.Use(h.authMiddleware)
 		r.Use(scopeMiddleware)
@@ -189,6 +208,7 @@ func (h *Hub) start(ctx context.Context) {
 // stop waits for the background work (after its ctx ended) and saves the
 // cursors one last time.
 func (h *Hub) stop() {
+	h.endLife()
 	h.wg.Wait()
 	if err := h.cursors.save(); err != nil {
 		slog.Warn("hub: could not save the feed cursors", "error", err)

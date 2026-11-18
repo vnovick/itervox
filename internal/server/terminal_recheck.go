@@ -64,7 +64,7 @@ func (s *Server) watchTerminalAccess(t terminalTicket, done <-chan struct{}, rev
 		}
 		if reason := s.terminalAccessLost(t); reason != "" {
 			slog.Info("server: live terminal closed: its token lost access", "session_id", t.sessionID,
-				"actor", t.principal.actor(), "write", t.write, "reason", reason)
+				"actor", t.actor(), "write", t.write, "reason", reason)
 			revoke(reason)
 			return
 		}

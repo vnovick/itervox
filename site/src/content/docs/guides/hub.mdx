@@ -143,6 +143,69 @@ A member running with `server.allow_unauthenticated: true` is listed and its
 events are merged, but it is not proxied: the hub could not cap a caller's
 scope on it. Open its own dashboard.
 
+WebSocket upgrades are not proxied (403 `terminal_not_proxied`), with one
+exception: the read-only live terminal below.
+
+## The live terminal
+
+A project's [live terminal](/guides/sessions/#live-terminal) works through
+the hub **read-only**:
+
+| Hub token | Live terminal through the hub |
+|---|---|
+| `viewer` | none: the snapshot view |
+| `operator`, `admin` | read-only: you watch the session; nothing you type reaches it |
+
+Typing into a session is never reachable through the hub, whatever the hub
+token and `sessions.terminal_write` say: the hub holds only an operator
+token on each member, and a read-write terminal needs admin. Open the
+project's own dashboard to type.
+
+How it works:
+
+1. The dashboard asks the hub for a ticket
+   (`POST /hub/p/<project>/api/v1/sessions/<id>/terminal/ticket`). The hub
+   checks your hub token like any other request (operator needed), refuses
+   `write` (403 `terminal_write_not_proxied`), and asks the project for a
+   **read** ticket with its `hub-operator` token, naming you (your hub
+   token's name) in a header. The project trusts that name only on the
+   token the hub created for itself (marked as the hub's in the project's
+   `tokens.json`; no token you create can carry the mark), refuses it a
+   write ticket whatever its scope, and binds the ticket to that token and
+   to you. The hub remembers the ticket (its hash) with your hub token.
+2. The dashboard opens the socket on the hub
+   (`GET /hub/p/<project>/api/v1/sessions/<id>/terminal?ticket=…`). A
+   browser cannot send a token on a WebSocket, so the ticket is the
+   credential: the hub opens the socket only for a ticket it brokered, once,
+   for that project and session, and checks your hub token again. The
+   page's `Origin` must be the hub's own or in `server.allowed_origins` of
+   the daemon serving the hub. The hub then opens the project's socket
+   itself, with its `hub-operator` token and none of your browser's
+   headers (no `Origin`, cookies or referrer). The project spends the
+   ticket only together with that token, so a hub ticket is of no use
+   against the project directly.
+3. The hub relays the session's output as it comes and, of what your
+   browser sends, only resizes: typed bytes are dropped by the hub, and the
+   project's read-only attach drops them again.
+
+The project's event feed records the attach as `terminal_attached` with
+`via: hub:<your hub token's name>`, and its log line names the hub's
+member token too.
+
+An open terminal ends (WebSocket close code `4403`, and the panel says why)
+when:
+
+- your **hub token** is revoked, expires, is rotated or drops below
+  operator: the hub checks every 30 seconds and at once when its token store
+  changes (`itervox token revoke --hub` from another process is noticed by
+  the hub's next token read);
+- the project revokes or rotates the hub's **`hub-operator` token**
+  (`itervox token revoke` in the project): the project's daemon closes it,
+  exactly as for its own tokens, and the hub passes the reason on.
+
+At most 16 terminals are open through one hub at a time (and 16 per
+project daemon).
+
 ## Merged feed
 
 `GET /hub/api/v1/feed?since=<seq>` merges every member's event feed

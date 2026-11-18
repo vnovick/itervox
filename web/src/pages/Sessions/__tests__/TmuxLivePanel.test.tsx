@@ -10,8 +10,8 @@ import { terminalModeFor } from '../terminalMode';
 
 // #298 — which screen a controllable tmux session gets: the live terminal
 // (read-only, or read-write for admin with sessions.terminal_write) or the
-// polled snapshot (viewers, older or Windows daemons, no tmux, the hub,
-// and on request).
+// polled snapshot (viewers, older or Windows daemons, no tmux, and on
+// request). Through the hub it is read-only.
 
 const m = vi.hoisted(() => ({ scope: 'operator' as Scope }));
 
@@ -59,7 +59,14 @@ describe('terminalModeFor', () => {
     expect(terminalModeFor('admin', tmux({ terminal: undefined }))).toBeNull();
     expect(terminalModeFor('admin', tmux({ available: false }))).toBeNull();
     expect(terminalModeFor('admin', undefined)).toBeNull();
+    // Through the hub: read-only for operator and admin alike, none for a
+    // viewer, and none on the hub's own pages.
     configureApiContext('/hub/p/alpha/sessions');
+    expect(terminalModeFor('admin', tmux({ terminalWrite: true }))).toBe('read');
+    expect(terminalModeFor('operator', tmux({ terminalWrite: true }))).toBe('read');
+    expect(terminalModeFor('viewer', tmux())).toBeNull();
+    expect(terminalModeFor('operator', tmux({ terminal: false }))).toBeNull();
+    configureApiContext('/hub/');
     expect(terminalModeFor('admin', tmux({ terminalWrite: true }))).toBeNull();
   });
 });
@@ -83,6 +90,13 @@ describe('TmuxLivePanel', () => {
     expect(useUIStore.getState().sessionsLiveTerminal).toBe(false);
     await userEvent.click(screen.getByRole('button', { name: 'Live terminal' }));
     expect(await screen.findByTestId('live-terminal')).toHaveAttribute('data-mode', 'write');
+  });
+
+  it('opens a read-only live terminal through the hub', async () => {
+    m.scope = 'operator';
+    configureApiContext('/hub/p/alpha/sessions');
+    render(<TmuxLivePanel id="itervox-a" tmux={tmux({ terminalWrite: true })} />);
+    expect(await screen.findByTestId('live-terminal')).toHaveAttribute('data-mode', 'read');
   });
 
   it('keeps the snapshot on a daemon without the live terminal', () => {
