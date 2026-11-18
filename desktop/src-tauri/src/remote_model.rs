@@ -334,6 +334,13 @@ impl RemoteCore {
         Self::fetch_jobs(remotes, tunnels, tokens)
             .into_iter()
             .map(|j| {
+                let terminal = match remotes.daemon(&j.key) {
+                    Some((c, _)) => crate::terminal::attach_host(
+                        crate::platform::Os::current(),
+                        Some(&c.transport),
+                    ),
+                    None => Err("That remote connection is gone.".into()),
+                };
                 let conn = remotes
                     .daemon(&j.key)
                     .map(|(c, d)| (c.name.clone(), d.name()));
@@ -348,6 +355,7 @@ impl RemoteCore {
                     key: j.key,
                     url: j.url,
                     token: j.token,
+                    terminal,
                 }
             })
             .collect()
@@ -796,6 +804,10 @@ mod tests {
                 token: Some("prod-token".into()),
                 name: "app".into(),
                 remote: Some("PROD".into()),
+                // #278: its sessions attach over the connection's SSH.
+                terminal: Ok(crate::terminal::AttachHost::Ssh {
+                    destination: "prod.example".into()
+                }),
             }]
         );
     }

@@ -250,7 +250,13 @@ Claude Code and Codex sessions you started by hand on a daemon's host — in a t
 
 A session running in a tmux pane carries a **tmux** badge (hover it for the pane), highlighted when the dashboard can control it — a session the daemon started with **New session**, or one you run in tmux with [`sessions.tmux_control`](/configuration/#sessions) on (see [Sessions in tmux](/guides/sessions/#sessions-in-tmux)). Under a daemon that has tmux, **New session…** opens its dashboard at the New session form. Under a daemon whose host has no tmux, the window says **tmux not found — install it to control sessions from here**, with the install command, instead.
 
-The window only reads. It never types into a terminal or drives another app: messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
+### Open in Terminal
+
+A tmux session the app may attach to — one the daemon started with **New session**, or one you started by hand in tmux while [`sessions.tmux_control`](/configuration/#sessions) is on — has **Open in Terminal** beside it. It opens the system terminal attached to that tmux session: Terminal on the Mac, `$TERMINAL` (a single program, run as `<terminal> -e <command>`) or else `x-terminal-emulator` on Linux, and Windows Terminal (`wt`) on Windows. For a local daemon the terminal runs `tmux attach -t itervox-<id>`; for a remote daemon reached over SSH it runs `ssh -t <destination> tmux attach -t itervox-<id>` with the connection's own destination (so your `~/.ssh/config` applies, and ssh may ask for a passphrase in the terminal); for a VM reached by SSH through IAP, `gcloud compute ssh <vm> --tunnel-through-iap --command="tmux attach -t itervox-<id>" -- -t`. The app only attaches: the daemon still owns the session, the dashboard keeps showing it, and closing the terminal detaches without ending it.
+
+The action is absent for a session the app may not attach to: a dispatched run (it has no tmux session), a hand-started session without `sessions.tmux_control`, and a session whose tmux name is not a plain one (letters, digits, `-`, `_`). A daemon reached through a plain IAP port tunnel has no SSH to attach over, and a local daemon on Windows has no tmux; the window says so under the daemon instead. On Windows, run itervox in WSL and add it as an SSH remote. The command is passed to the terminal as separate arguments, built only from the checked session name and host; on the Mac the app writes a one-time `.command` file (readable only by you, deleted when it runs) because Terminal opens files, not argument lists.
+
+The window only reads. It never types into a terminal or drives another app (**Open in Terminal** starts a new terminal window that you type into): messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
 
 ### System material
 
@@ -438,6 +444,7 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Daemon bundled in the app; **Stop** sends `SIGTERM` | Same | No native daemon yet ([local projects](#windows-local-projects)); with `itervox.exe`, **Stop** runs `itervox stop` |
 | Wake detected from the clocks, network change from `getifaddrs` | Same | Network change from the default routes' source addresses; a wake that keeps the address is caught by the tunnel health checks |
 | `open` for logs and links | `xdg-open` | `explorer` |
+| [Open in Terminal](#open-in-terminal): Terminal, through a one-time `.command` file | `$TERMINAL`, else `x-terminal-emulator`, with `-e` | Windows Terminal (`wt new-tab`); remote daemons only |
 | Liquid Glass (macOS 26) or vibrancy behind the Sessions window ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
 | Tray **Quit Itervox** with <kbd>⌘Q</kbd> | <kbd>Ctrl</kbd>+<kbd>Q</kbd>, shown and bound only where the panel's menu supports shortcuts (AppIndicator menus often do not) | <kbd>Ctrl</kbd>+<kbd>Q</kbd> |
 
