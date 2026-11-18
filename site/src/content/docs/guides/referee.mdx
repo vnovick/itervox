@@ -101,6 +101,8 @@ second_opinion:
   cannot be told apart from their dependency lists by path.
 - The policy file is always added to the human lane, last, so no `!` pattern
   can exclude it.
+- `tools:` lists the deploy tools [`envcheck`](#referee-envcheck) inspects;
+  `lanes` reads only its shape (an unknown key in it is still an error).
 
 `--json` prints a stable shape (`version` 1):
 
@@ -151,6 +153,107 @@ removed outright is not flagged either; the human lane covers the common
 coverage config files. Exit `20` with any finding, `0` with none, `2` on an
 error. `GITHUB_STEP_SUMMARY` gets a summary here too.
 
+### `referee envcheck`
+
+```bash
+referee envcheck --base origin/main [--head HEAD] [--policy .referee.yml] [--json]
+```
+
+A dependency bump can change how a deploy CLI behaves without touching any
+CI file. Say the repository's deploy step runs a guard script first, which
+decides from a few environment variables which deployment a deploy may
+target. A lockfile change installs a new version of the CLI that also reads
+a new deploy-target variable. The guard does not know that variable, so it
+cannot refuse a deploy that uses it. `lanes` sees only a lockfile and
+`audit` sees nothing. `envcheck` scans the installed tool and fails when it
+mentions a deploy-target variable that the guard does not classify.
+
+Tools are listed under `tools:` in the policy, **on the base ref**:
+
+```yaml
+# .referee.yml on your default branch
+tools:
+  convex:                       # a built-in adapter
+    guard: scripts/lib/deploy-target.mjs
+  mycli:                        # a generic adapter: no Go code
+    guard: scripts/lib/deploy-target.mjs
+    env_scan: node_modules/mycli/dist/**/*.js
+    env_pattern: 'process\.env\.([A-Z_][A-Z0-9_]*)'
+    deploy_vars: [MYCLI_*]
+    probes:
+      - mycli deploy --dry-run
+      - mycli --help
+```
+
+| Key | | |
+|---|---|---|
+| `guard` | required | the repository file that classifies the tool's deploy-target variables |
+| `install` | optional | where the tool is installed (built-in: `node_modules/<package>`; generic: the directory part of `env_scan`) |
+| `deploy_vars` | generic: required | globs (`*`, `?`) over variable names that choose where, or as whom, the tool deploys. On a built-in it replaces the adapter's list. `[]` is refused |
+| `env_scan` | generic only, required | a repository-relative glob of the installed files to scan; `**` spans directories |
+| `env_pattern` | generic only | a regular expression whose first group is a variable name. Without it, every word that matches `deploy_vars` counts |
+| `probes` | optional | commands a later behaviour diff will run. Each must start with the tool's command and runs without a shell, so quotes, `$`, `;`, `\|`, `&` and redirections are refused. Probes are validated now and run by nothing yet |
+| `command` | generic only | the tool's executable name, which probes start with (default: the tool's key) |
+
+The built-in adapters are deliberately small:
+
+| Adapter | Install root | Deploy-target variables | Probes | Detected by |
+|---|---|---|---|---|
+| `convex` | `node_modules/convex` | `CONVEX_*` | `convex --version`, `convex deploy --help` | a `convex` dependency in `package.json`, or `convex.json` |
+| `vercel` | `node_modules/vercel` | `VERCEL_*` | `vercel --version`, `vercel deploy --help` | a `vercel` dependency in `package.json`, `vercel.json` or `.vercel/project.json` |
+
+A built-in scans the `.js`, `.cjs` and `.mjs` files under its install root.
+Any other name under `tools:` is a generic adapter. A tool the repository
+looks like it uses but `tools:` leaves out is printed as a note and does not
+change the exit code.
+
+What each side comes from:
+
+- **The policy** (`tools:`): the base ref, as for `lanes`. A pull request
+  cannot add, drop or repoint a tool for its own check.
+- **The installed tool**: the working tree under `--dir`, so run `envcheck`
+  after installing the head's dependencies (`npm ci`). That install is what
+  the deploy will run. An install root that is missing, or has no file to
+  scan, is an error (exit `2`), never a pass.
+- **The guard**: git, at the base ref **and** at the head. A variable is
+  classified only when both versions mention it. A pull request that drops a
+  classification from its guard fails. So does one that classifies a new
+  variable in the same change that starts reading it: land the guard change
+  on the base branch first, where it is reviewed on its own. A guard missing
+  on either side is an error.
+
+"Classified" means the guard mentions the variable's name as a whole word
+(`CONVEX_DEPLOY` is not mentioned by `CONVEX_DEPLOY_KEY`), in code, in a list
+or in a comment. envcheck does not judge what the guard does with it.
+
+**Limits.** A scan finds the variable names a tool's files mention, not
+every way it can read one. It does not see a name built at run time
+(`"CONVEX_" + x`), a variable read by a native binary or by a dependency
+outside the install root, or a target chosen in a config file instead of a
+variable. Symlinks below the install root are not followed (a symlinked
+root, as pnpm installs, is). Install scripts run by
+your package manager can change the installed files, so install with
+`--ignore-scripts` before `envcheck` if you can. Treat `envcheck` as a
+tripwire for the common case, not as proof.
+
+Exit `0` when every deploy-target variable is classified (or there is no
+`tools:` on the base ref, with a message saying so), `20` with an
+unclassified one, `2` on an error. The exit for a finding is `20`, not `10`:
+the fix is a change to the deploy guard, which a human owns. Each finding
+names the tool, the variable and the `file:line` where the install first
+mentions it:
+
+```text
+envcheck: 1 unclassified deploy-target variable(s) (policy: .referee.yml@1a2b3c4d5e6f)
+  node_modules/convex/dist/cli.bundle.cjs:3  [convex] convex mentions CONVEX_TARGET_URL, a deploy-target variable the guard on the base ref does not classify
+      add CONVEX_TARGET_URL to scripts/lib/deploy-target.mjs (on the base branch first)
+  convex: 3 deploy-target variable(s) in node_modules/convex, guard scripts/lib/deploy-target.mjs
+```
+
+`--json` prints `version` 1 with `tools` (each with its `variables` and
+parsed `probes`), `findings` (`tool`, `variable`, `path`, `line`, `guard`,
+`message`) and `notes`. `GITHUB_STEP_SUMMARY` gets a summary here too.
+
 ### `referee pin`
 
 ```bash
@@ -199,10 +302,10 @@ reviewers the public key.
 
 | Code | Meaning |
 |---|---|
-| `0` | auto lane, no audit findings, pin matches, check passed, records verify |
+| `0` | auto lane, no audit or envcheck findings, pin matches, check passed, records verify |
 | `1` | `run`: the check failed; `verify`: a record did not verify |
 | `10` | `lanes`: second_opinion lane |
-| `20` | `lanes`: human lane; `audit`: findings; `pin`: mismatch |
+| `20` | `lanes`: human lane; `audit`, `envcheck`: findings; `pin`: mismatch |
 | `2` | usage, git or I/O error (bad ref, malformed policy, missing file) |
 
 referee fails closed: an error is never `0`. A base ref that is not in the
@@ -216,12 +319,12 @@ checkout is an error, not an empty diff; fetch it (`fetch-depth: 0`).
 
 | Input | Default | |
 |---|---|---|
-| `mode` | (required) | `lanes`, `audit`, `pin` or `verify` |
+| `mode` | (required) | `lanes`, `audit`, `envcheck`, `pin` or `verify` |
 | `base` | `origin/<base branch>` | the ref the pull request merges into |
 | `head` | `HEAD` | the ref under review |
-| `policy` | `.referee.yml` | lanes: the policy path on the base ref; pin: the file to hash |
+| `policy` | `.referee.yml` | lanes, envcheck: the policy path on the base ref; pin: the file to hash |
 | `policy-sha256` | | pin: the pinned hash |
-| `fail-on` | `human` | lanes: `human`, `second_opinion` or `never`; audit: `never` reports without failing |
+| `fail-on` | `human` | lanes: `human`, `second_opinion` or `never`; audit, envcheck: `never` reports without failing |
 | `records`, `pubkey`, `tree` | | verify |
 
 Outputs: `lane` (lanes) and `exit-code`. An error fails the step whatever

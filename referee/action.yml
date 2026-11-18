@@ -2,7 +2,8 @@ name: referee
 description: >-
   Keep coding agents from changing how CI checks their work: classify a pull
   request's files into human / second_opinion / auto lanes (policy read from
-  the base branch), audit it for weakened checks, pin a policy hash, or
+  the base branch), audit it for weakened checks, check that installed deploy
+  tools read no unclassified deploy-target variable, pin a policy hash, or
   verify signed check records.
 author: vnovick
 branding:
@@ -11,21 +12,21 @@ branding:
 
 inputs:
   mode:
-    description: lanes, audit, pin or verify.
+    description: lanes, audit, envcheck, pin or verify.
     required: true
   base:
     description: >-
-      The ref the pull request merges into (lanes, audit). Default:
+      The ref the pull request merges into (lanes, audit, envcheck). Default:
       origin/<the pull request's base branch>. Needs the base in the
       checkout (actions/checkout with fetch-depth 0).
     required: false
     default: ''
   head:
-    description: The ref under review (lanes, audit).
+    description: The ref under review (lanes, audit, envcheck).
     required: false
     default: HEAD
   policy:
-    description: The policy file, read from the base ref (lanes), or the file to hash (pin).
+    description: The policy file, read from the base ref (lanes, envcheck), or the file to hash (pin).
     required: false
     default: .referee.yml
   policy-sha256:
@@ -36,8 +37,8 @@ inputs:
     description: >-
       lanes: fail the step on human (default), second_opinion (also fails a
       second_opinion lane) or never (report only; read the lane output).
-      audit: never reports findings without failing (read exit-code); any
-      other value fails on findings. An error always fails.
+      audit, envcheck: never reports findings without failing (read
+      exit-code); any other value fails on findings. An error always fails.
     required: false
     default: human
   records:

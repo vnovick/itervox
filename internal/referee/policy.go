@@ -14,17 +14,32 @@ import (
 
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/guardrails"
+	"github.com/vnovick/itervox/internal/referee/adapters"
 )
 
 // defaultPolicyPath is the policy file, read from the base ref.
 const defaultPolicyPath = ".referee.yml"
 
 // policyFile is the policy file's shape: two lists of gitignore-style
-// globs. A key that is absent takes its default; an empty list turns the
-// lane off. JSON is valid YAML, so a JSON policy parses too.
+// globs, and the tools envcheck inspects. A lane key that is absent takes
+// its default; an empty list turns the lane off. JSON is valid YAML, so a
+// JSON policy parses too.
 type policyFile struct {
-	Human         *[]string `yaml:"human"`
-	SecondOpinion *[]string `yaml:"second_opinion"`
+	Human         *[]string                  `yaml:"human"`
+	SecondOpinion *[]string                  `yaml:"second_opinion"`
+	Tools         map[string]adapters.Config `yaml:"tools"`
+}
+
+// decodePolicy decodes a policy file. Unknown keys (also inside tools:)
+// are an error.
+func decodePolicy(raw []byte) (policyFile, error) {
+	var f policyFile
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
+		return policyFile{}, fmt.Errorf("parse policy: %w", err)
+	}
+	return f, nil
 }
 
 // policy is the lanes a diff is classified with, and where they came from.
@@ -37,11 +52,9 @@ type policy struct {
 // parsePolicy parses a policy file. Unknown keys are an error, so a typo
 // (`humans:`) cannot silently fall back to the defaults.
 func parsePolicy(raw []byte) (guardrails.Lanes, error) {
-	var f policyFile
-	dec := yaml.NewDecoder(bytes.NewReader(raw))
-	dec.KnownFields(true)
-	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
-		return guardrails.Lanes{}, fmt.Errorf("parse policy: %w", err)
+	f, err := decodePolicy(raw)
+	if err != nil {
+		return guardrails.Lanes{}, err
 	}
 	lanes := guardrails.Lanes{Human: slices.Clone(config.DefaultGuardrailHumanLane)}
 	if f.Human != nil {
@@ -89,15 +102,24 @@ func validatePattern(p string) error {
 	return nil
 }
 
+// cleanPolicyPath is --policy as a repository path.
+func cleanPolicyPath(p string) (string, error) {
+	p = strings.TrimPrefix(path.Clean("/"+strings.ReplaceAll(p, `\`, "/")), "/")
+	if p == "" {
+		return "", errors.New("--policy names no file")
+	}
+	return p, nil
+}
+
 // loadPolicy reads the policy from the BASE commit, never from the working
 // tree or the head: the branch under review must not be able to rewrite
 // the rules it is judged by. A base without the file uses the defaults.
 // The policy file itself is always in the human lane, so a change to it is
 // seen by a human before it takes effect.
 func loadPolicy(ctx context.Context, dir, baseCommit, policyPath string) (policy, error) {
-	policyPath = strings.TrimPrefix(path.Clean("/"+strings.ReplaceAll(policyPath, `\`, "/")), "/")
-	if policyPath == "" {
-		return policy{}, errors.New("--policy names no file")
+	policyPath, err := cleanPolicyPath(policyPath)
+	if err != nil {
+		return policy{}, err
 	}
 	raw, found, err := showFile(ctx, dir, baseCommit, policyPath)
 	if err != nil {
