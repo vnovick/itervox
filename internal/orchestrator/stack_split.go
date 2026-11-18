@@ -120,22 +120,19 @@ func splitTree(ctx context.Context, ws, base, from string, paths []string) (stri
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	index := filepath.Join(tmp, "index")
-	git := func(stdin []byte, args ...string) ([]byte, error) {
+	git := func(args ...string) ([]byte, error) {
 		cmd := gitexec.Command(ctx, ws, args...)
 		cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+index)
-		if stdin != nil {
-			cmd.Stdin = bytes.NewReader(stdin)
-		}
 		out, err := cmd.Output()
 		if err != nil {
 			return nil, fmt.Errorf("orchestrator: git %s: %w", args[0], err)
 		}
 		return out, nil
 	}
-	if _, err := git(nil, "read-tree", base); err != nil {
+	if _, err := git("read-tree", base); err != nil {
 		return "", err
 	}
-	listing, err := git(nil, "ls-tree", "-r", "-z", "--full-tree", from)
+	listing, err := git("ls-tree", "-r", "-z", "--full-tree", from)
 	if err != nil {
 		return "", err
 	}
@@ -145,18 +142,33 @@ func splitTree(ctx context.Context, ws, base, from string, paths []string) (stri
 			entries[p] = meta
 		}
 	}
-	var info bytes.Buffer
+	// The paths go to update-index as arguments, never on its stdin
+	// (TestNoWritesToProcessesItervoxDidNotStart), in batches that keep the
+	// argument list well under the OS limit.
+	var add, remove []string
 	for _, p := range paths {
 		if meta, ok := entries[p]; ok {
-			info.WriteString(meta + "\t" + p + "\x00")
+			mode, rest, _ := strings.Cut(meta, " ")
+			_, id, _ := strings.Cut(rest, " ")
+			add = append(add, "--cacheinfo", mode+","+id+","+p)
 		} else {
-			info.WriteString("0 0000000000000000000000000000000000000000\t" + p + "\x00")
+			remove = append(remove, p)
 		}
 	}
-	if _, err := git(info.Bytes(), "update-index", "-z", "--index-info"); err != nil {
-		return "", err
+	const batch = 400
+	for i := 0; i < len(add); i += 2 * batch {
+		args := append([]string{"update-index", "--add"}, add[i:min(i+2*batch, len(add))]...)
+		if _, err := git(args...); err != nil {
+			return "", err
+		}
 	}
-	out, err := git(nil, "write-tree")
+	for i := 0; i < len(remove); i += batch {
+		args := append([]string{"update-index", "--force-remove", "--"}, remove[i:min(i+batch, len(remove))]...)
+		if _, err := git(args...); err != nil {
+			return "", err
+		}
+	}
+	out, err := git("write-tree")
 	if err != nil {
 		return "", err
 	}
