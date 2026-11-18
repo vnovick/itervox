@@ -39,7 +39,8 @@ use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJEC
 use crate::registry::{registry_dir, DaemonLister};
 use crate::remote::is_remote_key;
 use crate::sessions::{
-    new_session_link, page_action, push_script, read_all, session_link, PageAction,
+    new_session_link, page_action, push_script, read_all, session_link, terminal_target,
+    PageAction, SessionsView,
 };
 use crate::supervisor::{self, last_line, output_log_name, record_for};
 use crate::token::{generate_token, platform_store, TokenStore};
@@ -87,6 +88,9 @@ struct Shared {
     /// The project list last pushed to the welcome window: what its Start
     /// and Open buttons may act on.
     welcome_last: Mutex<Option<crate::welcome::WelcomeView>>,
+    /// The view last pushed to the Sessions window: the only sessions its
+    /// "Open in Terminal" may attach to (#278).
+    sessions_last: Mutex<SessionsView>,
 }
 
 /// A hub window: label, token, origin.
@@ -231,6 +235,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         hub_covered: Mutex::default(),
         machine: Arc::default(),
         welcome_last: Mutex::default(),
+        sessions_last: Mutex::default(),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -1054,6 +1059,7 @@ fn push_sessions(app: &AppHandle, shared: &Arc<Shared>) {
     jobs.extend(shared.remote.session_jobs());
     let view = read_all(&jobs, client::fetch_sessions);
     let _ = window.eval(push_script(&view));
+    *lock(&shared.sessions_last) = view;
 }
 
 /// Shows the Sessions window, creating it on first use. Its page asks for
@@ -1148,6 +1154,23 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
                 Some(base) => open_dashboard(app, shared, &daemon, Some(new_session_link(&base))),
                 None => error_dialog(app, "That project's daemon is not running."),
             }
+        }
+        PageAction::OpenTerminal { daemon, session } => {
+            // Only a session the window was shown with the action (#278).
+            let Some((host, name)) =
+                terminal_target(&lock(&shared.sessions_last), &daemon, &session)
+            else {
+                error_dialog(app, "That session can no longer be opened in a terminal.");
+                return;
+            };
+            let app2 = app.clone();
+            let shared2 = Arc::clone(shared);
+            // Off the main thread: resolving ssh/gcloud may run the login shell.
+            std::thread::spawn(move || {
+                if let Err(e) = crate::terminal::open(&host, &name, shared2.remote.tools()) {
+                    error_dialog(&app2, &e);
+                }
+            });
         }
     }
 }

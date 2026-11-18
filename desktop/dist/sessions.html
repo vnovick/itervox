@@ -6,8 +6,10 @@
      /__itervox/open-session, which the window intercepts and opens in that
      daemon's dashboard at /sessions?id=… ; "New session…" navigates to
      /__itervox/new-session and opens /sessions?new=1. Sessions in tmux carry
-     a "tmux" badge; a daemon without tmux shows the install warning. No
-     network access of its own. -->
+     a "tmux" badge; a daemon without tmux shows the install warning. A tmux
+     session the app may attach to has "Open in Terminal" (#278), which
+     navigates to /__itervox/open-terminal; the app opens the system terminal
+     attached to it. No network access of its own. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -50,6 +52,10 @@
     margin:4px 0 6px; font-size:13px; }
   .tmux-warning code { font-family:var(--font-mono); }
   button.new-session { font-size:13px; min-height:32px; padding:0 14px; margin:0 0 4px; }
+  .session-row { display:flex; gap:6px; align-items:center; }
+  .session-row button.session { flex:1; min-width:0; }
+  button.terminal { font-size:12px; min-height:32px; padding:0 12px; white-space:nowrap; }
+  .terminal-note { color:var(--muted); margin:4px 2px; font-size:12px; }
 </style>
 </head>
 <body class="page">
@@ -63,6 +69,7 @@
   var OPEN_PATH = '/__itervox/open-session';
   var READY_PATH = '/__itervox/ready';
   var NEW_SESSION_PATH = '/__itervox/new-session';
+  var OPEN_TERMINAL_PATH = '/__itervox/open-terminal';
   var groupsEl = document.getElementById('groups');
   var summaryEl = document.getElementById('summary');
 
@@ -79,6 +86,11 @@
 
   function open(daemon, key) {
     window.location.href = OPEN_PATH + '?daemon=' + encodeURIComponent(daemon) +
+      '&id=' + encodeURIComponent(key);
+  }
+
+  function openTerminal(daemon, key) {
+    window.location.href = OPEN_TERMINAL_PATH + '?daemon=' + encodeURIComponent(daemon) +
       '&id=' + encodeURIComponent(key);
   }
 
@@ -108,6 +120,7 @@
         ns.addEventListener('click', function () { newSession(g.daemon); });
         sec.appendChild(ns);
       }
+      if (g.terminalNote) sec.appendChild(el('p', 'terminal-note', g.terminalNote));
       if (g.error) sec.appendChild(el('p', 'error', g.error));
       else if (g.sessions.length === 0) sec.appendChild(el('p', 'empty', 'No sessions.'));
       g.sessions.forEach(function (s) {
@@ -133,7 +146,18 @@
           : external && s.inUseReason ? 'Still running outside itervox: ' + s.inUseReason
           : 'Open ' + s.label;
         b.addEventListener('click', function () { open(g.daemon, s.key); });
-        sec.appendChild(b);
+        if (s.openTerminal) {
+          var row = el('div', 'session-row');
+          row.appendChild(b);
+          var term = el('button', 'terminal chip', 'Open in Terminal');
+          term.type = 'button';
+          term.title = 'Open a terminal attached to this tmux session (closing it leaves the session running)';
+          term.addEventListener('click', function () { openTerminal(g.daemon, s.key); });
+          row.appendChild(term);
+          sec.appendChild(row);
+        } else {
+          sec.appendChild(b);
+        }
       });
       groupsEl.appendChild(sec);
     });

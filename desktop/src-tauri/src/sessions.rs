@@ -19,10 +19,17 @@
 //! Sessions started by hand on a daemon's host (#178 step 3) are listed
 //! too, after the daemon's own, marked "started outside itervox": they are
 //! read-only, shown as running (with why) or exited.
+//!
+//! "Open in Terminal" (#278) opens the system terminal attached to a tmux
+//! session the app may attach to ([`crate::terminal::attach_name`]): the
+//! page navigates to [`OPEN_TERMINAL_PATH`] with the session's key, and the
+//! app attaches only to a session of the view it last pushed
+//! ([`terminal_target`]), never to a name the page hands it.
 
 use serde::{Deserialize, Serialize};
 
 use crate::client::FetchError;
+use crate::terminal::{attach_name, AttachFacts, AttachHost};
 
 /// `status` of a session waiting for a human answer.
 pub const STATUS_INPUT_REQUIRED: &str = "input_required";
@@ -68,6 +75,13 @@ pub struct Session {
     pub input_context: String,
     pub started_at: String,
     pub queued_at: String,
+    /// The tmux session the app may attach to; empty when none
+    /// ([`attach_name`]). Not sent to the page.
+    #[serde(skip)]
+    pub attach: String,
+    /// The window offers "Open in Terminal": `attach` is set and the
+    /// daemon's host can be reached from a terminal here.
+    pub open_terminal: bool,
 }
 
 impl Session {
@@ -115,6 +129,7 @@ struct RawSession {
     in_use_reason: String,
     tmux_pane: Option<RawPane>,
     controllable: bool,
+    attach_command: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -185,6 +200,15 @@ fn sessions_of(raw: RawSessions) -> Vec<Session> {
             };
             let named = !r.identifier.is_empty() || r.owner == OWNER_EXTERNAL || !r.cwd.is_empty();
             let tmux = r.tmux_pane.is_some() || r.kind == "tmux";
+            let attach = attach_name(&AttachFacts {
+                id: &r.id,
+                owner: &r.owner,
+                kind: &r.kind,
+                controllable: r.controllable,
+                pane_label: r.tmux_pane.as_ref().map_or("", |p| p.label.as_str()),
+                attach_command: &r.attach_command,
+            })
+            .unwrap_or_default();
             (!key.is_empty() && named).then_some(Session {
                 label: label_of(&r.identifier, &r.title, &r.cwd, &key),
                 id: r.id,
@@ -206,6 +230,8 @@ fn sessions_of(raw: RawSessions) -> Vec<Session> {
                 input_context: r.input_context,
                 started_at: r.started_at,
                 queued_at: r.queued_at,
+                attach,
+                open_terminal: false,
             })
         })
         .collect()
@@ -222,6 +248,9 @@ pub struct DaemonSessions {
     pub result: Result<Vec<Session>, String>,
     /// The daemon's tmux status; `None` from a daemon without tmux control.
     pub tmux: Option<TmuxInfo>,
+    /// Where its tmux sessions are attached from, or why a terminal here
+    /// cannot ([`crate::terminal::attach_host`]).
+    pub terminal: Result<AttachHost, String>,
 }
 
 /// One daemon's group in the window.
@@ -240,6 +269,12 @@ pub struct SessionGroup {
     pub tmux_warning: Option<String>,
     /// The daemon can start a session in tmux ("New session…").
     pub new_session: bool,
+    /// Why its tmux sessions have no "Open in Terminal", while it has
+    /// sessions the app would otherwise attach to.
+    pub terminal_note: Option<String>,
+    /// Where "Open in Terminal" attaches from. Not sent to the page.
+    #[serde(skip)]
+    pub attach_host: Option<AttachHost>,
     pub sessions: Vec<Session>,
 }
 
@@ -267,7 +302,13 @@ pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
                 Err(e) => (Vec::new(), Some(e)),
             };
             sessions.sort_by_key(|s| (!s.waiting(), s.external()));
+            for s in &mut sessions {
+                s.open_terminal = !s.attach.is_empty() && d.terminal.is_ok();
+            }
+            let attachable = sessions.iter().any(|s| !s.attach.is_empty());
             SessionGroup {
+                terminal_note: d.terminal.as_ref().err().filter(|_| attachable).cloned(),
+                attach_host: d.terminal.ok(),
                 waiting: sessions.iter().filter(|s| s.waiting()).count(),
                 external: sessions.iter().filter(|s| s.external()).count(),
                 location: match &d.remote {
@@ -309,6 +350,8 @@ pub struct SessionsJob {
     pub name: String,
     /// The remote connection's name; `None` for a local daemon.
     pub remote: Option<String>,
+    /// Where its tmux sessions are attached from ([`DaemonSessions::terminal`]).
+    pub terminal: Result<AttachHost, String>,
 }
 
 /// Reads every daemon in parallel with `fetch` (each read is bounded by the
@@ -340,6 +383,7 @@ where
                         remote: j.remote.clone(),
                         result,
                         tmux,
+                        terminal: j.terminal.clone(),
                     }
                 })
             })
@@ -365,6 +409,8 @@ pub const OPEN_PATH: &str = "/__itervox/open-session";
 pub const READY_PATH: &str = "/__itervox/ready";
 /// The path the page navigates to for "New session…" (#178 tmux).
 pub const NEW_SESSION_PATH: &str = "/__itervox/new-session";
+/// The path the page navigates to for "Open in Terminal" (#278).
+pub const OPEN_TERMINAL_PATH: &str = "/__itervox/open-terminal";
 
 /// What a navigation of the Sessions page asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,6 +421,8 @@ pub enum PageAction {
     Open { daemon: String, session: String },
     /// Open the dashboard of `daemon` at the New session form.
     NewSession { daemon: String },
+    /// Open a terminal attached to `session` (its key) of `daemon`.
+    OpenTerminal { daemon: String, session: String },
 }
 
 /// The action behind a navigation of the Sessions page, or `None` for an
@@ -393,7 +441,7 @@ pub fn page_action(url: &str) -> Option<PageAction> {
             .and_then(percent_decode)
             .filter(|d| !d.is_empty())
             .map(|daemon| PageAction::NewSession { daemon }),
-        OPEN_PATH => {
+        OPEN_PATH | OPEN_TERMINAL_PATH => {
             let mut daemon = None;
             let mut session = None;
             for pair in query.split('&') {
@@ -405,15 +453,40 @@ pub fn page_action(url: &str) -> Option<PageAction> {
                 }
             }
             match (daemon, session) {
-                (Some(d), Some(s)) if !d.is_empty() && !s.is_empty() => Some(PageAction::Open {
-                    daemon: d,
-                    session: s,
-                }),
+                (Some(d), Some(s)) if !d.is_empty() && !s.is_empty() => {
+                    Some(if path == OPEN_PATH {
+                        PageAction::Open {
+                            daemon: d,
+                            session: s,
+                        }
+                    } else {
+                        PageAction::OpenTerminal {
+                            daemon: d,
+                            session: s,
+                        }
+                    })
+                }
                 _ => None,
             }
         }
         _ => None,
     }
+}
+
+/// What "Open in Terminal" attaches to for `session` (its key) of
+/// `daemon`: the host and tmux session from `view`, the view the window
+/// last showed, when it offered the action there; else `None`.
+pub fn terminal_target(
+    view: &SessionsView,
+    daemon: &str,
+    session: &str,
+) -> Option<(AttachHost, String)> {
+    let g = view.groups.iter().find(|g| g.daemon == daemon)?;
+    let s = g
+        .sessions
+        .iter()
+        .find(|s| s.key == session && s.open_terminal)?;
+    Some((g.attach_host.clone()?, s.attach.clone()))
 }
 
 /// The dashboard route of one session: `{base}sessions?id=<key>`.
@@ -498,6 +571,8 @@ mod tests {
             input_context: String::new(),
             started_at: String::new(),
             queued_at: String::new(),
+            attach: String::new(),
+            open_terminal: false,
         }
     }
 
@@ -526,6 +601,7 @@ mod tests {
     fn groups_by_daemon_with_waiting_sessions_first() {
         let view = aggregate(vec![
             DaemonSessions {
+                terminal: Ok(AttachHost::Local),
                 tmux: None,
                 key: "/a/WORKFLOW.md".into(),
                 name: "alpha".into(),
@@ -533,6 +609,7 @@ mod tests {
                 result: Ok(vec![session("A-1", "running")]),
             },
             DaemonSessions {
+                terminal: Ok(AttachHost::Local),
                 tmux: None,
                 key: "remote:vm:/srv/WORKFLOW.md".into(),
                 name: "server".into(),
@@ -543,6 +620,7 @@ mod tests {
                 ]),
             },
             DaemonSessions {
+                terminal: Ok(AttachHost::Local),
                 tmux: None,
                 key: "/b/WORKFLOW.md".into(),
                 name: "beta".into(),
@@ -570,6 +648,7 @@ mod tests {
         let mut s = session("ENG-1", "running");
         s.title = "a\u{2028}b</script>".into();
         let view = aggregate(vec![DaemonSessions {
+            terminal: Ok(AttachHost::Local),
             tmux: None,
             key: "k".into(),
             name: "n".into(),
@@ -678,6 +757,7 @@ mod tests {
                 token: Some("local-token".into()),
                 name: "app".into(),
                 remote: None,
+                terminal: Ok(AttachHost::Local),
             },
             SessionsJob {
                 key: "remote:prod:/srv/app/WORKFLOW.md".into(),
@@ -685,6 +765,7 @@ mod tests {
                 token: Some("remote-token".into()),
                 name: "server".into(),
                 remote: Some("PROD".into()),
+                terminal: Ok(AttachHost::Local),
             },
         ];
         let view = read_all(&jobs, crate::client::fetch_sessions);
@@ -717,6 +798,7 @@ mod tests {
             token: None,
             name: "down".into(),
             remote: None,
+            terminal: Ok(AttachHost::Local),
         }];
         let view = read_all(&jobs, |_, _| Err(FetchError::Status(404)));
         assert!(view.groups[0]
@@ -742,6 +824,7 @@ mod tests {
         let parsed = parse_sessions(body).unwrap();
         assert_eq!(parsed.len(), 3, "a row with no key is still skipped");
         let view = aggregate(vec![DaemonSessions {
+            terminal: Ok(AttachHost::Local),
             tmux: None,
             key: "/work/app/WORKFLOW.md".into(),
             name: "app".into(),
@@ -820,6 +903,7 @@ mod tests {
             remote: None,
             result: Ok(read.sessions),
             tmux: read.tmux,
+            terminal: Ok(AttachHost::Local),
         };
         let view = aggregate(vec![
             daemon("a", read),
@@ -867,6 +951,124 @@ mod tests {
             new_session_link("http://127.0.0.1:8090"),
             "http://127.0.0.1:8090/sessions?new=1"
         );
+    }
+
+    /// #278: "Open in Terminal" is offered for itervox's own tmux sessions
+    /// and for hand-started ones the daemon lets the app control
+    /// (`sessions.tmux_control`), never for read-only or ordinary sessions;
+    /// a daemon whose host a terminal cannot reach says why instead; the
+    /// app attaches only to what it offered.
+    #[test]
+    fn open_in_terminal_hidden_for_sessions_the_app_may_not_attach_to() {
+        let body = br#"{"generatedAt":"x","tmux":{"available":true,"installHint":"","control":false},"sessions":[
+          {"id":"sess-1","owner":"itervox","identifier":"ENG-1","status":"running"},
+          {"id":"itervox-abc123","owner":"itervox","kind":"tmux","identifier":"","status":"running","cwd":"/w","controllable":true,"attachCommand":"tmux attach -t itervox-abc123"},
+          {"id":"hand-1","owner":"external","identifier":"","status":"running","cwd":"/w","tmuxPane":{"id":"%3","label":"work:0.0"},"controllable":false},
+          {"id":"hand-2","owner":"external","identifier":"","status":"running","cwd":"/w/b","tmuxPane":{"id":"%4","label":"mine:1.0"},"controllable":true}
+        ]}"#;
+        let read = parse_read(body).unwrap();
+        let attach: Vec<_> = read
+            .sessions
+            .iter()
+            .map(|s| (s.key.as_str(), s.attach.as_str()))
+            .collect();
+        assert_eq!(
+            attach,
+            vec![
+                ("sess-1", ""),
+                ("itervox-abc123", "itervox-abc123"),
+                ("hand-1", ""),
+                ("hand-2", "mine")
+            ]
+        );
+        let group = |terminal: Result<AttachHost, String>| {
+            aggregate(vec![DaemonSessions {
+                key: "/w/WORKFLOW.md".into(),
+                name: "w".into(),
+                remote: None,
+                result: Ok(read.sessions.clone()),
+                tmux: read.tmux.clone(),
+                terminal,
+            }])
+        };
+        let view = group(Ok(AttachHost::Ssh {
+            destination: "me@vm".into(),
+        }));
+        let g = &view.groups[0];
+        let offered: Vec<_> = g
+            .sessions
+            .iter()
+            .filter(|s| s.open_terminal)
+            .map(|s| s.key.as_str())
+            .collect();
+        assert_eq!(offered, vec!["itervox-abc123", "hand-2"]);
+        assert_eq!(g.terminal_note, None);
+        let js = push_script(&view);
+        assert!(js.contains(r#""openTerminal":true"#));
+        assert!(
+            !js.contains(r#""attach""#),
+            "the tmux name stays in the app"
+        );
+        assert!(!js.contains("attachHost") && !js.contains("me@vm"));
+
+        assert_eq!(
+            terminal_target(&view, "/w/WORKFLOW.md", "itervox-abc123"),
+            Some((
+                AttachHost::Ssh {
+                    destination: "me@vm".into()
+                },
+                "itervox-abc123".into()
+            ))
+        );
+        assert_eq!(terminal_target(&view, "/w/WORKFLOW.md", "hand-1"), None);
+        assert_eq!(terminal_target(&view, "/w/WORKFLOW.md", "sess-1"), None);
+        assert_eq!(terminal_target(&view, "/other", "itervox-abc123"), None);
+
+        let blocked = group(Err(crate::terminal::IAP_PORT_NOTE.into()));
+        let g = &blocked.groups[0];
+        assert!(g.sessions.iter().all(|s| !s.open_terminal));
+        assert_eq!(
+            g.terminal_note.as_deref(),
+            Some(crate::terminal::IAP_PORT_NOTE)
+        );
+        assert_eq!(
+            terminal_target(&blocked, "/w/WORKFLOW.md", "itervox-abc123"),
+            None
+        );
+        // No note where there is nothing to attach to.
+        let plain = aggregate(vec![DaemonSessions {
+            key: "k".into(),
+            name: "k".into(),
+            remote: None,
+            result: Ok(vec![session("ENG-1", "running")]),
+            tmux: None,
+            terminal: Err("no".into()),
+        }]);
+        assert_eq!(plain.groups[0].terminal_note, None);
+
+        assert_eq!(
+            page_action(
+                "tauri://localhost/__itervox/open-terminal?daemon=%2Fw%2FWORKFLOW.md&id=itervox-abc123"
+            ),
+            Some(PageAction::OpenTerminal {
+                daemon: "/w/WORKFLOW.md".into(),
+                session: "itervox-abc123".into()
+            })
+        );
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/open-terminal?daemon=x"),
+            None
+        );
+
+        let html = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../dist/sessions.html"
+        ))
+        .expect("desktop/dist/sessions.html");
+        assert!(html.contains(OPEN_TERMINAL_PATH));
+        assert!(html.contains("if (s.openTerminal)"));
+        assert!(html.contains("'Open in Terminal'"));
+        assert!(html.contains("g.terminalNote"));
     }
 
     /// Drift guard: the page navigates to the paths the window intercepts
