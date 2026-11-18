@@ -68,7 +68,18 @@ type Token struct {
 	Created  time.Time  `json:"created"`
 	LastUsed *time.Time `json:"lastUsed,omitempty"`
 	Expires  *time.Time `json:"expires,omitempty"`
+	// Kind marks a token itervox made for itself: KindHub for the hub's
+	// member tokens. Empty for every token a person creates (CLI, Settings →
+	// Access): neither the API nor the CLI can set it, so a member trusts a
+	// kind only because the hub wrote it into this file, which takes the
+	// project owner's file access.
+	Kind string `json:"kind,omitempty"`
 }
+
+// KindHub is the Kind of a token the itervox hub created in a member's
+// store for itself (cmd/itervox hubMemberToken). A member trusts the hub
+// caller header (the person behind a hub request) only on such a token.
+const KindHub = "hub"
 
 // Expired reports whether t has an expiry at or before now.
 func (t Token) Expired(now time.Time) bool {
@@ -382,6 +393,19 @@ func nonNil(t []Token) []Token {
 // returned exactly once and never stored. actor names who asked, for the
 // audit log line.
 func (s *Store) Create(name string, scope Scope, expires *time.Time, actor string) (Token, string, error) {
+	return s.create(name, scope, expires, "", actor)
+}
+
+// CreateKind is Create for a never-expiring token of kind (KindHub). Only
+// itervox's own enrolment path calls it; no API or CLI path does.
+func (s *Store) CreateKind(name string, scope Scope, kind, actor string) (Token, string, error) {
+	if kind != KindHub {
+		return Token{}, "", fmt.Errorf("apitokens: unknown token kind %q", kind)
+	}
+	return s.create(name, scope, nil, kind, actor)
+}
+
+func (s *Store) create(name string, scope Scope, expires *time.Time, kind, actor string) (Token, string, error) {
 	name = strings.TrimSpace(name)
 	if err := validateName(name); err != nil {
 		return Token{}, "", err
@@ -401,7 +425,7 @@ func (s *Store) Create(name string, scope Scope, expires *time.Time, actor strin
 	if err != nil {
 		return Token{}, "", err
 	}
-	t := Token{ID: id, Name: name, Scope: scope, Hash: HashSecret(secret), Created: now}
+	t := Token{ID: id, Name: name, Scope: scope, Hash: HashSecret(secret), Created: now, Kind: kind}
 	if expires != nil {
 		e := expires.UTC()
 		t.Expires = &e
@@ -412,7 +436,7 @@ func (s *Store) Create(name string, scope Scope, expires *time.Time, actor strin
 		return Token{}, "", err
 	}
 	slog.Info("apitokens: token created", "id", t.ID, "name", t.Name, "scope", string(t.Scope),
-		"expires", expiryAttr(t.Expires), "actor", actor)
+		"kind", t.Kind, "expires", expiryAttr(t.Expires), "actor", actor)
 	return t, secret, nil
 }
 

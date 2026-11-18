@@ -23,12 +23,16 @@ import (
 //   - a path the member's table does not declare: 404; an agent-grant
 //     route, a public non-GET route (tracker webhooks) or an unknown access
 //     class: 403 not_proxied;
-//   - the live terminal (#298): any WebSocket upgrade, a "ticket" route (the
-//     terminal's socket) and the terminal ticket route: 403
-//     terminal_not_proxied. The hub holds an operator member token and
-//     cannot carry a ticket's principal or the socket's Origin check, so a
-//     terminal is reached only on the project's own dashboard (a follow-up
-//     may add a scoped pass-through);
+//   - the live terminal (#298): through the hub it is READ-ONLY and
+//     brokered, never proxied as is (terminal.go). A POST to the terminal
+//     ticket route passes every check below (the member declares it
+//     operator, so a viewer hub token is refused) and is then brokered by
+//     brokerTerminalTicket: "write" is refused, the member is asked for a
+//     read ticket with the operator member token and the caller's name.
+//     The socket itself is its own hub route outside the bearer group
+//     (handleTerminalSocket), opened only for a ticket the hub brokered.
+//     Here, any other WebSocket upgrade, a "ticket" route reached with a
+//     bearer, and the socket's path: 403 terminal_not_proxied;
 //   - a public GET route (probes) needs at least viewer; any other route the scope it
 //     declares; a member admin route is refused (the hub holds an operator
 //     token, never an admin one);
@@ -46,9 +50,10 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_path", "the path must be a plain /api/v1/... path")
 		return
 	}
-	if isTerminalRequest(r, rest) {
+	brokered := isTerminalTicketRequest(r, rest)
+	if !brokered && isTerminalRequest(r, rest) {
 		writeError(w, http.StatusForbidden, "terminal_not_proxied",
-			"the live terminal is not reachable through the hub; open the project's own dashboard")
+			"only the read-only live terminal is reachable through the hub, through a ticket the hub brokers; open the project's own dashboard for anything else")
 		return
 	}
 	if m.routes == nil {
@@ -86,6 +91,10 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 			"project administration (settings, tokens, tmux control) is not reachable through the hub; open the project's own dashboard")
 		return
 	}
+	if brokered {
+		h.brokerTerminalTicket(w, r, m, chi.URLParam(r, "project"), rest, p)
+		return
+	}
 	memberScope := apitokens.ScopeOperator
 	if p.Scope == apitokens.ScopeViewer {
 		memberScope = apitokens.ScopeViewer
@@ -106,8 +115,9 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 			pr.Out.URL.Path, pr.Out.URL.RawPath = rest, ""
 			pr.Out.URL.RawQuery = r.URL.RawQuery
 			pr.Out.Host = target.Host
-			// Never forward the caller's credentials or browser context.
-			for _, k := range []string{"Authorization", "Cookie", "Origin", "Referer"} {
+			// Never forward the caller's credentials or browser context,
+			// nor a hub caller name: only brokerTerminalTicket sets one.
+			for _, k := range []string{"Authorization", "Cookie", "Origin", "Referer", hubCallerHeader} {
 				pr.Out.Header.Del(k)
 			}
 			if secret != "" {
@@ -136,20 +146,18 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-// isTerminalRequest reports a request the hub never proxies because it is
-// (or leads to) a member's live terminal (#298): a WebSocket upgrade of any
-// path, or the terminal ticket and socket routes by their shape
+// isTerminalRequest reports a request the hub never proxies as is because
+// it is (or leads to) a member's live terminal (#298): a WebSocket upgrade
+// of any path, or the terminal ticket and socket routes by their shape
 // (/api/v1/sessions/{id}/terminal[/ticket]), checked before the member's
-// table so a table that mis-declares them changes nothing.
+// table so a table that mis-declares them changes nothing. handleProxy
+// brokers the one exception, the ticket POST (isTerminalTicketRequest).
 func isTerminalRequest(r *http.Request, rest string) bool {
-	if r.Header.Get("Upgrade") != "" || strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+	if isUpgrade(r) {
 		return true
 	}
-	segs := strings.Split(strings.TrimPrefix(rest, "/api/v1/"), "/")
-	if len(segs) < 3 || segs[0] != "sessions" || segs[2] != "terminal" {
-		return false
-	}
-	return len(segs) == 3 || (len(segs) == 4 && segs[3] == "ticket")
+	_, _, ok := terminalPath(rest)
+	return ok
 }
 
 // cleanAPIPath accepts only a plain /api/v1/... path: no escaped bytes

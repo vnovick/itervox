@@ -127,7 +127,7 @@ func storeTokenFunc() TokenFunc {
 	return func(m MemberRecord, scope apitokens.Scope) (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		_, secret, err := apitokens.Open(apitokens.Path(m.Workflow)).Create("hub-"+string(scope), scope, nil, "test")
+		_, secret, err := apitokens.Open(apitokens.Path(m.Workflow)).CreateKind("hub-"+string(scope), scope, apitokens.KindHub, "test")
 		return secret, err
 	}
 }

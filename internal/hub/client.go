@@ -150,9 +150,18 @@ func (c *memberClient) getOnce(ctx context.Context, m MemberRecord, scope apitok
 // do calls method path on m with the token of scope and a JSON body (nil:
 // none). A 401 drops the cached token and retries once with a fresh one.
 func (c *memberClient) do(ctx context.Context, m MemberRecord, scope apitokens.Scope, method, path string, body []byte) (memberReply, error) {
-	var hdr http.Header
+	return c.doHeaders(ctx, m, scope, method, path, body, nil)
+}
+
+// doHeaders is do with extra request headers (the terminal ticket's hub
+// caller, terminal.go).
+func (c *memberClient) doHeaders(ctx context.Context, m MemberRecord, scope apitokens.Scope, method, path string, body []byte, extra http.Header) (memberReply, error) {
+	hdr := extra.Clone()
 	if body != nil {
-		hdr = http.Header{"Content-Type": {"application/json"}}
+		if hdr == nil {
+			hdr = http.Header{}
+		}
+		hdr.Set("Content-Type", "application/json")
 	}
 	rep, err := c.doOnce(ctx, m, scope, method, path, body, hdr)
 	if err != nil || rep.status != http.StatusUnauthorized || !m.TokenRequired {

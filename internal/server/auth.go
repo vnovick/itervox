@@ -38,6 +38,10 @@ type Principal struct {
 	// TokenID and Name identify a stored token; empty otherwise.
 	TokenID string `json:"tokenId,omitempty"`
 	Name    string `json:"name,omitempty"`
+	// Kind is the stored token's apitokens Kind: apitokens.KindHub for the
+	// hub's member token, the one principal whose hub caller header
+	// (HubCallerHeader) is trusted. Empty otherwise.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Principal sources.
@@ -46,6 +50,11 @@ const (
 	principalToken           = "token"
 	principalUnauthenticated = "unauthenticated"
 )
+
+// isHub reports the hub's own member token (a stored token of KindHub).
+func (p Principal) isHub() bool {
+	return p.Source == principalToken && p.Kind == apitokens.KindHub
+}
 
 // actor names p in audit log lines (never a secret).
 func (p Principal) actor() string {
@@ -106,7 +115,7 @@ func (s *Server) authenticate(r *http.Request) (Principal, bool) {
 	}
 	if s.tokens != nil {
 		if t, ok := s.tokens.Authenticate(presented); ok {
-			return Principal{Scope: t.Scope, Source: principalToken, TokenID: t.ID, Name: t.Name}, true
+			return Principal{Scope: t.Scope, Source: principalToken, TokenID: t.ID, Name: t.Name, Kind: t.Kind}, true
 		}
 	}
 	return Principal{}, false

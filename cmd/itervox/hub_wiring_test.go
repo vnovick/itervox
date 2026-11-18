@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/hub"
 )
@@ -147,4 +148,26 @@ func TestHubMemberTokenStoredPrivatelyAndReused(t *testing.T) {
 	gi, err := os.ReadFile(filepath.Join(dir, ".itervox", ".gitignore"))
 	require.NoError(t, err)
 	assert.Contains(t, string(gi), "/hub-*-token.json")
+}
+
+// TestHubMemberTokenIsMarkedAsTheHubs: the hub's member token carries
+// apitokens.KindHub (the one principal whose hub caller header a member
+// trusts), and a remembered token from before the mark is replaced.
+func TestHubMemberTokenIsMarkedAsTheHubs(t *testing.T) {
+	dir := t.TempDir()
+	wf := filepath.Join(dir, "WORKFLOW.md")
+	m := hub.MemberRecord{Workflow: wf, ProjectDir: dir}
+	// A token remembered by an older hub: same file and name, no kind.
+	old, _, err := ensureStoredToken(wf, storedTokenSpec{file: "hub-operator-token.json", name: "hub-operator",
+		actor: "itervox hub", label: "hub"}, apitokens.ScopeOperator)
+	require.NoError(t, err)
+	op, err := hubMemberToken(m, apitokens.ScopeOperator)
+	require.NoError(t, err)
+	assert.NotEqual(t, old, op, "the kindless token is replaced")
+	store := apitokens.Open(apitokens.Path(wf))
+	tok, ok := store.Authenticate(op)
+	require.True(t, ok)
+	assert.Equal(t, apitokens.KindHub, tok.Kind)
+	_, ok = store.Authenticate(old)
+	assert.False(t, ok, "the replaced token is revoked")
 }

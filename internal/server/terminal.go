@@ -26,8 +26,9 @@ import (
 //     (operator) mints a ticket (terminal_tickets.go). "write" needs the
 //     admin scope AND sessions.terminal_write; a viewer gets no terminal.
 //   - GET /api/v1/sessions/{id}/terminal?ticket=…&cols=…&rows=… is the
-//     socket (access class "ticket": no bearer header; the hub refuses
-//     it). Its Origin is checked against server.allowed_origins.
+//     socket (access class "ticket": no bearer header). Its Origin is
+//     checked against server.allowed_origins. Through the hub it is
+//     read-only, on a ticket the hub minted (terminal_hub.go).
 //
 // Wire format. Daemon → browser: binary frames, the raw bytes tmux draws.
 // Browser → daemon: binary frames whose first byte is the op:
@@ -151,6 +152,21 @@ func (s *Server) handleTerminalTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, _ := principalFrom(r.Context())
+	hubCaller := ""
+	if p.isHub() { // terminal_hub.go: read-only, on behalf of a named person
+		if write {
+			writeError(w, http.StatusForbidden, "terminal_write_not_proxied",
+				"typing into the live terminal is never reachable through the hub; open the project's own dashboard")
+			return
+		}
+		name, ok := hubCallerName(r.Header.Get(HubCallerHeader))
+		if !ok {
+			writeError(w, http.StatusBadRequest, "hub_caller_required",
+				"a terminal ticket for the hub needs the hub caller's name in "+HubCallerHeader)
+			return
+		}
+		hubCaller = name
+	}
 	if write {
 		if !p.Scope.Allows(apitokens.ScopeAdmin) {
 			writeInsufficientScope(w, apitokens.ScopeAdmin, p.Scope)
@@ -168,10 +184,14 @@ func (s *Server) handleTerminalTicket(w http.ResponseWriter, r *http.Request) {
 	if writeTerminalError(w, s.sessions.CheckTerminal(id), id) {
 		return
 	}
-	secret, expires, err := s.terminalTickets.mint(id, write, p, mintingTokenHash(r, p))
+	secret, expires, err := s.terminalTickets.mint(id, write, p, mintingTokenHash(r, p), hubCaller)
 	if err != nil {
 		writeError(w, http.StatusTooManyRequests, "too_many_terminals", "too many terminal tickets are pending; try again shortly")
 		return
+	}
+	if hubCaller != "" {
+		slog.Info("server: terminal ticket minted through the hub", "session_id", id,
+			"actor", "hub:"+hubCaller, "hub_member_token", p.TokenID)
 	}
 	mode := "read"
 	if write {
@@ -228,7 +248,7 @@ func (s *Server) handleSessionTerminal(w http.ResponseWriter, r *http.Request) {
 	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
 	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
 	conn, err := s.sessions.AttachTerminal(TerminalAttachRequest{ID: id, Write: ticket.write, Cols: cols, Rows: rows,
-		Actor: ticket.principal.actor()})
+		Actor: ticket.actor()})
 	if writeTerminalError(w, err, id) {
 		return
 	}
@@ -246,9 +266,10 @@ func (s *Server) handleSessionTerminal(w http.ResponseWriter, r *http.Request) {
 
 // ticketPrincipalMatches re-checks the principal that minted the ticket:
 // still valid and still holding the scope the mode needs. A socket request
-// that also carries a bearer token must carry the same principal's.
+// that also carries a bearer token must carry the same principal's; a
+// ticket the hub minted must carry it (terminal_hub.go).
 func (s *Server) ticketPrincipalMatches(r *http.Request, t terminalTicket) bool {
-	if r.Header.Get("Authorization") != "" {
+	if r.Header.Get("Authorization") != "" || t.principal.isHub() {
 		p, ok := s.authenticate(r)
 		if !ok || !samePrincipal(p, t.principal) {
 			return false

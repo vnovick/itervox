@@ -164,6 +164,9 @@ func hubMemberToken(m hub.MemberRecord, scope apitokens.Scope) (string, error) {
 		name:  "hub-" + string(scope),
 		actor: "itervox hub",
 		label: "hub",
+		// The member trusts the hub caller header (who is watching a
+		// terminal through the hub) only on a token of this kind.
+		kind: apitokens.KindHub,
 	}, scope)
 	if err != nil {
 		return "", err

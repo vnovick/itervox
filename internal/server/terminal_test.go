@@ -180,7 +180,7 @@ func TestTerminalTicketIsSingleUseExpiresAndIsBoundToItsSession(t *testing.T) {
 	store.now = func() time.Time { return now }
 	p := Principal{Scope: apitokens.ScopeOperator, Source: principalToken, TokenID: "tok1"}
 
-	secret, expires, err := store.mint("s1", false, p, "")
+	secret, expires, err := store.mint("s1", false, p, "", "")
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(secret, terminalTicketPrefix))
 	assert.Equal(t, now.Add(terminalTicketTTL), expires)
@@ -191,14 +191,14 @@ func TestTerminalTicketIsSingleUseExpiresAndIsBoundToItsSession(t *testing.T) {
 	_, err = store.redeem(secret, "s1")
 	assert.ErrorIs(t, err, errTicketInvalid, "a ticket redeems once")
 
-	secret, _, err = store.mint("s1", true, p, "")
+	secret, _, err = store.mint("s1", true, p, "", "")
 	require.NoError(t, err)
 	_, err = store.redeem(secret, "s2")
 	assert.ErrorIs(t, err, errTicketWrongSession)
 	_, err = store.redeem(secret, "s1")
 	assert.ErrorIs(t, err, errTicketInvalid, "a ticket tried on the wrong session is spent")
 
-	secret, _, err = store.mint("s1", false, p, "")
+	secret, _, err = store.mint("s1", false, p, "", "")
 	require.NoError(t, err)
 	now = now.Add(terminalTicketTTL)
 	_, err = store.redeem(secret, "s1")
@@ -208,13 +208,13 @@ func TestTerminalTicketIsSingleUseExpiresAndIsBoundToItsSession(t *testing.T) {
 	assert.ErrorIs(t, err, errTicketInvalid)
 
 	for range maxTerminalTickets {
-		_, _, err = store.mint("s1", false, p, "")
+		_, _, err = store.mint("s1", false, p, "", "")
 		require.NoError(t, err)
 	}
-	_, _, err = store.mint("s1", false, p, "")
+	_, _, err = store.mint("s1", false, p, "", "")
 	assert.ErrorIs(t, err, errTicketStoreFull)
 	now = now.Add(terminalTicketTTL)
-	_, _, err = store.mint("s1", false, p, "")
+	_, _, err = store.mint("s1", false, p, "", "")
 	assert.NoError(t, err, "expired tickets are pruned")
 }
 
