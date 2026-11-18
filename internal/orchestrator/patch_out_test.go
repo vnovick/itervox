@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -48,6 +49,10 @@ type patchOutOpts struct {
 	// completion is tracker.completion_state ("Done" when empty). A
 	// non-terminal one keeps the issue's push-lane record.
 	completion string
+	// extra are further files the agent changes in the same commit.
+	extra []string
+	// split is guardrails.lanes.split.
+	split bool
 }
 
 func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
@@ -71,8 +76,11 @@ func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
 	laneGit(t, r.ws, "fetch", "-q", "origin")
 
 	script := filepath.Join(root, "agent.sh")
-	body := "set -e\ngit checkout -q -b eng-1-fix\nmkdir -p " + filepath.Dir(o.file) + "\necho 'change' > " + o.file +
-		"\ngit add -A\ngit commit -q -m change\n"
+	body := "set -e\ngit checkout -q -b eng-1-fix\n"
+	for _, f := range append([]string{o.file}, o.extra...) {
+		body += "mkdir -p " + filepath.Dir(f) + "\necho 'change' > " + f + "\n"
+	}
+	body += "git add -A\ngit commit -q -m change\n"
 	if o.dirty {
 		body += "echo 'uncommitted' >> " + o.file + "\n"
 	}
@@ -91,6 +99,7 @@ func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
 	}
 	cfg.Guardrails.Enabled = true
 	cfg.Guardrails.Lanes.Human = o.human
+	cfg.Guardrails.Lanes.Split = o.split
 	cfg.Agent.Profiles = map[string]config.AgentProfile{
 		"impl": {Command: "/bin/sh " + script, Instructions: "Implement it.", Push: config.PushDaemon, Verify: o.verify},
 	}
@@ -103,7 +112,7 @@ func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.prs = append(r.prs, head+"->"+base)
-		return "https://example.invalid/o/r/pull/1", nil
+		return fmt.Sprintf("https://example.invalid/o/r/pull/%d", len(r.prs)), nil
 	})
 
 	store := agentactions.NewStore()

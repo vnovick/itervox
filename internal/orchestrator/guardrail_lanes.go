@@ -70,9 +70,11 @@ type guardrailLaneEvent struct {
 	Report guardrails.LaneReport
 }
 
-// mergeLaneQuery is the payload of EventMergeLaneCheck.
+// mergeLaneQuery is the payload of EventMergeLaneCheck. pr is the pull
+// request's number (0 when the caller did not say).
 type mergeLaneQuery struct {
 	reply chan string
+	pr    int
 }
 
 // laneBackend names a run's backend for the second-opinion comparison: the
@@ -183,12 +185,27 @@ const (
 )
 
 // mergeLaneRefusal is why merge_pr must not merge identifier's pull request
-// under guardrails.lanes, or "" when it may. Pure over State.
-func mergeLaneRefusal(state State, identifier string) string {
+// number pr (0: unknown) under guardrails.lanes, or "" when it may. The
+// lower, code-only pull request of a code-first stack split is judged by
+// the code side's own lane; every other pull request by the issue's. Pure
+// over State.
+func mergeLaneRefusal(state State, identifier string, pr int) string {
+	if split, ok := stackSplitLaneRecord(state, identifier, pr); ok {
+		if split == nil {
+			return ""
+		}
+		return laneRecordRefusal(state, identifier, *split)
+	}
 	rec, ok := state.PushLanes[identifier]
 	if !ok {
 		return ""
 	}
+	return laneRecordRefusal(state, identifier, rec)
+}
+
+// laneRecordRefusal is why a pull request whose pushes reached rec's lane
+// must not be merged, or "" when it may. Pure over State.
+func laneRecordRefusal(state State, identifier string, rec PushLaneRecord) string {
 	paths := guardrails.LanePathSummary(rec.Paths, rec.PathsTotal, guardrails.MaxLanePathsShown)
 	switch rec.Lane {
 	case guardrails.LaneSecondOpinion:
@@ -217,13 +234,21 @@ func mergeLaneRefusal(state State, identifier string) string {
 // agent's push sent before it. Fails closed (a reason) when the loop does
 // not answer. Safe from any goroutine.
 func (o *Orchestrator) MergeLaneRefusal(ctx context.Context, identifier string) string {
+	return o.MergeLaneRefusalForPR(ctx, identifier, 0)
+}
+
+// MergeLaneRefusalForPR is MergeLaneRefusal for pull request number pr of
+// identifier: a stack split's lower, code-only pull request is judged by
+// its own lane (guardrails.lanes.split). pr 0 judges by the issue's lane.
+// Safe from any goroutine.
+func (o *Orchestrator) MergeLaneRefusalForPR(ctx context.Context, identifier string, pr int) string {
 	done := o.loopExitedCh()
 	if done == nil {
 		return "lane_unknown: the orchestrator is not running, so the pushed lanes cannot be checked"
 	}
 	reply := make(chan string, 1)
 	select {
-	case o.events <- OrchestratorEvent{Type: EventMergeLaneCheck, Identifier: identifier, mergeLane: &mergeLaneQuery{reply: reply}}:
+	case o.events <- OrchestratorEvent{Type: EventMergeLaneCheck, Identifier: identifier, mergeLane: &mergeLaneQuery{reply: reply, pr: pr}}:
 	case <-done:
 		return "lane_unknown: the orchestrator stopped"
 	case <-ctx.Done():
@@ -251,7 +276,7 @@ func (o *Orchestrator) handleMergeLaneCheck(state State, ev OrchestratorEvent) {
 	if ev.mergeLane == nil {
 		return
 	}
-	reason := mergeLaneRefusal(state, ev.Identifier)
+	reason := mergeLaneRefusal(state, ev.Identifier, ev.mergeLane.pr)
 	if reason != "" {
 		kind, _, _ := strings.Cut(reason, ":")
 		slog.Warn("guardrails: merge_pr refused", "issue_identifier", ev.Identifier, "reason", kind)

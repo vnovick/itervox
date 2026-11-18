@@ -144,6 +144,78 @@ anything else:
 | `second_opinion` | refused with `lane_second_opinion` until a reviewer whose backend (`claude`, `codex`, …) did not write the change records an approving verdict after the last such push. |
 | none | unchanged |
 
+## Stack split: code and pipeline as two pull requests
+
+When one run changes both ordinary code and human-lane files, the whole push
+waits for a person, code included. With `guardrails.lanes.split: true`,
+Itervox offers the run's changes as **two stacked pull requests** instead, so
+the code waits for a person only when it depends on the pipeline change.
+
+```yaml
+guardrails:
+  lanes:
+    split: true        # default false
+```
+
+The split needs **[patches only](/guides/safety/#patches-only-the-daemon-pushes)**
+(`push: daemon`), because only then does Itervox push the branch. An agent's
+own pushes are never rewritten: with no profile on `push: daemon` the setting
+does nothing, and the daemon logs a startup warning saying so (also when the
+guardrails or the human lane are off). It also needs the profile's
+[signed checks](/guides/signed-checks/) (`verify`), because the order is
+decided by running them.
+
+How it works, after the run's own checks passed and before anything is pushed:
+
+1. The run's changed files (against the merge base with the pull request's
+   target, which is what the single pull request and the run's checks are
+   based on) are sorted with the same classifier the pre-push hook uses.
+   Human-lane files go to the **pipeline** side; everything else, plus
+   dependency lockfiles (`go.sum`, `package-lock.json`, `pnpm-lock.yaml`, …)
+   and Itervox's handoff and evidence files, stays on the **code** side. A
+   file is never divided. With no human-lane file, or nothing but human-lane
+   files, nothing changes: one pull request as before.
+2. Itervox builds a code-only and a pipeline-only commit on the base and
+   runs the profile's `verify` checks on **the code alone**, in a temporary
+   worktree. They are signed and stored like the run's own.
+3. **The code passes alone:** the code goes first. `<branch>-code` is pushed
+   and its pull request opened against the base right away; the pipeline
+   change is the issue branch, stacked on it (its pull request targets
+   `<branch>-code`), and its push waits for your approval as usual.
+4. **The code fails alone:** the checks run on **the pipeline change
+   alone**. If they pass, the pipeline goes first: `<branch>-pipeline`
+   (after your approval) against the base, and the code stacked on it as the
+   issue branch.
+5. **Both fail alone:** no stack is offered. One combined pull request, as
+   without the split, and the reason is recorded.
+
+No branch in the stack is a broken middle: the lower one passed its own
+checks, and the top has exactly the tree the run's checks passed on. The
+pipeline pull request is stacked rather than opened independently against the
+base, because base plus pipeline alone is a combination nobody tested.
+
+The decision (the order, the files on each side, the branches, the pull
+requests and the reason) is kept per issue in `.itervox/stack_splits.json`,
+written to the run log, and fed as a `stack_split` event (`outcome` is
+`code_first`, `pipeline_first` or `combined`; `count` is the number of
+pipeline files). Both pull requests are linked on the issue.
+
+Merge policy stays per pull request: `merge_pr` judges the lower, code-only
+pull request of a code-first split by the code's own lane (`auto` merges;
+`second_opinion` still needs its reviewer), and every other pull request of
+the issue, the pipeline one included, by the issue's lane (`lane_human`).
+
+Limits of this version:
+
+- Only a branch's first push is split; a branch already on the remote, an
+  issue [stacked on its blocker](/guides/stacked-prs/) and a run without
+  `verify` get one pull request (the last two with the reason recorded).
+- The checks on each half run in a fresh worktree of that commit: a check
+  that needs ignored files the agent's worktree has (installed dependencies,
+  build output) can fail there, and the split then falls back to one pull
+  request.
+- Later runs on the issue push to the issue branch, the top of the stack.
+
 ## Check your lanes
 
 `itervox doctor` (and `itervox config show`) print a **Lanes** section:

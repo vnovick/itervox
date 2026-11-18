@@ -49,6 +49,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadDepsOverridesFromDisk(state)
 	state = o.loadPlaybookOverridesFromDisk(state) // #218
 	state = o.loadPushLanesFromDisk(state)         // guardrails.lanes
+	state = o.loadStackSplitsFromDisk(state)       // guardrails.lanes.split
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
@@ -555,7 +556,8 @@ func (o *Orchestrator) applyTrackerPoll(ctx context.Context, state State, res *t
 	// Running workers are not cancelled — they complete naturally.
 	terminalIdents := buildTerminalIdentifierSet(&state)
 	terminalCounts := pruneTerminalRuntimeLedgers(&state, terminalIdents)
-	o.prunePushLanes(&state, func(ident string) bool { _, t := terminalIdents[ident]; return !t }) // guardrails.lanes
+	o.prunePushLanes(&state, func(ident string) bool { _, t := terminalIdents[ident]; return !t })   // guardrails.lanes
+	o.pruneStackSplits(&state, func(ident string) bool { _, t := terminalIdents[ident]; return !t }) // guardrails.lanes.split
 	absentCounts := pruneAbsentTrackerIssues(&state, currentActive, prevActive)
 	// CORE-109 — a discard marker whose completion event was lost.
 	discardsExpired := expireDiscardMarkers(&state, now)
@@ -2194,6 +2196,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		o.handleGuardrailLane(&state, ev, time.Now())
 	case EventMergeLaneCheck: // guardrails.lanes
 		o.handleMergeLaneCheck(state, ev)
+	case EventStackSplit: // guardrails.lanes.split
+		o.handleStackSplit(&state, ev, time.Now())
 	case EventWorkerExited:
 		// #187: a poll in flight may have listed this issue before its run
 		// moved it; that list must not dispatch it again.
