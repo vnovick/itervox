@@ -42,7 +42,7 @@ func TestSecondOpinionNeedsDifferentBackendReviewer(t *testing.T) {
 	assert.Equal(t, []string{"claude"}, rec.WriterBackends)
 	assert.Equal(t, []string{"auth/token.go"}, rec.Paths)
 
-	refused := func() string { return mergeLaneRefusal(state, "ENG-1") }
+	refused := func() string { return mergeLaneRefusal(state, "ENG-1", 0) }
 	assert.True(t, strings.HasPrefix(refused(), MergeRefusalLaneSecondOpinion+":"), "no review yet: %s", refused())
 	assert.Contains(t, refused(), "other than the writer's (claude)")
 
@@ -79,7 +79,7 @@ func TestSecondOpinionNeedsDifferentBackendReviewer(t *testing.T) {
 	o.handleGuardrailLane(&state, laneEvent(guardrails.LaneSecondOpinion, "auth/x.go"), pushedAt.Add(4*time.Minute))
 	assert.Equal(t, guardrails.LaneHuman, state.PushLanes["ENG-1"].Lane)
 
-	assert.Empty(t, mergeLaneRefusal(state, "ENG-2"), "an issue whose pushes stayed in the auto lane merges as before")
+	assert.Empty(t, mergeLaneRefusal(state, "ENG-2", 0), "an issue whose pushes stayed in the auto lane merges as before")
 }
 
 // PushLanes persists across a restart (so a restart never forgets that a

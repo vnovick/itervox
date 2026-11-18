@@ -101,6 +101,9 @@ type daemonPushRun struct {
 	// were sealed on ("" when the seal could not hash the tree).
 	verify   bool
 	sealTree string
+	// branch and sha, when set, are what to push instead of the worktree's
+	// current branch and HEAD: a stack split's two commits.
+	branch, sha string
 }
 
 // daemonPushResult is the outcome of a daemon push.
@@ -124,7 +127,10 @@ func patchOutHoldContext(reason string) string {
 // daemonPush pushes the run's branch for a patch-out run. Worker goroutine.
 func (o *Orchestrator) daemonPush(ctx context.Context, run daemonPushRun) daemonPushResult {
 	ws, identifier := run.wsPath, run.issue.Identifier
-	branch := workspace.GetCurrentBranch(ctx, ws)
+	branch := run.branch
+	if branch == "" {
+		branch = workspace.GetCurrentBranch(ctx, ws)
+	}
 	res := daemonPushResult{branch: branch}
 	hold := func(reason string) daemonPushResult {
 		res.hold = patchOutHoldContext(reason)
@@ -135,7 +141,10 @@ func (o *Orchestrator) daemonPush(ctx context.Context, run daemonPushRun) daemon
 	if branch == "" || slices.Contains(protectedBranches(o.cfg), branch) {
 		return hold(fmt.Sprintf("the worktree is not on an issue branch (it is on %s): Itervox pushes only the issue's own branch, never a protected one", cmp.Or(branch, "a detached HEAD")))
 	}
-	sha := attest.Head(ctx, ws)
+	sha := run.sha
+	if sha == "" {
+		sha = attest.Head(ctx, ws)
+	}
 	if sha == "" {
 		return hold("the worktree has no commit to push")
 	}

@@ -183,6 +183,9 @@ type Orchestrator struct {
 	// pushLanesFile persists State.PushLanes (guardrails.lanes). Set before
 	// Run; read-only afterwards.
 	pushLanesFile string
+	// stackSplitsFile persists State.StackSplits (guardrails.lanes.split).
+	// Set before Run; read-only afterwards.
+	stackSplitsFile string
 	// pendingReviewsFile persists State.PendingReviews (M4-close BH-M4-2).
 	// Set before Run; read-only afterwards.
 	pendingReviewsFile string

@@ -72,6 +72,11 @@ func (w *watcher) eventText(ev server.FeedEvent) (line, command string) {
 		}
 	case "dispatch_resumed":
 		what = "dispatch resumed"
+	case "stack_split": // guardrails.lanes.split
+		what = "stack split: " + strings.ReplaceAll(cmpStr(pl.Outcome, "?"), "_", " ")
+		if pl.Reason != "" {
+			what += " (" + pl.Reason + ")"
+		}
 	case "session_stopped":
 		what = "session stopped"
 		if pl.Outcome != "" {

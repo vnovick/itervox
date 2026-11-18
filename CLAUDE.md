@@ -477,6 +477,21 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   fails closed). `ReviewVerdict.Backend` is stamped by the loop for the
   second-opinion check. `guardrails.lanes` is load-time config, NOT in the
   cfgMu allowlist.
+- **Stack split** (`guardrails.lanes.split`, `push: daemon` only,
+  `internal/orchestrator/stack_split.go`): worker-side, like `daemonPush`.
+  After the verify gate the worker sorts the run's files (`Lanes.SplitPaths`:
+  human lane vs the rest, lockfiles and handoffs with the code), builds
+  code-only / pipeline-only commits on the merge base through a temporary
+  index (gitexec), runs the profile's `verify` checks on them in a temporary
+  worktree, and pushes lower then top through `daemonPush` (top on the issue
+  branch, `reset --soft` to a commit with the run's own tree). The decision
+  reaches the loop only as `EventStackSplit` → `State.StackSplits` (per issue,
+  persisted to `stack_splits.json` by the ledger writer, pruned on terminal,
+  one `stack_split` feed event per decision). `merge_pr` asks
+  `MergeLaneRefusalForPR` (PR number through `EventMergeLaneCheck`): only a
+  code-first split's lower PR is judged by the code side's lane; everything
+  else keeps the issue's `PushLanes` record. An agent's own pushes are never
+  split (`config.StackSplitIgnoredReason` → startup warning).
 
 ### Workspace port ledger is workspace state, not `State`
 

@@ -177,6 +177,8 @@ type OrchestratorEvent struct { //nolint:revive
 	guardrailLane *guardrailLaneEvent
 	// mergeLane is the payload of EventMergeLaneCheck (guardrails.lanes).
 	mergeLane *mergeLaneQuery
+	// stackSplit is the payload of EventStackSplit (guardrails.lanes.split).
+	stackSplit *StackSplitRecord
 	// deferReply receives the loop's decision on an EventDeferStateMove.
 	deferReply chan bool
 	// feed is the payload of EventFeedRecorded (#213).
@@ -775,6 +777,14 @@ type State struct {
 	// persisted to push_lanes.json (ledger writer), pruned when the issue
 	// turns terminal.
 	PushLanes map[string]PushLaneRecord
+	// StackSplits is each issue's latest stack split decision
+	// (guardrails.lanes.split, push: daemon): the order, the files on each
+	// side, the branches and pull requests, and the reason. merge_pr judges
+	// a code-first split's lower, code-only pull request by its own lane
+	// (MergeLaneRefusalForPR). Key: issue identifier. Event-loop state, set
+	// only by EventStackSplit, persisted to stack_splits.json (ledger
+	// writer), pruned when the issue turns terminal.
+	StackSplits map[string]StackSplitRecord
 	// PersistWriteErrors counts failed ledger writes (CORE-038). Not tracked
 	// by the event loop: Snapshot() overlays the orchestrator's atomic
 	// counter, so it is only meaningful on a Snapshot() result.
@@ -1157,6 +1167,7 @@ func NewState(cfg *config.Config) State {
 		ReviewChainIndex:    make(map[string]int),
 		ReviewOutcomes:      make(map[string]ReviewOutcome),
 		PushLanes:           make(map[string]PushLaneRecord),
+		StackSplits:         make(map[string]StackSplitRecord),
 		PROpenedDispatched:  make(map[string]struct{}),
 		PRMergedDispatched:  make(map[string]struct{}),
 		ManagedPRs:          make(map[string]ManagedPR),

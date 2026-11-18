@@ -68,6 +68,9 @@ func (a guardrailsAdapter) ProvideAgentInput(identifier, message string) error {
 // token store, i.e. without a listening server).
 func wireGuardrails(cfg *config.Config, orch *orchestrator.Orchestrator, tmux *tmuxSessions, tokens *agentactions.Store, addr string) server.GuardrailsClient {
 	metrics.PreinitGuardrailBlocks(guardrails.Kinds...)
+	if reason := config.StackSplitIgnoredReason(cfg); reason != "" {
+		slog.Warn("guardrails: guardrails.lanes.split is set but has no effect", "reason", reason)
+	}
 	if !cfg.Guardrails.Enabled {
 		return guardrailsAdapter{orch: orch}
 	}

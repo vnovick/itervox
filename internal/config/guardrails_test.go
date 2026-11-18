@@ -53,6 +53,8 @@ func TestLanesConfigRoundtrip(t *testing.T) {
 		{"set: a user list replaces the default", "guardrails:\n  lanes:\n    human:\n      - \" .github/workflows/** \"\n      - \".github/workflows/**\"\n      - \"\"\n      - \"deploy/**\"\n    second_opinion:\n      - \"go.mod\"\n      - \"migrations/**\"\n",
 			config.GuardrailLanesConfig{Human: []string{".github/workflows/**", "deploy/**"}, SecondOpinion: []string{"go.mod", "migrations/**"}}},
 		{"empty human list turns the lane off", "guardrails:\n  lanes:\n    human: []\n", config.GuardrailLanesConfig{}},
+		{"split set (guardrails.lanes.split)", "guardrails:\n  lanes:\n    split: true\n",
+			config.GuardrailLanesConfig{Human: config.DefaultGuardrailHumanLane, Split: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,4 +124,27 @@ func TestPlainApprovalCommandsUnchanged(t *testing.T) {
 	assert.Equal(t, []string{"helm upgrade *-prod", "kubectl apply"}, cfg.Guardrails.ApprovalCommands)
 	assert.Nil(t, cfg.Guardrails.EnvApprovalCommands)
 	assert.NoError(t, config.ValidateGuardrailApprovals(cfg.Guardrails))
+}
+
+// guardrails.lanes.split is off by default and, when set, explains at
+// startup why it can have no effect: it needs a push: daemon profile (the
+// split is made where Itervox pushes), the guardrails, and a human lane.
+func TestStackSplitIgnoredReason(t *testing.T) {
+	cfg, err := config.Load(workflowWithContent(t, minimal("guardrails:\n  lanes:\n    split: true\n")))
+	require.NoError(t, err)
+	assert.True(t, cfg.Guardrails.Lanes.Split)
+	assert.Contains(t, config.StackSplitIgnoredReason(cfg), "no profile pushes with push: daemon")
+
+	cfg.Agent.Push = config.PushDaemon
+	assert.Empty(t, config.StackSplitIgnoredReason(cfg))
+	cfg.Guardrails.Lanes.Human = nil
+	assert.Contains(t, config.StackSplitIgnoredReason(cfg), "guardrails.lanes.human is empty")
+	cfg.Guardrails.Enabled = false
+	assert.Contains(t, config.StackSplitIgnoredReason(cfg), "guardrails.enabled is false")
+	cfg.Guardrails.Lanes.Split = false
+	assert.Empty(t, config.StackSplitIgnoredReason(cfg), "off: nothing to warn about")
+
+	off, err := config.Load(workflowWithContent(t, minimal("")))
+	require.NoError(t, err)
+	assert.False(t, off.Guardrails.Lanes.Split, "default off")
 }
