@@ -41,7 +41,7 @@ func TestValidateDispatchSchemaErrorPrecedesOtherValidation(t *testing.T) {
 }
 
 func TestValidateDispatchFailsUnsupportedTrackerKind(t *testing.T) {
-	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
+	content := "---\nitervox_schema_version: 2\ntracker:\n  kind: trello\n  api_key: key\n  project_slug: proj\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
@@ -450,4 +450,70 @@ automations:
 	require.NoError(t, err)
 
 	require.NoError(t, config.ValidateDispatch(cfg))
+}
+
+// jiraWorkflow builds a WORKFLOW.md with tracker.kind: jira. Each argument is
+// the raw YAML value for that key; an empty string omits the key.
+func jiraWorkflow(endpoint, slug, apiKey string) string {
+	s := "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n"
+	if endpoint != "" {
+		s += "  endpoint: " + endpoint + "\n"
+	}
+	if slug != "" {
+		s += "  project_slug: " + slug + "\n"
+	}
+	if apiKey != "" {
+		s += "  api_key: " + apiKey + "\n"
+	}
+	return s + "  active_states: [\"To Do\", \"In Progress\"]\n  terminal_states: [Done]\n---\n\nPrompt.\n"
+}
+
+func TestValidateAcceptsJiraKind(t *testing.T) {
+	path := workflowWithContent(t, jiraWorkflow("https://your-site.atlassian.net", "PROJ", "me@example.com:token123"))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NoError(t, config.ValidateDispatch(cfg))
+	assert.True(t, config.TrackerNeedsAPIKey("jira"))
+}
+
+func TestJiraRequiresEndpointProjectAndEmailToken(t *testing.T) {
+	const okEndpoint, okSlug, okKey = "https://your-site.atlassian.net", "PROJ", "me@example.com:token123"
+	tests := []struct {
+		name, endpoint, slug, apiKey, wantSetting string
+	}{
+		{"missing endpoint", "", okSlug, okKey, "tracker.endpoint"},
+		{"http endpoint", "http://your-site.atlassian.net", okSlug, okKey, "tracker.endpoint"},
+		{"endpoint without host", "https://", okSlug, okKey, "tracker.endpoint"},
+		{"endpoint with userinfo", `"https://me%40example.com:SECRETTOKEN@your-site.atlassian.net"`, okSlug, okKey, "tracker.endpoint"},
+		{"endpoint with query", `"https://your-site.atlassian.net/?x=1"`, okSlug, okKey, "tracker.endpoint"},
+		{"endpoint with fragment", `"https://your-site.atlassian.net/#x"`, okSlug, okKey, "tracker.endpoint"},
+		{"endpoint with API path", `"https://your-site.atlassian.net/rest/api/3"`, okSlug, okKey, "tracker.endpoint"},
+		{"endpoint with leading space", `" https://your-site.atlassian.net"`, okSlug, okKey, "tracker.endpoint"},
+		{"endpoint with trailing space", `"https://your-site.atlassian.net "`, okSlug, okKey, "tracker.endpoint"},
+		{"endpoint with inner space", `"https://your site.atlassian.net"`, okSlug, okKey, "tracker.endpoint"},
+		{"missing project_slug", okEndpoint, "", okKey, "tracker.project_slug"},
+		{"lowercase project_slug", okEndpoint, "proj", okKey, "tracker.project_slug"},
+		{"project_slug with quote", okEndpoint, `'PROJ" OR 1=1'`, okKey, "tracker.project_slug"},
+		{"api_key without colon", okEndpoint, okSlug, "me@example.comtoken123", "tracker.api_key"},
+		{"api_key empty email", okEndpoint, okSlug, `":token123"`, "tracker.api_key"},
+		{"api_key email without at", okEndpoint, okSlug, "meexample.com:token123", "tracker.api_key"},
+		{"api_key empty token", okEndpoint, okSlug, `"me@example.com:"`, "tracker.api_key"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(workflowWithContent(t, jiraWorkflow(tc.endpoint, tc.slug, tc.apiKey)))
+			require.NoError(t, err)
+			err = config.ValidateDispatch(cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantSetting)
+			if tc.wantSetting == "tracker.endpoint" {
+				assert.NotContains(t, err.Error(), "SECRETTOKEN")
+			}
+			if tc.wantSetting == "tracker.api_key" {
+				assert.NotContains(t, err.Error(), "token123")
+				assert.NotContains(t, err.Error(), "me@example.com")
+				assert.NotContains(t, err.Error(), "meexample.com")
+			}
+		})
+	}
 }
