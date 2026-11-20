@@ -12,7 +12,7 @@ import (
 // and environment (#74), with the reason for each choice so the operator can
 // see why.
 type quickstartDetection struct {
-	Tracker       string // "github" | "linear" | "local"
+	Tracker       string // "github" | "linear" | "jira" | "local"
 	TrackerReason string
 	Runner        string // "claude" | "codex"
 	RunnerReason  string
@@ -42,7 +42,7 @@ func detectQuickstart(dir, trackerFlag, runnerFlag string) (quickstartDetection,
 			reason = "origin " + remote + " is not on github.com"
 		}
 		det.Tracker = "local"
-		det.TrackerReason = reason + " and LINEAR_API_KEY is not set; issues are files in .itervox/issues/ (pass --tracker github or --tracker linear to use a service)"
+		det.TrackerReason = reason + " and LINEAR_API_KEY is not set; issues are files in .itervox/issues/ (pass --tracker github, linear or jira to use a service)"
 	}
 
 	if runnerFlag != "" {

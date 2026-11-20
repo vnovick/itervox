@@ -32,6 +32,13 @@ func ensureEnvStub(itervoxDir, trackerKind string) {
 		envContent = header + "LINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
 	case "github":
 		envContent = header + "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+	case "jira":
+		// A comment, not a placeholder value: this file is loaded into the
+		// daemon's environment, and a variable that is set but wrong is
+		// harder to see than one that is missing.
+		envContent = header + "# Jira: your Atlassian account email, a colon, then an API token from\n" +
+			"# https://id.atlassian.com/manage-profile/security/api-tokens. Remove the # and fill it in:\n" +
+			"# JIRA_API_KEY=you@example.com:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
 	case "local":
 		envContent = header + "# The local tracker needs no credentials.\n"
 	default:

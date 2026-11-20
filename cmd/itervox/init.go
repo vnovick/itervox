@@ -32,6 +32,8 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 		b.WriteString("  api_key: $LINEAR_API_KEY          # export LINEAR_API_KEY=lin_api_...\n")
 	case "github":
 		b.WriteString("  api_key: $GITHUB_TOKEN            # export GITHUB_TOKEN=ghp_...\n")
+	case "jira":
+		b.WriteString("  api_key: $JIRA_API_KEY            # .itervox/.env: JIRA_API_KEY=you@example.com:your_api_token\n")
 	}
 
 	slug := "owner/repo"
@@ -45,6 +47,8 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 	switch trackerKind {
 	case "local":
 		writeLocalTrackerBlock(&b)
+	case "jira":
+		writeJiraTrackerBlock(&b)
 	case "linear":
 		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
 		b.WriteString("  #                        Or pick projects in the web dashboard instead.\n")
@@ -202,7 +206,7 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 
 	b.WriteString("## Step 2 — Create a branch\n\n")
 	b.WriteString("```bash\n")
-	if trackerKind == "linear" || trackerKind == "local" {
+	if trackerKind == "linear" || trackerKind == "local" || trackerKind == "jira" {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}\n")
 	} else {
 		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | replace: \"#\", \"\" | downcase }}\n")
@@ -252,11 +256,16 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 	}
 	b.WriteString("```\n\n---\n\n")
 
-	if trackerKind == "local" {
+	switch trackerKind {
+	case "local":
 		b.WriteString("## Step 6 — Report\n\n")
 		b.WriteString("Finish with a short summary of what changed. Itervox adds the PR link, if you opened one, ")
 		b.WriteString("and a session summary as comments in the issue file (`.itervox/issues/{{ issue.identifier }}.md`).\n\n---\n\n")
-	} else {
+	case "jira":
+		b.WriteString("## Step 6 — Report\n\n")
+		b.WriteString("Finish with a short summary of what changed. Itervox adds the PR link, if you opened one, ")
+		b.WriteString("and a session summary as comments on the Jira issue.\n\n---\n\n")
+	default:
 		b.WriteString("## Step 6 — Post PR link to tracker\n\n")
 		b.WriteString("After the PR is open, post its URL as a comment on the tracker issue so it is visible in ")
 	}
@@ -298,7 +307,7 @@ func generateWorkflowWith(trackerKind, runner string, info repoInfo, workflowPat
 // generates a WORKFLOW.md pre-filled with discovered values.
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	trackerKind := fs.String("tracker", "", "tracker kind: linear, github or local (required)")
+	trackerKind := fs.String("tracker", "", "tracker kind: linear, github, jira or local (required)")
 	runner := fs.String("runner", "claude", "default runner backend: claude or codex")
 	output := fs.String("output", "WORKFLOW.md", "output file path")
 	workflowPath := fs.String("workflow", "WORKFLOW.md", "workflow path for --update")
@@ -345,14 +354,14 @@ func runInit(args []string) {
 	}
 
 	switch *trackerKind {
-	case "linear", "github", "local":
+	case "linear", "github", "jira", "local":
 		// valid
 	case "":
-		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear, github or local)")
+		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear, github, jira or local)")
 		fs.Usage()
 		fatalExit(1)
 	default:
-		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github, local)\n", *trackerKind)
+		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github, jira, local)\n", *trackerKind)
 		fatalExit(1)
 	}
 
@@ -474,10 +483,17 @@ func runInit(args []string) {
 // login screen, since the API token is auto-generated.
 func printInitNextSteps(w io.Writer, trackerKind, envDir, envPath, output string) {
 	_, _ = fmt.Fprintf(w, "Next steps:\n")
-	if trackerKind == "local" {
+	nextStep := 2
+	switch trackerKind {
+	case "local":
 		_, _ = fmt.Fprintf(w, "  1. Write issues in %s (copy %s.md), and set state: Todo to start one\n",
 			filepath.Join(envDir, "issues"), localSeedIdentifier)
-	} else {
+	case "jira":
+		_, _ = fmt.Fprintf(w, "  1. Edit %s: set tracker.endpoint to your Jira Cloud site URL (like https://your-site.atlassian.net) and tracker.project_slug to the project key (like PROJ)\n",
+			filepath.Join(envDir, "settings.jsonc"))
+		_, _ = fmt.Fprintf(w, "  2. Edit %s: set JIRA_API_KEY=you@example.com:your_api_token (your Atlassian account email, a colon, then an API token)\n", envPath)
+		nextStep = 3
+	default:
 		_, _ = fmt.Fprintf(w, "  1. Edit %s — fill in your API key\n", envPath)
 	}
 	runCmd, openCmd := "itervox", "itervox open"
@@ -485,10 +501,10 @@ func printInitNextSteps(w io.Writer, trackerKind, envDir, envPath, output string
 		runCmd = "itervox -workflow " + output
 		openCmd = "itervox open --workflow " + output
 	}
-	_, _ = fmt.Fprintf(w, "  2. Run: %s\n", runCmd)
-	_, _ = fmt.Fprintf(w, "  3. Open the dashboard, logged in (from another terminal): %s\n", openCmd)
+	_, _ = fmt.Fprintf(w, "  %d. Run: %s\n", nextStep, runCmd)
+	_, _ = fmt.Fprintf(w, "  %d. Open the dashboard, logged in (from another terminal): %s\n", nextStep+1, openCmd)
 	_, _ = fmt.Fprintf(w, "     (%s --print prints the URL instead; it contains your API token, so keep it to yourself)\n", openCmd)
-	nextStep := 4
+	nextStep += 2
 	if trackerKind == "linear" {
 		_, _ = fmt.Fprintf(w, "  %d. Select a project in the web dashboard\n", nextStep)
 		nextStep++

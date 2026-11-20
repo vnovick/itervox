@@ -54,13 +54,21 @@ func labelColor(name string) string {
 // lists closed issues for it); every other field is read or written as a
 // literal label, "closed" included, so it is checked like any other.
 func githubStateLabels(t config.TrackerConfig) []string {
+	return trackerStateNames(t, "closed")
+}
+
+// trackerStateNames returns every state name in t (active, working,
+// completion, terminal, backlog, failed), de-duplicated case-insensitively in
+// that order. A terminal state equal to nativeTerminal, ignoring case, is
+// left out; an empty nativeTerminal leaves out nothing.
+func trackerStateNames(t config.TrackerConfig, nativeTerminal string) []string {
 	var out []string
 	seen := map[string]bool{}
 	add := func(native bool, names ...string) {
 		for _, n := range names {
 			n = strings.TrimSpace(n)
 			key := strings.ToLower(n)
-			if n == "" || (native && key == "closed") || seen[key] {
+			if n == "" || (native && nativeTerminal != "" && strings.EqualFold(key, nativeTerminal)) || seen[key] {
 				continue
 			}
 			seen[key] = true

@@ -49,7 +49,7 @@ func TestFreshInitHasNoDeprecatedFrontMatter(t *testing.T) {
 	for _, tmpl := range KnownTemplateNames() {
 		variants = append(variants, variant{tmpl, initOptions{Template: tmpl}})
 	}
-	for _, tracker := range []string{"linear", "github", "local"} {
+	for _, tracker := range []string{"linear", "github", "jira", "local"} {
 		for _, v := range variants {
 			t.Run(tracker+"/"+v.name, func(t *testing.T) {
 				dir := t.TempDir()

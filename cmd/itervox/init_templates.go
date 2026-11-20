@@ -318,8 +318,11 @@ func rateLimitSwitchAutomation(runner string) string {
 
 // completionStateFor is the state init's workflow moves a finished issue to.
 func completionStateFor(trackerKind string) string {
-	if trackerKind == "github" {
+	switch trackerKind {
+	case "github":
 		return "in-review"
+	case "jira":
+		return "Done" // a new Jira project has no review status
 	}
 	return "In Review"
 }
