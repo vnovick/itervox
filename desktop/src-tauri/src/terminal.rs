@@ -9,12 +9,16 @@
 //! a GCP VM reached by SSH through IAP. The daemon keeps owning the session:
 //! closing the terminal detaches, and tmux keeps the session running.
 //!
+//! The terminal is the user's own program, picked with "Terminal app"
+//! ([`crate::terminal_app`]); how each one is started is
+//! [`crate::terminal_launch`].
+//!
 //! Safety: every part of the command is checked here and handed to the
-//! terminal as an argument vector — Linux's `x-terminal-emulator -e …` and
-//! Windows Terminal's `wt new-tab …` get one argument per word, no shell
-//! line. macOS's Terminal opens a file, so the app writes a one-shot
-//! `.command` script (mode 0700, created new, deleting itself when it
-//! runs) whose words are each shell-quoted ([`command_file`]). A session
+//! terminal as an argument vector — Linux's terminals and Windows
+//! Terminal get one argument per word, no shell line. On macOS the app
+//! writes a one-shot `.command` script (mode 0700, created new, deleting
+//! itself when it runs) whose words are each shell-quoted
+//! ([`command_file`]), and the terminal gets only its path. A session
 //! name must be a plain tmux name (`[A-Za-z0-9_-]`, which is what the
 //! daemon's `tmuxctl.ValidSessionName` allows; itervox's own are
 //! `itervox-<6 hex>`) and a host a single word that cannot be read as an
@@ -28,6 +32,8 @@ use std::process::{Command, Stdio};
 use crate::platform::Os;
 use crate::remote::{shell_quote, IapMode, Transport};
 use crate::shellpath::Tools;
+use crate::terminal_app::{App, Detected};
+use crate::terminal_launch::launch_in;
 
 /// Why a local daemon's sessions cannot be opened on Windows.
 pub const WINDOWS_LOCAL_NOTE: &str =
@@ -227,15 +233,21 @@ pub fn attach_argv(
 }
 
 /// What starts the terminal: a program and its arguments, and on macOS the
-/// `.command` file to write first (path, contents).
+/// `.command` file to write first (path, contents). Built per terminal
+/// program by [`crate::terminal_launch::launch_in`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub program: String,
     pub args: Vec<String>,
     pub script: Option<(PathBuf, String)>,
+    /// Windows: start it in a new console (PowerShell, Command Prompt).
+    pub new_console: bool,
+    /// Windows: the command line after `args`, passed as is (Command
+    /// Prompt's quoting, [`crate::terminal_launch::cmd_line`]).
+    pub raw_tail: Option<String>,
 }
 
-/// The one-shot script macOS's Terminal runs: it deletes itself, then
+/// The one-shot script the macOS terminals run: it deletes itself, then
 /// `exec`s `argv`, each word shell-quoted.
 pub fn command_file(argv: &[String]) -> String {
     let words: Vec<String> = argv.iter().map(|w| shell_quote(w)).collect();
@@ -243,80 +255,6 @@ pub fn command_file(argv: &[String]) -> String {
         "#!/bin/sh\n# Itervox: Open in Terminal. Deletes itself, then attaches.\nrm -f -- \"$0\"\nexec {}\n",
         words.join(" ")
     )
-}
-
-/// How `os` opens a terminal running `argv`.
-///
-/// - macOS: `/usr/bin/open -a Terminal <script>` with `script` the
-///   `.command` file ([`command_file`]) the caller writes first.
-/// - Linux: `<terminal> -e <argv…>`, with `terminal` the configured one
-///   (`$TERMINAL`, one program) or `x-terminal-emulator`.
-/// - Windows: `wt.exe new-tab <argv…>` (Windows Terminal). `wt` splits
-///   its command line at `;`, so no word may hold one.
-pub fn launch(
-    os: Os,
-    argv: &[String],
-    script: Option<&Path>,
-    configured: Option<&str>,
-) -> Result<Launch, String> {
-    if argv.is_empty() || argv[0].starts_with('-') {
-        return Err("Nothing to run in the terminal.".into());
-    }
-    if argv
-        .iter()
-        .any(|w| w.is_empty() || w.chars().any(|c| c.is_control()))
-    {
-        return Err("The terminal command holds an unusable argument.".into());
-    }
-    match os {
-        Os::Mac => {
-            let path = script.ok_or("No place to write the terminal command file.")?;
-            Ok(Launch {
-                program: "/usr/bin/open".into(),
-                args: vec![
-                    "-a".into(),
-                    "Terminal".into(),
-                    path.to_string_lossy().into_owned(),
-                ],
-                script: Some((path.to_path_buf(), command_file(argv))),
-            })
-        }
-        Os::Linux => {
-            let program =
-                match configured.map(str::trim).filter(|t| !t.is_empty()) {
-                    Some(t)
-                        if !t.starts_with('-')
-                            && !t.chars().any(|c| c.is_whitespace() || c.is_control()) =>
-                    {
-                        t.to_string()
-                    }
-                    Some(_) => return Err(
-                        "$TERMINAL must name one terminal program (it is run with -e <command>)."
-                            .into(),
-                    ),
-                    None => "x-terminal-emulator".into(),
-                };
-            let mut args = vec!["-e".to_string()];
-            args.extend(argv.iter().cloned());
-            Ok(Launch {
-                program,
-                args,
-                script: None,
-            })
-        }
-        Os::Windows => {
-            if argv.iter().any(|w| w.contains(';')) {
-                return Err("The terminal command holds an unusable argument.".into());
-            }
-            let mut args = vec!["new-tab".to_string()];
-            args.extend(argv.iter().cloned());
-            Ok(Launch {
-                program: "wt.exe".into(),
-                args,
-                script: None,
-            })
-        }
-    }
 }
 
 /// A fresh path for the macOS `.command` file, in the per-user temp dir.
@@ -348,9 +286,10 @@ fn write_script(path: &Path, body: &str) -> Result<(), String> {
         .map_err(|e| format!("Could not write the terminal command file: {e}"))
 }
 
-/// Opens the system terminal attached to tmux session `name` on `host`,
-/// without waiting for it. Runs ssh/gcloud from `tools`, with its PATH.
-pub fn open(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> {
+/// Opens `app` (the user's terminal program, [`crate::terminal_app`])
+/// attached to tmux session `name` on `host`, without waiting for it. Runs
+/// ssh/gcloud from `tools`, with its PATH.
+pub fn open(host: &AttachHost, name: &str, tools: &Tools, app: &Detected) -> Result<(), String> {
     let os = Os::current();
     let lossy = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let argv = attach_argv(
@@ -359,12 +298,15 @@ pub fn open(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> 
         lossy(&tools.ssh).as_deref(),
         lossy(&tools.gcloud).as_deref(),
     )?;
-    let configured = match os {
-        Os::Linux => std::env::var("TERMINAL").ok(),
-        _ => None,
-    };
     let script = (os == Os::Mac).then(script_path);
-    let l = launch(os, &argv, script.as_deref(), configured.as_deref())?;
+    let l = launch_in(os, app, &argv, script.as_deref())?;
+    #[cfg(not(windows))]
+    if l.new_console || l.raw_tail.is_some() {
+        return Err(format!(
+            "{} is not a terminal on this platform.",
+            app.name()
+        ));
+    }
     if let Some((path, body)) = &l.script {
         write_script(path, body)?;
     }
@@ -374,6 +316,18 @@ pub fn open(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> 
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NEW_CONSOLE`: PowerShell and Command Prompt get a window.
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        if l.new_console {
+            c.creation_flags(CREATE_NEW_CONSOLE);
+        }
+        if let Some(tail) = &l.raw_tail {
+            c.raw_arg(tail);
+        }
+    }
     match c.spawn() {
         Ok(mut child) => {
             // Reap it; the terminal outlives this call.
@@ -386,13 +340,14 @@ pub fn open(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> 
             if let Some((path, _)) = &l.script {
                 let _ = std::fs::remove_file(path);
             }
-            Err(match os {
-                Os::Linux => format!(
-                    "Could not start {} — set $TERMINAL to your terminal program (run as <terminal> -e <command>).",
+            Err(match (os, app.app) {
+                (Os::Linux, _) => format!(
+                    "Could not start {} ({}) — choose another Terminal app in the Sessions window, or set $TERMINAL to your terminal program.",
+                    app.name(),
                     l.program
                 ),
-                Os::Windows => "Could not start Windows Terminal (wt.exe). Install it from the Microsoft Store.".into(),
-                Os::Mac => "Could not open Terminal.".into(),
+                (Os::Windows, App::WindowsTerminal) => "Could not start Windows Terminal (wt.exe). Install it from the Microsoft Store, or choose another Terminal app in the Sessions window.".into(),
+                _ => format!("Could not open {}.", app.name()),
             })
         }
     }
@@ -404,6 +359,28 @@ mod tests {
 
     fn v(words: &[&str]) -> Vec<String> {
         words.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The terminal each platform opens when nothing is chosen or found:
+    /// Terminal, `$TERMINAL` or `x-terminal-emulator`, Windows Terminal.
+    fn launch(
+        os: Os,
+        argv: &[String],
+        script: Option<&Path>,
+        configured: Option<&str>,
+    ) -> Result<Launch, String> {
+        let app = match os {
+            Os::Mac => Detected::new(App::MacTerminal, "Terminal"),
+            Os::Linux => match configured.map(str::trim).filter(|t| !t.is_empty()) {
+                Some(t) if t.starts_with('-') || t.contains(char::is_whitespace) => {
+                    return Err("$TERMINAL must name one terminal program.".into())
+                }
+                Some(t) => Detected::new(App::Configured, t),
+                None => Detected::new(App::XTerminalEmulator, "x-terminal-emulator"),
+            },
+            Os::Windows => Detected::new(App::WindowsTerminal, "wt.exe"),
+        };
+        launch_in(os, &app, argv, script)
     }
 
     fn ssh(dest: &str) -> Transport {

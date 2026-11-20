@@ -310,6 +310,10 @@ pub struct SessionsView {
     /// Sessions started by hand, across daemons (included in `total`).
     pub external: usize,
     pub groups: Vec<SessionGroup>,
+    /// The "Terminal app" picker and the "Open in <terminal>" label
+    /// ([`crate::terminal_app::picker`]); set by the app after the reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_app: Option<crate::terminal_app::Picker>,
 }
 
 /// Groups the reads by daemon. Within a group, sessions waiting for input
@@ -369,6 +373,7 @@ pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
         total: groups.iter().map(|g| g.sessions.len()).sum(),
         external: groups.iter().map(|g| g.external).sum(),
         groups,
+        terminal_app: None,
     }
 }
 
@@ -446,6 +451,8 @@ pub const NEW_SESSION_PATH: &str = "/__itervox/new-session";
 pub const OPEN_TERMINAL_PATH: &str = "/__itervox/open-terminal";
 /// The path the page navigates to for "Live terminal" (#278 phase 2).
 pub const OPEN_LIVE_TERMINAL_PATH: &str = "/__itervox/open-live-terminal";
+/// The path the page navigates to when "Terminal app" is changed (#278).
+pub const TERMINAL_APP_PATH: &str = "/__itervox/terminal-app";
 
 /// What a navigation of the Sessions page asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -460,6 +467,10 @@ pub enum PageAction {
     OpenTerminal { daemon: String, session: String },
     /// Open the live terminal window of `session` (its key) of `daemon`.
     OpenLiveTerminal { daemon: String, session: String },
+    /// Save the Terminal app: a [`crate::terminal_app::App`] id or
+    /// [`crate::terminal_app::AUTOMATIC`] (checked against what is found
+    /// before it is saved).
+    SetTerminalApp { id: String },
 }
 
 /// The action behind a navigation of the Sessions page, or `None` for an
@@ -472,6 +483,16 @@ pub fn page_action(url: &str) -> Option<PageAction> {
         .unwrap_or((path_and_query, ""));
     match path {
         READY_PATH => Some(PageAction::Ready),
+        TERMINAL_APP_PATH => query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("id="))
+            .filter(|id| {
+                (1..=32).contains(&id.len())
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            })
+            .map(|id| PageAction::SetTerminalApp { id: id.to_string() }),
         NEW_SESSION_PATH => query
             .split('&')
             .find_map(|pair| pair.strip_prefix("daemon="))
@@ -1326,5 +1347,54 @@ mod tests {
             "hand-started sessions are labelled in the list"
         );
         assert!(html.contains("s.label"));
+    }
+
+    /// #278: the "Terminal app" picker navigates to its intercepted path
+    /// with a plain id; the push carries the picker, and the button takes
+    /// its label from it ("Open in iTerm"), "Open in Terminal" without one.
+    #[test]
+    fn terminal_app_picker_page_action_and_label() {
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/terminal-app?id=iterm2"),
+            Some(PageAction::SetTerminalApp {
+                id: "iterm2".into()
+            })
+        );
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/terminal-app?id=auto"),
+            Some(PageAction::SetTerminalApp { id: "auto".into() })
+        );
+        for bad in ["", "?id=", "?id=..%2Fx", "?id=iTerm2", "?id=a%20b", "?x=1"] {
+            assert_eq!(
+                page_action(&format!("tauri://localhost/__itervox/terminal-app{bad}")),
+                None,
+                "{bad:?}"
+            );
+        }
+
+        use crate::terminal_app::{picker, App, Detected, Detection};
+        let found = Detection {
+            apps: vec![Detected::new(App::ITerm2, "/Applications/iTerm.app")],
+            note: None,
+        };
+        let mut view = aggregate(Vec::new());
+        assert!(!push_script(&view).contains("terminalApp"));
+        view.terminal_app = Some(picker(crate::platform::Os::Mac, Some("iterm2"), &found));
+        let js = push_script(&view);
+        assert!(js.contains(r#""terminalApp":{"choice":"iterm2""#), "{js}");
+        assert!(js.contains(r#""openLabel":"Open in iTerm""#));
+
+        let html = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../dist/sessions.html"
+        ))
+        .expect("desktop/dist/sessions.html");
+        assert!(html.contains(TERMINAL_APP_PATH));
+        assert!(html.contains("view.terminalApp.openLabel"));
+        assert!(html.contains("Terminal app"));
+        assert!(
+            html.contains("appNote.textContent = t.note"),
+            "the fallback note is shown"
+        );
     }
 }
