@@ -28,6 +28,12 @@ func TestPollingPostsCarryReadIntent(t *testing.T) {
 		readIntent[r.Method+" "+r.URL.Path] = tracker.HasReadIntent(r.Context())
 		mu.Unlock()
 		body := `{"issues":[],"isLast":true}`
+		switch {
+		case r.URL.Path == "/rest/api/3/comment/list":
+			body = `{"values":[{"id":"1","properties":[]}]}`
+		case strings.HasSuffix(r.URL.Path, "/comment"):
+			body = `{"comments":[{"id":"1"}],"total":1}`
+		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 	})}
 
@@ -35,9 +41,12 @@ func TestPollingPostsCarryReadIntent(t *testing.T) {
 	require.NoError(t, err)
 	_, err = c.FetchIssueStatesByIDs(t.Context(), []string{"10001"})
 	require.NoError(t, err)
+	_, err = c.FetchIssueDetail(t.Context(), "PROJ-1")
+	require.NoError(t, err)
 
 	assert.True(t, readIntent["POST /rest/api/3/search/jql"], "search is a read")
 	assert.True(t, readIntent["POST /rest/api/3/issue/bulkfetch"], "bulkfetch is a read")
+	assert.True(t, readIntent["POST /rest/api/3/comment/list"], "the comment property read is a read")
 }
 
 // refusingClient returns a client for endpoint whose transport counts every

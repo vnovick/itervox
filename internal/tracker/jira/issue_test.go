@@ -1,6 +1,7 @@
 package jira_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -22,10 +23,23 @@ func commentFixture(id, created, text string) map[string]any {
 	}
 }
 
-// detailHandler answers the issue GET, then serves comments in the given
-// pages (matched by startAt).
+// detailHandler answers the issue GET, serves comments in the given pages
+// (matched by startAt), and answers the property read with an empty
+// properties list for every requested comment.
 func detailHandler(issue map[string]any, total int, pages map[int][]any) func(int, recorded, http.ResponseWriter) {
 	return func(_ int, r recorded, w http.ResponseWriter) {
+		if r.Path == "/rest/api/3/comment/list" {
+			var in struct {
+				IDs []int64 `json:"ids"`
+			}
+			_ = json.Unmarshal([]byte(r.Body), &in)
+			values := []any{}
+			for _, id := range in.IDs {
+				values = append(values, map[string]any{"id": strconv.FormatInt(id, 10), "properties": []any{}})
+			}
+			writeJSON(w, map[string]any{"isLast": true, "values": values})
+			return
+		}
 		if strings.HasSuffix(r.Path, "/comment") {
 			q, _ := url.ParseQuery(r.Query)
 			start, _ := strconv.Atoi(q.Get("startAt"))
@@ -57,7 +71,7 @@ func TestFetchIssueDetailReturnsCommentsOldestFirst(t *testing.T) {
 	assert.Equal(t, "acc-1", got.Comments[0].AuthorID)
 	assert.Equal(t, "Author 1", got.Comments[0].AuthorName)
 	reqs := seen()
-	require.Len(t, reqs, 3, "issue GET plus two comment pages")
+	require.Len(t, reqs, 4, "issue GET, two comment pages, one property read")
 	assert.Equal(t, "/rest/api/3/issue/10001", reqs[0].Path)
 	q, _ := url.ParseQuery(reqs[1].Query)
 	assert.Equal(t, "created", q.Get("orderBy"))

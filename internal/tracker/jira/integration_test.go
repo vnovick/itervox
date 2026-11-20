@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/jira"
 )
@@ -196,4 +197,44 @@ func TestJiraLiveRoundTrip(t *testing.T) {
 	assert.LessOrEqual(t, units(stored), jiraLimit)
 	t.Logf("over-limit comment: sent %d UTF-16 units, Jira stored %d; last line before the marker: %q",
 		units(longBody), units(stored), stored[strings.LastIndex(stored, "\n\n[Shortened"):len(stored)-len(tracker.ManagedCommentMarker)-2])
+
+	// l. keyed comment: a retry finds the first post and posts nothing.
+	before, err := c.FetchIssueDetail(ctx, b.ID)
+	require.NoError(t, err)
+	key, err := outbox.NewCommentKey()
+	require.NoError(t, err)
+	_, found, err := c.FindCommentByKey(ctx, b.ID, key)
+	require.NoError(t, err)
+	assert.False(t, found, "a new key is on no comment")
+	const keyedText = "keyed comment\nwith `code`"
+	first, err := c.CreateCommentWithKey(ctx, b.ID, key, keyedText)
+	require.NoError(t, err)
+	// retry does what cmd/itervox deliverComment does on a retry: it looks
+	// the key up first and posts only when the key is definitely absent.
+	retry := func() *domain.Comment {
+		t.Helper()
+		got, found, err := c.FindCommentByKey(ctx, b.ID, key)
+		require.NoError(t, err)
+		if found {
+			return got
+		}
+		cm, err := c.CreateCommentWithKey(ctx, b.ID, key, keyedText)
+		require.NoError(t, err)
+		return cm
+	}
+	again := retry()
+	assert.Equal(t, first.ID, again.ID, "the retry found the first comment")
+	after, err := c.FetchIssueDetail(ctx, b.ID)
+	require.NoError(t, err)
+	require.Len(t, after.Comments, len(before.Comments)+1, "one comment was added, not two")
+	var keyed *domain.Comment
+	for i := range after.Comments {
+		if after.Comments[i].ID == first.ID {
+			keyed = &after.Comments[i]
+		}
+	}
+	require.NotNil(t, keyed, "the keyed comment is in the issue detail")
+	assert.True(t, tracker.CommentHasKey(keyed.Body, key), "the orchestrator can match the keyed comment on read")
+	assert.Equal(t, keyedText+"\n\n"+tracker.CommentKeyMarker(key), keyed.Body, "the text reads back as typed, with the marker added on read")
+	t.Logf("keyed comment %s on %s", first.ID, b.Identifier)
 }

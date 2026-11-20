@@ -31,21 +31,47 @@ func issuePath(id string) string { return "/rest/api/3/issue/" + url.PathEscape(
 // shortened text. A body that is blank is refused, and an invalid issue id is
 // refused, both before any request.
 func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
+	return c.createComment(ctx, "jira_create_comment", issueID, body, "")
+}
+
+// CreateCommentWithKey implements tracker.IdempotentCommenter. It posts body
+// like CreateComment and sends key in the same request, as the comment
+// property itervox.commentKey, so no second request has to attach the key.
+// The text people read in Jira stays as typed. FindCommentByKey and
+// FetchIssueDetail read the key back. A blank key is refused before any
+// request.
+func (c *Client) CreateCommentWithKey(ctx context.Context, issueID, key, body string) (*domain.Comment, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, errors.New("jira_create_comment_with_key: empty key")
+	}
+	return c.createComment(ctx, "jira_create_comment_with_key", issueID, body, key)
+}
+
+// createComment posts body on the issue, with key in the comment key
+// property when key is not empty. op names the operation in errors.
+func (c *Client) createComment(ctx context.Context, op, issueID, body, key string) (*domain.Comment, error) {
 	if err := checkIssueRef(issueID); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(body) == "" {
-		return nil, errors.New("jira_create_comment: empty body")
+		return nil, fmt.Errorf("%s: empty body", op)
 	}
 	body = fitContentLimit(body)
+	req := map[string]any{"body": textToADF(body)}
+	if key != "" {
+		req["properties"] = []any{map[string]any{"key": commentKeyProperty, "value": map[string]any{"key": key}}}
+	}
 	var raw map[string]any
-	if err := c.do(ctx, "POST", issuePath(issueID)+"/comment", map[string]any{"body": textToADF(body)}, &raw); err != nil {
-		return nil, fmt.Errorf("jira_create_comment: %w", err)
+	if err := c.do(ctx, "POST", issuePath(issueID)+"/comment", req, &raw); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	cm := normalizeComment(raw)
 	if cm.Body == "" {
 		cm.Body = body
 	}
+	// The create response carries no properties, so the key is added here
+	// the same way normalizeComment adds it on a read.
+	cm.Body = tracker.MarkCommentKey(cm.Body, key)
 	return &cm, nil
 }
 

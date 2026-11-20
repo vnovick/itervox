@@ -57,15 +57,33 @@ func (c *Client) normalizeIssue(raw map[string]any) domain.Issue {
 	return issue
 }
 
-// normalizeComment maps one raw Jira comment to a domain.Comment.
+// normalizeComment maps one raw Jira comment to a domain.Comment. When the
+// comment has a key in its itervox.commentKey property, the body gets that
+// key's hidden marker (tracker.MarkCommentKey), which is how the orchestrator
+// finds a keyed comment. The marker exists only in the returned value, never
+// in Jira.
 func normalizeComment(raw map[string]any) domain.Comment {
 	return domain.Comment{
 		ID:         str(raw["id"]),
-		Body:       adfToText(raw["body"]),
+		Body:       tracker.MarkCommentKey(adfToText(raw["body"]), commentKeyOf(raw)),
 		CreatedAt:  parseJiraTime(raw["created"]),
 		AuthorID:   str(nested(raw, "author", "accountId")),
 		AuthorName: str(nested(raw, "author", "displayName")),
 	}
+}
+
+// commentKeyOf returns the key in a raw comment's itervox.commentKey
+// property, or "". A raw comment has properties only after
+// addCommentProperties stored them.
+func commentKeyOf(raw map[string]any) string {
+	props, _ := raw["properties"].([]any)
+	for _, p := range props {
+		prop, _ := p.(map[string]any)
+		if str(prop["key"]) == commentKeyProperty {
+			return str(nested(prop, "value", "key"))
+		}
+	}
+	return ""
 }
 
 // blockersOf returns the issues that block this one: links with an inward

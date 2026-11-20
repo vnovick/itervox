@@ -67,8 +67,9 @@ type Client struct {
 }
 
 var (
-	_ tracker.StateListSetter = (*Client)(nil)
-	_ tracker.Tracker         = (*Client)(nil)
+	_ tracker.IdempotentCommenter = (*Client)(nil)
+	_ tracker.StateListSetter     = (*Client)(nil)
+	_ tracker.Tracker             = (*Client)(nil)
 )
 
 // NewClient creates a Jira Client. A single trailing "/" on cfg.Endpoint is
