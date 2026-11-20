@@ -333,12 +333,22 @@ missing from either install is an error (exit `2`) before anything runs.
   runner's user is visible. `LANG` and `LC_ALL` are `C`, `TERM` is `dumb`,
   `NO_COLOR` is `1`. Nothing else is passed: no token, no cloud key, no
   `CI`, and no variable the tool's `deploy_vars` match, even from that list.
-- **Stdin is the null device.** A prompt reads end of input at once and
-  cannot be answered: it usually aborts, which shows as a changed exit code
-  and output. One that keeps waiting is killed at the timeout.
+- **No input, but an open stdin.** Stdin is a pipe that `diff` holds open
+  and never writes to, closed only after the probe has exited or been
+  killed. A prompt is never answered and never reads end of input either,
+  so a tool that asks a question does what it would do in front of a
+  person: it waits.
+- **Waiting for input is detected.** A probe that is still running and has
+  printed nothing for **3 seconds** (the idle window; any output, even past
+  the 64 KiB cap, restarts it) is taken to be waiting for input. Its whole
+  process group is killed, the run is recorded with `waiting_for_input`,
+  and its last non-empty output line is reported as the prompt it was
+  waiting on (with or without a trailing newline). A tool that is silent for
+  3 seconds for another reason (a slow start, a network call) looks the same;
+  that is only a change when the other side did not wait.
 - **A timeout** (`--timeout`, default 30 s), after which its whole process
-  group is killed, children included. A process the tool leaves running
-  after it exits is killed too.
+  group is killed, children included. It bounds a probe that keeps printing.
+  A process the tool leaves running after it exits is killed too.
 - **An output cap.** stdout and stderr are read as one stream, and the first
   64 KiB are compared.
 
@@ -347,18 +357,28 @@ ANSI colour is removed, a line redrawn with `\r` keeps what was left on
 screen, the checkout path becomes `<checkout>` and the fresh home
 `<home>`, and versions (`1.2.3`), timestamps, durations (`12ms`, `1.5s`),
 UUIDs, long hex ids and temp paths become placeholders. A probe changed when
-its exit code changed, when it timed out on one side only, when its
-normalised output differs, or when the head prints a new **prompt**: a line
-with `[y/N]`, `(yes/no)` and the like, an inquirer-style `? …` question,
-"Are you sure", "Do you want to continue", "Press Enter". A head run that
-timed out with a question as the last thing it printed (a line ending in `?`
-or `:`) is reported as a prompt too: it was waiting for an answer.
+its exit code changed, when it timed out or waited for input on one side
+only, when its normalised output differs, or when the head prints a new
+**prompt**. A prompt is found two ways:
+
+- **A head run waiting for input** where the base run did not wait: its last
+  line is the prompt, whatever its wording (`Deploy to production?`,
+  `Target:`, or `(waiting for input; nothing was printed)` when it printed
+  nothing).
+- **A prompt-like line** new on the head, even when the tool did not wait (it
+  read a default, or printed the question to a log): a line with `[y/N]`,
+  `(yes/no)` and the like, an inquirer-style `? …` question, "Are you sure",
+  "Do you want to continue", "Press Enter". A head run that timed out with a
+  question as the last thing it printed (a line ending in `?` or `:`) is
+  reported as a prompt too.
+
+Both sides waiting on the same question is not a change.
 
 ```text
 diff: 1 of 3 probe(s) changed behaviour (policy: .referee.yml@1a2b3c4d5e6f, base install: ../base @ 9f8e7d6c5b4a)
   [mycli] mycli --version: unchanged (exit 0)
-  [mycli] mycli deploy --help: changed (exit_code, timed_out, output, prompt)
-      base exit 0, head timed out
+  [mycli] mycli deploy --help: changed (exit_code, waiting_for_input, output, prompt)
+      base exit 0, head waiting for input
       new prompt: Deploy to production? [y/N]
       + Deploy to production? [y/N]
   [mycli] mycli env ls: unchanged (exit 0)
@@ -373,8 +393,10 @@ anything.
 
 `--json` prints `version` 1 with `base_commit`, `merge_base`,
 `base_dir_commit`, `env` (the variable names a probe gets) and, per tool,
-each probe's `base` and `head` runs (`executable`, `exit_code`, `timed_out`,
-`left_running`, `duration_ms`, `output_bytes`, `output_truncated`) and its
+each probe's `base` and `head` runs (`executable`, `exit_code` (`-1` when
+killed), `timed_out`, `waiting_for_input`, `prompt` (the last line of a run
+waiting for input, else empty), `left_running`, `duration_ms`,
+`output_bytes`, `output_truncated`) and its
 `changes`, `added` and `removed` lines (the first 20 of each, with
 `added_count` and `removed_count`) and new `prompts`. Lines are normalised
 and redacted. `GITHUB_STEP_SUMMARY` gets a summary here too.
@@ -394,8 +416,8 @@ and redacted. `GITHUB_STEP_SUMMARY` gets a summary here too.
 - **What it sees is what the probes show.** A change behind a flag no probe
   passes, or one that only happens with real credentials, is not seen.
 - **Normalising can hide a change** that only differs in a version-like or
-  time-like token, and a prompt worded unlike the patterns above is seen
-  only through the timeout or the output diff.
+  time-like token. A prompt worded unlike the patterns above is seen only
+  when the tool waits for its answer (or through the output diff).
 - Linux and macOS only.
 
 ### `referee pin`

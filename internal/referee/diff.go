@@ -34,12 +34,15 @@ dry run says without touching any CI file.
                   git worktree add --detach ../base "$(git merge-base origin/main HEAD)"
                   (cd ../base && npm ci --ignore-scripts)
 
-Each probe runs without a shell, in its checkout, with stdin the null device
-(a prompt reads end of input, nobody answers it), a fresh empty HOME, only
-PATH kept from the environment (no credentials, no deploy-target variable),
-a per-probe timeout after which its whole process group is killed, and its
-first 64 KiB of output compared. Versions, timestamps, durations, temp
-paths, the checkout path and ANSI colour are normalised away first.
+Each probe runs without a shell, in its checkout, with stdin an open pipe
+nothing is ever written to (a prompt is never answered and never sees end
+of input), a fresh empty HOME, only PATH kept from the environment (no
+credentials, no deploy-target variable), and its first 64 KiB of output
+compared. A probe still running that has printed nothing for 3s is waiting
+for input: its whole process group is killed and its last line reported as
+the prompt. A per-probe timeout kills the group of one that keeps printing.
+Versions, timestamps, durations, temp paths, the checkout path and ANSI
+colour are normalised away first.
 
 There is NO network sandbox: a probe can reach the network. Run diff in a
 job that holds no deploy credentials.
@@ -81,7 +84,7 @@ type diffProbe struct {
 	Base         probeRun `json:"base"`
 	Head         probeRun `json:"head"`
 	Changed      bool     `json:"changed"`
-	Changes      []string `json:"changes"` // exit_code, timed_out, output, prompt
+	Changes      []string `json:"changes"` // exit_code, timed_out, waiting_for_input, output, prompt
 	Added        []string `json:"added"`   // normalised lines only head printed (bounded)
 	AddedCount   int      `json:"added_count"`
 	Removed      []string `json:"removed"` // normalised lines only base printed (bounded)
@@ -335,6 +338,9 @@ func compareRuns(p adapters.Probe, base, head probeRun) diffProbe {
 	if base.TimedOut != head.TimedOut {
 		d.Changes = append(d.Changes, "timed_out")
 	}
+	if base.WaitingForInput != head.WaitingForInput {
+		d.Changes = append(d.Changes, "waiting_for_input")
+	}
 	if !slices.Equal(base.lines, head.lines) {
 		d.Changes = append(d.Changes, "output")
 		added, removed := lineDiff(base.lines, head.lines)
@@ -348,6 +354,12 @@ func compareRuns(p adapters.Probe, base, head probeRun) diffProbe {
 		if last := head.lines[len(head.lines)-1]; looksLikeQuestion(last) && !slices.Contains(prompts, last) {
 			prompts = append(prompts, last)
 		}
+	}
+	// A head run seen waiting for input where the base did not wait was
+	// asking something: its last line is the question, whatever its
+	// wording.
+	if head.WaitingForInput && !base.WaitingForInput && head.Prompt != "" && !slices.Contains(prompts, head.Prompt) {
+		prompts = append(prompts, head.Prompt)
 	}
 	if len(prompts) > 0 {
 		d.Changes = append(d.Changes, "prompt")

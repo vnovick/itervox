@@ -1,6 +1,7 @@
 #!/bin/sh
-# A new version whose deploy now asks for a confirmation, and aborts when
-# stdin ends without an answer (as prompt libraries do).
+# A new version whose deploy now asks for a confirmation. Its stdin is a
+# pipe nothing writes to and that never ends, so it waits for the answer
+# until the idle window kills it (the abort branch is never reached).
 case "$1" in
 --version) echo "fake 1.2.0" ;;
 deploy)

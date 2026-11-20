@@ -134,27 +134,134 @@ func TestDiffChangedOutputExitsSecondOpinion(t *testing.T) {
 	assert.False(t, findProbe(t, rep, "fake --version").Changed, "a version-only change is normalised away")
 }
 
+// shortIdle shortens the idle window that takes a silent probe to be
+// waiting for input, for one test.
+func shortIdle(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := probeIdleWindow
+	probeIdleWindow = d
+	t.Cleanup(func() { probeIdleWindow = old })
+}
+
 // TestDiffNewPromptIsFlagged: the head's deploy now asks "[y/N]". Its stdin
-// is the null device, so nothing answers: it reads end of input and
-// aborts, and the question is reported as a new prompt.
+// is an open pipe nothing writes to, so it waits for an answer that never
+// comes (it never sees end of input): the idle window kills it, and the
+// question is reported as a new prompt.
 func TestDiffNewPromptIsFlagged(t *testing.T) {
+	shortIdle(t, 500*time.Millisecond)
 	r, base := diffRepo(t, diffPolicy)
 	installFake(t, base, "fake-1.0.0")
 	installFake(t, r.dir, "fake-prompt")
 	code, out, errOut := referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--json")
 	require.Equal(t, exitSecondOpinion, code, "stdout=%s stderr=%s", out, errOut)
 	p := findProbe(t, diffJSON(t, out), "fake deploy --help")
-	assert.Equal(t, []string{"exit_code", "output", "prompt"}, p.Changes)
+	assert.Equal(t, []string{"exit_code", "waiting_for_input", "output", "prompt"}, p.Changes)
 	assert.Equal(t, []string{"Deploy to production? [y/N]"}, p.Prompts)
-	assert.Equal(t, 1, p.Head.ExitCode)
+	assert.Equal(t, -1, p.Head.ExitCode)
 	assert.False(t, p.Head.TimedOut)
-	assert.Contains(t, p.Added, "Aborted: no answer.")
+	assert.True(t, p.Head.WaitingForInput)
+	assert.Equal(t, "Deploy to production? [y/N]", p.Head.Prompt)
+	assert.NotContains(t, p.Added, "Aborted: no answer.", "stdin never reached end of input")
 	assert.NotContains(t, strings.Join(p.Added, "\n"), "answer: ", "the prompt was never answered")
 
 	code, out, _ = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base)
 	require.Equal(t, exitSecondOpinion, code)
 	assert.Contains(t, out, "new prompt: Deploy to production? [y/N]")
-	assert.Contains(t, out, "base exit 0, head exit 1")
+	assert.Contains(t, out, "base exit 0, head waiting for input")
+}
+
+// TestDiffWaitingForInputIsAPrompt: the head's deploy prints a question
+// with no newline and no prompt pattern ("Deploy to production? ") and
+// reads stdin. It is seen waiting within the idle window, far before the
+// timeout, its process group (with the child it started) is killed, and
+// its last line is reported as a new prompt: exit 10 against a base that
+// exited on its own.
+func TestDiffWaitingForInputIsAPrompt(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc")
+	}
+	shortIdle(t, 500*time.Millisecond)
+	r, base := diffRepo(t, diffPolicy)
+	installFake(t, base, "fake-1.0.0")
+	installFake(t, r.dir, "fake-wait")
+	summary := filepath.Join(t.TempDir(), "summary.md")
+	start := time.Now()
+	code, out, errOut := referee(t, map[string]string{"GITHUB_STEP_SUMMARY": summary},
+		"diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--timeout", "20s", "--json")
+	require.Equal(t, exitSecondOpinion, code, "stdout=%s stderr=%s", out, errOut)
+	assert.Less(t, time.Since(start), 10*time.Second, "the waiting probe must be seen at the idle window, not the timeout")
+	rep := diffJSON(t, out)
+	assert.Equal(t, 1, rep.Version)
+	assert.Equal(t, exitSecondOpinion, rep.ExitCode)
+	p := findProbe(t, rep, "fake deploy --help")
+	assert.True(t, p.Head.WaitingForInput)
+	assert.False(t, p.Head.TimedOut)
+	assert.Equal(t, -1, p.Head.ExitCode)
+	assert.Equal(t, "Deploy to production?", p.Head.Prompt)
+	assert.Less(t, p.Head.DurationMs, int64(5000))
+	assert.False(t, p.Base.WaitingForInput)
+	assert.Empty(t, p.Base.Prompt)
+	assert.Equal(t, 0, p.Base.ExitCode)
+	assert.Equal(t, []string{"exit_code", "waiting_for_input", "output", "prompt"}, p.Changes)
+	assert.Equal(t, []string{"Deploy to production?"}, p.Prompts)
+	assert.NotContains(t, strings.Join(p.Added, "\n"), "answer: ", "the prompt was never answered")
+	md, err := os.ReadFile(summary)
+	require.NoError(t, err)
+	assert.Contains(t, string(md), "new prompt: `Deploy to production?`")
+	assert.Contains(t, string(md), "head waiting for input")
+
+	raw, err := os.ReadFile(filepath.Join(r.dir, "hang.pid"))
+	require.NoError(t, err, "the waiting probe wrote its child's pid")
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	require.NoError(t, err)
+	assert.Eventually(t, func() bool { return !processAlive(pid) }, 3*time.Second, 20*time.Millisecond,
+		"the waiting probe's child %d survived the kill", pid)
+
+	// Both sides waiting on the same question is not a change.
+	installFake(t, base, "fake-wait")
+	code, out, errOut = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--json")
+	require.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
+	p = findProbe(t, diffJSON(t, out), "fake deploy --help")
+	assert.False(t, p.Changed)
+	assert.True(t, p.Base.WaitingForInput)
+	assert.True(t, p.Head.WaitingForInput)
+}
+
+// TestProbeSteadyOutputIsNotWaiting: a probe that prints a line every
+// 0.2s for longer than the idle window is not waiting for input: each
+// write restarts the window, and it runs to its own exit.
+func TestProbeSteadyOutputIsNotWaiting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("referee diff runs on Linux and macOS")
+	}
+	shortIdle(t, 600*time.Millisecond)
+	dir := t.TempDir()
+	installFake(t, dir, "fake-slow")
+	exe := filepath.Join(dir, "tools", "fake", "bin", "fake")
+	run, err := runProbe(context.Background(), dir, exe, []string{"fake", "deploy"}, 20*time.Second,
+		func(string) bool { return false }, withRealPath(dir, "<checkout>"))
+	require.NoError(t, err)
+	assert.False(t, run.WaitingForInput, "steady output must reset the idle window")
+	assert.False(t, run.TimedOut)
+	assert.Equal(t, 0, run.ExitCode)
+	assert.Empty(t, run.Prompt)
+	assert.Greater(t, run.DurationMs, int64(600), "it ran longer than one idle window")
+	require.Len(t, run.lines, 9)
+	assert.Equal(t, "done", run.lines[8])
+}
+
+// TestProbeSilentWaitHasAPlaceholderPrompt: a probe that waits on stdin
+// without printing anything is still waiting for input, reported with a
+// placeholder prompt.
+func TestProbeSilentWaitHasAPlaceholderPrompt(t *testing.T) {
+	assert.Equal(t, noOutputPrompt, lastPromptLine(nil))
+	assert.Equal(t, noOutputPrompt, lastPromptLine([]string{"", "  "}))
+	assert.Equal(t, "Name:", lastPromptLine([]string{"Name:", ""}))
+	p := compareRuns(adaptersProbe("fake deploy"),
+		probeRun{},
+		probeRun{ExitCode: -1, WaitingForInput: true, Prompt: noOutputPrompt})
+	assert.Equal(t, []string{"exit_code", "waiting_for_input", "prompt"}, p.Changes)
+	assert.Equal(t, []string{noOutputPrompt}, p.Prompts)
 }
 
 // TestDiffTimedOutQuestionIsAPrompt: a head run that kept waiting after a
