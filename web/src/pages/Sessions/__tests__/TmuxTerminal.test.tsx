@@ -136,6 +136,23 @@ describe('TmuxTerminal', () => {
     expect(screen.getByRole('application')).toHaveAccessibleName('Session terminal (read-only)');
   });
 
+  it('follows the mode the daemon granted: write asked, read granted', async () => {
+    m.ticket.mockResolvedValue(ticket('read'));
+    render(<TmuxTerminal id="itervox-a" mode="write" />);
+    await waitFor(() => {
+      expect(m.sockets).toHaveLength(1);
+    });
+    expect(screen.getByTestId('tmux-terminal-mode')).toHaveTextContent('read-only');
+    m.terms[0].data?.('ls\r');
+    expect(m.sockets[0].sent).toHaveLength(0);
+    // Without onSnapshot (the desktop terminal window) there is no fallback.
+    expect(screen.queryByRole('button', { name: 'Snapshot view' })).toBeNull();
+    act(() => {
+      m.sockets[0].handlers.onClose?.({ code: 1006, reason: '' });
+    });
+    expect(screen.getByTestId('tmux-terminal-close')).toHaveTextContent('closed 1006');
+  });
+
   it('shows a refused ticket and falls back to the snapshot view', async () => {
     m.ticket.mockRejectedValue(new Error('this session is not running in a tmux pane'));
     const onSnapshot = vi.fn();

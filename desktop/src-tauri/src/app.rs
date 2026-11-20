@@ -39,8 +39,8 @@ use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJEC
 use crate::registry::{registry_dir, DaemonLister};
 use crate::remote::is_remote_key;
 use crate::sessions::{
-    new_session_link, page_action, push_script, read_all, session_link, terminal_target,
-    PageAction, SessionsView,
+    live_terminal_target, new_session_link, page_action, push_script, read_all, session_link,
+    terminal_target, LiveTerminalTarget, PageAction, SessionsView,
 };
 use crate::supervisor::{self, last_line, output_log_name, record_for};
 use crate::token::{generate_token, platform_store, TokenStore};
@@ -1172,5 +1172,82 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
                 }
             });
         }
+        PageAction::OpenLiveTerminal { daemon, session } => {
+            // Only a session the window was shown "Live terminal" for.
+            let Some(target) =
+                live_terminal_target(&lock(&shared.sessions_last), &daemon, &session)
+            else {
+                error_dialog(app, "That session's live terminal can no longer be opened.");
+                return;
+            };
+            open_live_terminal(app, shared, &daemon, target);
+        }
     }
+}
+
+/// Opens (or focuses) the terminal window of one session (#278 phase 2,
+/// terminal_window.rs): the daemon's terminal-only page from its own
+/// origin, the token handed over by the origin-guarded initialization
+/// script, never in the URL. One window per session; closing it detaches.
+fn open_live_terminal(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    daemon: &str,
+    target: LiveTerminalTarget,
+) {
+    // A remote daemon's link is rebased onto its tunnel by dash::target.
+    let base = if is_remote_key(daemon) {
+        Some("http://127.0.0.1/".to_string())
+    } else {
+        lock(&shared.core)
+            .last_records()
+            .iter()
+            .find(|r| r.workflow == daemon)
+            .map(|r| r.base_url())
+    };
+    let Some(base) = base else {
+        error_dialog(app, "That project's daemon is not running.");
+        return;
+    };
+    let link = crate::terminal_window::page_link(&base, &target.id);
+    let (t, _) = match dash::target(shared, daemon, Some(link)) {
+        Ok(x) => x,
+        Err(e) => {
+            error_dialog(app, &e);
+            return;
+        }
+    };
+    let (Ok(url), Some(origin)) = (tauri::Url::parse(&t.url), t.origin.clone()) else {
+        error_dialog(app, "That project's dashboard has no web address to open.");
+        return;
+    };
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = app2.get_webview_window(&target.window) {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let nav_origin = origin.clone();
+        let mut builder =
+            WebviewWindowBuilder::new(&app2, &target.window, WebviewUrl::External(url))
+                .title(&target.title)
+                .inner_size(960.0, 600.0)
+                .min_inner_size(480.0, 280.0)
+                .on_navigation(move |u| {
+                    crate::terminal_window::navigation_allowed(&nav_origin, u.as_str())
+                });
+        if let Some(token) = t.token.as_deref() {
+            builder = builder.initialization_script(token_init_script(&origin, token));
+        }
+        match builder.build() {
+            Ok(w) => {
+                let _ = w.set_focus();
+            }
+            Err(e) => eprintln!("itervox desktop: could not open the terminal window: {e}"),
+        }
+    });
 }

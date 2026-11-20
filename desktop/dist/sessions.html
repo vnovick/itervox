@@ -9,7 +9,11 @@
      a "tmux" badge; a daemon without tmux shows the install warning. A tmux
      session the app may attach to has "Open in Terminal" (#278), which
      navigates to /__itervox/open-terminal; the app opens the system terminal
-     attached to it. No network access of its own. -->
+     attached to it. A session the daemon offers a live terminal for (#278
+     phase 2) has "Live terminal", which navigates to
+     /__itervox/open-live-terminal; the app opens (or focuses) that
+     session's own app window with the daemon's live terminal in it. No
+     network access of its own. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -70,6 +74,7 @@
   var READY_PATH = '/__itervox/ready';
   var NEW_SESSION_PATH = '/__itervox/new-session';
   var OPEN_TERMINAL_PATH = '/__itervox/open-terminal';
+  var OPEN_LIVE_TERMINAL_PATH = '/__itervox/open-live-terminal';
   var groupsEl = document.getElementById('groups');
   var summaryEl = document.getElementById('summary');
 
@@ -91,6 +96,11 @@
 
   function openTerminal(daemon, key) {
     window.location.href = OPEN_TERMINAL_PATH + '?daemon=' + encodeURIComponent(daemon) +
+      '&id=' + encodeURIComponent(key);
+  }
+
+  function openLiveTerminal(daemon, key) {
+    window.location.href = OPEN_LIVE_TERMINAL_PATH + '?daemon=' + encodeURIComponent(daemon) +
       '&id=' + encodeURIComponent(key);
   }
 
@@ -121,6 +131,7 @@
         sec.appendChild(ns);
       }
       if (g.terminalNote) sec.appendChild(el('p', 'terminal-note', g.terminalNote));
+      if (g.liveTerminalNote) sec.appendChild(el('p', 'terminal-note', g.liveTerminalNote));
       if (g.error) sec.appendChild(el('p', 'error', g.error));
       else if (g.sessions.length === 0) sec.appendChild(el('p', 'empty', 'No sessions.'));
       g.sessions.forEach(function (s) {
@@ -146,14 +157,23 @@
           : external && s.inUseReason ? 'Still running outside itervox: ' + s.inUseReason
           : 'Open ' + s.label;
         b.addEventListener('click', function () { open(g.daemon, s.key); });
-        if (s.openTerminal) {
+        if (s.liveTerminal || s.openTerminal) {
           var row = el('div', 'session-row');
           row.appendChild(b);
-          var term = el('button', 'terminal chip', 'Open in Terminal');
-          term.type = 'button';
-          term.title = 'Open a terminal attached to this tmux session (closing it leaves the session running)';
-          term.addEventListener('click', function () { openTerminal(g.daemon, s.key); });
-          row.appendChild(term);
+          if (s.liveTerminal) {
+            var live = el('button', 'terminal chip', 'Live terminal');
+            live.type = 'button';
+            live.title = 'Open this session\'s live terminal in its own window (closing it leaves the session running)';
+            live.addEventListener('click', function () { openLiveTerminal(g.daemon, s.key); });
+            row.appendChild(live);
+          }
+          if (s.openTerminal) {
+            var term = el('button', 'terminal chip', 'Open in Terminal');
+            term.type = 'button';
+            term.title = 'Open a terminal attached to this tmux session (closing it leaves the session running)';
+            term.addEventListener('click', function () { openTerminal(g.daemon, s.key); });
+            row.appendChild(term);
+          }
           sec.appendChild(row);
         } else {
           sec.appendChild(b);
