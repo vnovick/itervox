@@ -174,10 +174,11 @@ type fakeProject struct {
 	ref     hub.MemberRef
 	mu      sync.Mutex
 	calls   []memberCall
-	pending map[string]string // identifier → question
-	approve map[string]bool   // identifier → the pending request is an approval
-	live    map[string]bool   // identifier → a live run
-	down    atomic.Bool       // the member does not answer
+	pending map[string]string   // identifier → question
+	approve map[string]bool     // identifier → the pending request is an approval
+	live    map[string]bool     // identifier → a live run
+	reasons map[string][]string // identifier → why a held push needs a person
+	down    atomic.Bool         // the member does not answer
 }
 
 func (p *fakeProject) writes() []memberCall {
@@ -204,6 +205,7 @@ func newFakeMembers(names ...string) *fakeMembers {
 		m.projects[n] = &fakeProject{
 			ref:     hub.MemberRef{Project: n, Workflow: "/work/" + n + "/WORKFLOW.md"},
 			pending: map[string]string{}, approve: map[string]bool{}, live: map[string]bool{},
+			reasons: map[string][]string{},
 		}
 	}
 	return m
@@ -258,6 +260,7 @@ func (m *fakeMembers) Call(_ context.Context, ref hub.MemberRef, method, path st
 		}
 		resp, _ := json.Marshal(map[string]any{"identifier": id, "run": map[string]any{
 			"runId": "run-" + id, "live": p.live[id], "pendingInput": q, "pendingApproval": p.approve[id],
+			"pendingReasons": p.reasons[id],
 		}})
 		return http.StatusOK, resp, nil
 	case method == http.MethodPost && len(parts) == 6 && parts[3] == "issues" && parts[5] == "provide-input":

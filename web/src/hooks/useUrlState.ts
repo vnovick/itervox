@@ -12,6 +12,7 @@ import { useItervoxStore } from '../store/itervoxStore';
 import { useUIStore, type AutomationsTab } from '../store/uiStore';
 import { useIssue, useIssues } from '../queries/issues';
 import { useToastStore } from '../store/toastStore';
+import { openIssueLanes } from '../utils/openIssueLanes';
 
 // CORE-079 — URL state, single writer. Everything that puts app state into
 // the URL goes through here (AuthGate's one-shot ?token= strip is the only
@@ -198,6 +199,27 @@ export function useNewTaskUrlOpen(): void {
     // Keyed on the param only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wanted]);
+}
+
+/**
+ * guardrails.lanes — `?issue=<id>&lanes=1` (the link an approval's Slack
+ * message carries) opens that issue's detail on Changes → Lanes once; the
+ * `lanes` param is then removed (replace), so Back and a reload keep only
+ * `?issue=`.
+ */
+export function useIssueLanesUrlOpen(): void {
+  const location = useLocation();
+  const write = useWrite();
+  const params = new URLSearchParams(location.search);
+  const issue = params.get('issue');
+  const wanted = params.get('lanes') !== null;
+  useEffect(() => {
+    if (!wanted) return;
+    if (issue !== null && isSyntacticIssueId(issue)) openIssueLanes(issue);
+    write(location, { lanes: null }, true);
+    // Keyed on the params only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted, issue]);
 }
 
 export function useDashboardUrlState(): void {

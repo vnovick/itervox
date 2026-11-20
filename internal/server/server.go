@@ -16,6 +16,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/cors"
 	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/issuefilter"
 	"github.com/vnovick/itervox/internal/sysmon"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -1334,6 +1335,13 @@ type InputRequiredRow struct {
 	// GuardrailLanePathsTotal how many there were.
 	GuardrailLanePaths      []string `json:"guardrailLanePaths,omitempty"`
 	GuardrailLanePathsTotal int      `json:"guardrailLanePathsTotal,omitempty"`
+	// GuardrailLaneReasons say why that push needs a person, with file and
+	// line (audit findings on the pushed diff, the lane pattern each path
+	// matched): at most 20, redacted by the daemon; the question (Context)
+	// lists the same reasons as text. GuardrailLaneReasonsTotal is how many
+	// there were.
+	GuardrailLaneReasons      []guardrails.LaneReason `json:"guardrailLaneReasons,omitempty"`
+	GuardrailLaneReasonsTotal int                     `json:"guardrailLaneReasonsTotal,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -1956,6 +1964,7 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/context", s.handleIssueContext)           // #215
 			r.Get("/issues/{identifier}/activity", s.handleIssueActivity)         // system visibility: operator
 			r.Get("/issues/{identifier}/diff", s.handleIssueDiff)                 // #215: hunks need operator
+			r.Get("/issues/{identifier}/lanes", s.handleIssueLanes)               // guardrails.lanes: the Lanes view
 			r.Post("/issues/{identifier}/review-comments", s.handleReviewComment) // #238
 			r.Post("/issues/{identifier}/review-continue", s.handleReviewContinue)
 			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges

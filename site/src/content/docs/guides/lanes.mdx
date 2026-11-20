@@ -113,6 +113,31 @@ comment, with the files it changes (up to ten, then "and N more"):
 
 > Pipeline change: the agent wants to push changes to `.github/workflows/ci.yml` (`git push origin refs/heads/itervox/eng-1`)
 
+It also says **why**, concretely, with file and line:
+
+> Why this needs a person:
+> - `.github/workflows/ci.yml:10 adds 'continue-on-error: true' (failure ignored in a CI workflow …)`
+> - `.github/workflows/ci.yml matched .github/** → human`
+
+Two kinds of reason, findings first:
+
+- **Findings** on what the push adds: the same rules as
+  [`itervox referee audit`](/guides/referee/) (a test skip, a deleted test, a
+  focused `.only`, a lowered coverage threshold, `continue-on-error` /
+  `allow_failure`, `|| true` in a workflow, `--no-verify`), with the line in
+  the pushed version. A finding on a file outside the human lane (a
+  `t.Skip` in a test the same push adds) is listed too.
+- **Lane rules:** each held file and the pattern that put it in its lane.
+
+The list is bounded (twenty reasons kept, eight shown, then "and N more"),
+each field is clipped, and secrets are redacted before anything leaves the
+daemon. The same list is in the tracker comment, the dashboard card, the
+[Slack message](/guides/slack/) (which links straight to the issue's
+[Lanes view](/guides/now-and-changes/#lanes-view)) and
+[`itervox watch`](/guides/terminal/) (the first three; `--json` has them all).
+Findings are a reading aid, not the reason the push is held: the path decides
+the lane.
+
 - Reply `approve` to let **that** push through once. New commits ask again.
 - Any other reply, or dismissing it, refuses the push. The agent is told your
   reply, so "fix the code, not the pipeline" reaches it.

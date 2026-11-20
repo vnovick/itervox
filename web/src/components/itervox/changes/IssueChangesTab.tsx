@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 import { useIssueDiff, type DiffSource } from '../../../queries/changes';
 import { useDiffPrefsStore, type DiffLayout } from '../../../store/diffPrefsStore';
 import {
@@ -8,9 +8,12 @@ import {
   useViewedFiles,
 } from '../../../store/reviewDraftStore';
 import { useIsNarrow } from '../../../hooks/useIsNarrow';
+import { useUIStore } from '../../../store/uiStore';
 import { DiffFileList } from './DiffFileList';
 import { FilePatch } from './FilePatch';
 import { ReviewDraft } from './ReviewDraft';
+import { ChangesViewToggle, type ChangesView } from './ChangesViewToggle';
+import { LanesPanel } from './lanes/LanesPanel';
 
 const SOURCE_LABEL: Record<string, string> = { pr: 'PR files', worktree: 'Live worktree' };
 
@@ -46,6 +49,11 @@ function typingIn(target: EventTarget): boolean {
  * only at phone width), filters the file list, ticks files viewed, steps
  * through draft comments, and takes keys: j / k next / previous file,
  * n / p next / previous comment.
+ *
+ * guardrails.lanes — a Files | Lanes toggle: the Lanes view draws the
+ * files in their lanes and the pull request(s) they go into; a file there
+ * opens its diff here. An approval's "Why" link opens it directly
+ * (uiStore.issueLanesFor).
  */
 export default function IssueChangesTab({
   identifier,
@@ -70,6 +78,14 @@ export default function IssueChangesTab({
   const viewed = useViewedFiles(identifier);
   const toggleViewed = useReviewDraftStore((s) => s.toggleViewed);
   const comments = usePendingComments(identifier);
+  const lanesFor = useUIStore((s) => s.issueLanesFor);
+  const [view, setView] = useState<ChangesView>('files');
+  // An approval's "Why" link asks for Lanes (adjusted while rendering, then
+  // the request is consumed once).
+  if (lanesFor === identifier && view !== 'lanes') setView('lanes');
+  useEffect(() => {
+    if (lanesFor === identifier) useUIStore.getState().setIssueLanesFor(null);
+  }, [lanesFor, identifier]);
 
   const files = useMemo(() => data?.files ?? [], [data?.files]);
   const shownFiles = useMemo(() => {
@@ -87,6 +103,23 @@ export default function IssueChangesTab({
     return m;
   }, [comments]);
 
+  const toggle = <ChangesViewToggle view={view} onChange={setView} />;
+  if (view === 'lanes') {
+    return (
+      <div className="space-y-3" data-testid="issue-changes-tab">
+        {toggle}
+        <LanesPanel
+          identifier={identifier}
+          onOpenFile={(p) => {
+            if (data?.sources.includes('worktree')) setSource('worktree'); // the Lanes view is the worktree
+            setSelected(p);
+            setFocusComment(null);
+            setView('files');
+          }}
+        />
+      </div>
+    );
+  }
   if (isLoading) return <p className="text-theme-muted text-sm">Loading changes…</p>;
   if (error) return <p className="text-theme-danger-text text-sm">{error.message}</p>;
   if (!data) {
@@ -143,6 +176,7 @@ export default function IssueChangesTab({
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- j/k/n/p shortcuts bubble up from the focused file list, diff and buttons inside; every action also has a button
     <div className="space-y-3" data-testid="issue-changes-tab" onKeyDown={onKeyDown}>
+      {toggle}
       {data.sources.length > 1 && (
         <div role="group" aria-label="Diff source" className="flex gap-1 text-xs">
           {data.sources.map((s) => (

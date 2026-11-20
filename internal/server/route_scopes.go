@@ -82,6 +82,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/issues/{identifier}/sublog-stream": accessViewer,
 	"GET /api/v1/issues/{identifier}/context":       accessViewer, // #215: redacted, never tool output
 	"GET /api/v1/issues/{identifier}/diff":          accessViewer, // #215: ?file= hunks need operator (handleIssueDiff)
+	"GET /api/v1/issues/{identifier}/lanes":         accessViewer, // guardrails.lanes: finding text needs operator (lanesForScope)
 	"GET /api/v1/issues/{identifier}/decisions":     accessViewer, // #218: redacted, bounded decision logs
 	"GET /api/v1/issues/{identifier}/attestations":  accessViewer, // signed checks: redacted at record time
 	"GET /api/v1/playbooks":                         accessViewer, // #218

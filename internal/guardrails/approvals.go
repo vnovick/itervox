@@ -36,6 +36,11 @@ type ApprovalRequest struct {
 	// MaxLanePathsSent); PathsTotal is how many there were.
 	Paths      []string `json:"paths,omitempty"`
 	PathsTotal int      `json:"paths_total,omitempty"`
+	// Reasons say why, with file and line: audit findings on the pushed
+	// diff and the lane pattern each path matched (at most
+	// MaxLaneReasons); ReasonsTotal is how many there were.
+	Reasons      []LaneReason `json:"reasons,omitempty"`
+	ReasonsTotal int          `json:"reasons_total,omitempty"`
 }
 
 // ApprovalStatus is an approval request's state as a shim sees it.

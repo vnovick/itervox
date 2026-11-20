@@ -50,6 +50,22 @@ export const BUDGET = {
       forbid: [],
     },
     {
+      // guardrails.lanes: the Changes tab loads React Flow only when its
+      // Lanes view opens (the LanesDiagram chunk), never with the tab.
+      name: 'IssueChangesTab',
+      pattern: /^IssueChangesTab-[\w-]+\.js$/,
+      maxBytes: 120 * KB,
+      forbid: ['react-flow__', '@xyflow'],
+    },
+    {
+      // guardrails.lanes: the Lanes diagram itself; React Flow is shared
+      // with the Deps graph in its own chunk, so this one stays small.
+      name: 'LanesDiagram',
+      pattern: /^LanesDiagram-[\w-]+\.js$/,
+      maxBytes: 40 * KB,
+      forbid: [],
+    },
+    {
       // #298: the entry and page chunks never carry the terminal renderer.
       name: 'index',
       pattern: /^index-[\w-]+\.js$/,

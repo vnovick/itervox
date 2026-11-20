@@ -99,7 +99,8 @@ describe('IssueChangesTab (#215)', () => {
     routeFetch(mockFetch, { '/api/v1/issues/ENG-1/diff': { body: diff(false) } });
     render(<IssueChangesTab identifier="ENG-1" />, { wrapper });
     expect(await screen.findByText('a.go')).toBeInTheDocument();
-    expect(screen.queryByRole('button')).toBeNull();
+    // only the Files | Lanes switch: no file buttons
+    expect(screen.queryAllByRole('button').map((b) => b.textContent)).toEqual(['Files', 'Lanes']);
     expect(screen.getByText(/File diffs need an operator token/)).toBeInTheDocument();
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });

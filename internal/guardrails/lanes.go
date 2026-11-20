@@ -62,13 +62,21 @@ func (l Lanes) Empty() bool { return len(l.Human) == 0 && len(l.SecondOpinion) =
 
 // Lane is the lane of one repository-relative path.
 func (l Lanes) Lane(p string) string {
-	switch {
-	case matchLaneList(l.Human, p):
-		return LaneHuman
-	case matchLaneList(l.SecondOpinion, p):
-		return LaneSecondOpinion
+	lane, _ := l.Match(p)
+	return lane
+}
+
+// Match is the lane of one repository-relative path and the pattern that
+// put it there ("" for auto): the last pattern of that lane's list that
+// matched it.
+func (l Lanes) Match(p string) (lane, pattern string) {
+	if pat, ok := matchLaneRule(l.Human, p); ok {
+		return LaneHuman, pat
 	}
-	return LaneAuto
+	if pat, ok := matchLaneRule(l.SecondOpinion, p); ok {
+		return LaneSecondOpinion, pat
+	}
+	return LaneAuto, ""
 }
 
 // LaneResult classifies a set of paths: the highest lane any reached, and
@@ -77,6 +85,9 @@ type LaneResult struct {
 	Lane          string
 	Human         []string
 	SecondOpinion []string
+	// Rules maps each path above auto to the pattern that put it in its
+	// lane: the "why" an approval request and the Lanes view show.
+	Rules map[string]string
 }
 
 // Paths are the paths that put the result in its lane.
@@ -94,12 +105,19 @@ func (r LaneResult) Paths() []string {
 func (l Lanes) Classify(paths []string) LaneResult {
 	r := LaneResult{Lane: LaneAuto}
 	for _, p := range paths {
-		switch l.Lane(p) {
+		lane, pat := l.Match(p)
+		switch lane {
 		case LaneHuman:
 			r.Human = append(r.Human, p)
 		case LaneSecondOpinion:
 			r.SecondOpinion = append(r.SecondOpinion, p)
+		default:
+			continue
 		}
+		if r.Rules == nil {
+			r.Rules = map[string]string{}
+		}
+		r.Rules[p] = pat
 	}
 	slices.Sort(r.Human)
 	r.Human = slices.Compact(r.Human)
@@ -114,20 +132,21 @@ func (l Lanes) Classify(paths []string) LaneResult {
 	return r
 }
 
-// matchLaneList reports whether p is in a lane's pattern list: the last
-// pattern that matches decides, and a `!` pattern excludes.
-func matchLaneList(patterns []string, p string) bool {
-	in := false
-	for _, pat := range patterns {
-		neg := strings.HasPrefix(pat, "!")
-		if neg {
-			pat = pat[1:]
-		}
+// matchLaneRule reports whether p is in a lane's pattern list, and the
+// pattern that put it there: the last pattern that matches decides, and a
+// `!` pattern excludes.
+func matchLaneRule(patterns []string, p string) (string, bool) {
+	in, by := false, ""
+	for _, raw := range patterns {
+		pat, neg := strings.CutPrefix(raw, "!")
 		if MatchLanePattern(pat, p) {
-			in = !neg
+			in, by = !neg, raw
 		}
 	}
-	return in
+	if !in {
+		return "", false
+	}
+	return strings.TrimSpace(by), true
 }
 
 // normalizeLanePath turns a path git or a user wrote into the matcher's

@@ -46,6 +46,9 @@ type runContext struct {
 		Live            bool   `json:"live"`
 		PendingInput    string `json:"pendingInput"`
 		PendingApproval bool   `json:"pendingApproval"`
+		// PendingReasons say why a held push needs a person (one line
+		// each, file and line), guardrails.lanes.
+		PendingReasons []string `json:"pendingReasons"`
 	} `json:"run"`
 }
 
@@ -161,23 +164,47 @@ func (c *Channel) render(ctx context.Context, n hub.Notification) message {
 		head += "\n" + escape(n.Project)
 	}
 	msg.Blocks = append(msg.Blocks, section(head))
+	link := n.URL
 	if n.Kind == hub.KindInputRequired || n.Kind == hub.KindGuardrailApproval {
-		msg.Blocks = append(msg.Blocks, c.requestBlocks(ctx, n)...)
+		blocks, lanes := c.requestBlocks(ctx, n)
+		msg.Blocks = append(msg.Blocks, blocks...)
+		if lanes {
+			link = lanesLink(link)
+		}
 	}
-	msg.Blocks = append(msg.Blocks, c.linkBlock(n.URL))
+	msg.Blocks = append(msg.Blocks, c.linkBlock(link))
 	return msg
+}
+
+// lanesLink is an issue's dashboard link opened on its Lanes view (the
+// Changes tab's diagram of a held push): `lanes=1` next to `issue=`.
+func lanesLink(link string) string {
+	if !strings.Contains(link, "?issue=") {
+		return link
+	}
+	return link + "&lanes=1"
+}
+
+// reasonsBlock lists why a held push needs a person (guardrails.lanes).
+func reasonsBlock(reasons []string) block {
+	lines := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		lines = append(lines, "• "+escape(r))
+	}
+	return section(truncate("*Why this needs a person*\n"+strings.Join(lines, "\n"), maxSectionText))
 }
 
 // requestBlocks are the question and controls of an input request or a
 // guardrail approval; none when the member cannot confirm it is pending.
-func (c *Channel) requestBlocks(ctx context.Context, n hub.Notification) []block {
+// lanes reports a held push with reasons (its link opens the Lanes view).
+func (c *Channel) requestBlocks(ctx context.Context, n hub.Notification) (blocks []block, lanes bool) {
 	members := c.actions()
 	if members == nil {
-		return nil
+		return nil, false
 	}
 	ref, ok := members.Member(n.Project)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	kind := kindReply
 	if n.Kind == hub.KindGuardrailApproval {
@@ -185,27 +212,30 @@ func (c *Channel) requestBlocks(ctx context.Context, n hub.Notification) []block
 	}
 	rc, ok := fetchContext(ctx, members, ref, n.Identifier)
 	if !ok || !rc.pending(kind, n.RunID) {
-		return nil
+		return nil, false
 	}
-	blocks := []block{section(">" + strings.ReplaceAll(escape(truncate(rc.Run.PendingInput, maxSectionText)), "\n", "\n>"))}
+	blocks = []block{section(">" + strings.ReplaceAll(escape(truncate(rc.Run.PendingInput, maxSectionText)), "\n", "\n>"))}
+	if lanes = kind == kindApproval && len(rc.Run.PendingReasons) > 0; lanes {
+		blocks = append(blocks, reasonsBlock(rc.Run.PendingReasons))
+	}
 	if !c.interactive() {
-		return blocks
+		return blocks, lanes
 	}
 	value, err := c.sign(action{
 		Kind: kind, Project: ref.Project, MemberKey: ref.Key(), Identifier: n.Identifier,
 		RunID: rc.Run.RunID, Expires: c.now().Add(c.cfg.ActionTTL),
 	})
 	if err != nil {
-		return blocks
+		return blocks, lanes
 	}
 	if kind == kindApproval {
 		return append(blocks, block{"type": "actions", "elements": []block{
 			button(actionApprove, "Approve", value, "primary"),
 			button(actionReject, "Reject", value, "danger"),
-		}})
+		}}), lanes
 	}
 	if len(value) > maxBlockID {
-		return blocks // too long to carry: answer in the dashboard
+		return blocks, lanes // too long to carry: answer in the dashboard
 	}
 	return append(blocks, block{
 		"type": "input", "block_id": value, "dispatch_action": true, "optional": false,
@@ -215,7 +245,7 @@ func (c *Channel) requestBlocks(ctx context.Context, n hub.Notification) []block
 			"dispatch_action_config": block{"trigger_actions_on": []string{"on_enter_pressed"}},
 			"placeholder":            plain("Type the answer and press Enter"),
 		},
-	})
+	}), lanes
 }
 
 // renderDigest renders a digest as one message: a line per item.

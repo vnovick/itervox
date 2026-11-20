@@ -27,6 +27,7 @@ type laneDaemon struct {
 	mu        sync.Mutex
 	events    []Event
 	lanes     []LaneReport
+	requests  []ApprovalRequest
 }
 
 func newLaneDaemon(t *testing.T) *laneDaemon {
@@ -57,6 +58,9 @@ func newLaneDaemon(t *testing.T) *laneDaemon {
 		case r.Method == http.MethodPost && route == "approvals":
 			var req ApprovalRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			d.mu.Lock()
+			d.requests = append(d.requests, req)
+			d.mu.Unlock()
 			st, _ := d.approvals.Request("ENG-1", "run1", req)
 			_ = json.NewEncoder(w).Encode(st)
 		case r.Method == http.MethodGet && strings.HasPrefix(route, "approvals/"):
@@ -276,6 +280,29 @@ func TestPrePushNewBranchClassifiesAgainstBase(t *testing.T) {
 	assert.Equal(t, LaneHuman, res.Lane)
 	require.Len(t, res.Human, 1)
 	assert.Contains(t, res.Human[0], "changed files unknown for refs/heads/x")
+}
+
+// A held push says why, with file and line: the audit finding on the
+// pushed workflow and the lane pattern it matched travel in the approval
+// request the daemon shows a human.
+func TestPrePushHeldPushCarriesReasons(t *testing.T) {
+	d := newLaneDaemon(t)
+	r := newLaneRig(t, d, true)
+	r.writeCommit(".github/workflows/ci.yml", "jobs:\n  test:\n    continue-on-error: true\n", "make CI pass")
+	wait := r.startPush()
+	a := d.pending(t)
+	d.mu.Lock()
+	require.NotEmpty(t, d.requests)
+	req := d.requests[len(d.requests)-1]
+	d.mu.Unlock()
+	assert.Equal(t, 2, req.ReasonsTotal)
+	assert.Equal(t, []string{
+		".github/workflows/ci.yml:3 adds `continue-on-error: true` (failure ignored in a CI workflow (continue-on-error / allow_failure: true))",
+		".github/workflows/ci.yml matched .github/** → human",
+	}, LaneReasonLines(req.Reasons, req.ReasonsTotal, MaxLaneReasonsShown))
+	require.True(t, d.approvals.Decide(a.ID, false, "no"))
+	_, code := wait()
+	assert.Equal(t, 1, code)
 }
 
 func TestLanePathSummary(t *testing.T) {

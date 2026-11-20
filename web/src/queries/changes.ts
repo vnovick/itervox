@@ -6,9 +6,11 @@ import { ApiError, apiRequest } from '../auth/apiRequest';
 import {
   DiffResponseSchema,
   FileDiffResponseSchema,
+  IssueLanesResponseSchema,
   RunContextResponseSchema,
   type DiffResponse,
   type FileDiffResponse,
+  type IssueLanesResponse,
   type RunContextResponse,
 } from '../types/schemas';
 
@@ -91,6 +93,25 @@ export function useFileDiff(identifier: string, file: string | null, source?: Di
         { op: 'file diff fetch' },
       );
       return FileDiffResponseSchema.parse(data);
+    },
+    staleTime: DIFF_STALE_MS,
+  });
+}
+
+export const ISSUE_LANES_KEY = (identifier: string) => ['issueLanes', identifier] as const;
+
+/**
+ * guardrails.lanes — the Lanes view: the worktree's files in their lanes,
+ * findings per file, why a person is needed and the stack split. null when
+ * the issue has no worktree (404).
+ */
+export function useIssueLanes(identifier: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ISSUE_LANES_KEY(identifier),
+    enabled: enabled && identifier !== '',
+    queryFn: async (): Promise<IssueLanesResponse | null> => {
+      const data = await getOrNull(`/api/v1/issues/${enc(identifier)}/lanes`, 'lanes fetch');
+      return data === null ? null : IssueLanesResponseSchema.parse(data);
     },
     staleTime: DIFF_STALE_MS,
   });

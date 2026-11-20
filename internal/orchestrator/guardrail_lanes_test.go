@@ -172,6 +172,32 @@ func TestMergeRefusedForHumanLaneRun(t *testing.T) {
 	assert.Empty(t, rej.orch.MergeLaneRefusal(context.Background(), "ENG-1"), "a rejected push leaves no lane")
 }
 
+// guardrails.lanes: a held push says WHY, with file and line — the audit
+// finding on the pushed workflow and the lane pattern it matched — on the
+// input-required entry (the dashboard card), in its question (the tracker
+// comment, `itervox watch`) and in the run context Slack reads.
+func TestHeldPushQuestionSaysWhy(t *testing.T) {
+	r := newLaneRig(t, ".github/workflows/ci.yml")
+	var entry *orchestrator.InputRequiredEntry
+	require.Eventually(t, func() bool {
+		entry = r.orch.Snapshot().InputRequiredIssues["ENG-1"]
+		return entry != nil && entry.GuardrailApprovalID != ""
+	}, 30*time.Second, 20*time.Millisecond, "the pipeline push never raised an input request")
+	want := []string{
+		".github/workflows/ci.yml:1 adds `continue-on-error: true` (failure ignored in a CI workflow (continue-on-error / allow_failure: true))",
+		".github/workflows/ci.yml matched .github/** → human",
+	}
+	assert.Equal(t, want, guardrails.LaneReasonLines(entry.GuardrailLaneReasons, entry.GuardrailLaneReasonsTotal, guardrails.MaxLaneReasonsShown))
+	assert.Contains(t, entry.Context, "Why this needs a person:\n- "+want[0]+"\n- "+want[1]+"\n")
+	rc, ok := r.orch.RunContext("ENG-1")
+	require.True(t, ok)
+	assert.True(t, rc.PendingApproval)
+	assert.Equal(t, want, rc.PendingReasons)
+
+	require.NoError(t, r.orch.ProvideInput("ENG-1", "no"))
+	assert.Contains(t, r.agentOutput(), "exit=1")
+}
+
 // guardrails.lanes end to end: a second-opinion push is not held; it lands
 // and is recorded for merge policy with the writer's backend.
 func TestSecondOpinionPushRecordedWithWriterBackend(t *testing.T) {

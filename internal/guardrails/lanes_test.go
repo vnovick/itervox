@@ -71,7 +71,7 @@ func TestLaneMatcherGlobs(t *testing.T) {
 	// Human wins over second_opinion for a path in both.
 	assert.Equal(t, LaneHuman, Lanes{Human: []string{"go.mod"}, SecondOpinion: []string{"go.mod"}}.Lane("go.mod"))
 	// A later pattern re-includes what a ! excluded (last match wins).
-	assert.True(t, matchLaneList([]string{"a/**", "!a/b/**", "a/b/c"}, "a/b/c"))
+	assert.True(t, inLaneList([]string{"a/**", "!a/b/**", "a/b/c"}, "a/b/c"))
 
 	r := lanes.Classify([]string{"main.go", "internal/auth/token.go", ".github/workflows/ci.yml", "Makefile", ".github/workflows/ci.yml"})
 	assert.Equal(t, LaneHuman, r.Lane)
@@ -84,4 +84,10 @@ func TestLaneMatcherGlobs(t *testing.T) {
 	assert.Less(t, LaneRank(LaneAuto), LaneRank(LaneSecondOpinion))
 	assert.Less(t, LaneRank(LaneSecondOpinion), LaneRank(LaneHuman))
 	assert.Equal(t, LaneRank(LaneHuman), LaneRank("bogus"), "an unknown lane ranks as human")
+}
+
+// inLaneList reports whether p is in a lane's pattern list.
+func inLaneList(patterns []string, p string) bool {
+	_, in := matchLaneRule(patterns, p)
+	return in
 }

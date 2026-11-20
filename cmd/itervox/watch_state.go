@@ -1,6 +1,10 @@
 package main
 
-import "time"
+import (
+	"time"
+
+	"github.com/vnovick/itervox/internal/guardrails"
+)
 
 // The parts of GET /api/v1/state that `itervox watch` and `itervox approve`
 // read (#240). Unknown fields are ignored, so an older or newer daemon
@@ -58,6 +62,10 @@ type watchInput struct {
 	State             string `json:"state"`
 	Context           string `json:"context"`
 	GuardrailApproval bool   `json:"guardrailApproval"`
+	// GuardrailLaneReasons say why a held push needs a person
+	// (guardrails.lanes), with their total.
+	GuardrailLaneReasons      []guardrails.LaneReason `json:"guardrailLaneReasons"`
+	GuardrailLaneReasonsTotal int                     `json:"guardrailLaneReasonsTotal"`
 }
 
 // waiting reports whether the entry waits for a human (not an answered

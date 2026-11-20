@@ -44,6 +44,8 @@ type laneRepo interface {
 	// ChangedPaths lists the paths that differ between commits from and to
 	// (renames as a deletion plus an addition).
 	ChangedPaths(from, to string) ([]string, error)
+	// AuditRange applies the audit rules to the diff from..to.
+	AuditRange(from, to string) ([]AuditFinding, error)
 }
 
 func (g gitRepo) MergeBase(a, b string) (string, bool) {
@@ -141,6 +143,52 @@ func (p Policy) classifyPush(updates []RefUpdate, repo laneRepo) LaneResult {
 	return r
 }
 
+// pushFindings applies the audit rules to what each ref update changes
+// (the range pushedPaths compares: from the issue base's merge base, else
+// from the remote tip), keeping the findings on the files the push
+// changes. Best effort: a range that cannot be audited adds nothing (the
+// lane-rule reasons still say why the push is held).
+func (p Policy) pushFindings(updates []RefUpdate, repo laneRepo) []AuditFinding {
+	var out []AuditFinding
+	for _, u := range updates {
+		if zeroSHA(u.LocalSHA) || !strings.HasPrefix(u.RemoteRef, "refs/heads/") {
+			continue
+		}
+		paths, err := p.pushedPaths(u, repo)
+		if err != nil || len(paths) == 0 {
+			continue
+		}
+		from := ""
+		for _, ref := range p.BaseRefs {
+			if mb, ok := repo.MergeBase(ref, u.LocalSHA); ok {
+				from = mb
+				break
+			}
+		}
+		if from == "" && !zeroSHA(u.RemoteSHA) {
+			from = u.RemoteSHA
+		}
+		if from == "" {
+			continue
+		}
+		found, err := repo.AuditRange(from, u.LocalSHA)
+		if err != nil {
+			continue
+		}
+		out = append(out, filterFindings(found, paths)...)
+	}
+	return filterFindings(out, nil)
+}
+
+// PushReasons are the reasons a daemon push (push: daemon) classified as
+// r is in its lane: the audit findings on what it changes, then the lane
+// rules. Bounded and redacted; total is how many there were. Runs git
+// through gitexec on the caller's goroutine (a worker's).
+func PushReasons(dir, branch, sha, remoteSHA string, lanes Lanes, baseRefs []string, r LaneResult) ([]LaneReason, int) {
+	p := Policy{Lanes: lanes, BaseRefs: baseRefs}
+	return LaneReasons(r, p.pushFindings([]RefUpdate{daemonRefUpdate(branch, sha, remoteSHA)}, gitRepo{dir: dir}))
+}
+
 // laneKey identifies a held push: the same refs and commits join the
 // pending request, new commits ask again.
 func laneKey(dir string, updates []RefUpdate) string {
@@ -153,16 +201,17 @@ func laneKey(dir string, updates []RefUpdate) string {
 
 // holdHumanLane waits for a human to approve a push that changes human-lane
 // files. ok means approved, once; otherwise code is the hook's exit status.
-func holdHumanLane(p Policy, dir, remote string, updates []RefUpdate, r LaneResult, stderr io.Writer) (code int, ok bool) {
+func holdHumanLane(p Policy, dir, remote string, updates []RefUpdate, r LaneResult, repo laneRepo, stderr io.Writer) (code int, ok bool) {
 	refs := make([]string, 0, len(updates))
 	for _, u := range updates {
 		refs = append(refs, u.RemoteRef)
 	}
 	display := displayCommand("git", append([]string{"push", remote}, refs...))
 	sent := r.Human[:min(len(r.Human), MaxLanePathsSent)]
+	reasons, reasonsTotal := LaneReasons(LaneResult{Lane: r.Lane, Human: r.Human, Rules: r.Rules}, p.pushFindings(updates, repo))
 	return waitForApproval(p, approvalAsk{
 		req: ApprovalRequest{Key: laneKey(dir, updates), Command: display, Lane: LaneHuman,
-			Paths: sent, PathsTotal: len(r.Human)},
+			Paths: sent, PathsTotal: len(r.Human), Reasons: reasons, ReasonsTotal: reasonsTotal},
 		why: "(guardrails.lanes.human: it changes " + LanePathSummary(sent, len(r.Human), MaxLanePathsShown) +
 			"; an agent may change what CI checks, never how CI checks)",
 		unavailableKind: KindLaneHuman,

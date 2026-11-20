@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 )
@@ -22,6 +23,8 @@ func sortedInputRequiredRows(entries map[string]*orchestrator.InputRequiredEntry
 		if len(entry.GuardrailLanePaths) > 0 {                  // guardrails.lanes: a held pipeline change
 			row.GuardrailLanePaths = append([]string(nil), entry.GuardrailLanePaths...)
 			row.GuardrailLanePathsTotal = entry.GuardrailLanePathsTotal
+			row.GuardrailLaneReasons = append([]guardrails.LaneReason(nil), entry.GuardrailLaneReasons...)
+			row.GuardrailLaneReasonsTotal = entry.GuardrailLaneReasonsTotal
 		}
 		rows = append(rows, row)
 	}
