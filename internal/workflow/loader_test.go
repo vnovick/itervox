@@ -527,20 +527,20 @@ func TestPatchProfilesBlock_Create(t *testing.T) {
 
 // TestPatchProfilesBlock_CreateWithoutAgentSection: a front matter with no
 // agent: key gets one, so the profiles block does not land indented in the
-// last section; the model_server and timeout keys are written, a zero
-// timeout is omitted.
+// last section; the model_server, model_server_name and timeout keys are
+// written, a zero timeout is omitted.
 func TestPatchProfilesBlock_CreateWithoutAgentSection(t *testing.T) {
 	content := "---\ntracker:\n  kind: local\n---\n\nPrompt body.\n"
 	f := filepath.Join(t.TempDir(), "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
 	require.NoError(t, workflow.PatchProfilesBlock(f, map[string]workflow.ProfileEntry{
-		"local": {Command: "claude", ModelServer: "$LOCAL_MODEL_URL", StallTimeoutMs: 600000},
+		"local": {Command: "claude", ModelServer: "$LOCAL_MODEL_URL", ModelServerName: "workstation", StallTimeoutMs: 600000},
 	}))
 	data, err := os.ReadFile(f)
 	require.NoError(t, err)
 	got := string(data)
 	assert.Contains(t, got, "tracker:\n  kind: local\nagent:\n  profiles:\n    local:\n      command: claude\n")
-	assert.Contains(t, got, "      model_server: \"$LOCAL_MODEL_URL\"\n")
+	assert.Contains(t, got, "      model_server: \"$LOCAL_MODEL_URL\"\n      model_server_name: \"workstation\"\n")
 	assert.Contains(t, got, "      stall_timeout_ms: 600000\n")
 	assert.NotContains(t, got, "read_timeout_ms")
 	assert.Contains(t, got, "Prompt body.")

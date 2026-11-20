@@ -231,6 +231,9 @@ type ProfileEntry struct {
 	// ModelServer is the profile's model_server as configured ("" omits
 	// the key).
 	ModelServer string
+	// ModelServerName is the profile's model_server_name ("" omits the
+	// key).
+	ModelServerName string
 	// ReadTimeoutMs, TurnTimeoutMs and StallTimeoutMs are the profile's
 	// own timeouts (0 omits the key).
 	ReadTimeoutMs  int
@@ -381,6 +384,9 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				if entry.ModelServer != "" {
 					replacement = append(replacement, lvl3+"model_server: "+strconv.Quote(entry.ModelServer))
+				}
+				if entry.ModelServerName != "" {
+					replacement = append(replacement, lvl3+"model_server_name: "+strconv.Quote(entry.ModelServerName))
 				}
 				for _, t := range []struct {
 					key string

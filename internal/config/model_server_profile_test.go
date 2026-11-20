@@ -52,10 +52,18 @@ func TestProfileModelServerRoundtrip(t *testing.T) {
 		assert.Contains(t, err.Error(), "is not set")
 	})
 	t.Run("malformed values fail load", func(t *testing.T) {
-		for _, bad := range []string{"127.0.0.1:8000", "ftp://host", "http://", "http://$HOST:8000", "[x]"} {
+		for _, bad := range []string{"127.0.0.1:8000", "ftp://host", "http://", "http://$HOST:8000", "[x]", "http://127.0.0.1", "https://box.lan/v1"} {
 			_, err := loadProfiles(t, "    local:\n      command: claude\n      model_server: \""+bad+"\"\n")
 			require.Error(t, err, "model_server %s", bad)
 			assert.Contains(t, err.Error(), "agent.profiles.local.model_server", "model_server %s", bad)
+		}
+	})
+	t.Run("a URL without an explicit port is refused", func(t *testing.T) {
+		t.Setenv("ITERVOX_TEST_MODEL_SERVER_NOPORT", "http://127.0.0.1/")
+		for _, v := range []string{"http://127.0.0.1", "https://box.lan/v1", "$ITERVOX_TEST_MODEL_SERVER_NOPORT"} {
+			_, err := loadProfiles(t, "    local:\n      command: claude\n      model_server: \""+v+"\"\n")
+			require.Error(t, err, v)
+			assert.Contains(t, err.Error(), "has no port; write the port the server listens on", v)
 		}
 	})
 	t.Run("conflict with the command is a load error", func(t *testing.T) {
@@ -96,29 +104,37 @@ func TestModelServerEnvVarPerBackend(t *testing.T) {
 	assert.Equal(t, "OPENAI_BASE_URL=http://127.0.0.1:8000/v1", config.ProfileModelServerEnv(codex, "codex", "claude"))
 }
 
-// TestModelServerAutoPool: two profiles on one server share one pool, an
-// explicit pool wins, and the derived pool is marked so it is not saved.
+// TestModelServerAutoPool: profiles on one server (host and port; the path
+// and the loopback spelling do not matter) share one pool named after the
+// first of them, with no port in the name; another port or host is another
+// pool; an explicit pool wins; the derived pool is marked so it is not
+// saved.
 func TestModelServerAutoPool(t *testing.T) {
 	cfg, err := loadProfiles(t,
-		"    local-a:\n      command: claude\n      model_server: http://127.0.0.1:8000\n"+
-			"    local-b:\n      command: codex\n      model_server: http://localhost:8000/v1\n"+
-			"    local-c:\n      command: claude\n      model_server: http://127.0.0.1:8001\n"+
-			"    box:\n      command: claude\n      model_server: http://GPU-Box.lan:8000\n"+
-			"    pinned:\n      command: claude\n      model_server: http://127.0.0.1:8000\n      pool: mine\n")
+		"    local-b:\n      command: codex\n      model_server: http://localhost:11434/v1\n"+
+			"    local-a:\n      command: claude\n      model_server: http://127.0.0.1:11434\n"+
+			"    local-c:\n      command: claude\n      model_server: http://127.0.0.1:1234\n"+
+			"    box:\n      command: claude\n      model_server: http://GPU-Box.lan:8080\n"+
+			"    pinned:\n      command: claude\n      model_server: http://127.0.0.1:11434\n      pool: mine\n")
 	require.NoError(t, err)
 	p := cfg.Agent.Profiles
-	assert.Equal(t, "local-8000", p["local-a"].Pool)
+	assert.Equal(t, "model-local-a", p["local-a"].Pool, "named after the first profile on the server by name")
 	assert.Equal(t, p["local-a"].Pool, p["local-b"].Pool, "one server, one pool")
 	assert.True(t, p["local-a"].PoolAuto)
-	assert.Equal(t, "local-8001", p["local-c"].Pool, "another port is another server")
-	assert.Equal(t, "model-gpu-box-lan-8000", p["box"].Pool)
-	assert.True(t, config.ValidPoolName(p["box"].Pool))
+	assert.True(t, p["local-b"].PoolAuto)
+	assert.Equal(t, "model-local-c", p["local-c"].Pool, "another port is another server")
+	assert.Equal(t, "model-box", p["box"].Pool, "another host is another server")
 	assert.Equal(t, "mine", p["pinned"].Pool, "an explicit pool wins")
 	assert.False(t, p["pinned"].PoolAuto)
-	assert.Equal(t, "claude/local-8000", config.ProfileRunsLane(p["local-a"], cfg.Agent.Command),
+	for name, profile := range p {
+		assert.True(t, config.ValidPoolName(profile.Pool), name)
+		assert.NotRegexp(t, `[0-9]{2,}`, profile.Pool, "%s: no port in a pool name", name)
+	}
+	assert.Equal(t, "claude/model-local-a", config.ProfileRunsLane(p["local-a"], cfg.Agent.Command),
 		"the breaker lane: a claude limit never holds it")
-	assert.Equal(t, "local-443", config.ModelServerPool("https://[::1]/"))
-	assert.Equal(t, "local-80", config.ModelServerPool("http://127.0.0.2"))
+	assert.Equal(t, "loopback:11434", config.ModelServerKey("http://[::1]:11434/v1"))
+	assert.Equal(t, "gpu-box.lan:8080", config.ModelServerKey("https://GPU-Box.lan:8080"))
+	assert.Empty(t, config.ModelServerKey("http://127.0.0.1"), "no explicit port, no key")
 
 	// Clearing model_server (the dashboard save) drops a derived pool and
 	// keeps an explicit one.
@@ -131,16 +147,75 @@ func TestModelServerAutoPool(t *testing.T) {
 	pinned.ModelServer = ""
 	require.NoError(t, config.ApplyProfileModelServer("pinned", &pinned, "claude"))
 	assert.Equal(t, "mine", pinned.Pool)
+
+	// Over the whole set, the server's pool now follows its remaining
+	// first profile.
+	p["local-a"] = a
+	require.NoError(t, config.AssignModelServerPools(p))
+	assert.Empty(t, p["local-a"].Pool)
+	assert.Equal(t, "model-local-b", p["local-b"].Pool)
 }
 
-// TestModelServerPoolInFallbackMap: a profile_map key names the derived
-// lane, which validation accepts.
+// TestModelServerNamePool: model_server_name names the server's pool for
+// every profile on it (pool: still wins), is saved as its own key, and is
+// refused without a model_server, with a bad name, when two profiles on one
+// server disagree, and when one name would cover two servers.
+func TestModelServerNamePool(t *testing.T) {
+	cfg, err := loadProfiles(t,
+		"    alpha:\n      command: claude\n      model_server: http://127.0.0.1:1234\n"+
+			"    beta:\n      command: codex\n      model_server: http://127.0.0.1:1234/v1\n      model_server_name: studio\n"+
+			"    gamma:\n      command: claude\n      model_server: http://127.0.0.1:1234\n      pool: own\n")
+	require.NoError(t, err)
+	p := cfg.Agent.Profiles
+	assert.Equal(t, "studio", p["beta"].ModelServerName)
+	assert.Empty(t, p["alpha"].ModelServerName)
+	assert.Equal(t, "studio", p["alpha"].Pool, "the name covers every profile on the server")
+	assert.Equal(t, "studio", p["beta"].Pool)
+	assert.True(t, p["alpha"].PoolAuto)
+	assert.Equal(t, "own", p["gamma"].Pool)
+	assert.False(t, p["gamma"].PoolAuto)
+
+	for name, tc := range map[string]struct{ profiles, want string }{
+		"without model_server": {
+			"    alpha:\n      command: claude\n      model_server_name: studio\n",
+			"model_server_name is set without a model_server",
+		},
+		"bad name": {
+			"    alpha:\n      command: claude\n      model_server: http://127.0.0.1:1234\n      model_server_name: Studio_1\n",
+			"must match [a-z0-9-]+",
+		},
+		"two names, one server": {
+			"    alpha:\n      command: claude\n      model_server: http://127.0.0.1:1234\n      model_server_name: one\n" +
+				"    beta:\n      command: claude\n      model_server: http://localhost:1234\n      model_server_name: two\n",
+			"name the same model server",
+		},
+		"one name, two servers": {
+			"    alpha:\n      command: claude\n      model_server: http://127.0.0.1:1234\n      model_server_name: shared\n" +
+				"    beta:\n      command: claude\n      model_server: http://127.0.0.1:11434\n      model_server_name: shared\n",
+			"names two servers",
+		},
+		"a derived name taken by another server": {
+			"    alpha:\n      command: claude\n      model_server: http://127.0.0.1:1234\n" +
+				"    beta:\n      command: claude\n      model_server: http://127.0.0.1:11434\n      model_server_name: model-alpha\n",
+			"names two servers",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadProfiles(t, tc.profiles)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// TestModelServerPoolInFallbackMap: a chain step and a profile_map key name
+// the derived lane (no port in it), which validation accepts.
 func TestModelServerPoolInFallbackMap(t *testing.T) {
 	_, err := loadProfiles(t,
 		"    coder:\n      command: claude\n"+
-			"    coder-local:\n      command: claude\n      model_server: http://127.0.0.1:8000\n"+
-			"  backend_fallback:\n    chain: [claude, claude/local-8000]\n"+
-			"    profile_map:\n      coder:\n        \"claude/local-8000\": coder-local\n")
+			"    coder-local:\n      command: claude\n      model_server: http://127.0.0.1:11434\n      model_server_name: workstation\n"+
+			"  backend_fallback:\n    chain: [claude, codex, claude/workstation]\n"+
+			"    profile_map:\n      coder:\n        \"claude/workstation\": coder-local\n")
 	require.NoError(t, err)
 }
 
@@ -198,10 +273,10 @@ func TestProfileTimeoutFieldsParse(t *testing.T) {
 
 // TestCheckModelServerValue: the shape check the dashboard save uses.
 func TestCheckModelServerValue(t *testing.T) {
-	for _, ok := range []string{"", "http://127.0.0.1:8000", "https://box.lan/v1", "$LOCAL_MODEL_URL"} {
+	for _, ok := range []string{"", "http://127.0.0.1:11434", "https://box.lan:443/v1", "http://[::1]:1234", "$LOCAL_MODEL_URL"} {
 		assert.NoError(t, config.CheckModelServerValue(ok), ok)
 	}
-	for _, bad := range []string{"127.0.0.1:8000", "http://", "${X}", "http://$X"} {
+	for _, bad := range []string{"127.0.0.1:8000", "http://", "${X}", "http://$X", "http://127.0.0.1", "https://box.lan/v1", "http://[::1]/"} {
 		assert.Error(t, config.CheckModelServerValue(bad), bad)
 	}
 }

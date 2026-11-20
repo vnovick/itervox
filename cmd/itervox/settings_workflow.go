@@ -33,6 +33,7 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			Backend:             profile.Backend,
 			Pool:                pool,
 			ModelServer:         strings.TrimSpace(profile.ModelServer),
+			ModelServerName:     strings.TrimSpace(profile.ModelServerName),
 			ReadTimeoutMs:       profile.ReadTimeoutMs,
 			TurnTimeoutMs:       profile.TurnTimeoutMs,
 			StallTimeoutMs:      profile.StallTimeoutMs,

@@ -744,11 +744,11 @@ Also:
 
 **Goal:** a profile whose command points at a model server on this machine is probed by `doctor`. See [Local models](/guides/local-models/).
 
-**Setup:** add a profile to `WORKFLOW.md`:
+**Setup:** pick a free port on this machine (written `<port>` below) and add a profile to `WORKFLOW.md`:
 
 ```yaml
     coder-local:
-      command: ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude
+      command: ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude
       pool: local
       soul_file: .itervox/agents/implementer/SOUL.md
       instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
@@ -756,8 +756,8 @@ Also:
 
 **Steps:**
 
-1. With nothing on port 8000, run `"$ITERVOX" doctor`. Its **Model servers** section reads `ANTHROPIC_BASE_URL=http://127.0.0.1:8000, used by coder-local: not answering`, with a `WARNING:` naming `coli serve`. The exit code does not change because of it.
-2. Start any HTTP server on that port (your model server, or `python3 -m http.server 8000 --bind 127.0.0.1`) and run doctor again: `… used by coder-local: answering`.
+1. With nothing on `<port>`, run `"$ITERVOX" doctor`. Its **Model servers** section reads `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>, used by coder-local: not answering`, with a `WARNING:` naming `coli serve`. The exit code does not change because of it.
+2. Start any HTTP server on that port (your model server, or `python3 -m http.server <port> --bind 127.0.0.1`) and run doctor again: `… used by coder-local: answering`.
 3. **(LLM, with a real model server)** run an issue on `coder-local`. A limit on Anthropic does not hold it: its breaker is the `claude/local` lane.
 4. In the desktop app, the tray menu's **Model servers** section lists the server for the project.
 

@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -13,7 +15,7 @@ import (
 // vendor's, without writing `ANTHROPIC_BASE_URL=…` into the command.
 // Itervox sets the variable the profile's backend reads when it runs the
 // agent (ModelServerEnvVar), gives the profile its own quota pool unless it
-// sets one (ModelServerPool), and lengthens its timeouts (ProfileTimeouts).
+// sets one (AssignModelServerPools), and lengthens its timeouts (ProfileTimeouts).
 
 // Timeouts a profile that uses a model server gets when it does not set its
 // own. A local model reads a long prompt before it prints anything and then
@@ -47,27 +49,86 @@ func ModelServerEnvVar(backend string) string {
 	return ""
 }
 
-// ModelServerPool is the quota pool a profile on rawURL gets when it sets no
-// pool: "local-<port>" for a loopback host (127.0.0.0/8, ::1, localhost),
-// else "model-<host>-<port>", lower-case letters, digits and '-'. Profiles
-// on the same server share it; a hosted backend's limit never holds it.
-func ModelServerPool(rawURL string) string {
+// ModelServerKey is the server a model_server URL names, for sharing a
+// quota pool: the host, lower-cased, and the port, so a claude profile on
+// http://127.0.0.1:<port> and a codex profile on http://127.0.0.1:<port>/v1
+// share one. Every loopback host (127.0.0.0/8, ::1, localhost) is one
+// machine, "loopback". "" for a URL without an explicit port.
+func ModelServerKey(rawURL string) string {
 	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "local"
+	if err != nil || u.Port() == "" {
+		return ""
 	}
 	host := strings.ToLower(u.Hostname())
-	port := u.Port()
-	if port == "" {
-		port = "80"
-		if u.Scheme == "https" {
-			port = "443"
+	if isLoopbackHost(host) {
+		host = "loopback"
+	}
+	return net.JoinHostPort(host, u.Port())
+}
+
+// AssignModelServerPools gives every profile with a model_server and no pool
+// of its own the quota pool of its server (ModelServerKey), with PoolAuto
+// set. Profiles on one server share the pool; its name is the
+// model_server_name one of them sets, else "model-<profile>" after the first
+// of them by name. The name carries no host or port. An explicit pool wins
+// for its profile. Two profiles on one server with different
+// model_server_name values, or one name on two servers, are an error.
+// config.Load calls it after ApplyProfileModelServer on every profile; the
+// dashboard's profile save and delete call it for the whole set, so a
+// derived name can follow a rename.
+func AssignModelServerPools(profiles map[string]AgentProfile) error {
+	type server struct {
+		profiles []string // in name order
+		named    string
+		namedBy  string
+	}
+	servers := map[string]*server{}
+	var keys []string
+	for _, name := range slices.Sorted(maps.Keys(profiles)) {
+		p := profiles[name]
+		if p.PoolAuto {
+			p.Pool, p.PoolAuto = "", false
+			profiles[name] = p
+		}
+		key := ModelServerKey(p.ModelServerURL)
+		if key == "" {
+			continue
+		}
+		s := servers[key]
+		if s == nil {
+			s = &server{}
+			servers[key] = s
+			keys = append(keys, key)
+		}
+		s.profiles = append(s.profiles, name)
+		if given := p.ModelServerName; given != "" {
+			if s.named != "" && s.named != given {
+				return fmt.Errorf("config: agent.profiles.%s.model_server_name %q and agent.profiles.%s.model_server_name %q name the same model server (%s); give them one name",
+					s.namedBy, s.named, name, given, key)
+			}
+			s.named, s.namedBy = given, name
 		}
 	}
-	if isLoopbackHost(host) {
-		return "local-" + port
+	serverOf := map[string]string{}
+	for _, key := range keys {
+		s := servers[key]
+		pool := s.named
+		if pool == "" {
+			pool = poolSlug("model-" + s.profiles[0])
+		}
+		if other, taken := serverOf[pool]; taken {
+			return fmt.Errorf("config: the model server pool %q names two servers (%s and %s); set model_server_name on the profiles of one of them", pool, other, key)
+		}
+		serverOf[pool] = key
+		for _, name := range s.profiles {
+			p := profiles[name]
+			if p.Pool == "" {
+				p.Pool, p.PoolAuto = pool, true
+				profiles[name] = p
+			}
+		}
 	}
-	return poolSlug("model-" + host + "-" + port)
+	return nil
 }
 
 func isLoopbackHost(host string) bool {
@@ -101,14 +162,16 @@ func poolSlug(s string) string {
 	return out
 }
 
-// ApplyProfileModelServer resolves and checks profile's model_server, and
-// sets its pool from it unless the profile sets pool itself. name is the
+// ApplyProfileModelServer resolves and checks profile's model_server and
+// model_server_name, and drops a pool derived earlier (AssignModelServerPools
+// derives it again over the whole set). name is the
 // profile's name (for messages); defaultCommand is agent.command, which a
 // profile without a command runs. config.Load calls it for every profile,
 // and the dashboard's profile save calls it for the saved profile.
 //
-// The model_server is an http(s) URL with a host, or a whole $VAR naming
-// one, read from the environment now; an unset variable is an error. The
+// The model_server is an http(s) URL with a host and an explicit port, or a
+// whole $VAR naming one, read from the environment now; an unset variable is
+// an error. The
 // profile must run claude or codex. A command that assigns the same
 // variable to another URL is a conflict.
 func ApplyProfileModelServer(name string, profile *AgentProfile, defaultCommand string) error {
@@ -117,6 +180,15 @@ func ApplyProfileModelServer(name string, profile *AgentProfile, defaultCommand 
 	profile.ModelServerURL = ""
 	if profile.PoolAuto {
 		profile.Pool, profile.PoolAuto = "", false
+	}
+	profile.ModelServerName = strings.TrimSpace(profile.ModelServerName)
+	if profile.ModelServerName != "" {
+		if raw == "" {
+			return fmt.Errorf("config: agent.profiles.%s.model_server_name is set without a model_server", name)
+		}
+		if !ValidPoolName(profile.ModelServerName) {
+			return fmt.Errorf("config: agent.profiles.%s.model_server_name %q must match [a-z0-9-]+ (it names the quota pool)", name, profile.ModelServerName)
+		}
 	}
 	if raw == "" {
 		return nil
@@ -150,15 +222,13 @@ func ApplyProfileModelServer(name string, profile *AgentProfile, defaultCommand 
 		return fmt.Errorf("%s %q conflicts with %s=%s in the profile's command; keep one of them", where, raw, envVar, assigned)
 	}
 	profile.ModelServerURL = resolved
-	if profile.Pool == "" {
-		profile.Pool, profile.PoolAuto = ModelServerPool(resolved), true
-	}
 	return nil
 }
 
 // CheckModelServerValue checks the shape of a model_server value without
 // reading the environment: empty, a whole $VAR, or an http(s) URL with a
-// host. The dashboard's profile save calls it before saving.
+// host and an explicit port. The dashboard's profile save and quickstart
+// call it before saving.
 func CheckModelServerValue(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || envVarRe.MatchString(raw) {
@@ -170,7 +240,10 @@ func CheckModelServerValue(raw string) error {
 	return checkModelServerURL(raw)
 }
 
-// checkModelServerURL accepts an http(s) URL with a host.
+// checkModelServerURL accepts an http(s) URL with a host and an explicit
+// port. The port is required, not taken from the scheme: local model
+// servers listen on ports of their own, and a URL without one would
+// silently mean 80 or 443, which is rarely where the server is.
 func checkModelServerURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -181,6 +254,9 @@ func checkModelServerURL(raw string) error {
 	}
 	if u.Host == "" || u.Hostname() == "" {
 		return fmt.Errorf("has no host")
+	}
+	if u.Port() == "" {
+		return fmt.Errorf("has no port; write the port the server listens on, as in %s://%s:<port>", u.Scheme, u.Host)
 	}
 	return nil
 }
@@ -254,16 +330,26 @@ func ProfileTimeouts(profile AgentProfile, defaultCommand string, agent RunTimeo
 	}
 }
 
-// profileModelServerFields reads model_server and the three per-profile
-// timeouts. A timeout is absent or a positive number of milliseconds: a
+// profileModelServerFields reads model_server, model_server_name and the
+// three per-profile timeouts. A timeout is absent or a positive number of milliseconds: a
 // profile cannot turn one off (the agent-level setting does that).
-func profileModelServerFields(m map[string]any, name string) (modelServer string, t RunTimeouts, err error) {
-	if raw, ok := m["model_server"]; ok && raw != nil {
+func profileModelServerFields(m map[string]any, name string) (modelServer, serverName string, t RunTimeouts, err error) {
+	str := func(key string) (string, error) {
+		raw, ok := m[key]
+		if !ok || raw == nil {
+			return "", nil
+		}
 		s, isStr := raw.(string)
 		if !isStr {
-			return "", t, fmt.Errorf("config: agent.profiles.%s.model_server must be a string, got %T", name, raw)
+			return "", fmt.Errorf("config: agent.profiles.%s.%s must be a string, got %T", name, key, raw)
 		}
-		modelServer = strings.TrimSpace(s)
+		return strings.TrimSpace(s), nil
+	}
+	if modelServer, err = str("model_server"); err != nil {
+		return "", "", t, err
+	}
+	if serverName, err = str("model_server_name"); err != nil {
+		return "", "", t, err
 	}
 	read := func(key string) (int, error) {
 		raw, ok := m[key]
@@ -277,13 +363,13 @@ func profileModelServerFields(m map[string]any, name string) (modelServer string
 		return n, nil
 	}
 	if t.ReadMs, err = read("read_timeout_ms"); err != nil {
-		return "", t, err
+		return "", "", t, err
 	}
 	if t.TurnMs, err = read("turn_timeout_ms"); err != nil {
-		return "", t, err
+		return "", "", t, err
 	}
 	if t.StallMs, err = read("stall_timeout_ms"); err != nil {
-		return "", t, err
+		return "", "", t, err
 	}
-	return modelServer, t, nil
+	return modelServer, serverName, t, nil
 }

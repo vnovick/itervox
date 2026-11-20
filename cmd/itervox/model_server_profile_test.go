@@ -52,7 +52,8 @@ Prompt.
 
 // TestUpsertProfileModelServer: the dashboard save path. A save without
 // modelServer keeps it (and the profile's timeouts); a save with one sets
-// it, re-derives the pool and never writes the derived pool; "" clears it;
+// it, re-derives the pools of the whole set and never writes the derived
+// pool; "" clears it;
 // a value the profile's backend cannot use is refused.
 func TestUpsertProfileModelServer(t *testing.T) {
 	t.Setenv("ITERVOX_TEST_LOCAL_URL", "http://127.0.0.1:8100")
@@ -77,8 +78,23 @@ func TestUpsertProfileModelServer(t *testing.T) {
 	}, "local"))
 	live := adapter.orch.ProfilesCfg()["local"]
 	assert.Equal(t, "http://127.0.0.1:9000", live.ModelServerURL, "the live profile is resolved too")
-	assert.Equal(t, "local-9000", live.Pool, "the pool follows the new server")
-	assert.Equal(t, "local-9000", reload().Pool)
+	assert.Equal(t, "model-local", live.Pool, "the pool is named after the profile, not the port")
+	assert.True(t, live.PoolAuto)
+	assert.Equal(t, "model-local", reload().Pool)
+
+	// A second profile on the same server joins its pool, which is named
+	// after the first of them by name; deleting it gives the name back.
+	require.NoError(t, adapter.UpsertProfile("another", server.ProfileDef{
+		Command: "claude", Enabled: true, ModelServer: "http://localhost:9000", ModelServerSet: true,
+	}, ""))
+	profiles := adapter.orch.ProfilesCfg()
+	assert.Equal(t, "model-another", profiles["another"].Pool)
+	assert.Equal(t, "model-another", profiles["local"].Pool, "one server, one pool")
+	require.NoError(t, adapter.DeleteProfile("another"))
+	assert.Equal(t, "model-local", adapter.orch.ProfilesCfg()["local"].Pool)
+	assert.Equal(t, "model-local", reload().Pool)
+	raw, _ = os.ReadFile(workflowPath)
+	assert.NotContains(t, string(raw), "pool:", "the derived pool is never written")
 
 	require.NoError(t, adapter.UpsertProfile("local", server.ProfileDef{
 		Command: "claude --model m", Enabled: true, ModelServer: "", ModelServerSet: true,
@@ -92,6 +108,23 @@ func TestUpsertProfileModelServer(t *testing.T) {
 	}, "local")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "model_server works with claude and codex profiles")
+}
+
+// TestUpsertProfileKeepsModelServerName: model_server_name is load-time
+// (the dashboard does not edit it): a save carries it over, writes it back
+// and keeps naming the pool.
+func TestUpsertProfileKeepsModelServerName(t *testing.T) {
+	workflowPath, adapter := modelServerWorkflow(t, "http://127.0.0.1:9000\"\n      model_server_name: \"workstation")
+	require.Equal(t, "workstation", adapter.orch.ProfilesCfg()["local"].Pool)
+	require.NoError(t, adapter.UpsertProfile("local", server.ProfileDef{Command: "claude --model m", Enabled: true}, "local"))
+	raw, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "model_server_name: \"workstation\"")
+	assert.NotContains(t, string(raw), "pool:")
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, "workstation", cfg.Agent.Profiles["local"].Pool)
+	assert.Equal(t, "workstation", adapter.orch.ProfilesCfg()["local"].Pool)
 }
 
 // TestDoctorAndModelServersListModelServerProfiles: doctor probes a
@@ -120,7 +153,7 @@ func TestDoctorAndModelServersListModelServerProfiles(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/model-servers", nil))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	pool := config.ModelServerPool(up.URL)
+	pool := "model-local" // the server's pool, named after its one profile
 	assert.JSONEq(t, `{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"`+up.URL+`","profiles":["local"],"pools":["`+pool+`"],"remote":false,"modelServer":true}]}`,
 		rec.Body.String())
 

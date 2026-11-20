@@ -93,11 +93,13 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		// so a dashboard save does not strip them from WORKFLOW.md.
 		PermissionMode: existingProfile.PermissionMode,
 		// The quota pool (backend_fallback lanes) is load-time only; one
-		// derived from model_server is derived again below.
+		// derived from model_server is derived again below, over the whole
+		// set (AssignModelServerPools).
 		Pool:              existingProfile.Pool,
 		PoolAuto:          existingProfile.PoolAuto,
 		ModelServer:       existingProfile.ModelServer,
-		ReadTimeoutMs:     existingProfile.ReadTimeoutMs, // per-profile timeouts: load-time, carried over
+		ModelServerName:   existingProfile.ModelServerName, // load-time, carried over
+		ReadTimeoutMs:     existingProfile.ReadTimeoutMs,   // per-profile timeouts: load-time, carried over
 		TurnTimeoutMs:     existingProfile.TurnTimeoutMs,
 		StallTimeoutMs:    existingProfile.StallTimeoutMs,
 		RequireEvidence:   existingProfile.RequireEvidence,
@@ -140,6 +142,11 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		}
 	}
 	finalProfiles[name] = nextProfile
+	// A derived pool is named after the first profile on its server, so
+	// a save (new URL, rename) can change other profiles' pools too.
+	if err := config.AssignModelServerPools(finalProfiles); err != nil {
+		return err
+	}
 	automations := a.orch.AutomationsCfg()
 	automationsChanged := false
 	if renamingProfile {
@@ -274,6 +281,10 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	defer unlock()
 	profiles := a.orch.ProfilesCfg()
 	delete(profiles, name)
+	// The deleted profile may have named its server's derived pool.
+	if err := config.AssignModelServerPools(profiles); err != nil {
+		return err
+	}
 	automations, automationsChanged := removeAutomationsForProfile(a.orch.AutomationsCfg(), name)
 	reviewerProfile, autoReview := a.orch.ReviewerCfg()
 	reviewerChanged := false

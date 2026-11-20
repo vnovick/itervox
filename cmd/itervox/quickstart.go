@@ -93,8 +93,8 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 	fs.BoolVar(&opts.Yes, "y", false, "shorthand for --yes")
 	fs.BoolVar(&opts.NoStart, "no-start", false, "stop after the checks; do not start the daemon")
 	fs.DurationVar(&opts.ReadyTimeout, "ready-timeout", quickstartDefaultReadyTimeout, "how long to wait for the daemon to report ready")
-	fs.StringVar(&opts.ModelServer, "model-server", "", "add a `local` profile whose agent uses this model server URL (e.g. "+quickstartDefaultModelServer+"), without asking")
-	fs.BoolVar(&opts.NoLocalModel, "no-local-model", false, "do not ask about a local model server")
+	fs.StringVar(&opts.ModelServer, "model-server", "", "add a profile named local whose agent uses the model server at `URL`, without asking; the URL includes its port, http://127.0.0.1:<port> (no port is assumed)")
+	fs.BoolVar(&opts.NoLocalModel, "no-local-model", false, "do not look for or ask about a local model server")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}

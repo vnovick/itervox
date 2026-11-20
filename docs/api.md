@@ -1928,7 +1928,7 @@ profile's `model_server`, under the variable its backend reads — from the
 live profile configuration, and never probes them:
 
 ```json
-{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:8000","profiles":["(default)","coder-local"],"pools":["local"],"remote":false}]}
+{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:<port>","profiles":["(default)","coder-local"],"pools":["local"],"remote":false}]}
 ```
 
 One row per variable and URL. `profiles` are the enabled profiles using it
@@ -1938,7 +1938,7 @@ One row per variable and URL. `profiles` are the enabled profiles using it
 from a variable in a command (`$LOCAL_MODEL_URL`) has `"unchecked": true`;
 a `model_server` variable is resolved at load and listed by its value. A row
 that a profile's `model_server` names has `"modelServer": true`, and its pool
-is the profile's derived pool (`local-<port>`) unless the profile sets one. Viewer scope;
+is the server's derived pool (its `model_server_name`, else `model-<profile>` after its first profile by name) unless the profile sets one. Viewer scope;
 below admin, credentials in a URL are redacted. With no model server
 configured the list is empty.
 
@@ -2603,7 +2603,7 @@ Profile update body:
   "enabled": true,
   "allowedActions": ["comment", "provide_input"],
   "createIssueState": "Todo",
-  "modelServer": "http://127.0.0.1:8000",
+  "modelServer": "http://127.0.0.1:<port>",
   "originalName": "old-name"
 }
 ```

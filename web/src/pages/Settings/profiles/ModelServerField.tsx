@@ -1,6 +1,6 @@
 import { BACKEND_LABELS, type AgentBackend } from '../../../lib/backends';
 import { fieldLabelCls, helperTextCls, inputCls } from '../formStyles';
-import { DEFAULT_MODEL_SERVER_URL, MODEL_SERVER_ENV_VARS } from './modelServer';
+import { MODEL_SERVER_ENV_VARS, MODEL_SERVER_URL_EXAMPLE } from './modelServer';
 
 interface ModelServerFieldProps {
   backend: AgentBackend;
@@ -29,7 +29,7 @@ export function ModelServerField({ backend, value, error, onChange }: ModelServe
         onChange={(event) => {
           onChange(event.target.value);
         }}
-        placeholder={`${DEFAULT_MODEL_SERVER_URL} or $LOCAL_MODEL_URL`}
+        placeholder={`${MODEL_SERVER_URL_EXAMPLE} or $LOCAL_MODEL_URL`}
         aria-invalid={error ? true : undefined}
         aria-describedby="profile-model-server-help"
         className={`${inputCls} font-mono text-xs`}

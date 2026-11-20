@@ -4,8 +4,11 @@ import type { AgentBackend } from '../../../lib/backends';
 // profile's agent talks to instead of its vendor's. The daemon sets the
 // variable the profile's backend reads when it runs the agent.
 
-/** Offered as the placeholder; the URL `itervox quickstart` defaults to. */
-export const DEFAULT_MODEL_SERVER_URL = 'http://127.0.0.1:8000';
+/**
+ * The placeholder's URL shape. No port is assumed: local model servers listen
+ * on ports of their own, so the operator writes the one theirs uses.
+ */
+export const MODEL_SERVER_URL_EXAMPLE = 'http://127.0.0.1:<port>';
 
 /**
  * The variable each backend's CLI reads for its model server, as the daemon
@@ -17,12 +20,24 @@ export const MODEL_SERVER_ENV_VARS: Partial<Record<AgentBackend, string>> = {
   codex: 'OPENAI_BASE_URL',
 };
 
-const URL_HINT = `Enter an http:// or https:// URL, like ${DEFAULT_MODEL_SERVER_URL}.`;
+const URL_HINT = `Enter an http:// or https:// URL with its port, like ${MODEL_SERVER_URL_EXAMPLE}.`;
+const PORT_HINT = `Add the port the server listens on, like ${MODEL_SERVER_URL_EXAMPLE}.`;
+
+/**
+ * Whether the URL text writes a port in its authority. Read from the text,
+ * not URL.port, which is empty for a scheme's default port (http://h:80).
+ */
+function hasExplicitPort(value: string): boolean {
+  const rest = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const authority = rest.split(/[/?#]/, 1)[0] ?? '';
+  const host = authority.slice(authority.lastIndexOf('@') + 1);
+  return /^(\[[^\]]*\]|[^:[\]]+):\d+$/.test(host);
+}
 
 /**
  * Why a model_server value cannot be saved for backend, or null. Mirrors
  * config.CheckModelServerValue: empty, a whole $VAR, or an http(s) URL with
- * a host — and the daemon's backend check.
+ * a host and an explicit port — and the daemon's backend check.
  */
 export function modelServerProblem(value: string, backend: AgentBackend): string | null {
   const v = value.trim();
@@ -41,5 +56,6 @@ export function modelServerProblem(value: string, backend: AgentBackend): string
   if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '') {
     return URL_HINT;
   }
+  if (!hasExplicitPort(v)) return PORT_HINT;
   return null;
 }

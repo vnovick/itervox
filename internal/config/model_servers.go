@@ -7,7 +7,7 @@ import (
 )
 
 // Model servers: the base URLs a profile command points its agent CLI at
-// (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`), for a local engine
+// (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude`), for a local engine
 // such as colibri or a proxy. `itervox doctor` probes them; the desktop app
 // reads them from GET /api/v1/model-servers and probes them itself. Both a
 // profile's model_server (model_server_profile.go) and assignments in its
@@ -19,7 +19,7 @@ import (
 var ModelServerEnvVars = []string{"ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"}
 
 // ModelServerURLs returns the model-server variables assigned in command
-// before the program, e.g. `ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`,
+// before the program, e.g. `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude`,
 // through an optional `env` prefix and its flags, quotes stripped.
 func ModelServerURLs(command string) map[string]string {
 	out := map[string]string{}
