@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -25,11 +27,11 @@ func checkIssueRef(id string) error {
 func issuePath(id string) string { return "/rest/api/3/issue/" + url.PathEscape(id) }
 
 // CreateComment posts body as a comment on the issue (a numeric id or a key)
-// and returns the stored comment. The text is sent as one ADF paragraph per
-// line, so Markdown is kept as typed. A body longer than Jira's content limit
-// is shortened first (fitContentLimit), and the returned comment holds the
-// shortened text. A body that is blank is refused, and an invalid issue id is
-// refused, both before any request.
+// and returns the stored comment. Markdown in the text is sent as Jira rich
+// text that reads back as the same text (see textToADF and postText). A body
+// longer than Jira's content limit is shortened first (fitContentLimit), and
+// the returned comment holds the shortened text. A body that is blank is
+// refused, and an invalid issue id is refused, both before any request.
 func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
 	return c.createComment(ctx, "jira_create_comment", issueID, body, "")
 }
@@ -57,12 +59,17 @@ func (c *Client) createComment(ctx context.Context, op, issueID, body, key strin
 		return nil, fmt.Errorf("%s: empty body", op)
 	}
 	body = fitContentLimit(body)
-	req := map[string]any{"body": textToADF(body)}
-	if key != "" {
-		req["properties"] = []any{map[string]any{"key": commentKeyProperty, "value": map[string]any{"key": key}}}
+	// The key travels in the same request as the text, so the plain retry
+	// of postText carries it too.
+	withDoc := func(doc map[string]any) any {
+		req := map[string]any{"body": doc}
+		if key != "" {
+			req["properties"] = []any{map[string]any{"key": commentKeyProperty, "value": map[string]any{"key": key}}}
+		}
+		return req
 	}
 	var raw map[string]any
-	if err := c.do(ctx, "POST", issuePath(issueID)+"/comment", req, &raw); err != nil {
+	if err := c.postText(ctx, issuePath(issueID)+"/comment", body, withDoc, &raw); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	cm := normalizeComment(raw)
@@ -73,6 +80,24 @@ func (c *Client) createComment(ctx context.Context, op, issueID, body, key strin
 	// the same way normalizeComment adds it on a read.
 	cm.Body = tracker.MarkCommentKey(cm.Body, key)
 	return &cm, nil
+}
+
+// postText posts a request that carries text as an ADF document; withDoc
+// returns the request with the document in it. If Jira refuses the rich
+// document as invalid (400), the text is sent once more as plain paragraphs,
+// as the adapter sent all text before Markdown support, so that formatting
+// can never cost a comment or an issue. Text that has no rich part is not
+// sent twice.
+func (c *Client) postText(ctx context.Context, path, text string, withDoc func(doc map[string]any) any, out any) error {
+	rich := textToADF(text)
+	err := c.do(ctx, "POST", path, withDoc(rich), out)
+	var status *tracker.APIStatusError
+	if errors.As(err, &status) && status.Status == http.StatusBadRequest {
+		if plain := plainTextToADF(text); !reflect.DeepEqual(plain, rich) {
+			err = c.do(ctx, "POST", path, withDoc(plain), out)
+		}
+	}
+	return err
 }
 
 // UpdateIssueState moves the issue to the status named stateName (compared
@@ -137,7 +162,8 @@ func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string)
 // CreateIssue creates a follow-up issue in the configured project and returns
 // it as Jira now stores it. With a source issue, the new issue copies the
 // source's issue type, unless that type is a sub-task; then, and with no
-// source, it is a "Task". Labels are trimmed and de-duplicated without case.
+// source, it is a "Task". The body is the description, sent like a comment
+// (see postText). Labels are trimmed and de-duplicated without case.
 // When in.BlockedBySource is set, the source is linked as the blocker inside
 // the create request, so a rejected create leaves nothing behind. When
 // in.State is set, the issue is moved there; if the move fails, the new issue
@@ -170,9 +196,6 @@ func (c *Client) CreateIssue(ctx context.Context, sourceIssueID string, in track
 		"summary":   in.Title,
 		"issuetype": issuetype,
 	}
-	if strings.TrimSpace(in.Body) != "" {
-		fields["description"] = textToADF(fitContentLimit(in.Body))
-	}
 	if labels := cleanLabels(in.Labels); len(labels) > 0 {
 		fields["labels"] = labels
 	}
@@ -191,7 +214,13 @@ func (c *Client) CreateIssue(ctx context.Context, sourceIssueID string, in track
 		ID  string `json:"id"`
 		Key string `json:"key"`
 	}
-	if err := c.do(ctx, "POST", "/rest/api/3/issue", req, &created); err != nil {
+	withDescription := func(doc map[string]any) any {
+		if strings.TrimSpace(in.Body) != "" {
+			fields["description"] = doc
+		}
+		return req
+	}
+	if err := c.postText(ctx, "/rest/api/3/issue", fitContentLimit(in.Body), withDescription, &created); err != nil {
 		return nil, fmt.Errorf("jira_create_issue: %w", err)
 	}
 	if strings.TrimSpace(in.State) != "" {

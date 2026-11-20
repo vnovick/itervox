@@ -11,3 +11,6 @@ func (c *Client) SetCommentPageSize(n int) { c.commentPageSize = n }
 
 // TextToADF exposes textToADF to package tests.
 func TextToADF(text string) map[string]any { return textToADF(text) }
+
+// PlainTextToADF exposes plainTextToADF to package tests.
+func PlainTextToADF(text string) map[string]any { return plainTextToADF(text) }

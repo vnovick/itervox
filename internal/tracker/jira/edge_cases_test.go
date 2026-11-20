@@ -118,5 +118,7 @@ func TestADFKeepsHyperlinkTargets(t *testing.T) {
 
 	got := jira.ADFToText(doc)
 
-	assert.Equal(t, "See the failing run (https://ci.example.com/run/42), https://same.example.com and no address", got)
+	// A link reads as a Markdown link; a bare address, or a link without
+	// one, reads as its text.
+	assert.Equal(t, "See [the failing run](https://ci.example.com/run/42), https://same.example.com and no address", got)
 }

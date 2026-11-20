@@ -146,8 +146,9 @@ func TestADFToTextFlattensParagraphsListsAndCode(t *testing.T) {
 		map[string]any{"type": "panel", "content": []any{para(text("nested"))}},
 	}}
 
-	// Blocks are separated by one blank line, as in Markdown.
-	want := "Title\n\none\ntwo @Ann\n\n- a\n- b\n\n- c\n\n```\nx := 1\n```\n\nhttps://example.com/pX\n\nnested"
+	// Blocks are separated by one blank line, as in Markdown. The heading and
+	// the numbered list read as Markdown too.
+	want := "## Title\n\none\ntwo @Ann\n\n- a\n- b\n\n1. c\n\n```\nx := 1\n```\n\nhttps://example.com/pX\n\nnested"
 	assert.Equal(t, want, jira.ADFToText(doc))
 	assert.Equal(t, "plain", jira.ADFToText("plain"))
 	assert.Empty(t, jira.ADFToText(nil))

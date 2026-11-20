@@ -386,3 +386,110 @@ func TestJiraLiveScope(t *testing.T) {
 		t.Logf("by id %s (%s): in scope %v", is.Identifier, nameOf[is.ID], match)
 	}
 }
+
+// TestJiraLiveMarkdownRoundTrip posts every text in itervoxTexts, and
+// everyConstruct, as comments on a new issue, reads them back through the
+// adapter, and checks they are identical. It then reads the stored comments
+// from Jira itself and checks that they hold real rich nodes, and that Jira
+// renders them as HTML headings, lists and code. It needs the same
+// environment as TestJiraLiveRoundTrip, logs the issue key, and moves the
+// issue to the done state at the end.
+func TestJiraLiveMarkdownRoundTrip(t *testing.T) {
+	endpoint := os.Getenv("JIRA_ENDPOINT")
+	project := os.Getenv("JIRA_PROJECT")
+	apiKey := os.Getenv("JIRA_API_KEY")
+	if endpoint == "" || project == "" || apiKey == "" {
+		t.Skip("set JIRA_ENDPOINT, JIRA_PROJECT and JIRA_API_KEY to run the live Markdown round trip")
+	}
+	ctx := t.Context()
+	c := jira.NewClient(jira.ClientConfig{Endpoint: endpoint, APIKey: apiKey, ProjectSlug: project})
+
+	var description string
+	for _, tc := range itervoxTexts {
+		if strings.HasPrefix(tc.name, "verify-skill issue description") {
+			description = tc.text
+		}
+	}
+	require.NotEmpty(t, description)
+	is, err := c.CreateIssue(ctx, "", tracker.NewIssue{
+		Title: fmt.Sprintf("itervox Markdown round trip %d", time.Now().Unix()),
+		Body:  description,
+	})
+	require.NoError(t, err)
+	t.Logf("test issue: %s", is.Identifier)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := c.UpdateIssueState(cleanupCtx, is.ID, envOr("JIRA_DONE_STATE", "Done")); err != nil {
+			t.Logf("cleanup: move %s to done: %v", is.Identifier, err)
+		}
+	})
+	require.NotNil(t, is.Description)
+	assert.Equal(t, description, *is.Description, "the description reads back exactly")
+
+	var sent []string
+	for _, tc := range itervoxTexts {
+		sent = append(sent, strings.TrimRight(tc.text, " \t\r\n"))
+	}
+	sent = append(sent, everyConstruct)
+	for _, text := range sent {
+		_, err := c.CreateComment(ctx, is.ID, text)
+		require.NoError(t, err, "post %q", text)
+	}
+
+	// a. through the adapter: every comment reads back exactly.
+	d, err := c.FetchIssueDetail(ctx, is.ID)
+	require.NoError(t, err)
+	require.Len(t, d.Comments, len(sent))
+	same := 0
+	for i, cm := range d.Comments {
+		if assert.Equal(t, sent[i], cm.Body, "comment %d", i) {
+			same++
+		}
+	}
+	t.Logf("adapter read-back: %d of %d comments identical", same, len(sent))
+	assert.True(t, strings.HasPrefix(d.Comments[0].Body, questionPrefix), "the daemon still finds its question")
+	assert.True(t, tracker.IsManagedComment(d.Comments[0]), "the managed marker survives")
+
+	// b. from Jira itself: the stored bodies hold rich nodes, and Jira renders
+	// them as HTML.
+	user, token, _ := strings.Cut(apiKey, ":")
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		strings.TrimRight(endpoint, "/")+"/rest/api/3/issue/"+is.Identifier+"/comment?maxResults=100&expand=renderedBody", nil)
+	require.NoError(t, err)
+	req.SetBasicAuth(user, token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var raw struct {
+		Comments []struct {
+			Body         map[string]any `json:"body"`
+			RenderedBody string         `json:"renderedBody"`
+		} `json:"comments"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&raw))
+	require.Len(t, raw.Comments, len(sent))
+	stored := map[string]bool{}
+	var html strings.Builder
+	for _, cm := range raw.Comments {
+		for _, typ := range adfTypes(cm.Body) {
+			stored[typ] = true
+		}
+		html.WriteString(cm.RenderedBody)
+	}
+	for _, want := range []string{"heading", "strong", "em", "code", "link", "codeBlock", "bulletList", "orderedList", "listItem", "blockquote", "hardBreak"} {
+		assert.True(t, stored[want], "Jira stored a %s", want)
+	}
+	// renderedBody is Jira's older HTML rendering: bold is <b>, code is <tt>.
+	for _, want := range []string{"<h1", "<h2", "<b>", "<em>", "<tt>", "<pre", "<ul", "<ol", "<blockquote>", "<a href="} {
+		assert.Contains(t, html.String(), want, "Jira rendered %s", want)
+	}
+	question, err := json.Marshal(raw.Comments[0].Body)
+	require.NoError(t, err)
+	t.Logf("stored body of the question comment: %s", question)
+	last, err := json.Marshal(raw.Comments[len(raw.Comments)-1].Body)
+	require.NoError(t, err)
+	t.Logf("stored body of the every-construct comment: %s", last)
+}

@@ -3,6 +3,7 @@ package jira
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf16"
 )
@@ -109,10 +110,14 @@ func splitTrailingMarkers(text string) (body, tail string) {
 	return text[:end], tail
 }
 
-// adfToText flattens an Atlassian Document Format tree to plain text. Blocks
-// (paragraphs, headings, lists, code blocks) are separated by one blank line,
-// as in Markdown. A string is returned as is; any other non-map value gives
-// "". Trailing whitespace is trimmed.
+// adfToText prints an Atlassian Document Format tree as Markdown. For the
+// subset textToADF writes (headings, **strong**, _em_, `code`, links, fenced
+// code, "- " and "1. " lists, "> " quotes) it gives back exactly the text that
+// was written, so Itervox recognises its own comments. Rich text a person
+// wrote in Jira reads as the same Markdown. Blocks are separated by one blank
+// line. A node it does not know gives the text of its children, or nothing.
+// A string is returned as is; any other non-map value gives "". Trailing
+// whitespace is trimmed.
 func adfToText(v any) string {
 	if s, ok := v.(string); ok {
 		return s
@@ -121,95 +126,188 @@ func adfToText(v any) string {
 	if !ok {
 		return ""
 	}
-	var sb strings.Builder
-	writeADF(&sb, node)
-	return strings.TrimRight(sb.String(), " \t\r\n")
+	return strings.TrimRight(blockText(node), " \t\r\n")
 }
 
-// writeADF appends the text of one ADF node and its children to sb.
-func writeADF(sb *strings.Builder, node map[string]any) {
-	attr := func(key string) string {
-		attrs, _ := node["attrs"].(map[string]any)
-		s, _ := attrs[key].(string)
-		return s
-	}
+// blockText prints one block node and everything in it.
+func blockText(node map[string]any) string {
 	switch node["type"] {
-	case "text":
-		s, _ := node["text"].(string)
-		sb.WriteString(s)
-		if href := linkHref(node); href != "" && href != s {
-			sb.WriteString(" (" + href + ")")
-		}
-	case "hardBreak":
-		sb.WriteString("\n")
-	case "paragraph", "heading":
-		writeADFChildren(sb, node)
-		sb.WriteString("\n\n")
+	case "paragraph":
+		return inlineText(children(node))
+	case "heading":
+		level := min(max(intAttr(node, "level", 1), 1), 6)
+		return strings.Repeat("#", level) + " " + inlineText(children(node))
 	case "bulletList", "orderedList":
-		writeADFChildren(sb, node)
-		sb.WriteString("\n")
-	case "listItem":
-		var item strings.Builder
-		writeADFChildren(&item, node)
-		sb.WriteString("- " + strings.TrimRight(item.String(), "\n") + "\n")
+		return listText(node)
 	case "codeBlock":
 		var code strings.Builder
-		writeADFChildren(&code, node)
-		sb.WriteString("```\n" + code.String() + "\n```\n\n")
-	case "mention", "emoji":
-		sb.WriteString(attr("text"))
-	case "inlineCard":
-		sb.WriteString(attr("url"))
-	default: // doc, panel, and any unknown node
-		writeADFChildren(sb, node)
+		for _, ch := range children(node) {
+			s, _ := ch["text"].(string) // a code block holds unmarked text only
+			code.WriteString(s)
+		}
+		if code.Len() > 0 {
+			code.WriteString("\n")
+		}
+		return "```" + strAttr(node, "language") + "\n" + code.String() + "```"
+	case "blockquote":
+		lines := strings.Split(blocksText(children(node), "\n\n"), "\n")
+		for i, l := range lines {
+			if l == "" {
+				lines[i] = ">"
+			} else {
+				lines[i] = "> " + l
+			}
+		}
+		return strings.Join(lines, "\n")
+	case "rule":
+		return "---"
+	case "text", "hardBreak", "mention", "emoji", "inlineCard":
+		return inlineText([]map[string]any{node})
+	default: // doc, panel, table, expand and any other node
+		return blocksText(children(node), "\n\n")
 	}
 }
 
-// linkHref returns the address of the first link mark on a text node, or "".
-func linkHref(node map[string]any) string {
-	marks, _ := node["marks"].([]any)
-	for _, m := range marks {
-		mark, _ := m.(map[string]any)
-		if mark["type"] == "link" {
-			return str(nested(mark, "attrs", "href"))
+// blocksText prints block nodes joined by sep, leaving out the ones that
+// print nothing (media, an empty paragraph).
+func blocksText(nodes []map[string]any, sep string) string {
+	var parts []string
+	for _, n := range nodes {
+		if s := blockText(n); s != "" {
+			parts = append(parts, s)
 		}
 	}
-	return ""
+	return strings.Join(parts, sep)
 }
 
-func writeADFChildren(sb *strings.Builder, node map[string]any) {
-	children, _ := node["content"].([]any)
-	for _, ch := range children {
+// listText prints a list, one "- " or "1. " line per item. The lines inside an
+// item (a nested list, a hard break) are indented under the item's marker.
+func listText(node map[string]any) string {
+	n := intAttr(node, "order", 1)
+	var lines []string
+	for _, item := range children(node) {
+		marker := "- "
+		if node["type"] == "orderedList" {
+			marker = fmt.Sprintf("%d. ", n)
+			n++
+		}
+		text := blocksText(children(item), "\n")
+		lines = append(lines, marker+strings.ReplaceAll(text, "\n", "\n"+strings.Repeat(" ", len(marker))))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// mark is how one ADF mark prints in Markdown.
+type mark struct{ open, close string }
+
+var (
+	strongMark = mark{"**", "**"}
+	emMark     = mark{"_", "_"}
+	codeMark   = mark{"`", "`"}
+)
+
+// inlineText prints inline nodes. A mark opens where it starts and closes
+// where it ends, so text a person styled reads as **bold _both_ bold**, not
+// as one pair of marks per text node.
+func inlineText(nodes []map[string]any) string {
+	var sb strings.Builder
+	var open []mark
+	closeTo := func(n int) {
+		for len(open) > n {
+			sb.WriteString(open[len(open)-1].close)
+			open = open[:len(open)-1]
+		}
+	}
+	for _, node := range nodes {
+		switch node["type"] {
+		case "text":
+			s, _ := node["text"].(string)
+			want := marksOf(node, s)
+			// Keep the marks that stay open. ADF cannot put strong or em on
+			// code, so a code node inside bold text keeps the bold open.
+			keep := 0
+			for keep < len(open) && (slices.Contains(want, open[keep]) ||
+				slices.Contains(want, codeMark) && (open[keep] == strongMark || open[keep] == emMark)) {
+				keep++
+			}
+			closeTo(keep)
+			for _, m := range want {
+				if !slices.Contains(open, m) {
+					sb.WriteString(m.open)
+					open = append(open, m)
+				}
+			}
+			sb.WriteString(s)
+		case "hardBreak":
+			closeTo(0)
+			sb.WriteString("\n")
+		case "mention", "emoji":
+			closeTo(0)
+			sb.WriteString(strAttr(node, "text"))
+		case "inlineCard":
+			closeTo(0)
+			sb.WriteString(strAttr(node, "url"))
+		default: // status, date and any other inline node
+			closeTo(0)
+			sb.WriteString(inlineText(children(node)))
+		}
+	}
+	closeTo(0)
+	return sb.String()
+}
+
+// marksOf returns the Markdown marks of a text node, in the node's order.
+// Marks Markdown has no form for (strike, underline, colour) are left out. A
+// link whose address is its text, or that has no address, prints as the text.
+func marksOf(node map[string]any, text string) []mark {
+	var out []mark
+	list, _ := node["marks"].([]any)
+	for _, m := range list {
+		am, _ := m.(map[string]any)
+		switch am["type"] {
+		case "strong":
+			out = append(out, strongMark)
+		case "em":
+			out = append(out, emMark)
+		case "code":
+			out = append(out, codeMark)
+		case "link":
+			if href := strAttr(am, "href"); href != "" && href != text {
+				out = append(out, mark{"[", "](" + href + ")"})
+			}
+		}
+	}
+	return out
+}
+
+// children returns the node's content entries that are nodes.
+func children(node map[string]any) []map[string]any {
+	list, _ := node["content"].([]any)
+	var out []map[string]any
+	for _, ch := range list {
 		if m, ok := ch.(map[string]any); ok {
-			writeADF(sb, m)
+			out = append(out, m)
 		}
 	}
+	return out
 }
 
-// textToADF wraps plain text in an Atlassian Document Format document, so
-// Markdown typed by an agent is stored as typed. A block of lines becomes one
-// paragraph, with a hard break between its lines. Blank lines only separate
-// blocks: an empty paragraph for each one makes Jira show the text
-// double-spaced.
-func textToADF(text string) map[string]any {
-	content := []any{}
-	var block []any
-	flush := func() {
-		if len(block) > 0 {
-			content = append(content, map[string]any{"type": "paragraph", "content": block})
-			block = nil
-		}
+// strAttr returns the string attribute key of node, or "".
+func strAttr(node map[string]any, key string) string {
+	attrs, _ := node["attrs"].(map[string]any)
+	s, _ := attrs[key].(string)
+	return s
+}
+
+// intAttr returns the number attribute key of node, or def. JSON gives
+// numbers as float64; documents built in Go hold an int.
+func intAttr(node map[string]any, key string, def int) int {
+	attrs, _ := node["attrs"].(map[string]any)
+	switch v := attrs[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
 	}
-	for line := range strings.SplitSeq(text, "\n") {
-		if line == "" {
-			flush()
-			continue
-		}
-		if len(block) > 0 {
-			block = append(block, map[string]any{"type": "hardBreak"})
-		}
-		block = append(block, map[string]any{"type": "text", "text": line})
-	}
-	flush()
-	return map[string]any{"type": "doc", "version": 1, "content": content}
+	return def
 }
