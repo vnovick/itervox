@@ -80,10 +80,24 @@ type Client struct {
 
 var (
 	_ tracker.IdempotentCommenter = (*Client)(nil)
+	_ tracker.RateLimiter         = (*Client)(nil)
 	_ tracker.ScopeMatcher        = (*Client)(nil)
 	_ tracker.StateListSetter     = (*Client)(nil)
 	_ tracker.Tracker             = (*Client)(nil)
 )
+
+// RateLimitSnapshot implements tracker.RateLimiter and always returns nil.
+// Jira gives API-token traffic no hourly budget: it is held to per-second
+// burst limits, and the X-RateLimit-Limit and X-RateLimit-Remaining headers
+// count requests per second for one endpoint
+// (https://developer.atlassian.com/cloud/jira/platform/rate-limiting/). A
+// snapshot filled from them would show the dashboard a false budget, and
+// one busy second under the write reserve would shed a whole tick's polling
+// reads. Every caller reads nil as "unknown" and fails open: no shedding, no
+// slower automation polls, no budget on the dashboard. A 429 is still
+// retried after its Retry-After (tracker.JiraRateLimitClassifier). The
+// tracker store needs the method to wrap the adapter (#113).
+func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot { return nil }
 
 // NewClient creates a Jira Client. A single trailing "/" on cfg.Endpoint is
 // trimmed so request paths join cleanly. The assignee is trimmed, and the

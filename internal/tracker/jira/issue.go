@@ -35,9 +35,6 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		return nil, fmt.Errorf("jira_fetch_issue_detail: %w", err)
 	}
 	issue := c.normalizeIssue(raw)
-	if branch := str(nested(raw, "properties", branchProperty, "branch")); branch != "" {
-		issue.BranchName = &branch
-	}
 	comments, _, err := c.fetchComments(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("jira_fetch_comments: %w", err)

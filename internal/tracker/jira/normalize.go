@@ -21,7 +21,8 @@ func (c *Client) normalizeAll(raws []map[string]any) []domain.Issue {
 }
 
 // normalizeIssue maps one raw Jira issue to a domain.Issue. Missing fields
-// leave the matching value empty.
+// leave the matching value empty. The branch comes from the itervox.branch
+// issue property, present when the request asked for it.
 func (c *Client) normalizeIssue(raw map[string]any) domain.Issue {
 	fields, _ := raw["fields"].(map[string]any)
 	id, _ := raw["id"].(string)
@@ -53,6 +54,9 @@ func (c *Client) normalizeIssue(raw map[string]any) domain.Issue {
 	}
 	if acc := str(nested(fields, "assignee", "accountId")); acc != "" {
 		issue.Assignees = []string{acc}
+	}
+	if branch := str(nested(raw, "properties", branchProperty, "branch")); branch != "" {
+		issue.BranchName = &branch
 	}
 	return issue
 }

@@ -31,7 +31,8 @@
 // clocks never need to agree; it is saved with the store, and a failed pull
 // keeps it and retries with backoff. A full pull still runs every
 // Config.FullSyncInterval to catch what an update listing cannot show (an
-// issue moved to another project or repository, a deleted GitHub issue).
+// issue moved to another project or repository, a deleted GitHub or Jira
+// issue).
 // The store is written atomically after
 // every successful sync and loaded at startup, so a restart serves at once;
 // only a cold start (no file, or one for another tracker scope) pulls before
@@ -93,6 +94,16 @@ type Config struct {
 	// NudgeDelay is how long Run waits after RequestSync before pulling
 	// (zero: DefaultNudgeDelay).
 	NudgeDelay time.Duration
+	// ActiveViewIssuesAreCandidates makes a full pull count an issue that a
+	// view lists in an active state as a candidate, also when the candidate
+	// request did not list it. Set it only for an upstream whose candidate
+	// list is exactly its list of issues in the active states under the
+	// same scope (Jira: FetchCandidateIssues is FetchIssuesByStates over the
+	// active states) and whose listing can lag a write, so two requests of
+	// one pull can disagree. Without it such an issue stays out of the
+	// candidates until the next full pull, because an incremental pull sees
+	// an unchanged listing.
+	ActiveViewIssuesAreCandidates bool
 	// Now is the clock (tests); nil means time.Now.
 	Now func() time.Time
 }
@@ -190,7 +201,8 @@ type baseUpstream interface {
 // The result also implements tracker.DetailBatcher and
 // tracker.ProjectManager exactly when up does (Linear does, GitHub does not),
 // and tracker.ScopeManager when up also does (#182), and
-// tracker.FilterManager when up does (#198: Linear and GitHub).
+// tracker.FilterManager when up does (#198: Linear and GitHub), and
+// tracker.ScopeMatcher when up does (Jira, which has no filter to manage).
 // It fails for an adapter without the base optional interfaces (the local
 // and memory trackers, which need no store).
 func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
@@ -242,6 +254,11 @@ func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
 	if filtered {
 		// #198: GitHub's tracker filter.
 		return &filteredStore{s, filterForward{s}}, s, nil
+	}
+	if _, ok := up.(tracker.ScopeMatcher); ok {
+		// Jira: the orchestrator checks a retry's by-ID read against the
+		// scope through it.
+		return &matchingStore{s}, s, nil
 	}
 	return s, s, nil
 }
@@ -703,6 +720,9 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	for _, id := range mixed {
 		s.memberLocked(issues[id]) // the lists the newer copy's state belongs to
 	}
+	if s.cfg.ActiveViewIssuesAreCandidates {
+		s.addActiveViewIssuesLocked(results, issues)
+	}
 	s.cursor, s.fullAt = newestUpdate(issues), s.now()
 	// A local change made after this pull began is newer than what it
 	// read: put it back.
@@ -723,6 +743,26 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 
 	s.persist()
 	return true, nil
+}
+
+// addActiveViewIssuesLocked adds to the candidates every issue a view listed
+// in an active state (Config.ActiveViewIssuesAreCandidates): the candidate
+// request missed it because the upstream's search had not caught up yet, or
+// it changed between the two requests. issues holds the newest copy of each
+// listed issue. Caller holds mu.
+func (s *Store) addActiveViewIssuesLocked(results map[string][]domain.Issue, issues map[string]domain.Issue) {
+	inCands := make(map[string]bool, len(s.candidates))
+	for _, id := range s.candidates {
+		inCands[id] = true
+	}
+	for _, list := range results {
+		for _, listed := range list {
+			if iss := issues[listed.ID]; !inCands[iss.ID] && containsFold(s.active, iss.State) {
+				inCands[iss.ID] = true
+				s.candidates = append(s.candidates, iss.ID)
+			}
+		}
+	}
 }
 
 // CursorOverlap is how far before the cursor an incremental pull asks from:
@@ -1182,6 +1222,17 @@ func (s *Store) invalidate(active []string) {
 	s.synced = false
 	s.scope++
 	s.cursor = time.Time{} // another scope: the next pull is full
+}
+
+// matchingStore is a Store over an adapter that checks its own read scope
+// in memory (tracker.ScopeMatcher) but has no filter to manage (Jira).
+type matchingStore struct{ *Store }
+
+var _ tracker.ScopeMatcher = (*matchingStore)(nil)
+
+// MatchesFilter implements tracker.ScopeMatcher: the adapter's answer.
+func (m *matchingStore) MatchesFilter(issue domain.Issue) (match, known bool) {
+	return m.up.(tracker.ScopeMatcher).MatchesFilter(issue)
 }
 
 // linearStore is a Store over an adapter that also batches detail reads and

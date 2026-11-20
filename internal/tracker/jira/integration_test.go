@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/vnovick/itervox/internal/outbox"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/jira"
+	"github.com/vnovick/itervox/internal/tracker/store"
 )
 
 // envOr returns the environment variable key, or def when it is empty.
@@ -492,4 +494,269 @@ func TestJiraLiveMarkdownRoundTrip(t *testing.T) {
 	last, err := json.Marshal(raw.Comments[len(raw.Comments)-1].Body)
 	require.NoError(t, err)
 	t.Logf("stored body of the every-construct comment: %s", last)
+}
+
+// editLabelsLive replaces the issue's labels through PUT
+// /rest/api/3/issue/{id}. The adapter never edits labels, so the test does
+// it itself.
+func editLabelsLive(t *testing.T, endpoint, apiKey, issueID string, labels []string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"fields": map[string]any{"labels": labels}})
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut,
+		strings.TrimSuffix(endpoint, "/")+"/rest/api/3/issue/"+issueID, bytes.NewReader(body))
+	require.NoError(t, err)
+	email, token, _ := strings.Cut(apiKey, ":")
+	req.SetBasicAuth(email, token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, "edit labels of issue %s", issueID)
+}
+
+// TestJiraLiveIncremental proves the incremental pull of the tracker store
+// (#114) on a real Jira Cloud project. It creates one labelled issue with a
+// branch, then moves it between two active states several times: after
+// each move, FetchIssuesUpdatedSince from the move's own update time must
+// list it in its new state, and the test prints how long search took to
+// show the move. The branch must come back on list reads. The project's
+// least recently updated issue, unchanged for longer than the whole window,
+// must not be listed. Last, the label is removed and a client scoped by
+// that label must report the issue gone. It needs the same environment as
+// TestJiraLiveRoundTrip and moves the issue to the done state at the end.
+// It never prints the API key, the site or the account.
+func TestJiraLiveIncremental(t *testing.T) {
+	endpoint := os.Getenv("JIRA_ENDPOINT")
+	project := os.Getenv("JIRA_PROJECT")
+	apiKey := os.Getenv("JIRA_API_KEY")
+	if endpoint == "" || project == "" || apiKey == "" {
+		t.Skip("set JIRA_ENDPOINT, JIRA_PROJECT and JIRA_API_KEY to run the live Jira incremental test")
+	}
+	active := splitCSV(envOr("JIRA_ACTIVE_STATES", "To Do,In Progress"))
+	require.GreaterOrEqual(t, len(active), 2, "JIRA_ACTIVE_STATES needs two states to move between")
+	done := envOr("JIRA_DONE_STATE", "Done")
+	samples, _ := strconv.Atoi(envOr("JIRA_LAG_SAMPLES", "6"))
+	const window = 4 * time.Minute // the adapter's widening (searchLag)
+	ctx := t.Context()
+	stamp := time.Now().Unix()
+	label := fmt.Sprintf("itervox-incremental-%d", stamp)
+	c := jira.NewClient(jira.ClientConfig{Endpoint: endpoint, APIKey: apiKey, ProjectSlug: project, ActiveStates: active})
+	scoped := jira.NewClient(jira.ClientConfig{Endpoint: endpoint, APIKey: apiKey, ProjectSlug: project, ActiveStates: active, Labels: []string{label}})
+
+	// The project's least recently updated issue, before anything changes.
+	all, gone, err := c.FetchIssuesUpdatedSince(ctx, time.Unix(0, 0))
+	require.NoError(t, err)
+	require.Empty(t, gone, "an unscoped client reports nothing gone")
+	var oldest *domain.Issue
+	for i := range all {
+		if all[i].UpdatedAt != nil && (oldest == nil || all[i].UpdatedAt.Before(*oldest.UpdatedAt)) {
+			oldest = &all[i]
+		}
+	}
+	require.NotNil(t, oldest, "the project has issues")
+	t.Logf("project lists %d issues; least recently updated: %s at %s", len(all), oldest.Identifier, oldest.UpdatedAt.UTC().Format(time.RFC3339))
+
+	is, err := c.CreateIssue(ctx, "", tracker.NewIssue{Title: fmt.Sprintf("itervox incremental %d", stamp), Labels: []string{label}, State: active[0]})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := c.UpdateIssueState(cleanupCtx, is.ID, done); err != nil {
+			t.Logf("cleanup: move %s to %q: %v", is.ID, done, err)
+		}
+	})
+	branch := fmt.Sprintf("itervox/incremental-%d", stamp)
+	require.NoError(t, c.SetIssueBranch(ctx, is.ID, branch))
+	t.Logf("created %s with label and branch", is.Identifier)
+
+	// listedAfter polls cl's incremental pull from since until it lists the
+	// issue in state with an update time at or after since (or, with
+	// wantGone, reports it gone), and returns the last result and the time
+	// from wrote, when the write returned, to that result.
+	listedAfter := func(cl *jira.Client, since time.Time, state string, wantGone bool, wrote time.Time) ([]domain.Issue, time.Duration) {
+		t.Helper()
+		start := time.Now()
+		for {
+			changed, gone, err := cl.FetchIssuesUpdatedSince(ctx, since)
+			require.NoError(t, err)
+			if wantGone && slices.Contains(gone, is.ID) {
+				return changed, time.Since(wrote)
+			}
+			for _, got := range changed {
+				if !wantGone && got.ID == is.ID && strings.EqualFold(got.State, state) && got.UpdatedAt != nil && !got.UpdatedAt.Before(since) {
+					return changed, time.Since(wrote)
+				}
+			}
+			if time.Since(start) > 2*time.Minute {
+				t.Fatalf("after 2 minutes the incremental pull from %s still does not show %s (state %q, gone %v)", since.UTC().Format(time.RFC3339Nano), is.Identifier, state, wantGone)
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	// updatedAt reads the issue's update time by id, which is consistent
+	// right after a write (search is not).
+	updatedAt := func() time.Time {
+		t.Helper()
+		got, err := c.FetchIssueStatesByIDs(ctx, []string{is.ID})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.NotNil(t, got[0].UpdatedAt)
+		return *got[0].UpdatedAt
+	}
+
+	var last []domain.Issue
+	var since time.Time
+	var worst time.Duration
+	for i := range samples {
+		state := active[(i+1)%2]
+		require.NoError(t, c.UpdateIssueState(ctx, is.ID, state))
+		wrote := time.Now()
+		since = updatedAt()
+		var lag time.Duration
+		last, lag = listedAfter(c, since, state, false, wrote)
+		worst = max(worst, lag)
+		t.Logf("lag sample %d: moved to %q, listed by the incremental pull %.2fs after the move returned", i+1, state, lag.Seconds())
+	}
+	t.Logf("lag over %d samples: worst %.2fs (the pull looks back %s plus the store's overlap)", samples, worst.Seconds(), window)
+
+	var listed *domain.Issue
+	for i := range last {
+		if last[i].UpdatedAt != nil {
+			assert.False(t, last[i].UpdatedAt.Before(since.Add(-window)), "%s is older than the window", last[i].Identifier)
+		}
+		if last[i].ID == is.ID {
+			listed = &last[i]
+		}
+		assert.NotEqual(t, oldest.ID, last[i].ID, "the unchanged older issue is not listed")
+	}
+	require.NotNil(t, listed)
+	if assert.NotNil(t, listed.BranchName, "the incremental pull carries the branch") {
+		assert.Equal(t, branch, *listed.BranchName)
+	}
+	t.Logf("incremental pull lists %d issues; %s not among them (updated %s, before the window start %s)",
+		len(last), oldest.Identifier, oldest.UpdatedAt.UTC().Format(time.RFC3339), since.Add(-window).UTC().Format(time.RFC3339))
+	cands, err := c.FetchCandidateIssues(ctx)
+	require.NoError(t, err)
+	var inCands bool
+	for _, got := range cands {
+		if got.ID == is.ID {
+			inCands = true
+			if assert.NotNil(t, got.BranchName, "the candidate poll carries the branch") {
+				assert.Equal(t, branch, *got.BranchName)
+			}
+		}
+	}
+	assert.True(t, inCands, "the issue is a candidate")
+
+	// The label is removed: the label-scoped client reports the issue gone.
+	before := updatedAt()
+	editLabelsLive(t, endpoint, apiKey, is.ID, []string{})
+	wrote := time.Now()
+	require.True(t, updatedAt().After(before), "removing a label moves the update time")
+	_, lag := listedAfter(scoped, before, "", true, wrote)
+	t.Logf("label removed: the label-scoped pull reports %s gone %.2fs after the edit returned", is.Identifier, lag.Seconds())
+}
+
+// TestJiraLiveStore runs the tracker store's sync loop (store.Run, as the
+// daemon starts it) over the adapter on a real Jira Cloud project, with a
+// 2-second sync interval, an hourly full pull and the store settings the
+// daemon uses for Jira. It creates an issue in an
+// active state and waits until the store lists it as a candidate; then it
+// moves the issue to the done state through the adapter, as a person would
+// in Jira, and waits until the store's candidates drop it and its board
+// view shows it done, which only the incremental pulls can do within the
+// hour. It prints how long each took. It needs the same environment as
+// TestJiraLiveRoundTrip. It never prints the API key, the site or the
+// account.
+func TestJiraLiveStore(t *testing.T) {
+	endpoint := os.Getenv("JIRA_ENDPOINT")
+	project := os.Getenv("JIRA_PROJECT")
+	apiKey := os.Getenv("JIRA_API_KEY")
+	if endpoint == "" || project == "" || apiKey == "" {
+		t.Skip("set JIRA_ENDPOINT, JIRA_PROJECT and JIRA_API_KEY to run the live Jira store test")
+	}
+	active := splitCSV(envOr("JIRA_ACTIVE_STATES", "To Do,In Progress"))
+	done := envOr("JIRA_DONE_STATE", "Done")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	c := jira.NewClient(jira.ClientConfig{Endpoint: endpoint, APIKey: apiKey, ProjectSlug: project, ActiveStates: active})
+	boardStates := append(slices.Clone(active), done)
+	tr, st, err := store.Wrap(c, store.Config{
+		Path:             t.TempDir() + "/tracker_store.json",
+		Scope:            "jira-live",
+		ActiveStates:     active,
+		Views:            [][]string{boardStates},
+		SyncInterval:     2 * time.Second,
+		FullSyncInterval: time.Hour,
+		// As withTrackerStore sets it for Jira: the cold pull's candidate
+		// search can miss the issue just created while its view search
+		// lists it.
+		ActiveViewIssuesAreCandidates: true,
+	})
+	require.NoError(t, err)
+	_, ok := tr.(tracker.ScopeMatcher)
+	require.True(t, ok)
+
+	is, err := c.CreateIssue(ctx, "", tracker.NewIssue{Title: fmt.Sprintf("itervox store %d", time.Now().Unix()), State: active[0]})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := c.UpdateIssueState(cleanupCtx, is.ID, done); err != nil {
+			t.Logf("cleanup: move %s to %q: %v", is.ID, done, err)
+		}
+	})
+	created := time.Now()
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); st.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-runDone })
+
+	// waitFor polls the store (no request: it answers from its copy) until
+	// cond holds.
+	waitFor := func(what string, cond func() bool) time.Duration {
+		t.Helper()
+		start := time.Now()
+		for !cond() {
+			if time.Since(start) > 2*time.Minute {
+				t.Fatalf("after 2 minutes: %s", what)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return time.Since(start)
+	}
+	stateIn := func(list []domain.Issue) (string, bool) {
+		for _, got := range list {
+			if got.ID == is.ID {
+				return got.State, true
+			}
+		}
+		return "", false
+	}
+	waitFor("the store lists the new issue as a candidate", func() bool {
+		cands, err := tr.FetchCandidateIssues(ctx)
+		require.NoError(t, err)
+		_, in := stateIn(cands)
+		return in
+	})
+	t.Logf("%s: a candidate in the store %.2fs after it was created", is.Identifier, time.Since(created).Seconds())
+	cursor := st.SyncStatus().Cursor
+
+	require.NoError(t, c.UpdateIssueState(ctx, is.ID, done))
+	moved := time.Now()
+	waitFor("the store drops the done issue from the candidates and shows it done", func() bool {
+		cands, err := tr.FetchCandidateIssues(ctx)
+		require.NoError(t, err)
+		if _, in := stateIn(cands); in {
+			return false
+		}
+		board, err := tr.FetchIssuesByStates(ctx, boardStates)
+		require.NoError(t, err)
+		state, in := stateIn(board)
+		return in && strings.EqualFold(state, done)
+	})
+	t.Logf("%s: moved to %q in Jira; the store shows it %.2fs later (sync interval 2s, full pull hourly)", is.Identifier, done, time.Since(moved).Seconds())
+	status := st.SyncStatus()
+	assert.Zero(t, status.Failures)
+	assert.True(t, status.Cursor.After(cursor), "the cursor moved to the move's update time")
 }

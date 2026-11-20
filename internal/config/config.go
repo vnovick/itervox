@@ -253,8 +253,8 @@ type TrackerConfig struct {
 	CommentCommands CommentCommandsConfig
 	// Store (#113) keeps a local copy of the tracked issues under .itervox/
 	// and serves the orchestrator's and dashboard's list reads from it; a
-	// background sync refreshes it from the tracker. Linear and GitHub only.
-	// Read once at startup.
+	// background sync refreshes it from the tracker. Linear, GitHub and Jira
+	// only. Read once at startup.
 	Store TrackerStoreConfig
 	// Webhooks is tracker.webhooks (#131): signed Linear/GitHub deliveries
 	// refresh the store by issue, and the store's periodic pull slows to the
@@ -273,20 +273,19 @@ const DefaultTrackerPushIntervalMs = 10000
 
 // TrackerStoreConfig configures the local tracker store (#113).
 type TrackerStoreConfig struct {
-	// Enabled turns the store on (Linear and GitHub only). Default true
+	// Enabled turns the store on (Linear, GitHub and Jira only). Default true
 	// (#132): the claim check (#116) re-reads each issue by ID before an
 	// agent starts, so a change a person made since the last sync is seen.
 	// `enabled: false` restores direct polling.
 	Enabled bool
 	// SyncIntervalMs is how often the store re-pulls from the tracker
-	// (default 60000). Reads between syncs cost no tracker requests. On
-	// Linear and GitHub a pull asks only for what changed since the last one
-	// (#114).
+	// (default 60000). Reads between syncs cost no tracker requests. A pull
+	// asks only for what changed since the last one (#114).
 	SyncIntervalMs int
 	// FullSyncIntervalMs is how often a pull is a full one even so (#114,
 	// default 3600000): it catches what a changes listing cannot show, such
 	// as an issue moved to another project or repository, or deleted on
-	// GitHub.
+	// GitHub or Jira.
 	FullSyncIntervalMs int
 }
 

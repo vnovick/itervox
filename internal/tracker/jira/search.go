@@ -14,6 +14,11 @@ const issueFieldList = "summary,description,status,priority,labels,issuelinks,as
 
 func issueFields() []string { return strings.Split(issueFieldList, ",") }
 
+// issueProperties are the issue properties every search and fetch requests:
+// the branch, so a list read carries it like a detail read (the tracker
+// store would otherwise drop it each time it lists the issue again).
+var issueProperties = []string{branchProperty}
+
 // jqlQuote returns s as a double-quoted JQL string, escaping backslash and
 // double quote so a value cannot break out of its quotes.
 func jqlQuote(s string) string {
@@ -88,7 +93,7 @@ func (c *Client) search(ctx context.Context, jql string) ([]map[string]any, erro
 			NextPageToken string           `json:"nextPageToken"`
 			IsLast        bool             `json:"isLast"`
 		}
-		body := map[string]any{"jql": jql, "fields": issueFields(), "maxResults": 100}
+		body := map[string]any{"jql": jql, "fields": issueFields(), "properties": issueProperties, "maxResults": 100}
 		if token != "" {
 			body["nextPageToken"] = token
 		}
@@ -131,7 +136,7 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 				ErrorMessage string `json:"errorMessage"`
 			} `json:"issueErrors"`
 		}
-		body := map[string]any{"issueIdsOrKeys": chunk, "fields": issueFields()}
+		body := map[string]any{"issueIdsOrKeys": chunk, "fields": issueFields(), "properties": issueProperties}
 		if err := c.do(ctx, "POST", "/rest/api/3/issue/bulkfetch", body, &resp); err != nil {
 			return nil, fmt.Errorf("jira_bulk_fetch: %w", err)
 		}
