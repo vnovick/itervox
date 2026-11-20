@@ -41,6 +41,10 @@ type quickstartOptions struct {
 	Yes          bool
 	NoStart      bool
 	ReadyTimeout time.Duration
+	// ModelServer adds a `local` profile on this model server without
+	// asking (quickstart_local_model.go); NoLocalModel skips the step.
+	ModelServer  string
+	NoLocalModel bool
 }
 
 // Seams tests replace: PATH lookup, `gh auth token`, and the daemon command.
@@ -89,11 +93,19 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 	fs.BoolVar(&opts.Yes, "y", false, "shorthand for --yes")
 	fs.BoolVar(&opts.NoStart, "no-start", false, "stop after the checks; do not start the daemon")
 	fs.DurationVar(&opts.ReadyTimeout, "ready-timeout", quickstartDefaultReadyTimeout, "how long to wait for the daemon to report ready")
+	fs.StringVar(&opts.ModelServer, "model-server", "", "add a `local` profile whose agent uses this model server URL (e.g. "+quickstartDefaultModelServer+"), without asking")
+	fs.BoolVar(&opts.NoLocalModel, "no-local-model", false, "do not ask about a local model server")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
 	if fs.NArg() > 0 {
 		return opts, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if opts.ModelServer != "" && opts.NoLocalModel {
+		return opts, errors.New("--model-server and --no-local-model exclude each other")
+	}
+	if err := config.CheckModelServerValue(opts.ModelServer); err != nil {
+		return opts, fmt.Errorf("--model-server %q: %w", opts.ModelServer, err)
 	}
 	switch opts.Tracker {
 	case "", "github", "linear", "local":
@@ -195,12 +207,17 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		}
 	}
 
+	// 5. Optional: a `local` profile on a model server (asked).
+	if code := quickstartLocalModel(workflowPath, opts, reader, out); code != 0 {
+		return code
+	}
+
 	if opts.NoStart {
 		_, _ = fmt.Fprintf(out, "itervox quickstart: not starting the daemon (--no-start); run `itervox -workflow %s`\n", workflowPath)
 		return 0
 	}
 
-	// 5. Start the daemon and wait for it to be ready.
+	// 6. Start the daemon and wait for it to be ready.
 	url, err := quickstartStartDaemon(workflowPath, itervoxDir, opts.ReadyTimeout, out)
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)

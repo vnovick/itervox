@@ -441,6 +441,7 @@ const PROFILE_KNOWN_KEYS = [
   'enabled',
   'allowedActions',
   'createIssueState',
+  'modelServer',
 ];
 
 function captureProfileUnknowns(input: unknown): unknown {
@@ -472,6 +473,9 @@ const ProfileDefCoreSchema = z.object({
   enabled: z.boolean().optional(),
   allowedActions: tolerantEnumList('profileDefs.allowedActions', AGENT_ACTIONS).optional(),
   createIssueState: z.string().optional(),
+  // agent.profiles.<name>.model_server as configured: an http(s) URL or a
+  // whole $VAR. Absent: none.
+  modelServer: z.string().optional(),
   // Client-only: raw allowed actions this bundle does not know (round 2).
   unknownAllowedActions: z.array(z.string()).optional(),
   // Client-only: keys this bundle does not know, re-sent by upsertProfile.

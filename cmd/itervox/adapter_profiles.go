@@ -92,8 +92,14 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		// Not edited by the dashboard: carried over from the saved profile
 		// so a dashboard save does not strip them from WORKFLOW.md.
 		PermissionMode: existingProfile.PermissionMode,
-		// The quota pool (backend_fallback lanes) is load-time only.
+		// The quota pool (backend_fallback lanes) is load-time only; one
+		// derived from model_server is derived again below.
 		Pool:              existingProfile.Pool,
+		PoolAuto:          existingProfile.PoolAuto,
+		ModelServer:       existingProfile.ModelServer,
+		ReadTimeoutMs:     existingProfile.ReadTimeoutMs, // per-profile timeouts: load-time, carried over
+		TurnTimeoutMs:     existingProfile.TurnTimeoutMs,
+		StallTimeoutMs:    existingProfile.StallTimeoutMs,
 		RequireEvidence:   existingProfile.RequireEvidence,
 		Verify:            existingProfile.Verify, // signed checks: load-time, carried over
 		CreateIssueLabels: existingProfile.CreateIssueLabels,
@@ -103,6 +109,18 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
 		// Patches only (push: daemon): load-time, carried over.
 		Push: existingProfile.Push,
+	}
+	if def.ModelServerSet {
+		nextProfile.ModelServer = def.ModelServer
+	}
+	// Resolves the model server ($VAR), checks it against the profile's
+	// backend and command, and derives its pool, exactly as config.Load.
+	defaultCommand := ""
+	if a.cfg != nil {
+		defaultCommand = a.cfg.Agent.Command // read-only after startup
+	}
+	if err := config.ApplyProfileModelServer(name, &nextProfile, defaultCommand); err != nil {
+		return err
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {
@@ -244,6 +262,7 @@ func profileDefFromConfig(p config.AgentProfile) server.ProfileDef {
 		Enabled:          config.ProfileEnabled(p),
 		AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
 		CreateIssueState: p.CreateIssueState,
+		ModelServer:      p.ModelServer,
 	}
 }
 

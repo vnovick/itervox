@@ -1348,6 +1348,12 @@ type ProfileDef struct {
 	Enabled          bool     `json:"enabled"`
 	AllowedActions   []string `json:"allowedActions,omitempty"`
 	CreateIssueState string   `json:"createIssueState,omitempty"`
+	// ModelServer is the profile's model_server as configured (a URL or a
+	// whole $VAR); "" for none.
+	ModelServer string `json:"modelServer,omitempty"`
+	// ModelServerSet is set when an upsert carried modelServer; without it
+	// the saved profile's value is kept.
+	ModelServerSet bool `json:"-"`
 }
 
 type AutomationTriggerDef = automationdef.Trigger

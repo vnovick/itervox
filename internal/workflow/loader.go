@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -227,6 +228,14 @@ type ProfileEntry struct {
 	Backend string
 	// Pool is the profile's quota pool ("" omits the key).
 	Pool string
+	// ModelServer is the profile's model_server as configured ("" omits
+	// the key).
+	ModelServer string
+	// ReadTimeoutMs, TurnTimeoutMs and StallTimeoutMs are the profile's
+	// own timeouts (0 omits the key).
+	ReadTimeoutMs  int
+	TurnTimeoutMs  int
+	StallTimeoutMs int
 	// Enabled controls whether the profile is selectable and dispatchable.
 	// Nil means omit the field from WORKFLOW.md, which defaults to true.
 	Enabled *bool
@@ -370,6 +379,17 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				if entry.Pool != "" {
 					replacement = append(replacement, lvl3+"pool: "+strconv.Quote(entry.Pool))
 				}
+				if entry.ModelServer != "" {
+					replacement = append(replacement, lvl3+"model_server: "+strconv.Quote(entry.ModelServer))
+				}
+				for _, t := range []struct {
+					key string
+					ms  int
+				}{{"read_timeout_ms", entry.ReadTimeoutMs}, {"turn_timeout_ms", entry.TurnTimeoutMs}, {"stall_timeout_ms", entry.StallTimeoutMs}} {
+					if t.ms > 0 {
+						replacement = append(replacement, lvl3+t.key+": "+strconv.Itoa(t.ms))
+					}
+				}
 				if entry.Enabled != nil && !*entry.Enabled {
 					replacement = append(replacement, lvl3+"enabled: false")
 				}
@@ -426,10 +446,11 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 			newFrontLines = append(newFrontLines, replacement...)
 			newFrontLines = append(newFrontLines, frontLines[profilesEnd:]...)
 		case len(profiles) > 0:
-			// No existing block: insert after the agent: block (or append if
-			// there is no agent: key at all).
+			// No existing block: insert after the agent: block (or append
+			// one with an agent: header if there is no agent: key at all;
+			// the indented block alone would land in the last section).
 			if agentLine < 0 {
-				newFrontLines = append(frontLines, replacement...)
+				newFrontLines = append(append(slices.Clone(frontLines), "agent:"), replacement...)
 			} else {
 				agentEnd := len(frontLines)
 				for j := agentLine + 1; j < len(frontLines); j++ {

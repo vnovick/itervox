@@ -93,6 +93,7 @@ func profileDefsForScope(defs map[string]ProfileDef, scope apitokens.Scope) map[
 	maps.Copy(out, defs)
 	for name, d := range out {
 		d.Command = redactSecretString(d.Command)
+		d.ModelServer = redactSecretString(d.ModelServer)
 		out[name] = d
 	}
 	return out

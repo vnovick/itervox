@@ -17,12 +17,13 @@ func (a *orchestratorAdapter) ModelServers() []server.ModelServerRow {
 	rows := make([]server.ModelServerRow, 0, len(uses))
 	for _, u := range uses {
 		rows = append(rows, server.ModelServerRow{
-			Var:       u.Var,
-			URL:       u.URL,
-			Profiles:  u.Profiles,
-			Pools:     u.Pools,
-			Remote:    len(hosts) > 0,
-			Unchecked: u.Unchecked,
+			Var:         u.Var,
+			URL:         u.URL,
+			Profiles:    u.Profiles,
+			Pools:       u.Pools,
+			Remote:      len(hosts) > 0,
+			Unchecked:   u.Unchecked,
+			ModelServer: u.ModelServer,
 		})
 	}
 	return rows

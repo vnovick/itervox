@@ -27,6 +27,7 @@ interface ProfilesCardProps {
     allowedActions?: string[],
     createIssueState?: string,
     originalName?: string,
+    modelServer?: string,
   ) => Promise<boolean>;
   onDelete: (name: string) => Promise<boolean>;
   availableModels?: Record<string, { id: string; label: string }[]>;
@@ -251,6 +252,7 @@ export function ProfilesCard({
               def.allowedActions,
               def.createIssueState,
               originalName,
+              def.modelServer,
             );
           }}
         />

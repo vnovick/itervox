@@ -3,6 +3,7 @@ import { AGENT_BACKENDS } from '../../../lib/backends';
 import { AllowedAgentActionSchema, type ProfileDef } from '../../../types/schemas';
 import { buildCanonicalCommand, draftFromProfileDef } from '../profileCommands';
 import type { SuggestedProfile } from './suggestedProfiles';
+import { modelServerProblem } from './modelServer';
 
 export const profileFormSchema = z
   .object({
@@ -21,6 +22,8 @@ export const profileFormSchema = z
     instructionsFile: z.string(),
     allowedActions: z.array(AllowedAgentActionSchema),
     createIssueState: z.string(),
+    // agent.profiles.<name>.model_server: '' for none.
+    modelServer: z.string(),
     // CORE-047 round 2: read-only raw actions from a newer daemon.
     unknownAllowedActions: z.array(z.string()).optional(),
   })
@@ -31,6 +34,10 @@ export const profileFormSchema = z
         path: ['createIssueState'],
         message: 'Choose the tracker column/state for follow-up issues.',
       });
+    }
+    const modelServerError = modelServerProblem(values.modelServer, values.backend);
+    if (modelServerError) {
+      ctx.addIssue({ code: 'custom', path: ['modelServer'], message: modelServerError });
     }
   });
 
@@ -50,6 +57,7 @@ export function emptyProfileValues(): ProfileFormValues {
     instructionsFile: '',
     allowedActions: [],
     createIssueState: '',
+    modelServer: '',
   };
 }
 
@@ -68,6 +76,7 @@ export function profileValuesFromDef(name: string, def: ProfileDef): ProfileForm
     instructionsFile: draft.instructionsFile,
     allowedActions: draft.allowedActions,
     createIssueState: draft.createIssueState,
+    modelServer: def.modelServer ?? '',
     unknownAllowedActions: def.unknownAllowedActions,
   };
 }
@@ -86,5 +95,6 @@ export function profileValuesFromSuggestion(suggestion: SuggestedProfile): Profi
     instructionsFile: '',
     allowedActions: suggestion.allowedActions,
     createIssueState: suggestion.createIssueState ?? '',
+    modelServer: '',
   };
 }
