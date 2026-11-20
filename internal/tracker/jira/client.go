@@ -49,6 +49,14 @@ type ClientConfig struct {
 	// ProjectSlug is the Jira project key, e.g. "PROJ".
 	ProjectSlug  string
 	ActiveStates []string
+	// Assignee narrows every list read to the issues assigned to one
+	// account: "me" (any case: the token's account) or an Atlassian
+	// account id. Empty: anyone. Reads by id are never narrowed.
+	Assignee string
+	// Labels narrows every list read to the issues carrying any of these
+	// labels, ANDed with the project and the assignee. Empty: no label
+	// filter.
+	Labels []string
 }
 
 // Client is the Jira Cloud REST tracker adapter.
@@ -64,18 +72,26 @@ type Client struct {
 	maxPages    int
 	// commentPageSize is the maxResults asked of each comment page.
 	commentPageSize int
+	// meMu guards me, the account id of the token, read once for an
+	// assignee of "me" (see resolveMe).
+	meMu sync.Mutex
+	me   string
 }
 
 var (
 	_ tracker.IdempotentCommenter = (*Client)(nil)
+	_ tracker.ScopeMatcher        = (*Client)(nil)
 	_ tracker.StateListSetter     = (*Client)(nil)
 	_ tracker.Tracker             = (*Client)(nil)
 )
 
 // NewClient creates a Jira Client. A single trailing "/" on cfg.Endpoint is
-// trimmed so request paths join cleanly.
+// trimmed so request paths join cleanly. The assignee is trimmed, and the
+// labels are trimmed and de-duplicated without case, as JQL compares them.
 func NewClient(cfg ClientConfig) *Client {
 	cfg.Endpoint = strings.TrimSuffix(cfg.Endpoint, "/")
+	cfg.Assignee = strings.TrimSpace(cfg.Assignee)
+	cfg.Labels = cleanLabels(cfg.Labels)
 	return &Client{
 		cfg: cfg,
 		httpClient: &http.Client{

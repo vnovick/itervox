@@ -1588,6 +1588,8 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			APIKey:       cfg.Tracker.APIKey,
 			ProjectSlug:  cfg.Tracker.ProjectSlug,
 			ActiveStates: cfg.Tracker.ActiveStates,
+			Assignee:     cfg.Tracker.Assignee, // project AND assignee AND labels, as for Linear
+			Labels:       cfg.Tracker.Labels,
 		}), nil
 	case "local":
 		// #85: one Markdown file per issue under .itervox/issues/; the

@@ -10,15 +10,17 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/tracker"
+	"github.com/vnovick/itervox/internal/tracker/jira"
 	"github.com/vnovick/itervox/internal/tracker/linear"
 )
 
 // assigneeCheckTimeout bounds the doctor's assignee check (#182).
 const assigneeCheckTimeout = 15 * time.Second
 
-// AssigneeCheck is the outcome of the Linear assignee-scope check (#182):
-// does tracker.assignee resolve to a user the key can see, and can the key
-// read the issues assigned to that user across the teams it covers.
+// AssigneeCheck is the outcome of the assignee-scope check (#182; Linear and
+// Jira): does tracker.assignee resolve to a user the key can see, and can
+// the key read the issues assigned to that user (across the teams it covers
+// for Linear, in the project for Jira).
 type AssigneeCheck struct {
 	// Ran is false when the check does not apply (no assignee scope) or
 	// could not run; SkipReason then says why when it is worth telling.
@@ -41,6 +43,45 @@ type AssigneeCheck struct {
 	Teams       []string
 	Issues      int
 	IssueTeams  []string
+	// Project is set for Jira: the read check counts the issues in its
+	// active states that the scoped poll reads.
+	Project string
+}
+
+// checkJiraAssignee is the assignee-scope check for Jira: tracker.assignee
+// resolves to an account the token can see (an unknown account id would
+// make every poll read nothing, not fail), and the scoped poll can read.
+func checkJiraAssignee(ctx context.Context, cfg *config.Config) AssigneeCheck {
+	if cfg == nil || cfg.Tracker.Kind != "jira" || strings.TrimSpace(cfg.Tracker.Assignee) == "" {
+		return AssigneeCheck{}
+	}
+	ac := AssigneeCheck{Spec: strings.TrimSpace(cfg.Tracker.Assignee), Project: cfg.Tracker.ProjectSlug}
+	if strings.TrimSpace(cfg.Tracker.APIKey) == "" {
+		ac.SkipReason = "tracker.api_key is empty (set JIRA_API_KEY, or run `itervox doctor --deploy`, which loads .itervox/.env)"
+		return ac
+	}
+	c := jira.NewClient(jira.ClientConfig{
+		Endpoint: cfg.Tracker.Endpoint, APIKey: cfg.Tracker.APIKey, ProjectSlug: cfg.Tracker.ProjectSlug,
+		ActiveStates: cfg.Tracker.ActiveStates, Assignee: ac.Spec, Labels: cfg.Tracker.Labels,
+	})
+	ac.Ran = true
+	u, err := c.ResolveAssignee(ctx)
+	switch {
+	case errors.Is(err, tracker.ErrAssigneeNotFound):
+		ac.Unresolvable = true
+		return ac
+	case err != nil:
+		ac.ResolveError = logging.RedactString(err.Error())
+		return ac
+	}
+	ac.User = u.Label()
+	issues, err := c.FetchCandidateIssues(ctx)
+	if err != nil {
+		ac.ReadError = logging.RedactString(err.Error())
+		return ac
+	}
+	ac.Issues = len(issues)
+	return ac
 }
 
 // checkLinearAssignee runs the assignee-scope check against the tracker
@@ -92,6 +133,9 @@ func renderAssigneeCheck(b *strings.Builder, ac AssigneeCheck) {
 			fmt.Fprintf(b, "assignee scope: not checked — %s\n", ac.SkipReason)
 		}
 		return
+	case ac.Unresolvable && ac.Project != "":
+		fmt.Fprintf(b, "ERROR: tracker.assignee %q does not resolve to an account this API token can see — use me or an Atlassian account id\n", ac.Spec)
+		return
 	case ac.Unresolvable:
 		fmt.Fprintf(b, "ERROR: tracker.assignee %q does not resolve to a user this API key can see — use me, a user id or the email of a workspace member\n", ac.Spec)
 		return
@@ -102,6 +146,10 @@ func renderAssigneeCheck(b *strings.Builder, ac AssigneeCheck) {
 	fmt.Fprintf(b, "assignee scope: %q resolves to %s\n", ac.Spec, ac.User)
 	if ac.ReadError != "" {
 		fmt.Fprintf(b, "WARNING: could not read the issues assigned to %s: %s\n", ac.User, ac.ReadError)
+		return
+	}
+	if ac.Project != "" {
+		fmt.Fprintf(b, "assignee reads: OK — %d issue(s) in the active states of project %s match tracker.assignee and tracker.labels\n", ac.Issues, ac.Project)
 		return
 	}
 	teams := or(strings.Join(ac.Teams, ", "), "none")

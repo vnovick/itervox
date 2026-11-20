@@ -186,7 +186,7 @@ type DoctorReport struct {
 	// Labels is the GitHub state-label check (#75). Zero value when the
 	// tracker is not GitHub.
 	Labels LabelCheck
-	// Assignee is the Linear assignee-scope check (#182). Zero value when
+	// Assignee is the Linear or Jira assignee-scope check (#182). Zero value when
 	// the tracker has no assignee scope.
 	Assignee AssigneeCheck
 	// Filter is the tracker.filter check (#198): validated with the
@@ -473,11 +473,15 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
-	// Linear assignee scope (#182): the user resolves, and its issues are
-	// readable. An unresolvable user or unknown team fails doctor.
+	// Assignee scope (#182: Linear; Jira): the user resolves, and its issues
+	// are readable. An unresolvable user or unknown team fails doctor.
 	if cfg != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), assigneeCheckTimeout)
-		report.Assignee = checkLinearAssignee(ctx, cfg)
+		if cfg.Tracker.Kind == "jira" {
+			report.Assignee = checkJiraAssignee(ctx, cfg)
+		} else {
+			report.Assignee = checkLinearAssignee(ctx, cfg)
+		}
 		cancel()
 	}
 

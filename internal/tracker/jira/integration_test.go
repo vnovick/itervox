@@ -3,10 +3,14 @@
 package jira_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,4 +241,148 @@ func TestJiraLiveRoundTrip(t *testing.T) {
 	assert.True(t, tracker.CommentHasKey(keyed.Body, key), "the orchestrator can match the keyed comment on read")
 	assert.Equal(t, keyedText+"\n\n"+tracker.CommentKeyMarker(key), keyed.Body, "the text reads back as typed, with the marker added on read")
 	t.Logf("keyed comment %s on %s", first.ID, b.Identifier)
+}
+
+// assignLive assigns the issue to the account through PUT
+// /rest/api/3/issue/{id}/assignee. The adapter never assigns issues, so the
+// test does it itself.
+func assignLive(t *testing.T, endpoint, apiKey, issueID, accountID string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"accountId": accountID})
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut,
+		strings.TrimSuffix(endpoint, "/")+"/rest/api/3/issue/"+issueID+"/assignee", bytes.NewReader(body))
+	require.NoError(t, err)
+	email, token, _ := strings.Cut(apiKey, ":")
+	req.SetBasicAuth(email, token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, "assign issue %s", issueID)
+}
+
+// TestJiraLiveScope proves the read scope on a real Jira Cloud project. It
+// creates four issues: with and without a label of its own, and assigned to
+// the token's account or unassigned. Scoped clients must list exactly the
+// matching ones among them (the search index lags behind writes, so it
+// polls), a by-ID read must stay unscoped, and MatchesFilter must agree with
+// the search. It needs the same environment as TestJiraLiveRoundTrip and
+// moves the issues to the done state at the end. It never prints the API key
+// or the account id.
+func TestJiraLiveScope(t *testing.T) {
+	endpoint := os.Getenv("JIRA_ENDPOINT")
+	project := os.Getenv("JIRA_PROJECT")
+	apiKey := os.Getenv("JIRA_API_KEY")
+	if endpoint == "" || project == "" || apiKey == "" {
+		t.Skip("set JIRA_ENDPOINT, JIRA_PROJECT and JIRA_API_KEY to run the live Jira scope test")
+	}
+	active := splitCSV(envOr("JIRA_ACTIVE_STATES", "To Do,In Progress"))
+	done := envOr("JIRA_DONE_STATE", "Done")
+	ctx := t.Context()
+	newClient := func(assignee string, labels ...string) *jira.Client {
+		return jira.NewClient(jira.ClientConfig{
+			Endpoint: endpoint, APIKey: apiKey, ProjectSlug: project, ActiveStates: active,
+			Assignee: assignee, Labels: labels,
+		})
+	}
+	base := newClient("")
+	me, err := newClient("me").ResolveAssignee(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, me.ID)
+
+	stamp := time.Now().Unix()
+	label := fmt.Sprintf("itervox-scope-%d", stamp)
+	specs := []struct {
+		name           string
+		labelled, mine bool
+	}{
+		{"labelled-mine", true, true},
+		{"labelled-unassigned", true, false},
+		{"plain-mine", false, true},
+		{"plain-unassigned", false, false},
+	}
+	nameOf := map[string]string{} // issue id -> spec name
+	var ids []string
+	for _, s := range specs {
+		in := tracker.NewIssue{Title: fmt.Sprintf("itervox scope %d %s", stamp, s.name)}
+		if s.labelled {
+			in.Labels = []string{label}
+		}
+		is, err := base.CreateIssue(ctx, "", in)
+		require.NoError(t, err)
+		id := is.ID
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := base.UpdateIssueState(cleanupCtx, id, done); err != nil {
+				t.Logf("cleanup: move %s to %q: %v", id, done, err)
+			}
+		})
+		if s.mine {
+			assignLive(t, endpoint, apiKey, id, me.ID)
+		}
+		nameOf[id] = s.name
+		ids = append(ids, id)
+		t.Logf("created %s (%s)", is.Identifier, s.name)
+	}
+
+	meAndLabel := newClient("me", label)
+	scopes := []struct {
+		name   string
+		client *jira.Client
+		want   []string
+	}{
+		{"no scope", base, []string{"labelled-mine", "labelled-unassigned", "plain-mine", "plain-unassigned"}},
+		{"labels", newClient("", label), []string{"labelled-mine", "labelled-unassigned"}},
+		{"labels in upper case", newClient("", strings.ToUpper(label)), []string{"labelled-mine", "labelled-unassigned"}},
+		{"assignee me", newClient("me"), []string{"labelled-mine", "plain-mine"}},
+		{"assignee me and labels", meAndLabel, []string{"labelled-mine"}},
+		{"assignee account id and labels", newClient(me.ID, label), []string{"labelled-mine"}},
+	}
+	// Only the issues this test created count: the project holds others.
+	listed := func(c *jira.Client) []string {
+		cands, err := c.FetchCandidateIssues(ctx)
+		require.NoError(t, err)
+		var names []string
+		for _, is := range cands {
+			if n, ok := nameOf[is.ID]; ok {
+				names = append(names, n)
+			}
+		}
+		slices.Sort(names)
+		return names
+	}
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		got := map[string][]string{}
+		var wrong []string
+		for _, sc := range scopes {
+			got[sc.name] = listed(sc.client)
+			if !slices.Equal(got[sc.name], sc.want) {
+				wrong = append(wrong, sc.name)
+			}
+		}
+		if len(wrong) == 0 {
+			for _, sc := range scopes {
+				t.Logf("scope %-31s lists %v", sc.name+":", got[sc.name])
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after 90s these scopes still list the wrong issues: %v (got %v)", wrong, got)
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	// The by-ID read is not scoped; MatchesFilter agrees with the search.
+	byID, err := meAndLabel.FetchIssueStatesByIDs(ctx, ids)
+	require.NoError(t, err)
+	require.Len(t, byID, len(ids), "a by-ID read returns every issue, in scope or not")
+	for _, is := range byID {
+		match, known := meAndLabel.MatchesFilter(is)
+		assert.True(t, known, nameOf[is.ID])
+		assert.Equal(t, nameOf[is.ID] == "labelled-mine", match, nameOf[is.ID])
+		t.Logf("by id %s (%s): in scope %v", is.Identifier, nameOf[is.ID], match)
+	}
 }

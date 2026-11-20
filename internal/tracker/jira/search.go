@@ -22,27 +22,51 @@ func jqlQuote(s string) string {
 	return `"` + s + `"`
 }
 
-// statesJQL builds the project-bounded query for the given state names.
-func (c *Client) statesJQL(states []string) string {
-	quoted := make([]string, len(states))
-	for i, s := range states {
-		quoted[i] = jqlQuote(s)
+// jqlList returns the values quoted and joined for a JQL "in (...)" list.
+func jqlList(values []string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = jqlQuote(v)
 	}
-	return fmt.Sprintf("project = %s AND status in (%s) ORDER BY created ASC",
-		jqlQuote(c.cfg.ProjectSlug), strings.Join(quoted, ", "))
+	return strings.Join(quoted, ", ")
 }
 
-// FetchCandidateIssues returns the project's issues in an active state, oldest
+// statesJQL builds the scoped query for the given state names: the project,
+// then the assignee and the labels when set, then the states. Without an
+// assignee or labels it is the project-only query.
+func (c *Client) statesJQL(states []string) string {
+	clauses := []string{"project = " + jqlQuote(c.cfg.ProjectSlug)}
+	switch {
+	case isMe(c.cfg.Assignee):
+		clauses = append(clauses, "assignee = currentUser()")
+	case c.cfg.Assignee != "":
+		clauses = append(clauses, "assignee = "+jqlQuote(c.cfg.Assignee))
+	}
+	if len(c.cfg.Labels) > 0 {
+		clauses = append(clauses, "labels in ("+jqlList(c.cfg.Labels)+")")
+	}
+	clauses = append(clauses, "status in ("+jqlList(states)+")")
+	return strings.Join(clauses, " AND ") + " ORDER BY created ASC"
+}
+
+// FetchCandidateIssues returns the scope's issues in an active state, oldest
 // first. With no active states it returns an empty slice and makes no request.
 func (c *Client) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
 	return c.FetchIssuesByStates(ctx, c.activeStates())
 }
 
-// FetchIssuesByStates returns the project's issues in any of the named
-// states. Empty names return an empty slice and make no request.
+// FetchIssuesByStates returns the scope's issues (the project, narrowed by the
+// assignee and the labels) in any of the named states. Empty names return an
+// empty slice and make no request. With an assignee of "me", the first read
+// also reads the token's account (see resolveMe) and fails if it cannot.
 func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]domain.Issue, error) {
 	if len(stateNames) == 0 {
 		return []domain.Issue{}, nil
+	}
+	if isMe(c.cfg.Assignee) {
+		if err := c.resolveMe(ctx); err != nil {
+			return nil, err
+		}
 	}
 	raws, err := c.search(ctx, c.statesJQL(stateNames))
 	if err != nil {

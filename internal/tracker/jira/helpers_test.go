@@ -33,6 +33,13 @@ func (r recorded) jsonBody(t *testing.T) map[string]any {
 // through handler. It returns the recorder accessor and the client.
 func newJiraServer(t *testing.T, handler func(n int, r recorded, w http.ResponseWriter)) (*jira.Client, func() []recorded) {
 	t.Helper()
+	return newScopedJiraServer(t, "", nil, handler)
+}
+
+// newScopedJiraServer is newJiraServer with a client scoped by assignee and
+// labels.
+func newScopedJiraServer(t *testing.T, assignee string, labels []string, handler func(n int, r recorded, w http.ResponseWriter)) (*jira.Client, func() []recorded) {
+	t.Helper()
 	var mu sync.Mutex
 	var seen []recorded
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +58,8 @@ func newJiraServer(t *testing.T, handler func(n int, r recorded, w http.Response
 		APIKey:       "me@example.com:tok",
 		ProjectSlug:  "PROJ",
 		ActiveStates: []string{"To Do", "In Progress"},
+		Assignee:     assignee,
+		Labels:       labels,
 	})
 	return c, func() []recorded {
 		mu.Lock()
