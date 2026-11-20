@@ -36,7 +36,7 @@ use crate::sessions::percent_encode;
 /// `TERMINAL_WINDOW_PATH`.
 pub const TERMINAL_PAGE_PATH: &str = "sessions/terminal";
 
-/// Why a daemon reached through its host's hub has no "Open terminal".
+/// Why a daemon reached through its host's hub has no "Live terminal".
 pub const HUB_NOTE: &str =
     "The live terminal is not available through the host's hub: open the session's dashboard on the daemon's own tunnel, or use Open in Terminal.";
 
@@ -61,7 +61,7 @@ pub fn page_link(base: &str, id: &str) -> String {
 }
 
 /// The window label of session `id` of `daemon`: stable, so a second
-/// "Open terminal" finds the window already open, and only `[a-z0-9-]`
+/// "Live terminal" finds the window already open, and only `[a-z0-9-]`
 /// as Tauri requires.
 pub fn window_label(daemon: &str, id: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -79,7 +79,7 @@ pub fn window_title(session: &str, project: &str, remote: Option<&str>) -> Strin
         Some(r) => format!("{project} ({r})"),
         None => project.to_string(),
     };
-    format!("{session} — {project} — Terminal")
+    format!("{session} — {project} — Live terminal")
 }
 
 /// Whether the terminal window may navigate to `url`: only pages of the
@@ -138,15 +138,15 @@ mod tests {
     fn terminal_window_title_names_session_and_project() {
         assert_eq!(
             window_title("itervox-abc123", "app", None),
-            "itervox-abc123 — app — Terminal"
+            "itervox-abc123 — app — Live terminal"
         );
         assert_eq!(
             window_title("ENG-1", "server", Some("PROD")),
-            "ENG-1 — server (PROD) — Terminal"
+            "ENG-1 — server (PROD) — Live terminal"
         );
         assert_eq!(
             window_title("ENG-1", "server", Some("")),
-            "ENG-1 — server — Terminal"
+            "ENG-1 — server — Live terminal"
         );
     }
 

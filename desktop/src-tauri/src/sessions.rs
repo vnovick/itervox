@@ -26,7 +26,7 @@
 //! app attaches only to a session of the view it last pushed
 //! ([`terminal_target`]), never to a name the page hands it.
 //!
-//! "Open terminal" (#278 phase 2) opens the session's own app window with
+//! "Live terminal" (#278 phase 2) opens the session's own app window with
 //! the daemon's live terminal (#298) in it ([`crate::terminal_window`]):
 //! offered for a controllable session of a daemon that reports a live
 //! terminal (`tmux.terminal`), never through a host's hub, and resolved
@@ -88,7 +88,7 @@ pub struct Session {
     /// The window offers "Open in Terminal": `attach` is set and the
     /// daemon's host can be reached from a terminal here.
     pub open_terminal: bool,
-    /// The window offers "Open terminal" (#278 phase 2): the daemon offers
+    /// The window offers "Live terminal" (#278 phase 2): the daemon offers
     /// this session a live terminal ([`aggregate`]).
     pub live_terminal: bool,
 }
@@ -291,7 +291,7 @@ pub struct SessionGroup {
     /// Where "Open in Terminal" attaches from. Not sent to the page.
     #[serde(skip)]
     pub attach_host: Option<AttachHost>,
-    /// Why its controllable sessions have no "Open terminal": the daemon
+    /// Why its controllable sessions have no "Live terminal": the daemon
     /// is reached through its host's hub.
     pub live_terminal_note: Option<String>,
     /// The remote connection's name; `None` for a local daemon. Not sent
@@ -444,7 +444,7 @@ pub const READY_PATH: &str = "/__itervox/ready";
 pub const NEW_SESSION_PATH: &str = "/__itervox/new-session";
 /// The path the page navigates to for "Open in Terminal" (#278).
 pub const OPEN_TERMINAL_PATH: &str = "/__itervox/open-terminal";
-/// The path the page navigates to for "Open terminal" (#278 phase 2).
+/// The path the page navigates to for "Live terminal" (#278 phase 2).
 pub const OPEN_LIVE_TERMINAL_PATH: &str = "/__itervox/open-live-terminal";
 
 /// What a navigation of the Sessions page asks for.
@@ -527,7 +527,7 @@ pub fn terminal_target(
     Some((g.attach_host.clone()?, s.attach.clone()))
 }
 
-/// What "Open terminal" opens for `session` (its key) of `daemon`.
+/// What "Live terminal" opens for `session` (its key) of `daemon`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveTerminalTarget {
     /// The session's id, the one the terminal route takes.
@@ -1149,7 +1149,7 @@ mod tests {
         assert!(html.contains("g.terminalNote"));
     }
 
-    /// #278 phase 2: "Open terminal" is offered for the controllable
+    /// #278 phase 2: "Live terminal" is offered for the controllable
     /// sessions of a daemon that reports a live terminal (`tmux.terminal`)
     /// and is read on its own address — never through a host's hub, never
     /// for read-only or ordinary sessions, never from an older daemon — and
@@ -1199,7 +1199,7 @@ mod tests {
             t.window,
             crate::terminal_window::window_label("/w/WORKFLOW.md", "itervox-abc123")
         );
-        assert_eq!(t.title, "Fix the flaky test — w (PROD) — Terminal");
+        assert_eq!(t.title, "Fix the flaky test — w (PROD) — Live terminal");
         assert_eq!(
             live_terminal_target(&view, "/w/WORKFLOW.md", "itervox-abc123"),
             Some(t.clone()),
@@ -1272,7 +1272,7 @@ mod tests {
         .expect("desktop/dist/sessions.html");
         assert!(html.contains(OPEN_LIVE_TERMINAL_PATH));
         assert!(html.contains("if (s.liveTerminal)"));
-        assert!(html.contains("'Open terminal'"));
+        assert!(html.contains("'Live terminal'"));
         assert!(html.contains("g.liveTerminalNote"));
         assert!(
             html.contains("'Open in Terminal'"),

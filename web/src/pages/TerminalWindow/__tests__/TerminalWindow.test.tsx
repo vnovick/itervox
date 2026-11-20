@@ -202,7 +202,7 @@ describe('TerminalWindow', () => {
     expect(screen.queryByRole('navigation')).toBeNull();
     expect(screen.getByTestId('terminal-window-session')).toHaveTextContent('Fix the flaky test');
     expect(screen.getByTestId('terminal-window-project')).toHaveTextContent('app');
-    expect(document.title).toBe('Fix the flaky test — app — Terminal');
+    expect(document.title).toBe('Fix the flaky test — app — Live terminal');
     // Every request carries the held token in a header (authedFetch) ...
     expect(calls.length).toBeGreaterThanOrEqual(3);
     for (const c of calls) expect(c.auth).toBe(`Bearer ${TOKEN}`);

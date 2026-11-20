@@ -10,7 +10,7 @@
      session the app may attach to has "Open in Terminal" (#278), which
      navigates to /__itervox/open-terminal; the app opens the system terminal
      attached to it. A session the daemon offers a live terminal for (#278
-     phase 2) has "Open terminal", which navigates to
+     phase 2) has "Live terminal", which navigates to
      /__itervox/open-live-terminal; the app opens (or focuses) that
      session's own app window with the daemon's live terminal in it. No
      network access of its own. -->
@@ -161,7 +161,7 @@
           var row = el('div', 'session-row');
           row.appendChild(b);
           if (s.liveTerminal) {
-            var live = el('button', 'terminal chip', 'Open terminal');
+            var live = el('button', 'terminal chip', 'Live terminal');
             live.type = 'button';
             live.title = 'Open this session\'s live terminal in its own window (closing it leaves the session running)';
             live.addEventListener('click', function () { openLiveTerminal(g.daemon, s.key); });

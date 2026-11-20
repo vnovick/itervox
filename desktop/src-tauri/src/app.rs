@@ -1173,7 +1173,7 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
             });
         }
         PageAction::OpenLiveTerminal { daemon, session } => {
-            // Only a session the window was shown "Open terminal" for.
+            // Only a session the window was shown "Live terminal" for.
             let Some(target) =
                 live_terminal_target(&lock(&shared.sessions_last), &daemon, &session)
             else {

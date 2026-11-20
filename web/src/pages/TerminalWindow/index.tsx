@@ -44,7 +44,7 @@ export default function TerminalWindow() {
   const label = session ? sessionLabel(session) : id;
 
   useEffect(() => {
-    document.title = [label, project, 'Terminal'].filter(Boolean).join(' — ');
+    document.title = [label, project, 'Live terminal'].filter(Boolean).join(' — ');
   }, [label, project]);
 
   let body: ReactNode;
