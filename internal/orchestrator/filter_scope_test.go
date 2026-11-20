@@ -55,6 +55,14 @@ func (f *filterTracker) FetchIssueStatesByIDs(ctx context.Context, ids []string)
 	return f.overlay(all), err
 }
 
+func (f *filterTracker) FetchIssueDetail(ctx context.Context, id string) (*domain.Issue, error) {
+	iss, err := f.MemoryTracker.FetchIssueDetail(ctx, id)
+	if iss != nil {
+		*iss = f.overlay([]domain.Issue{*iss})[0]
+	}
+	return iss, err
+}
+
 func (f *filterTracker) MatchesFilter(is domain.Issue) (bool, bool) {
 	return f.filter.Match(is, issuefilter.Env{})
 }

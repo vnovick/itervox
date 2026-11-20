@@ -147,6 +147,17 @@ func (o *Orchestrator) admitClaimRead(ctx context.Context, state *State, issue d
 			"identifier", issue.Identifier, "error", err)
 		return false, false
 	}
+	// #198: the read is unscoped, and the list the pick came from may be the
+	// store's, one pull old. An issue that left the tracker scope since
+	// (reassigned, a matching label removed, moved to another project) is not
+	// started, by the check fireRetries makes; the store forgets it, so the
+	// next tick does not pick it again.
+	if leftTrackerScope(o.tracker, *detailed) {
+		slog.Info("orchestrator: claim check: the issue left the tracker scope; not starting it",
+			"identifier", issue.Identifier, "tracker_identifier", detailed.Identifier, "path", admitDispatch)
+		o.forgetLocally(issue.ID)
+		return false, false
+	}
 	claimed, verdict := o.claimCheck(ctx, state, issue, detailed, admitDispatch, func(v domain.Issue) string {
 		return IneligibleReason(v, *state, o.cfg)
 	}, now)
