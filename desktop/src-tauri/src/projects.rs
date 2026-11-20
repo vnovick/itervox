@@ -2,7 +2,9 @@
 //! config directory (`projects.json`). Daemons found by `status --all --json`
 //! are listed whether or not they were added; an added project is listed
 //! also while its daemon is stopped, so it can be started. The project
-//! rail's order, pins and collapsed state (#244) are kept in the same file.
+//! rail's order, pins and collapsed state (#244) are kept in the same file,
+//! and so is the Terminal app "Open in Terminal" opens (#278,
+//! [`crate::terminal_app`]).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -68,6 +70,9 @@ struct FileShape {
     /// Absent in files written before #244; ignored by older apps.
     #[serde(default, skip_serializing_if = "is_default_rail")]
     rail: RailPrefs,
+    /// The Terminal app's id; absent for Automatic (and in older files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_app: Option<String>,
 }
 
 fn is_default_rail(r: &RailPrefs) -> bool {
@@ -79,6 +84,9 @@ fn is_default_rail(r: &RailPrefs) -> bool {
 pub struct SavedProjects {
     pub projects: Vec<SavedProject>,
     pub rail: RailPrefs,
+    /// The Terminal app "Open in Terminal" opens ([`crate::terminal_app`]
+    /// id); `None` for Automatic.
+    pub terminal_app: Option<String>,
 }
 
 /// The project key for a WORKFLOW.md path: absolute, `.` and `..` resolved
@@ -121,6 +129,7 @@ impl SavedProjects {
                 Ok(Self {
                     projects: shape.projects,
                     rail: shape.rail,
+                    terminal_app: shape.terminal_app,
                 })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -138,6 +147,7 @@ impl SavedProjects {
             version: FILE_VERSION,
             projects: self.projects.clone(),
             rail: self.rail.clone(),
+            terminal_app: self.terminal_app.clone(),
         })
         .map_err(|e| e.to_string())?;
         let tmp = path.with_extension("json.tmp");
@@ -213,6 +223,30 @@ mod tests {
             }]
         );
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    /// The Terminal app (#278) is saved with the project list; Automatic
+    /// writes nothing, and a file without it reads as Automatic.
+    #[test]
+    fn terminal_app_choice_persists_with_the_project_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROJECTS_FILE);
+        std::fs::write(&path, br#"{"version": 1, "projects": []}"#).unwrap();
+        let mut s = SavedProjects::load(&path).unwrap();
+        assert_eq!(s.terminal_app, None);
+        s.save(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("terminal_app"));
+        s.terminal_app = Some("iterm2".into());
+        s.save(&path).unwrap();
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(r#""terminal_app": "iterm2""#));
+        assert_eq!(
+            SavedProjects::load(&path).unwrap().terminal_app.as_deref(),
+            Some("iterm2")
+        );
     }
 
     #[test]

@@ -250,11 +250,47 @@ Claude Code and Codex sessions you started by hand on a daemon's host — in a t
 
 A session running in a tmux pane carries a **tmux** badge (hover it for the pane), highlighted when the dashboard can control it — a session the daemon started with **New session**, or one you run in tmux with [`sessions.tmux_control`](/configuration/#sessions) on (see [Sessions in tmux](/guides/sessions/#sessions-in-tmux)). Under a daemon that has tmux, **New session…** opens its dashboard at the New session form. Under a daemon whose host has no tmux, the window says **tmux not found — install it to control sessions from here**, with the install command, instead.
 
-### Open in Terminal
+### Open in your terminal
 
-A tmux session the app may attach to — one the daemon started with **New session**, or one you started by hand in tmux while [`sessions.tmux_control`](/configuration/#sessions) is on — has **Open in Terminal** beside it. It opens the system terminal attached to that tmux session: Terminal on the Mac, `$TERMINAL` (a single program, run as `<terminal> -e <command>`) or else `x-terminal-emulator` on Linux, and Windows Terminal (`wt`) on Windows. For a local daemon the terminal runs `tmux attach -t itervox-<id>`; for a remote daemon reached over SSH it runs `ssh -t <destination> tmux attach -t itervox-<id>` with the connection's own destination (so your `~/.ssh/config` applies, and ssh may ask for a passphrase in the terminal); for a VM reached by SSH through IAP, `gcloud compute ssh <vm> --tunnel-through-iap --command="tmux attach -t itervox-<id>" -- -t`. The app only attaches: the daemon still owns the session, the dashboard keeps showing it, and closing the terminal detaches without ending it.
+A tmux session in the Sessions window can be opened two ways:
 
-The action is absent for a session the app may not attach to: a dispatched run (it has no tmux session), a hand-started session without `sessions.tmux_control`, and a session whose tmux name is not a plain one (letters, digits, `-`, `_`). A daemon reached through a plain IAP port tunnel has no SSH to attach over, and a local daemon on Windows has no tmux; the window says so under the daemon instead. On Windows, run itervox in WSL and add it as an SSH remote. The command is passed to the terminal as separate arguments, built only from the checked session name and host; on the Mac the app writes a one-time `.command` file (readable only by you, deleted when it runs) because Terminal opens files, not argument lists.
+- **Live terminal** opens it in Itervox's own window: the daemon's live terminal, no terminal program needed (see [Live terminal](#live-terminal) below).
+- **Open in …** — for example **Open in iTerm**, **Open in Ghostty** or **Open in Terminal** — opens it in your own terminal program, attached with tmux, where you type as you would in any terminal.
+
+A tmux session the app may attach to — one the daemon started with **New session**, or one you started by hand in tmux while [`sessions.tmux_control`](/configuration/#sessions) is on — has **Open in …** beside it. For a local daemon the terminal runs `tmux attach -t itervox-<id>`; for a remote daemon reached over SSH it runs `ssh -t <destination> tmux attach -t itervox-<id>` with the connection's own destination (so your `~/.ssh/config` applies, and ssh may ask for a passphrase in the terminal); for a VM reached by SSH through IAP, `gcloud compute ssh <vm> --tunnel-through-iap --command="tmux attach -t itervox-<id>" -- -t`. The app only attaches: the daemon still owns the session, the dashboard keeps showing it, and closing the terminal detaches without ending it.
+
+#### Terminal app
+
+**Terminal app**, at the top of the Sessions window, picks the program: **Automatic** (the default) or one of the terminals the app found on this machine. Only installed programs are listed, and the button names the one in use. The choice is kept with the app's project list (`projects.json` in the app's configuration directory). If the program you chose is no longer found, the app uses Automatic and the window says so; choose it again once it is back, or pick another.
+
+| | Found | Automatic |
+|---|---|---|
+| macOS | Terminal, iTerm2, Ghostty, WezTerm, kitty, Alacritty and Warp, in `/Applications` or `~/Applications` (recognised by bundle id) | Terminal |
+| Linux | `$TERMINAL` (one program), then gnome-terminal, konsole, kitty, alacritty, wezterm, ghostty, foot, xfce4-terminal, tilix, xterm and x-terminal-emulator on `PATH` | `$TERMINAL`, else the first one found |
+| Windows | Windows Terminal, PowerShell 7, Windows PowerShell and Command Prompt | Windows Terminal, else PowerShell |
+
+On macOS Automatic is Terminal: the app does not read which terminal you made the default.
+
+How each program is started — always as separate arguments, built only from the checked session name and host, never as a shell line from the daemon's text:
+
+| Program | Started with |
+|---|---|
+| Terminal, iTerm2, Warp (macOS) | `open -a <App> <file>` — the app writes a one-time `.command` file (readable only by you, deleted when it runs) and the terminal opens it |
+| Ghostty, Alacritty (macOS) | `open -na <App> --args -e <file>` (the same one-time file) |
+| WezTerm (macOS) | `open -na WezTerm --args start -- <file>` |
+| kitty (macOS) | `open -na kitty --args <file>` |
+| gnome-terminal | `gnome-terminal -- <command>` |
+| wezterm (Linux) | `wezterm start -- <command>` |
+| kitty, foot (Linux) | `kitty <command>`, `foot <command>` |
+| xfce4-terminal | `xfce4-terminal -x <command>` |
+| konsole, alacritty, ghostty, tilix, xterm, x-terminal-emulator, other `$TERMINAL` | `<terminal> -e <command>` |
+| Windows Terminal | `wt new-tab <command>` |
+| PowerShell 7, Windows PowerShell | `pwsh -NoExit -Command "& '<word>' '<word>' …"` (`powershell` for Windows PowerShell) in a new console |
+| Command Prompt | `cmd /S /K "<command>"` in a new console |
+
+PowerShell and Command Prompt take only a command line, so the app builds it from literal words (single-quoted for PowerShell, which expands nothing in them) and refuses a word with a quote or one of Command Prompt's special characters (`% ^ & | < > !`); Windows Terminal refuses a `;`.
+
+The action is absent for a session the app may not attach to: a dispatched run (it has no tmux session), a hand-started session without `sessions.tmux_control`, and a session whose tmux name is not a plain one (letters, digits, `-`, `_`). A daemon reached through a plain IAP port tunnel has no SSH to attach over, and a local daemon on Windows has no tmux; the window says so under the daemon instead. On Windows, run itervox in WSL and add it as an SSH remote.
 
 ### Live terminal
 
@@ -264,9 +300,9 @@ The window is the daemon's own terminal page (`<dashboard>/sessions/terminal?id=
 
 The daemon decides what you may do: a read-only attach for an operator token, and typing only for an admin token on a daemon with `sessions.terminal_write: true`. The window shows the mode the daemon granted (**read-only** or **typing goes to the session**), the connection state, and — when the daemon closes the terminal — the close code and reason, with **Reconnect**. The terminal's size follows the window. Closing the window detaches: tmux keeps the session running and the dashboard keeps showing it.
 
-Unlike **Open in Terminal**, **Live terminal** needs no SSH or system terminal on your machine: it works for a daemon reached through a plain IAP port tunnel and from the app on Windows (for a remote daemon). It is absent for a daemon reached through its host's hub, which does not carry the live terminal (the window says so under the daemon), for a dispatched run, for a hand-started session without `sessions.tmux_control`, and for a daemon whose host has no tmux or no live terminal (Windows, older releases).
+Unlike **Open in …**, **Live terminal** needs no SSH or terminal program on your machine: it works for a daemon reached through a plain IAP port tunnel and from the app on Windows (for a remote daemon). It is absent for a daemon reached through its host's hub, which does not carry the live terminal (the window says so under the daemon), for a dispatched run, for a hand-started session without `sessions.tmux_control`, and for a daemon whose host has no tmux or no live terminal (Windows, older releases).
 
-The window only reads. It never types into a terminal or drives another app (**Open in Terminal** starts a new terminal window that you type into; **Live terminal** shows the daemon's live terminal, where only the daemon writes, under its own rules): messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
+The window only reads. It never types into a terminal or drives another app (**Open in …** starts a new window of your terminal program that you type into; **Live terminal** shows the daemon's live terminal, where only the daemon writes, under its own rules): messages and keys go through the daemon, which writes only to agent processes it started itself and — through tmux only — to sessions in tmux panes as described in [Sessions in tmux](/guides/sessions/#sessions-in-tmux).
 
 ### System material
 
@@ -454,7 +490,7 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Daemon bundled in the app; **Stop** sends `SIGTERM` | Same | No native daemon yet ([local projects](#windows-local-projects)); with `itervox.exe`, **Stop** runs `itervox stop` |
 | Wake detected from the clocks, network change from `getifaddrs` | Same | Network change from the default routes' source addresses; a wake that keeps the address is caught by the tunnel health checks |
 | `open` for logs and links | `xdg-open` | `explorer` |
-| [Open in Terminal](#open-in-terminal): Terminal, through a one-time `.command` file | `$TERMINAL`, else `x-terminal-emulator`, with `-e` | Windows Terminal (`wt new-tab`); remote daemons only |
+| [Open in your terminal](#open-in-your-terminal): the [Terminal app](#terminal-app) you pick (Terminal, iTerm2, Ghostty, …), through a one-time `.command` file | The Terminal app you pick (`$TERMINAL` first), each with its own run-a-command flag | The Terminal app you pick (Windows Terminal, PowerShell, Command Prompt); remote daemons only |
 | Liquid Glass (macOS 26) or vibrancy behind the Sessions window ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
 | Tray **Quit Itervox** with <kbd>⌘Q</kbd> | <kbd>Ctrl</kbd>+<kbd>Q</kbd>, shown and bound only where the panel's menu supports shortcuts (AppIndicator menus often do not) | <kbd>Ctrl</kbd>+<kbd>Q</kbd> |
 

@@ -1057,9 +1057,30 @@ fn push_sessions(app: &AppHandle, shared: &Arc<Shared>) {
         )
     };
     jobs.extend(shared.remote.session_jobs());
-    let view = read_all(&jobs, client::fetch_sessions);
+    let mut view = read_all(&jobs, client::fetch_sessions);
+    // The "Terminal app" picker (#278): what is installed now, and the
+    // saved choice (or Automatic when it is gone).
+    let found = detect_terminals(shared);
+    let choice = lock(&shared.core).saved.terminal_app.clone();
+    view.terminal_app = Some(crate::terminal_app::picker(
+        crate::platform::Os::current(),
+        choice.as_deref(),
+        &found,
+    ));
     let _ = window.eval(push_script(&view));
     *lock(&shared.sessions_last) = view;
+}
+
+/// The terminal programs installed here (#278, terminal_app.rs), looked
+/// up with the PATH the app runs ssh and gcloud with.
+fn detect_terminals(shared: &Shared) -> crate::terminal_app::Detection {
+    let tools = shared.remote.tools();
+    crate::terminal_app::detect(
+        crate::platform::Os::current(),
+        &crate::terminal_app::SystemProbe {
+            path_env: &tools.path_env,
+        },
+    )
 }
 
 /// Shows the Sessions window, creating it on first use. Its page asks for
@@ -1167,9 +1188,44 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
             let shared2 = Arc::clone(shared);
             // Off the main thread: resolving ssh/gcloud may run the login shell.
             std::thread::spawn(move || {
-                if let Err(e) = crate::terminal::open(&host, &name, shared2.remote.tools()) {
+                let found = detect_terminals(&shared2);
+                let choice = lock(&shared2.core).saved.terminal_app.clone();
+                let terminal = crate::terminal_app::resolve(
+                    crate::platform::Os::current(),
+                    choice.as_deref(),
+                    &found.apps,
+                );
+                if let Err(e) =
+                    crate::terminal::open(&host, &name, shared2.remote.tools(), &terminal.app)
+                {
                     error_dialog(&app2, &e);
                 }
+            });
+        }
+        PageAction::SetTerminalApp { id } => {
+            let app2 = app.clone();
+            let shared2 = Arc::clone(shared);
+            // Off the main thread, like Open in Terminal (detection reads
+            // the login shell's PATH).
+            std::thread::spawn(move || {
+                // Only Automatic or a terminal found now is saved.
+                if !crate::terminal_app::may_save(&id, &detect_terminals(&shared2)) {
+                    wake(&shared2);
+                    return;
+                }
+                let value = (id != crate::terminal_app::AUTOMATIC).then_some(id);
+                let res = {
+                    let mut core = lock(&shared2.core);
+                    if core.saved.terminal_app == value {
+                        return;
+                    }
+                    core.saved.terminal_app = value;
+                    core.saved.save(&shared2.projects_file)
+                };
+                if let Err(e) = res {
+                    error_dialog(&app2, &format!("Could not save the Terminal app: {e}"));
+                }
+                wake(&shared2);
             });
         }
         PageAction::OpenLiveTerminal { daemon, session } => {

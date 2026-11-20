@@ -12,8 +12,12 @@
      attached to it. A session the daemon offers a live terminal for (#278
      phase 2) has "Live terminal", which navigates to
      /__itervox/open-live-terminal; the app opens (or focuses) that
-     session's own app window with the daemon's live terminal in it. No
-     network access of its own. -->
+     session's own app window with the daemon's live terminal in it. The
+     header's "Terminal app" picker chooses the terminal program Open in
+     Terminal opens (Automatic or one found on this machine; the button
+     then reads "Open in iTerm" and so on) and navigates to
+     /__itervox/terminal-app?id=… to save it. No network access of its
+     own. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -60,12 +64,21 @@
   .session-row button.session { flex:1; min-width:0; }
   button.terminal { font-size:12px; min-height:32px; padding:0 12px; white-space:nowrap; }
   .terminal-note { color:var(--muted); margin:4px 2px; font-size:12px; }
+  #terminal-app-row { display:flex; gap:8px; align-items:center; margin-top:8px; font-size:13px; color:var(--text2); }
+  #terminal-app-row[hidden] { display:none; }
+  #terminal-app { font:inherit; min-height:28px; max-width:100%; }
+  #terminal-app-note { color:var(--warn); margin:4px 0 0; font-size:12px; }
 </style>
 </head>
 <body class="page">
 <header class="glass">
   <h1>Sessions</h1>
   <div id="summary">Reading the daemons…</div>
+  <div id="terminal-app-row" hidden>
+    <label for="terminal-app">Terminal app</label>
+    <select id="terminal-app" title="The terminal program Open in Terminal opens"></select>
+  </div>
+  <p id="terminal-app-note" hidden></p>
 </header>
 <main id="groups" aria-label="Agent sessions by daemon"></main>
 <script>
@@ -75,8 +88,37 @@
   var NEW_SESSION_PATH = '/__itervox/new-session';
   var OPEN_TERMINAL_PATH = '/__itervox/open-terminal';
   var OPEN_LIVE_TERMINAL_PATH = '/__itervox/open-live-terminal';
+  var TERMINAL_APP_PATH = '/__itervox/terminal-app';
   var groupsEl = document.getElementById('groups');
   var summaryEl = document.getElementById('summary');
+  var appRow = document.getElementById('terminal-app-row');
+  var appSelect = document.getElementById('terminal-app');
+  var appNote = document.getElementById('terminal-app-note');
+  var appOptions = '';
+
+  appSelect.addEventListener('change', function () {
+    window.location.href = TERMINAL_APP_PATH + '?id=' + encodeURIComponent(appSelect.value);
+  });
+
+  // The picker is rebuilt only when its options change, and left alone
+  // while it has focus, so a push never closes it under the pointer.
+  function renderTerminalApp(t) {
+    appRow.hidden = !t;
+    appNote.hidden = !(t && t.note);
+    if (!t) return;
+    appNote.textContent = t.note || '';
+    var key = JSON.stringify(t.options);
+    if (key !== appOptions) {
+      appOptions = key;
+      appSelect.textContent = '';
+      t.options.forEach(function (o) {
+        var opt = el('option', null, o.label);
+        opt.value = o.id;
+        appSelect.appendChild(opt);
+      });
+    }
+    if (document.activeElement !== appSelect) appSelect.value = t.choice;
+  }
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -116,6 +158,8 @@
       : view.total + ' session' + (view.total === 1 ? '' : 's') +
         (view.waiting > 0 ? ' · ' + view.waiting + ' waiting for input' : '') +
         (view.external > 0 ? ' · ' + view.external + ' started outside itervox' : '');
+    renderTerminalApp(view.terminalApp);
+    var openLabel = view.terminalApp ? view.terminalApp.openLabel : 'Open in Terminal';
     groupsEl.textContent = '';
     view.groups.forEach(function (g) {
       var sec = el('section', 'glass');
@@ -168,9 +212,9 @@
             row.appendChild(live);
           }
           if (s.openTerminal) {
-            var term = el('button', 'terminal chip', 'Open in Terminal');
+            var term = el('button', 'terminal chip', openLabel);
             term.type = 'button';
-            term.title = 'Open a terminal attached to this tmux session (closing it leaves the session running)';
+            term.title = openLabel + ', attached to this tmux session (closing it leaves the session running)';
             term.addEventListener('click', function () { openTerminal(g.daemon, s.key); });
             row.appendChild(term);
           }
@@ -187,6 +231,7 @@
 
   // Arrow keys move between sessions across groups; Enter opens (native).
   document.addEventListener('keydown', function (e) {
+    if (e.target === appSelect) return; // the picker keeps its own keys
     var list = buttons();
     if (list.length === 0) return;
     var i = list.indexOf(document.activeElement);
