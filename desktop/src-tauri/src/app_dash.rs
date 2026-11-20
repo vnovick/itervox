@@ -98,7 +98,11 @@ fn tabs_label(window: &str) -> String {
 
 /// The project's dashboard: URL (or `url`, a deep link), origin, token and
 /// window title. Reads only what the last refresh holds.
-fn target(shared: &Shared, key: &str, url: Option<String>) -> Result<(DashTarget, String), String> {
+pub(super) fn target(
+    shared: &Shared,
+    key: &str,
+    url: Option<String>,
+) -> Result<(DashTarget, String), String> {
     if is_remote_key(key) {
         let (t, title) = shared.remote.dashboard(key, url.as_deref())?;
         return Ok((

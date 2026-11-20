@@ -89,6 +89,17 @@ describe('checkBundleBudget', () => {
     expect(term?.maxBytes).toBeLessThanOrEqual(300 * KB);
   });
 
+  it('keeps the desktop terminal window page thin (#278)', () => {
+    const page = [...healthy, chunk('TerminalWindow-a.js', 4 * KB, 'xterm-helper-textarea')];
+    expect(checkBundleBudget(page, INDEX).violations).toContain(
+      'TerminalWindow chunk TerminalWindow-a.js contains forbidden "xterm-helper-textarea"',
+    );
+    const big = [...healthy, chunk('TerminalWindow-b.js', 40 * KB, '')];
+    expect(
+      checkBundleBudget(big, INDEX).violations.some((m) => m.startsWith('TerminalWindow chunk')),
+    ).toBe(true);
+  });
+
   it('keeps the #211 acceptance caps', () => {
     const dashboard = BUDGET.chunks.find((c) => c.name === 'Dashboard');
     const cron = BUDGET.chunks.find((c) => c.name === 'CronWidget');

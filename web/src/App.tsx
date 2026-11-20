@@ -44,6 +44,7 @@ import { AttentionNotifier } from './components/itervox/AttentionNotifier';
 import { getApiContext, routerBasename } from './auth/apiBase';
 import { isEmbeddedLanding, useEmbedded, useEmbeddedNavigateHook } from './hooks/useEmbeddedShell';
 import { FOCUS_PATH } from './hooks/useFocusIssue';
+import { isTerminalWindowPath } from './pages/TerminalWindow/terminalWindowPath';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Sessions = lazy(() => import('./pages/Sessions'));
@@ -62,6 +63,10 @@ const HubPage = lazy(() => import('./pages/Hub'));
 // /hub/p/{project}/m/{issue}.
 const HubMobilePage = lazy(() => import('./pages/HubMobile'));
 const MobileIssuePage = lazy(() => import('./pages/MobileIssue'));
+// #278 phase 2 — the desktop app's terminal window (one session's live
+// terminal and nothing else): rendered before the router and its event
+// stream.
+const TerminalWindowPage = lazy(() => import('./pages/TerminalWindow'));
 
 /** Tailwind's `md` breakpoint (the drawer is `md:hidden`). */
 const MD_BREAKPOINT_QUERY = '(min-width: 768px)';
@@ -419,6 +424,16 @@ export default function App() {
     return (
       <Suspense fallback={<PageLoader />}>
         {ctx.view === 'mobile' ? <HubMobilePage /> : <HubPage />}
+        <Toast />
+      </Suspense>
+    );
+  }
+  if (isTerminalWindowPath()) {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <PageErrorBoundary>
+          <TerminalWindowPage />
+        </PageErrorBoundary>
         <Toast />
       </Suspense>
     );
