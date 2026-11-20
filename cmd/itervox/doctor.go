@@ -186,7 +186,10 @@ type DoctorReport struct {
 	// Labels is the GitHub state-label check (#75). Zero value when the
 	// tracker is not GitHub.
 	Labels LabelCheck
-	// Assignee is the Linear assignee-scope check (#182). Zero value when
+	// JiraStatuses checks that the configured states are statuses of the
+	// Jira project. Zero value when the tracker is not Jira.
+	JiraStatuses JiraStatusCheck
+	// Assignee is the Linear or Jira assignee-scope check (#182). Zero value when
 	// the tracker has no assignee scope.
 	Assignee AssigneeCheck
 	// Filter is the tracker.filter check (#198): validated with the
@@ -458,11 +461,14 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		}
 	}
 
-	// GitHub state labels: one read through the tracker client. An API
-	// failure is reported but never fails doctor.
+	// GitHub state labels and Jira statuses: one read each through the
+	// tracker client. An API failure is reported but never fails doctor.
 	if cfg != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), labelCheckTimeout)
 		report.Labels = checkGitHubLabels(ctx, cfg)
+		cancel()
+		ctx, cancel = context.WithTimeout(context.Background(), labelCheckTimeout)
+		report.JiraStatuses = checkJiraStatuses(ctx, cfg, report.SchemaPassed)
 		cancel()
 	}
 
@@ -473,11 +479,15 @@ func collectDoctorReport(workflowPath string) (DoctorReport, *config.Config) {
 		cancel()
 	}
 
-	// Linear assignee scope (#182): the user resolves, and its issues are
-	// readable. An unresolvable user or unknown team fails doctor.
+	// Assignee scope (#182: Linear; Jira): the user resolves, and its issues
+	// are readable. An unresolvable user or unknown team fails doctor.
 	if cfg != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), assigneeCheckTimeout)
-		report.Assignee = checkLinearAssignee(ctx, cfg)
+		if cfg.Tracker.Kind == "jira" {
+			report.Assignee = checkJiraAssignee(ctx, cfg)
+		} else {
+			report.Assignee = checkLinearAssignee(ctx, cfg)
+		}
 		cancel()
 	}
 
@@ -533,6 +543,9 @@ func doctorExitCode(report DoctorReport) int {
 		// dispatched or moved, with no error anywhere else.
 		exitCode = 1
 	case report.LabelFixError != "":
+		exitCode = 1
+	case len(report.JiraStatuses.Missing) > 0:
+		// Likewise for a Jira state that is not a status of the project.
 		exitCode = 1
 	case report.BareFetch.Failing:
 		// #195: every new worktree starts from a base that no longer moves.
@@ -635,6 +648,7 @@ func renderDoctorReport(r DoctorReport) string {
 	renderDoctorSync(&b, r.Sync, r.SyncLagWarning)
 	renderBareFetchCheck(&b, r.BareFetch)
 	renderLabelCheck(&b, r.Labels)
+	renderJiraStatusCheck(&b, r.JiraStatuses)
 	renderAssigneeCheck(&b, r.Assignee)
 	renderFilterCheck(&b, r.Filter)
 	if r.LabelFixError != "" {

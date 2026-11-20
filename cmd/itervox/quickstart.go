@@ -83,7 +83,7 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 	opts := quickstartOptions{ReadyTimeout: quickstartDefaultReadyTimeout}
 	fs.StringVar(&opts.Dir, "dir", ".", "repository directory")
 	fs.StringVar(&opts.Workflow, "workflow", "", "workflow path (default <dir>/WORKFLOW.md)")
-	fs.StringVar(&opts.Tracker, "tracker", "", "tracker kind for a new workflow: github, linear or local (default: detected)")
+	fs.StringVar(&opts.Tracker, "tracker", "", "tracker kind for a new workflow: github, linear, jira or local (default: detected)")
 	fs.StringVar(&opts.Runner, "runner", "", "agent CLI for a new workflow: claude or codex (default: detected)")
 	fs.BoolVar(&opts.Yes, "yes", false, "answer yes to every confirmation")
 	fs.BoolVar(&opts.Yes, "y", false, "shorthand for --yes")
@@ -96,9 +96,9 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 		return opts, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	switch opts.Tracker {
-	case "", "github", "linear", "local":
+	case "", "github", "linear", "jira", "local":
 	default:
-		return opts, fmt.Errorf("unknown --tracker %q (github, linear or local)", opts.Tracker)
+		return opts, fmt.Errorf("unknown --tracker %q (github, linear, jira or local)", opts.Tracker)
 	}
 	switch opts.Runner {
 	case "", "claude", "codex":
@@ -321,6 +321,12 @@ func quickstartCredential(workflowPath, itervoxDir string, yes bool, in *bufio.R
 	case "linear":
 		if !isRealSecret(os.Getenv("LINEAR_API_KEY")) {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: set LINEAR_API_KEY in %s (create a key under Linear → Settings → API), then re-run.\n", envPath)
+			return 1
+		}
+	case "jira":
+		if !isRealSecret(os.Getenv("JIRA_API_KEY")) {
+			_, _ = fmt.Fprintf(out, "itervox quickstart: set JIRA_API_KEY=you@example.com:your_api_token in %s (your Atlassian account email, a colon, then an API token), and set tracker.endpoint and tracker.project_slug in %s if they are still empty, then re-run.\n",
+				envPath, config.ProjectSettingsPath(workflowPath))
 			return 1
 		}
 	}

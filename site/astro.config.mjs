@@ -34,6 +34,7 @@ export default defineConfig({
             { label: 'Moving settings out of WORKFLOW.md', slug: 'guides/settings-migration' },
             { label: 'Linear Setup', slug: 'guides/linear-setup' },
             { label: 'GitHub Issues', slug: 'guides/github-issues' },
+            { label: 'Jira', slug: 'guides/jira' },
             { label: 'Local issues', slug: 'guides/local-issues' },
             { label: 'New task', slug: 'guides/new-task' },
             { label: 'Tracker webhooks', slug: 'guides/tracker-webhooks' },

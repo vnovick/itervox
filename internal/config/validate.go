@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -23,15 +24,40 @@ var supportedTrackerKinds = map[string]bool{
 	"github": true,
 	"local":  true,
 	"memory": true,
+	"jira":   true,
 }
+
+// jiraProjectKeyRe is a Jira project key (like PROJ). The value goes into a
+// JQL query, so anything outside this shape is refused.
+var jiraProjectKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // localPrefixRe is a valid local tracker identifier prefix.
 var localPrefixRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // TrackerNeedsAPIKey reports whether tracker kind talks to a remote service
-// and so needs tracker.api_key. The local and memory trackers do not.
+// and so needs tracker.api_key (linear, github, jira). The local and memory
+// trackers do not.
 func TrackerNeedsAPIKey(kind string) bool {
-	return kind == "linear" || kind == "github"
+	return kind == "linear" || kind == "github" || kind == "jira"
+}
+
+// validateJira checks the Jira Cloud connection keys: an https site URL with
+// no userinfo, path, query or fragment, a project key, and an api_key of the
+// form email:api_token. No error includes the endpoint or the api_key value.
+func validateJira(t TrackerConfig) error {
+	u, err := url.Parse(t.Endpoint)
+	if t.Endpoint == "" || err != nil || u.Scheme != "https" || u.Host == "" ||
+		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return errors.New("tracker.endpoint must be an https:// URL with a host and nothing after it for tracker.kind: jira (your Jira Cloud site, like https://your-site.atlassian.net)")
+	}
+	if !jiraProjectKeyRe.MatchString(t.ProjectSlug) {
+		return errors.New("tracker.project_slug must be a Jira project key for tracker.kind: jira (capital letters, digits and _, starting with a letter, like PROJ)")
+	}
+	email, token, ok := strings.Cut(t.APIKey, ":")
+	if !ok || !strings.Contains(email, "@") || token == "" {
+		return errors.New("tracker.api_key must be email:api_token for tracker.kind: jira (an account email, a colon, then an API token)")
+	}
+	return nil
 }
 
 // LocalIssuesDir is where the local tracker (#85) keeps its issue files:
@@ -177,17 +203,22 @@ func ValidateDispatch(cfg *Config) error {
 
 	// Check 1: tracker.kind present and supported
 	if cfg.Tracker.Kind == "" {
-		return fmt.Errorf("missing tracker.kind: must be one of: linear, github, local")
+		return fmt.Errorf("missing tracker.kind: must be one of: linear, github, jira, local")
 	}
 	if !supportedTrackerKinds[cfg.Tracker.Kind] {
-		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear, github or local)", cfg.Tracker.Kind)
+		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear, github, jira or local)", cfg.Tracker.Kind)
 	}
 
 	// Check 3: tracker.api_key present after $VAR resolution.
 	// The local and memory trackers need no credentials, so this gate only
-	// applies to remote trackers (linear, github).
+	// applies to remote trackers (linear, github, jira).
 	if TrackerNeedsAPIKey(cfg.Tracker.Kind) && cfg.Tracker.APIKey == "" {
 		return fmt.Errorf("missing tracker.api_key: must be set or resolved from $VAR")
+	}
+	if cfg.Tracker.Kind == "jira" {
+		if err := validateJira(cfg.Tracker); err != nil {
+			return err
+		}
 	}
 
 	if cfg.Tracker.CommentCommands.Enabled && cfg.Tracker.Kind != "github" {

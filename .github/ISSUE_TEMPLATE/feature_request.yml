@@ -38,6 +38,7 @@ body:
         - Not tracker-specific
         - Linear
         - GitHub
+        - Jira
         - Both
     validations:
       required: true

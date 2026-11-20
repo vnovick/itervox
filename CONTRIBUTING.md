@@ -155,6 +155,7 @@ itervox/
 │   │   ├── tracker.go    # Tracker interface
 │   │   ├── memory.go     # In-memory test adapter (MemoryTracker)
 │   │   ├── linear/       # Linear GraphQL adapter
+│   │   ├── jira/         # Jira Cloud REST adapter
 │   │   └── github/       # GitHub REST adapter
 │   ├── workflow/         # WORKFLOW.md parser + content-hash file watcher
 │   └── workspace/        # Per-issue workspace dirs, path safety, lifecycle hooks
@@ -301,6 +302,7 @@ Tests that require live credentials are gated behind the `integration` build tag
 ```bash
 LINEAR_API_KEY=lin_api_... go test -tags integration ./internal/tracker/linear/...
 GITHUB_TOKEN=ghp_...       go test -tags integration ./internal/tracker/github/...
+JIRA_ENDPOINT=https://your-site.atlassian.net JIRA_PROJECT=PROJ JIRA_API_KEY=you@example.com:token go test -tags integration ./internal/tracker/jira/...
 ```
 
 These are skipped (not silently passed) in CI without credentials.
@@ -541,7 +543,7 @@ The workflows are `.github/workflows/dco.yml` and `.github/workflows/cla.yml`.
 Please include:
 
 - itervox version (`itervox --version` or the commit hash)
-- Tracker kind (`linear` or `github`)
+- Tracker kind (`linear`, `github` or `jira`)
 - Agent backend (`claude` or `codex`)
 - A minimal `WORKFLOW.md` that reproduces the problem (redact API keys)
 - The full error output or relevant log lines

@@ -152,3 +152,23 @@ func linearResetAt(h http.Header) time.Time {
 	consider("X-RateLimit-Complexity-Remaining", "X-RateLimit-Complexity-Reset")
 	return latest
 }
+
+// JiraRateLimitClassifier recognises Jira Cloud's rate-limit signal. Per
+// Atlassian's rate limiting page
+// (https://developer.atlassian.com/cloud/jira/platform/rate-limiting/) a
+// limited request gets HTTP 429, so only 429 counts; a 403 is a real
+// permission error and must not be retried.
+//
+// The reset instant comes from X-RateLimit-Reset, which Atlassian documents as
+// an ISO 8601 timestamp sent only with a 429. It is read as RFC3339; a missing
+// or unparseable value gives the zero time. Retry-After is not read here
+// because the shared retry loop already honours it.
+func JiraRateLimitClassifier(resp *http.Response) (bool, time.Time) {
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		return false, time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, resp.Header.Get("X-RateLimit-Reset")); err == nil {
+		return true, t.UTC()
+	}
+	return true, time.Time{}
+}

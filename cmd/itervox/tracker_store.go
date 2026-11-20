@@ -55,7 +55,7 @@ func trackerStoreScope(cfg *config.Config) string {
 }
 
 // withTrackerStore puts the local tracker store (#113) in front of tr when
-// tracker.store.enabled is set and tr is a Linear or GitHub adapter, and
+// tracker.store.enabled is set and tr is a Linear, GitHub or Jira adapter, and
 // keeps it synced until ctx ends. Otherwise tr is returned unchanged. With
 // tracker.webhooks on (#131) it also returns the webhook receiver for the
 // server, applying deliveries until ctx ends, and the store's periodic pull
@@ -64,7 +64,7 @@ func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath stri
 	if !cfg.Tracker.Store.Enabled {
 		return tr, nil
 	}
-	if cfg.Tracker.Kind != "linear" && cfg.Tracker.Kind != "github" {
+	if cfg.Tracker.Kind != "linear" && cfg.Tracker.Kind != "github" && cfg.Tracker.Kind != "jira" {
 		slog.Info("tracker store: not used for this tracker kind", "kind", cfg.Tracker.Kind)
 		return tr, nil
 	}
@@ -83,6 +83,9 @@ func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath stri
 		SyncInterval: time.Duration(storeSyncIntervalMs(t)) * time.Millisecond,
 		// #114: full pulls in between catch what a changes listing misses.
 		FullSyncInterval: time.Duration(t.Store.FullSyncIntervalMs) * time.Millisecond,
+		// Jira's search lags its writes and its reads by ID do not, and its
+		// candidate read is its by-states read over the active states.
+		ListingsLagWrites: t.Kind == "jira",
 	})
 	if err != nil {
 		slog.Warn("tracker store: not used", "error", err)

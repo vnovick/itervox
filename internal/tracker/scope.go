@@ -110,9 +110,9 @@ type FilterPreview struct {
 }
 
 // ScopeMatcher evaluates a tracker's effective filter in memory (#198); the
-// orchestrator uses it on a retry's unscoped by-ID read. It makes no
-// request (assignees resolve through the cache), so it is safe on the
-// event loop.
+// orchestrator uses it on the unscoped by-ID read of a retry and of a
+// dispatch claim check. It makes no request (assignees resolve through the
+// cache), so it is safe on the event loop.
 type ScopeMatcher interface {
 	// MatchesFilter evaluates the effective filter on an issue read with
 	// its filter fields (see domain.Issue). known is false when the answer

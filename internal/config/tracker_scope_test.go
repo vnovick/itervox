@@ -71,6 +71,45 @@ func TestLinearScopeCombinations(t *testing.T) {
 	}
 }
 
+// TestJiraScopeKeys: a Jira tracker accepts tracker.assignee (me or an
+// account id) and tracker.labels, still refuses tracker.team and
+// tracker.filter, and refuses an email or a name as the assignee.
+func TestJiraScopeKeys(t *testing.T) {
+	jira := func(scope string) string {
+		return "---\nitervox_schema_version: 2\ntracker:\n  kind: jira\n  endpoint: https://your-site.atlassian.net\n" +
+			"  project_slug: PROJ\n  api_key: me@example.com:token123\n" + scope + "---\n\nPrompt.\n"
+	}
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{"no scope", jira(""), ""},
+		{"assignee me", jira("  assignee: me\n"), ""},
+		{"assignee account id", jira("  assignee: \"557058:f58131cb-b67d-43c7-b30d-6b58d40bd077\"\n"), ""},
+		{"labels", jira("  labels: [agent, bot]\n"), ""},
+		{"assignee and labels", jira("  assignee: me\n  labels: [agent]\n"), ""},
+		{"team", jira("  team: ENG\n"), "tracker.team is not supported with tracker.kind: jira"},
+		{"team with assignee", jira("  assignee: me\n  team: ENG\n"), "tracker.team is not supported with tracker.kind: jira"},
+		{"assignee email", jira("  assignee: ada@example.com\n"), "use me or an Atlassian account id"},
+		{"assignee name", jira("  assignee: Ada Lovelace\n"), "use me or an Atlassian account id"},
+		{"filter", jira("  filter: [{labels_any: [agent]}]\n"), "tracker.filter is only supported with tracker.kind: linear or github"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(workflowWithContent(t, tc.content))
+			require.NoError(t, err)
+			err = config.ValidateDispatch(cfg)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 // TestTrackerSyncAssigneeNeedsAProject (#182): the local sync creates issues
 // in its project, so an assignee narrows that project (accepted) but never
 // replaces it.

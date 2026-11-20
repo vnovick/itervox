@@ -22,7 +22,7 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 
 ---
 
-Itervox is a long-running Go daemon that polls Linear, GitHub Issues or Markdown issue files in the repository, spawns Claude Code, Codex, OpenCode or Cursor agents per issue, and gives you a live web dashboard and terminal commands (`itervox watch`, `itervox logs -f`) while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
+Itervox is a long-running Go daemon that polls Linear, GitHub Issues, Jira Cloud or Markdown issue files in the repository, spawns Claude Code, Codex, OpenCode or Cursor agents per issue, and gives you a live web dashboard and terminal commands (`itervox watch`, `itervox logs -f`) while they work. One `WORKFLOW.md` per project, one static binary, no runtime. It's a full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) — formerly known as "Symphony Go".
 
 ## Spec conformance
 
@@ -276,8 +276,9 @@ Autonomous, not unsupervised. Agents do the work. You stay in control at every c
 |---|---|
 | **Linear** | GraphQL API, automatic state transitions, project filtering, branch name hints |
 | **GitHub Issues** | Issues + PRs with label-based routing, auto PR detection, PR link comments |
+| **Jira Cloud** | JQL polling by project key, status changes through Jira transitions, "Blocks" links as blockers, API token auth |
 
-Full setup guides: **[Linear](https://itervox.dev/guides/linear-setup/)** · **[GitHub Issues](https://itervox.dev/guides/github-issues/)**.
+Full setup guides: **[Linear](https://itervox.dev/guides/linear-setup/)** · **[GitHub Issues](https://itervox.dev/guides/github-issues/)** · **[Jira](https://itervox.dev/guides/jira/)**.
 
 **Claude Code plugin:** `/plugin marketplace add vnovick/itervox`, then `/plugin install itervox@itervox`, adds skills to set up, run and troubleshoot Itervox, and the `itervox mcp` server. Guide: **[itervox.dev/guides/claude-code-plugin/](https://itervox.dev/guides/claude-code-plugin/)**.
 

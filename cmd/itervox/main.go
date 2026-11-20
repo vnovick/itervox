@@ -39,6 +39,7 @@ import (
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
+	"github.com/vnovick/itervox/internal/tracker/jira"
 	"github.com/vnovick/itervox/internal/tracker/linear"
 	"github.com/vnovick/itervox/internal/tracker/local"
 	"github.com/vnovick/itervox/internal/workspace"
@@ -1581,6 +1582,15 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			Filter:          cfg.Tracker.Filter, // #198
 			WorkingState:    cfg.Tracker.WorkingState,
 		}), nil
+	case "jira":
+		return jira.NewClient(jira.ClientConfig{
+			Endpoint:     cfg.Tracker.Endpoint,
+			APIKey:       cfg.Tracker.APIKey,
+			ProjectSlug:  cfg.Tracker.ProjectSlug,
+			ActiveStates: cfg.Tracker.ActiveStates,
+			Assignee:     cfg.Tracker.Assignee, // project AND assignee AND labels, as for Linear
+			Labels:       cfg.Tracker.Labels,
+		}), nil
 	case "local":
 		// #85: one Markdown file per issue under .itervox/issues/; the
 		// project_slug, when set, is the identifier prefix (default ITX).
@@ -1594,7 +1604,7 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 		issues := tracker.GenerateDemoIssues(10)
 		return tracker.NewMemoryTracker(issues, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates), nil
 	default:
-		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, local, memory)", cfg.Tracker.Kind)
+		return nil, fmt.Errorf("unknown tracker kind %q (supported: linear, github, jira, local, memory)", cfg.Tracker.Kind)
 	}
 }
 

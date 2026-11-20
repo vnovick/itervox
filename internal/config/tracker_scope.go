@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,16 +12,28 @@ import (
 // the project (project_slug), the assignee (assignee, narrowed by team) and
 // the labels (labels, any-of). None set reads every issue, as before.
 
-// validateTrackerScope checks the scope keys: assignee, team and labels are
-// Linear-only, and an assignee is one user (me, an id or an email).
+// validateTrackerScope checks the scope keys: assignee and labels are for
+// Linear and Jira, team for Linear only. A Linear assignee is one user (me,
+// an id or an email); a Jira assignee is me or an account id.
 func validateTrackerScope(t TrackerConfig) error {
 	if err := validateTrackerFilter(t); err != nil {
 		return err
 	}
 	assignee := strings.TrimSpace(t.Assignee)
+	if t.Kind == "jira" {
+		if strings.TrimSpace(t.Team) != "" {
+			return errors.New("tracker.team is not supported with tracker.kind: jira: it names a Linear team; for Jira, tracker.project_slug picks the project, and tracker.assignee and tracker.labels narrow it")
+		}
+		// Jira Cloud can hide a user's email address (profile visibility),
+		// so an email cannot be matched to an account reliably.
+		if strings.ContainsAny(assignee, " \t,@") {
+			return fmt.Errorf("tracker.assignee %q is not a Jira account: use me or an Atlassian account id (an email or a name is not accepted)", assignee)
+		}
+		return nil
+	}
 	if t.Kind != "linear" {
 		if assignee != "" || strings.TrimSpace(t.Team) != "" || len(t.Labels) > 0 {
-			return fmt.Errorf("tracker.assignee, tracker.team and tracker.labels are only supported with tracker.kind: linear (got %q)", t.Kind)
+			return fmt.Errorf("tracker.assignee and tracker.labels are only supported with tracker.kind: linear or jira, and tracker.team with linear (got %q)", t.Kind)
 		}
 		return nil
 	}

@@ -130,12 +130,12 @@ Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `log
 ## `itervox quickstart` — From a repository to a running board
 
 ```bash
-itervox quickstart [--tracker github|linear|local] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start]
+itervox quickstart [--tracker github|linear|jira|local] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com, else `local` ([issue files](/guides/local-issues/), no account needed). |
+| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com, else `local` ([issue files](/guides/local-issues/), no account needed). Jira is used only with `--tracker jira`. |
 | `--runner` | detected | Agent CLI for a new workflow: `claude` if on `PATH`, else `codex`. |
 | `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). |
 | `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. The `.itervox/.env` next to it is loaded even when you run quickstart from another directory. |
@@ -182,7 +182,7 @@ Scans the repository and generates a `WORKFLOW.md` starter file pre-populated wi
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--tracker` | string | _(required)_ | Issue tracker: `linear`, `github` or `local`. `local` also writes an example issue, `.itervox/issues/ITX-1.md`, in Backlog and skips the initial dependency analysis. |
+| `--tracker` | string | _(required)_ | Issue tracker: `linear`, `github`, `jira` or `local`. `local` also writes an example issue, `.itervox/issues/ITX-1.md`, in Backlog and skips the initial dependency analysis. |
 | `--runner` | string | `claude` | Agent runner backend: `claude` or `codex` |
 | `--output` | string | `WORKFLOW.md` | Output file path |
 | `--workflow` | string | `WORKFLOW.md` | Workflow path to migrate when `--update` is set |
@@ -294,7 +294,7 @@ A fresh `itervox init` (every `--template` and `--preset`, and `itervox quicksta
 itervox doctor [--workflow PATH] [--clear-startup-error] [--deploy] [--fix [--yes]] [--upgrade]
 ```
 
-Validates `WORKFLOW.md` (schema 2, dispatch checks, profile commands, skill and subagent references, GitHub state labels) and the local daemon files. Exits `0` when clean, `1` on any warning or failed check, `2` when the check itself cannot run.
+Validates `WORKFLOW.md` (schema 2, dispatch checks, profile commands, skill and subagent references, GitHub state labels, Jira statuses) and the local daemon files. Exits `0` when clean, `1` on any warning or failed check, `2` when the check itself cannot run.
 
 Doctor resolves PATH the way the daemon does (see [Login-shell PATH](#login-shell-path)) and reports it before the other checks:
 

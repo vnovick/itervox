@@ -370,8 +370,9 @@ var errCommentAlreadyDelivered = errors.New("outbox flusher: comment already del
 //  4. A tracker without the capability keeps the pre-existing behaviour,
 //     including its duplicate risk.
 //
-// Residual (GitHub only): GitHub's key is a body marker, and the lookup runs
-// only once an attempt has been recorded. A hard crash after GitHub accepts
+// Residual (GitHub and Jira): the key is a body marker on GitHub and a comment
+// property on Jira, not the comment's id, and the lookup runs only once an
+// attempt has been recorded. A hard crash after the tracker accepts
 // the POST but before MarkFailed/MarkFlushed persists leaves the entry on disk
 // with Attempts == 0 and RateLimitedAttempts == 0, so on restart rule 1 posts
 // again without a lookup and the comment is duplicated. Linear is immune: the
