@@ -1,0 +1,14 @@
+#!/bin/sh
+# The same behaviour as fake-1.0.0: only the version, the build time, the
+# duration, colour and the paths it prints differ (all normalised away).
+case "$1" in
+--version) printf '\033[1mfake\033[0m 1.1.0\n' ;;
+deploy)
+	echo "Usage: fake deploy [--prod]"
+	echo "Deploys the current directory."
+	echo "Built 2026-03-04T05:06:07Z in 31ms"
+	echo "config: $HOME/.config/fake.json, cwd: $PWD" >&2
+	;;
+env) env | sort ;;
+*) echo "fake: unknown command $1" >&2; exit 2 ;;
+esac

@@ -832,10 +832,11 @@ evals (internal/evals: profile eval scenarios, judges, live runs and saved
 
 referee (internal/referee: the CI referee behind `itervox referee` and the
          standalone cmd/referee — imports attest, config, gitexec,
-         guardrails; never orchestrator. Its policy is read from the base
+         guardrails, logging, procgroup (`referee diff` runs probes in
+         their own process group); never orchestrator. Its policy is read from the base
          ref only, never the working tree. `itervox referee` dispatches
          before loadDotEnv so checks never inherit .itervox/.env)
-     └── referee/adapters (tool adapters behind `referee envcheck`:
+     └── referee/adapters (tool adapters behind `referee envcheck` and `diff`:
          built-in and generic deploy-tool adapters, install scans, probe
          parsing — stdlib only, gitexec at most; imported by
          internal/referee alone, never the daemon:

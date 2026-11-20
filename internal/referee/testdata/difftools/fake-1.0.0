@@ -1,0 +1,13 @@
+#!/bin/sh
+# A fake deploy CLI for the referee diff tests: the base version.
+case "$1" in
+--version) echo "fake 1.0.0" ;;
+deploy)
+	echo "Usage: fake deploy [--prod]"
+	echo "Deploys the current directory."
+	echo "Built 2026-01-02T03:04:05Z in 12ms"
+	echo "config: $HOME/.config/fake.json, cwd: $PWD" >&2
+	;;
+env) env | sort ;;
+*) echo "fake: unknown command $1" >&2; exit 2 ;;
+esac

@@ -1,0 +1,14 @@
+#!/bin/sh
+# A new version whose deploy hangs and starts a child: the timeout must
+# kill both. The child's pid goes to hang.pid in the working directory.
+case "$1" in
+--version) echo "fake 1.2.0" ;;
+deploy)
+	sleep 60 &
+	echo $! >"$PWD/hang.pid"
+	echo "Usage: fake deploy [--prod]"
+	sleep 60
+	;;
+env) env | sort ;;
+*) echo "fake: unknown command $1" >&2; exit 2 ;;
+esac

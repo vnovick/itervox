@@ -483,6 +483,7 @@ code ships as the standalone `referee` binary.
 itervox referee lanes --base origin/main   # exit 0 auto, 10 second_opinion, 20 human
 itervox referee audit --base origin/main   # exit 20 when a change weakens checks
 itervox referee envcheck --base origin/main  # exit 20 when an installed tool reads an unclassified deploy-target variable
+itervox referee diff --base origin/main --base-dir ../base  # exit 10 when a tool's probes behave differently on the head install
 itervox referee pin --file .referee.yml --policy-sha256 <hex>
 itervox referee run --name test --key KEY --out checks.jsonl -- go test ./...
 itervox referee verify checks.jsonl --pubkey attest.pub --tree .

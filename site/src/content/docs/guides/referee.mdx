@@ -101,7 +101,8 @@ second_opinion:
   cannot be told apart from their dependency lists by path.
 - The policy file is always added to the human lane, last, so no `!` pattern
   can exclude it.
-- `tools:` lists the deploy tools [`envcheck`](#referee-envcheck) inspects;
+- `tools:` lists the deploy tools [`envcheck`](#referee-envcheck) inspects and
+  [`diff`](#referee-diff) runs;
   `lanes` reads only its shape (an unknown key in it is still an error).
 
 `--json` prints a stable shape (`version` 1):
@@ -192,7 +193,7 @@ tools:
 | `deploy_vars` | generic: required | globs (`*`, `?`) over variable names that choose where, or as whom, the tool deploys. On a built-in it replaces the adapter's list. `[]` is refused |
 | `env_scan` | generic only, required | a repository-relative glob of the installed files to scan; `**` spans directories |
 | `env_pattern` | generic only | a regular expression whose first group is a variable name. Without it, every word that matches `deploy_vars` counts |
-| `probes` | optional | commands a later behaviour diff will run. Each must start with the tool's command and runs without a shell, so quotes, `$`, `;`, `\|`, `&` and redirections are refused. Probes are validated now and run by nothing yet |
+| `probes` | optional | safe commands [`diff`](#referee-diff) runs on the base and head installs. Each must start with the tool's command and runs without a shell, so quotes, `$`, `;`, `\|`, `&` and redirections are refused. |
 | `command` | generic only | the tool's executable name, which probes start with (default: the tool's key) |
 
 The built-in adapters are deliberately small:
@@ -254,6 +255,149 @@ envcheck: 1 unclassified deploy-target variable(s) (policy: .referee.yml@1a2b3c4
 parsed `probes`), `findings` (`tool`, `variable`, `path`, `line`, `guard`,
 `message`) and `notes`. `GITHUB_STEP_SUMMARY` gets a summary here too.
 
+### `referee diff`
+
+```bash
+referee diff --base origin/main --base-dir ../base [--head HEAD] [--policy .referee.yml] [--timeout 30s] [--json]
+```
+
+`envcheck` reads a tool's files; `diff` runs it. A dependency bump can make a
+deploy CLI ask a new question, take a new flag, or say something different in
+a dry run, again without touching any CI file. `diff` runs each configured
+tool's `probes` against two installs, the base's and the head's, and reports
+what changed: the exit code, the output, and new confirmation prompts.
+
+It needs two installs of the dependencies:
+
+- **The head install** is the working tree under `--dir`: install the head's
+  dependencies first, as for `envcheck`.
+- **The base install** is `--base-dir`: a second checkout of the **merge
+  base** of `--base` and `--head` (or of the base commit itself) with *its*
+  dependencies installed. `diff` checks that the directory is a git checkout
+  at one of those two commits and is not the head's own directory; anything
+  else is an error, so a mistake cannot compare the head with itself and pass.
+
+A GitHub Actions job:
+
+```yaml
+jobs:
+  tool-diff:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # No deploy credentials in this job: the probes run the tools' code.
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install the head
+        run: npm ci --ignore-scripts
+      - name: Install the merge base next to it
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "$(git merge-base "origin/$BASE_REF" HEAD)"
+          (cd "$RUNNER_TEMP/base" && npm ci --ignore-scripts)
+      # Pin to a commit SHA in real use.
+      - uses: vnovick/itervox/referee@main
+        with:
+          mode: diff
+          base-dir: ${{ runner.temp }}/base
+          fail-on: second_opinion # fail the step on a behaviour change
+```
+
+Any CI works the same way: `git worktree add --detach <dir> <merge base>`,
+install there, then `referee diff --base-dir <dir>`. Without `tools:` on the
+base ref there is nothing to compare: `diff` exits `0` with a message and
+needs no `--base-dir`.
+
+**Where a probe's command comes from.** A probe starts with the tool's
+command. For a tool installed under `node_modules/` it is
+`node_modules/.bin/<command>` in each checkout; for any other install root,
+`<install>/bin/<command>`, then `<install>/<command>`. It must be an
+executable file whose target stays inside that checkout. It is never looked
+up on `PATH`, where both sides would find the same program. A command
+missing from either install is an error (exit `2`) before anything runs.
+
+**How a probe runs.** Each probe runs twice, base first, with:
+
+- **No shell.** The probe's argv as parsed from the policy, in its own
+  checkout.
+- **A scrubbed environment.** Only `PATH` comes from the runner (with the
+  command's directory first). `HOME`, the `XDG_*` directories and `TMPDIR`
+  point into a fresh empty directory, so no saved login or config of the
+  runner's user is visible. `LANG` and `LC_ALL` are `C`, `TERM` is `dumb`,
+  `NO_COLOR` is `1`. Nothing else is passed: no token, no cloud key, no
+  `CI`, and no variable the tool's `deploy_vars` match, even from that list.
+- **Stdin is the null device.** A prompt reads end of input at once and
+  cannot be answered: it usually aborts, which shows as a changed exit code
+  and output. One that keeps waiting is killed at the timeout.
+- **A timeout** (`--timeout`, default 30 s), after which its whole process
+  group is killed, children included. A process the tool leaves running
+  after it exits is killed too.
+- **An output cap.** stdout and stderr are read as one stream, and the first
+  64 KiB are compared.
+
+**What counts as a change.** Before comparing, the output is normalised:
+ANSI colour is removed, a line redrawn with `\r` keeps what was left on
+screen, the checkout path becomes `<checkout>` and the fresh home
+`<home>`, and versions (`1.2.3`), timestamps, durations (`12ms`, `1.5s`),
+UUIDs, long hex ids and temp paths become placeholders. A probe changed when
+its exit code changed, when it timed out on one side only, when its
+normalised output differs, or when the head prints a new **prompt**: a line
+with `[y/N]`, `(yes/no)` and the like, an inquirer-style `? …` question,
+"Are you sure", "Do you want to continue", "Press Enter". A head run that
+timed out with a question as the last thing it printed (a line ending in `?`
+or `:`) is reported as a prompt too: it was waiting for an answer.
+
+```text
+diff: 1 of 3 probe(s) changed behaviour (policy: .referee.yml@1a2b3c4d5e6f, base install: ../base @ 9f8e7d6c5b4a)
+  [mycli] mycli --version: unchanged (exit 0)
+  [mycli] mycli deploy --help: changed (exit_code, timed_out, output, prompt)
+      base exit 0, head timed out
+      new prompt: Deploy to production? [y/N]
+      + Deploy to production? [y/N]
+  [mycli] mycli env ls: unchanged (exit 0)
+```
+
+Exit `0` when no probe changed (or there is no `tools:`), `10` when one did,
+and `2` on an error: a missing install on either side, a `--base-dir` that is
+not a checkout of the base, or a probe that cannot start. The exit for a
+change is `10`, the second-opinion code: a different help text is not
+necessarily wrong, but a person should read it before the change deploys
+anything.
+
+`--json` prints `version` 1 with `base_commit`, `merge_base`,
+`base_dir_commit`, `env` (the variable names a probe gets) and, per tool,
+each probe's `base` and `head` runs (`executable`, `exit_code`, `timed_out`,
+`left_running`, `duration_ms`, `output_bytes`, `output_truncated`) and its
+`changes`, `added` and `removed` lines (the first 20 of each, with
+`added_count` and `removed_count`) and new `prompts`. Lines are normalised
+and redacted. `GITHUB_STEP_SUMMARY` gets a summary here too.
+
+**Limits.** `diff` is not a sandbox:
+
+- **No network isolation.** A probe can reach the network, and a tool that
+  phones home or fetches something does so from your runner. Run `diff` in a
+  job that holds **no deploy credentials** (no deploy key, no cloud token, no
+  write-scoped `GITHUB_TOKEN`), as in the job above. The scrubbed environment
+  keeps credentials out of the probe's variables, not out of files the job
+  leaves readable.
+- **Probes are only as safe as you write them.** They run the installed
+  code of both versions. Use read-only commands: `--version`, `--help`,
+  `deploy --help`, a `--dry-run` you trust. A probe may write files in its
+  checkout.
+- **What it sees is what the probes show.** A change behind a flag no probe
+  passes, or one that only happens with real credentials, is not seen.
+- **Normalising can hide a change** that only differs in a version-like or
+  time-like token, and a prompt worded unlike the patterns above is seen
+  only through the timeout or the output diff.
+- Linux and macOS only.
+
 ### `referee pin`
 
 ```bash
@@ -302,9 +446,9 @@ reviewers the public key.
 
 | Code | Meaning |
 |---|---|
-| `0` | auto lane, no audit or envcheck findings, pin matches, check passed, records verify |
+| `0` | auto lane, no audit or envcheck findings, no diff behaviour change, pin matches, check passed, records verify |
 | `1` | `run`: the check failed; `verify`: a record did not verify |
-| `10` | `lanes`: second_opinion lane |
+| `10` | `lanes`: second_opinion lane; `diff`: a tool's behaviour changed |
 | `20` | `lanes`: human lane; `audit`, `envcheck`: findings; `pin`: mismatch |
 | `2` | usage, git or I/O error (bad ref, malformed policy, missing file) |
 
@@ -319,12 +463,13 @@ checkout is an error, not an empty diff; fetch it (`fetch-depth: 0`).
 
 | Input | Default | |
 |---|---|---|
-| `mode` | (required) | `lanes`, `audit`, `envcheck`, `pin` or `verify` |
+| `mode` | (required) | `lanes`, `audit`, `envcheck`, `diff`, `pin` or `verify` |
 | `base` | `origin/<base branch>` | the ref the pull request merges into |
 | `head` | `HEAD` | the ref under review |
-| `policy` | `.referee.yml` | lanes, envcheck: the policy path on the base ref; pin: the file to hash |
+| `policy` | `.referee.yml` | lanes, envcheck, diff: the policy path on the base ref; pin: the file to hash |
 | `policy-sha256` | | pin: the pinned hash |
-| `fail-on` | `human` | lanes: `human`, `second_opinion` or `never`; audit, envcheck: `never` reports without failing |
+| `fail-on` | `human` | lanes: `human`, `second_opinion` or `never`; audit, envcheck: `never` reports without failing; diff: `second_opinion` fails on a behaviour change (otherwise a warning) |
+| `base-dir` | | diff: the checkout of the merge base with its dependencies installed |
 | `records`, `pubkey`, `tree` | | verify |
 
 Outputs: `lane` (lanes) and `exit-code`. An error fails the step whatever
