@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/server"
 )
@@ -90,7 +91,13 @@ type prompt struct {
 	// Command answers it; Reject (approvals only) refuses it with a reason.
 	Command string `json:"command"`
 	Reject  string `json:"reject,omitempty"`
+	// Reasons say why a held push needs a person, one line each with file
+	// and line (guardrails.lanes; the text view prints the first few).
+	Reasons []string `json:"reasons,omitempty"`
 }
+
+// watchReasonsShown is how many reasons the text view prints per prompt.
+const watchReasonsShown = 3
 
 func (w *watcher) prompts(st *watchState) []prompt {
 	var out []prompt
@@ -100,8 +107,12 @@ func (w *watcher) prompts(st *watchState) []prompt {
 		}
 		if in.GuardrailApproval {
 			first, _, _ := strings.Cut(strings.TrimSpace(in.Context), "\n")
-			out = append(out, prompt{Identifier: in.Identifier, Kind: "approval", Context: clip(redactLine(first), 120),
-				Command: w.approveCommandLine(in.Identifier), Reject: w.command("reply", in.Identifier, `"<why not>"`)})
+			pr := prompt{Identifier: in.Identifier, Kind: "approval", Context: clip(redactLine(first), 120),
+				Command: w.approveCommandLine(in.Identifier), Reject: w.command("reply", in.Identifier, `"<why not>"`)}
+			for _, r := range guardrails.LaneReasonLines(in.GuardrailLaneReasons, in.GuardrailLaneReasonsTotal, guardrails.MaxLaneReasonsShown) {
+				pr.Reasons = append(pr.Reasons, clip(redactLine(r), 160))
+			}
+			out = append(out, pr)
 			continue
 		}
 		out = append(out, prompt{Identifier: in.Identifier, Kind: "input", Context: clip(redactLine(in.Context), 120),
@@ -122,6 +133,13 @@ func (w *watcher) renderPrompts(b *strings.Builder, ps []prompt) {
 			label, mark = "approval", "!"
 		}
 		fmt.Fprintf(b, "  %s %-10s %s: %s\n", w.p.c(sgrBold+";"+sgrYellow, mark), pr.Identifier, label, pr.Context)
+		for i, r := range pr.Reasons {
+			if i == watchReasonsShown {
+				fmt.Fprintf(b, "      %s\n", w.p.c(sgrDim, "why: … more in the dashboard's Lanes view"))
+				break
+			}
+			fmt.Fprintf(b, "      %s %s\n", w.p.c(sgrDim, "why:"), r)
+		}
 		fmt.Fprintf(b, "      %s %s\n", w.p.c(sgrYellow, "→"), w.p.c(sgrBold, pr.Command))
 		if pr.Reject != "" {
 			fmt.Fprintf(b, "      %s\n", w.p.c(sgrDim, "to refuse it: "+pr.Reject))

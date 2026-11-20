@@ -33,6 +33,7 @@ import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants'
 import { RUN_CONTEXT_CAPABILITY } from '../../queries/changes';
 import { IssueNowPanel } from './changes/IssueNowPanel';
 import { IssueDetailTabs, type IssueDetailTab } from './changes/IssueDetailTabs';
+import { useLanesTabRequest } from './changes/useLanesTabRequest';
 import { plainButtonClass } from '../ui/button/buttonRecipe';
 import { focusPathFor } from '../../hooks/useFocusIssue';
 import { Link } from 'react-router';
@@ -100,6 +101,7 @@ export default function IssueDetailSlide() {
     },
     [selectedIdentifier],
   );
+  useLanesTabRequest(selectedIdentifier, setTab); // an approval's "Why" link opens Changes → Lanes
 
   const close = useCallback(() => {
     setSelectedIdentifier(null);

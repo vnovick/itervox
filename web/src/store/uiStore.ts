@@ -63,6 +63,12 @@ interface UIState {
   commandPaletteOpen: boolean;
   /** #251 — the New task dialog is open. */
   newTaskOpen: boolean;
+  /**
+   * guardrails.lanes — the issue whose detail should open on Changes →
+   * Lanes (an approval card's "Why" link, or ?lanes=1); consumed by the
+   * Changes tab when it shows that issue.
+   */
+  issueLanesFor: string | null;
 
   // #157 — Rules editor, kept across navigation.
   rulesLayer: RulesLayerTab;
@@ -98,6 +104,7 @@ interface UIActions {
   setTimelineAutomationOnly: (value: boolean) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   setNewTaskOpen: (open: boolean) => void;
+  setIssueLanesFor: (identifier: string | null) => void;
   setRulesLayer: (layer: RulesLayerTab) => void;
   setRulesView: (view: RulesEditorView) => void;
   setRulesPreviewProfile: (profile: string) => void;
@@ -124,6 +131,7 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   timelineAutomationOnly: false,
   commandPaletteOpen: false,
   newTaskOpen: false,
+  issueLanesFor: null,
   rulesLayer: 'project',
   rulesView: 'form',
   rulesPreviewProfile: '',
@@ -171,6 +179,9 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setNewTaskOpen: (newTaskOpen) => {
     set({ newTaskOpen });
+  },
+  setIssueLanesFor: (issueLanesFor) => {
+    set({ issueLanesFor });
   },
   setRulesLayer: (rulesLayer) => {
     set({ rulesLayer });

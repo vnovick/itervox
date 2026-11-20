@@ -1292,7 +1292,8 @@ func copyInputRequiredMap(m map[string]*InputRequiredEntry) map[string]*InputReq
 			continue
 		}
 		e := *v
-		e.GuardrailLanePaths = cloneSlice(v.GuardrailLanePaths) // its one reference field
+		e.GuardrailLanePaths = cloneSlice(v.GuardrailLanePaths)     // its reference fields
+		e.GuardrailLaneReasons = cloneSlice(v.GuardrailLaneReasons) // (LaneReason holds no reference)
 		cp[k] = &e
 	}
 	return cp

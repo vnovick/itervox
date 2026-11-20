@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
@@ -41,9 +42,11 @@ type guardrailApprovalEvent struct {
 	Command string
 	// Lane, Paths and PathsTotal describe a push held by
 	// guardrails.lanes.human (empty for an approval command).
-	Lane       string
-	Paths      []string
-	PathsTotal int
+	Lane         string
+	Paths        []string
+	PathsTotal   int
+	Reasons      []guardrails.LaneReason
+	ReasonsTotal int
 }
 
 // guardrailTokenTTL bounds a guardrail token: a run's turns plus slack, as
@@ -165,6 +168,10 @@ func (o *Orchestrator) RequestGuardrailApproval(identifier, runID string, req gu
 		return guardrails.ApprovalStatus{}, fmt.Errorf("orchestrator: only a human-lane push asks for approval, not %q", req.Lane)
 	}
 	req.Paths, req.PathsTotal = sanitizeLanePaths(req.Paths, req.PathsTotal)
+	req.Reasons, req.ReasonsTotal = guardrails.SanitizeLaneReasons(req.Reasons, req.ReasonsTotal) // the hook runs in the agent's environment
+	if req.Lane != guardrails.LaneHuman {
+		req.Reasons, req.ReasonsTotal = nil, 0
+	}
 	st, created := o.guardApprovals.Request(identifier, runID, req)
 	if !created {
 		return st, nil
@@ -172,7 +179,8 @@ func (o *Orchestrator) RequestGuardrailApproval(identifier, runID string, req gu
 	select {
 	case o.events <- OrchestratorEvent{Type: EventGuardrailApproval, Identifier: identifier,
 		guardrail: &guardrailApprovalEvent{ID: st.ID, RunID: runID, Command: req.Command,
-			Lane: req.Lane, Paths: req.Paths, PathsTotal: req.PathsTotal}}:
+			Lane: req.Lane, Paths: req.Paths, PathsTotal: req.PathsTotal,
+			Reasons: req.Reasons, ReasonsTotal: req.ReasonsTotal}}:
 		return st, nil
 	default:
 		o.guardApprovals.Remove(st.ID)
@@ -213,13 +221,30 @@ func guardrailQuestion(g *guardrailApprovalEvent) string {
 	if g.Lane == guardrails.LaneHuman {
 		return "Pipeline change: the agent wants to push changes to " +
 			guardrails.LanePathSummary(g.Paths, g.PathsTotal, guardrails.MaxLanePathsShown) +
-			" (`" + g.Command + "`)\n\nThese files are in guardrails.lanes.human: an agent may change what CI checks, never how CI checks. " +
+			" (`" + g.Command + "`)\n\n" + laneReasonsBlock(g.Reasons, g.ReasonsTotal) +
+			"These files are in guardrails.lanes.human: an agent may change what CI checks, never how CI checks. " +
 			"Review the change, then reply `approve` to let this push through once; any other reply rejects it and is passed to the agent as the reason. " +
 			"Itervox will not auto-merge this pull request."
 	}
 	command := g.Command
 	return "Agent wants to run: `" + command + "`\n\nThis command is in guardrails.approval_commands. " +
 		"Reply `approve` to run it once; any other reply rejects it and is passed to the agent as the reason."
+}
+
+// laneReasonsBlock is the "why" list of a held push's question: one
+// Markdown bullet per reason (at most guardrails.MaxLaneReasonsShown), ""
+// when there is none.
+func laneReasonsBlock(reasons []guardrails.LaneReason, total int) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Why this needs a person:\n")
+	for _, line := range guardrails.LaneReasonLines(reasons, total, guardrails.MaxLaneReasonsShown) {
+		b.WriteString("- " + line + "\n")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // handleGuardrailApproval shows an approval request to a human as an
@@ -256,6 +281,7 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 	}
 	if g.Lane == guardrails.LaneHuman {
 		entry.GuardrailLanePaths, entry.GuardrailLanePathsTotal = slices.Clone(g.Paths), g.PathsTotal
+		entry.GuardrailLaneReasons, entry.GuardrailLaneReasonsTotal = slices.Clone(g.Reasons), g.ReasonsTotal
 	}
 	entry.QuestionCommentKey = o.newInputRequiredCommentKey(ev.Identifier)
 	body := tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg()))

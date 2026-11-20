@@ -37,6 +37,7 @@ func runContextRow(v orchestrator.RunContextView) server.RunContextRow {
 		BaseBranch: v.BaseBranch, CurrentStep: v.CurrentStep, ToolCalls: v.ToolCalls,
 		TurnCount: v.TurnCount, InputTokens: v.InputTokens, OutputTokens: v.OutputTokens, TotalTokens: v.TotalTokens,
 		PendingInput: v.PendingInput, PendingApproval: v.PendingApproval, QueuedSteers: v.QueuedSteers,
+		PendingReasons:  v.PendingReasons,
 		Steers:          make([]server.RunSteerRow, 0, len(v.Steers)),
 		GuardrailBlocks: v.GuardrailBlocks, LastGuardrailKind: v.LastGuardrailKind,
 		Playbook: v.Playbook, // #218
@@ -79,6 +80,32 @@ func (c changesAdapter) Handoffs(identifier string) []server.HandoffRow {
 		rows = append(rows, server.HandoffRow{Title: h.Title, Path: h.Path, Partial: h.Partial})
 	}
 	return rows
+}
+
+// Lanes is the issue's Lanes view (server.LanesClient): git in the HTTP
+// handler's goroutine, State through Snapshot.
+func (c changesAdapter) Lanes(ctx context.Context, identifier string) (server.LanesResponse, error) {
+	v, err := c.orch.WorktreeLanes(ctx, identifier)
+	if err != nil {
+		return server.LanesResponse{}, mapChangesErr(err)
+	}
+	resp := server.LanesResponse{Base: v.Base, MergeBase: v.MergeBase, Enforced: v.Enforced, Lane: v.Lane,
+		Truncated: v.Truncated, FindingsTruncated: v.FindingsTruncated, Reasons: v.Reasons, ReasonsTotal: v.ReasonsTotal,
+		ApprovalPending: v.ApprovalPending, Files: make([]server.LaneFileRow, 0, len(v.Files))}
+	for _, f := range v.Files {
+		resp.Files = append(resp.Files, server.LaneFileRow{DiffFileRow: diffFileRow(f.DiffFile), Lane: f.Lane, Rule: f.Rule, Findings: f.Findings})
+	}
+	if v.PushLane != nil {
+		resp.RecordedLane = v.PushLane.Lane
+	}
+	if s := v.Split; s != nil {
+		resp.Split = &server.StackSplitRow{Order: s.Order, Reason: s.Reason,
+			CodeFiles: append([]string{}, s.CodeFiles...), CodeFilesTotal: s.CodeFilesTotal,
+			PipelineFiles: append([]string{}, s.PipelineFiles...), PipelineFilesTotal: s.PipelineFilesTotal,
+			CodeLane: s.CodeLane, LowerBranch: s.LowerBranch, UpperBranch: s.UpperBranch,
+			LowerPR: s.LowerPR, LowerPRURL: s.LowerPRURL, UpperPRURL: s.UpperPRURL, DecidedAt: s.DecidedAt}
+	}
+	return resp, nil
 }
 
 // WorkspacePort is the issue workspace's ITERVOX_PORT (#250).

@@ -1280,6 +1280,56 @@ not_supported` (a daemon built without the endpoint). Every git call runs
 through `internal/gitexec` on the request's goroutine — never on the
 orchestrator's event loop — under a 15-second timeout.
 
+#### `GET /issues/{identifier}/lanes`
+
+**Viewer.** The [Lanes view](/guides/now-and-changes/#lanes-view): the same
+worktree-against-merge-base file list as `/diff`, each file in its
+[`guardrails.lanes`](/guides/lanes/) lane with the pattern that put it there,
+the audit findings on each file (the rules of `itervox referee audit`, with
+the line in the working tree), why the change needs a person, and the
+issue's stack split decision.
+
+```json
+{
+  "identifier": "ENG-12", "base": "origin/main", "mergeBase": "3f9c2e1d…",
+  "enforced": true, "lane": "human",
+  "files": [
+    {"path": ".github/workflows/ci.yml", "status": "modified", "additions": 1, "deletions": 0,
+     "lane": "human", "rule": ".github/**",
+     "findings": [{"kind": "finding", "path": ".github/workflows/ci.yml", "line": 10,
+                   "rule": "ci_continue_on_error", "message": "failure ignored in a CI workflow (…)",
+                   "text": "continue-on-error: true"}]},
+    {"path": "main.go", "status": "modified", "additions": 2, "deletions": 1, "lane": "auto", "findings": []}
+  ],
+  "reasons": [
+    {"kind": "finding", "path": ".github/workflows/ci.yml", "line": 10, "rule": "ci_continue_on_error", "…": "…"},
+    {"kind": "lane_rule", "path": ".github/workflows/ci.yml", "lane": "human", "rule": ".github/**"}
+  ],
+  "reasonsTotal": 2,
+  "split": {"order": "code_first", "reason": "…", "codeFiles": ["main.go"], "codeFilesTotal": 1,
+            "pipelineFiles": [".github/workflows/ci.yml"], "pipelineFilesTotal": 1,
+            "lowerBranch": "itervox/eng-12-code", "upperBranch": "itervox/eng-12",
+            "lowerPr": 41, "lowerPrUrl": "…", "upperPrUrl": "…"},
+  "recordedLane": "human", "approvalPending": true, "textAllowed": true
+}
+```
+
+- `enforced` is false when the guardrails are off or every lane is empty:
+  the files are still sorted by the configured patterns.
+- A reason's `kind` is `finding`, `lane_rule` or `tool_behaviour` (reserved;
+  nothing produces it yet). At most 10 findings per file and 20 reasons
+  (`reasonsTotal` counts them all); `findingsTruncated` when the diff was
+  only partly audited.
+- `split` is present once the run decided a [stack split](/guides/lanes/#stack-split-code-and-pipeline-as-two-pull-requests)
+  (`order` `combined` means one pull request, with the reason).
+- A finding's `text` is the added line. Like hunks it needs **operator**
+  (`textAllowed`); a viewer gets the rest without it. Every field is
+  redacted and clipped by the daemon.
+
+Errors as `/diff`. git runs on the request's goroutine, never on the event
+loop, under the same 15-second timeout; the split, the recorded lane and the
+pending approval come from the published snapshot.
+
 ### System visibility
 
 A run's resource use rides on the run context and the snapshot (see

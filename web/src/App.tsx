@@ -35,7 +35,7 @@ import AppHeader from './layout/AppHeader';
 import { useDialogLayer } from './components/ui/dialog/useDialogLayer';
 import { useMultiTabWarning } from './hooks/useMultiTabWarning';
 import { useAttentionCount } from './hooks/useOperatorQueue';
-import { useIssueUrlSync } from './hooks/useUrlState';
+import { useIssueLanesUrlOpen, useIssueUrlSync } from './hooks/useUrlState';
 import { inputRequiredRowState } from './utils/inputRequired';
 
 import { PageLoader } from './components/common/PageLoader';
@@ -391,6 +391,8 @@ function AppWithSSE() {
   useMultiTabWarning();
   // CORE-079 — ?issue= <-> the global IssueDetailSlide selection.
   useIssueUrlSync();
+  // guardrails.lanes — ?lanes=1 opens the issue on Changes → Lanes.
+  useIssueLanesUrlOpen();
   // Embedded: window.__itervoxNavigate for the desktop app's Go menu.
   useEmbeddedNavigateHook();
 

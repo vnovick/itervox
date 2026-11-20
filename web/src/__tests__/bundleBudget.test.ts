@@ -89,6 +89,17 @@ describe('checkBundleBudget', () => {
     expect(term?.maxBytes).toBeLessThanOrEqual(300 * KB);
   });
 
+  it('keeps React Flow out of the Changes tab chunk (guardrails.lanes)', () => {
+    const chunks = [
+      ...healthy,
+      chunk('IssueChangesTab-a.js', 40 * KB, 'import "@xyflow/react"'),
+      chunk('LanesDiagram-b.js', 8 * KB),
+    ];
+    expect(checkBundleBudget(chunks, INDEX).violations).toEqual([
+      'IssueChangesTab chunk IssueChangesTab-a.js contains forbidden "@xyflow"',
+    ]);
+  });
+
   it('keeps the #211 acceptance caps', () => {
     const dashboard = BUDGET.chunks.find((c) => c.name === 'Dashboard');
     const cron = BUDGET.chunks.find((c) => c.name === 'CronWidget');

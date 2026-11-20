@@ -19,6 +19,7 @@ import {
   URL_FILTER_DEBOUNCE_MS,
   useAutomationsTabUrlState,
   useDashboardUrlState,
+  useIssueLanesUrlOpen,
   useIssueUrlSync,
   useLogsUrlSelection,
 } from '../useUrlState';
@@ -475,6 +476,49 @@ function renderLogs(initialEntries: string[], initial: LogsProps) {
   render(<RouterProvider router={router} />);
   return router;
 }
+
+function LanesHarness() {
+  useIssueUrlSync();
+  useIssueLanesUrlOpen();
+  return null;
+}
+
+describe('useIssueLanesUrlOpen (guardrails.lanes)', () => {
+  it('?issue=&lanes=1 opens the issue on its Lanes view once and drops lanes (replace)', async () => {
+    routeIssues([makeIssue({ identifier: 'ENG-1' })]);
+    const router = createMemoryRouter([{ path: '*', element: <LanesHarness /> }], {
+      initialEntries: ['/?issue=ENG-1&lanes=1'],
+    });
+    render(
+      <QueryClientProvider client={makeTestQueryClient()}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(new URLSearchParams(router.state.location.search).has('lanes')).toBe(false);
+    });
+    expect(new URLSearchParams(router.state.location.search).get('issue')).toBe('ENG-1');
+    expect(selected()).toBe('ENG-1');
+    expect(useUIStore.getState().issueLanesFor).toBe('ENG-1');
+    expect(router.state.historyAction).toBe('REPLACE');
+  });
+
+  it('ignores lanes=1 without a valid issue', async () => {
+    routeIssues([]);
+    const router = createMemoryRouter([{ path: '*', element: <LanesHarness /> }], {
+      initialEntries: ['/?lanes=1'],
+    });
+    render(
+      <QueryClientProvider client={makeTestQueryClient()}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(router.state.location.search).toBe('');
+    });
+    expect(useUIStore.getState().issueLanesFor).toBeNull();
+  });
+});
 
 describe('useUrlState — logs selection and automations tab (CORE-085)', () => {
   it('logsPath encodes identifiers that contain / and #', () => {

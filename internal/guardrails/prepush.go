@@ -171,7 +171,7 @@ func runPrePush(p Policy, args, env []string, stdin io.Reader, stdout, stderr io
 		lanes = p.classifyPush(updates, repo)
 	}
 	if lanes.Lane == LaneHuman {
-		if code, ok := holdHumanLane(p, dir, remote, updates, lanes, stderr); !ok {
+		if code, ok := holdHumanLane(p, dir, remote, updates, lanes, repo, stderr); !ok {
 			return code
 		}
 	}

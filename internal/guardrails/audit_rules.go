@@ -1,4 +1,4 @@
-package referee
+package guardrails
 
 import (
 	"path"
@@ -11,9 +11,16 @@ import (
 // deliberately conservative: each looks only at added lines of the file
 // kinds where the construct means what the rule says, and skips comment
 // lines, so a finding is worth a human's look.
+//
+// They live here, not in internal/referee, because both front ends use
+// them: `referee audit` (internal/referee imports guardrails) and the
+// daemon — the pre-push hook's reason for a held human-lane push, and the
+// Lanes view (internal/orchestrator imports guardrails). guardrails cannot
+// import referee (referee imports guardrails), so the table moved down.
 
-// finding is one weakening change.
-type finding struct {
+// AuditFinding is one weakening change. Its JSON shape is `referee audit
+// --json`'s finding shape (stable within the report's version).
+type AuditFinding struct {
 	Rule    string `json:"rule"`
 	Path    string `json:"path"`
 	Line    int    `json:"line,omitempty"` // in the head version; 0 for a deleted file
@@ -193,16 +200,16 @@ func thresholds(lines []string) map[string]float64 {
 
 // lowered compares one hunk of a coverage config file: a threshold whose
 // removed line set a higher value than the added line that replaces it.
-func lowered(p string, h hunk) []finding {
+func lowered(p string, h hunk) []AuditFinding {
 	if !isCoverageConfig(p) || len(h.removed) == 0 || len(h.added) == 0 {
 		return nil
 	}
 	before := thresholds(h.removed)
-	var out []finding
+	var out []AuditFinding
 	for i, l := range h.added {
 		for key, now := range thresholds([]string{l}) {
 			if was, ok := before[key]; ok && now < was {
-				out = append(out, finding{
+				out = append(out, AuditFinding{
 					Rule: "coverage_lowered", Path: p, Line: h.firstNew + i,
 					Message: "coverage threshold " + key + " lowered from " + strconv.FormatFloat(was, 'f', -1, 64) + " to " + strconv.FormatFloat(now, 'f', -1, 64),
 					Text:    l,

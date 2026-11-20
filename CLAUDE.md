@@ -492,6 +492,19 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   code-first split's lower PR is judged by the code side's lane; everything
   else keeps the issue's `PushLanes` record. An agent's own pushes are never
   split (`config.StackSplitIgnoredReason` → startup warning).
+- **Lane reasons and the Lanes view.** The audit rules (`referee audit`'s
+  table) live in `internal/guardrails` (`audit_rules.go`, `AuditPatch`,
+  `AuditRange`), shared by the referee, the pre-push hook and the daemon —
+  guardrails cannot import referee. A held push's `ApprovalRequest.Reasons`
+  (`guardrails.LaneReason`: `finding` file:line, `lane_rule` path → pattern,
+  `tool_behaviour` reserved) are re-sanitized by the daemon
+  (`SanitizeLaneReasons`: redacted, clipped, ≤ 20) and ride on
+  `InputRequiredEntry.GuardrailLaneReasons` (question text, snapshot row,
+  run context `PendingReasons` for Slack). `GET
+  /api/v1/issues/{identifier}/lanes` (viewer; a finding's `text` needs
+  operator, `lanesForScope`) is `Orchestrator.WorktreeLanes`: git on the
+  caller's goroutine like `WorktreeDiff`, `StackSplits` / `PushLanes` /
+  the pending approval read only through `Snapshot()`. No new State.
 
 ### Workspace port ledger is workspace state, not `State`
 
