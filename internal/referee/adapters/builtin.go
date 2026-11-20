@@ -9,12 +9,14 @@ import (
 	"strings"
 )
 
-// builtinSpec is a built-in adapter: an npm-installed deploy CLI. Each is
-// deliberately small: the package, its command, the prefix its
-// deploy-target variables share, a few read-only probes and the config
-// files that show it is used.
+// builtinSpec is a built-in adapter: an npm-installed deploy tool. Each is
+// deliberately small: the package that is scanned (installed at
+// node_modules/<pkg>), its command, the prefix its deploy-target variables
+// share, a few read-only probes, and what shows it is used: a dependency on
+// pkg or on one of alsoDetect, or one of the config files.
 type builtinSpec struct {
 	pkg, command string
+	alsoDetect   []string
 	deployVars   []string
 	probes       []string
 	configFiles  []string
@@ -32,6 +34,27 @@ var builtins = map[string]builtinSpec{
 		deployVars:  []string{"VERCEL_*"},
 		probes:      []string{"vercel --version", "vercel deploy --help"},
 		configFiles: []string{"vercel.json", ".vercel/project.json"},
+	},
+	// The Inngest SDK reads the keys and URLs that choose which Inngest
+	// environment an app syncs its functions to and sends events to, so the
+	// SDK is what is scanned. The CLI (inngest-cli: an npm wrapper around a
+	// native binary) is the command the probes run, and a dependency on it
+	// also shows Inngest is used.
+	"inngest": {
+		pkg: "inngest", command: "inngest-cli",
+		alsoDetect: []string{"inngest-cli"},
+		deployVars: []string{"INNGEST_*"},
+		probes:     []string{"inngest-cli --help", "inngest-cli dev --help"},
+	},
+	// The Supabase CLI's npm package wraps a native binary, which is what
+	// reads the access token, the database password and the project
+	// settings. A scan sees only the package's JS files (see the envcheck
+	// limits in the referee guide).
+	"supabase": {
+		pkg: "supabase", command: "supabase",
+		deployVars:  []string{"SUPABASE_*"},
+		probes:      []string{"supabase --version", "supabase db push --help", "supabase functions deploy --help"},
+		configFiles: []string{"supabase/config.toml"},
 	},
 }
 
@@ -88,7 +111,7 @@ func loadBuiltin(name string, spec builtinSpec, c Config) (*adapter, error) {
 		return nil, err
 	}
 	a.detect = func(repo string) bool {
-		if dependsOn(repo, spec.pkg) {
+		if dependsOn(repo, spec.pkg) || slices.ContainsFunc(spec.alsoDetect, func(p string) bool { return dependsOn(repo, p) }) {
 			return true
 		}
 		for _, f := range spec.configFiles {

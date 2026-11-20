@@ -1,0 +1,4 @@
+{
+  "name": "fixture-db",
+  "devDependencies": { "supabase": "^1.0.0" }
+}

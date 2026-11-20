@@ -232,3 +232,86 @@ func TestEnvcheckPolicyWithToolsStillWorksForLanes(t *testing.T) {
 	code, out, errOut := referee(t, nil, "lanes", "--dir", r.dir, "--base", "main")
 	assert.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
 }
+
+// builtinEnvcheck runs envcheck end to end for one built-in adapter: the
+// base guard classifies `classified` and mentions a longer name that starts
+// with `unclassified` (which must not count), the head's lockfile bumps
+// pkg, and the install mentions both. Exit 20 with exactly one finding, for
+// `unclassified` at its file:line; once the base guard learns it, exit 0.
+func builtinEnvcheck(t *testing.T, tool, pkg, file, cli, classified, unclassified string, line int) {
+	t.Helper()
+	policy := "tools:\n  " + tool + ":\n    guard: scripts/lib/deploy-target.mjs\n"
+	guard := "export const TARGET_VARS = ['" + classified + "', '" + unclassified + "_SUFFIX'];\n"
+	r := newTestRepo(t)
+	r.commit("base", map[string]string{
+		".gitignore":                    "node_modules/\n",
+		".referee.yml":                  policy,
+		"package.json":                  `{"devDependencies":{"` + pkg + `":"^1.0.0"}}` + "\n",
+		"package-lock.json":             `{"packages":{"node_modules/` + pkg + `":{"version":"1.0.0"}}}` + "\n",
+		"scripts/lib/deploy-target.mjs": guard,
+	})
+	r.git("checkout", "-q", "-b", "bump")
+	r.commit("bump "+pkg, map[string]string{"package-lock.json": `{"packages":{"node_modules/` + pkg + `":{"version":"1.1.0"}}}` + "\n"})
+	r.write(map[string]string{
+		"node_modules/" + pkg + "/package.json": `{"name":"` + pkg + `"}` + "\n",
+		"node_modules/" + pkg + "/" + file:      cli,
+	})
+
+	code, out, errOut := referee(t, nil, "envcheck", "--dir", r.dir, "--base", "main", "--json")
+	require.Equal(t, exitHuman, code, "stdout=%s stderr=%s", out, errOut)
+	var rep envReport
+	require.NoError(t, json.Unmarshal([]byte(out), &rep))
+	require.Len(t, rep.Findings, 1)
+	assert.Equal(t, envFinding{
+		Tool: tool, Variable: unclassified, Path: "node_modules/" + pkg + "/" + file, Line: line,
+		Guard:   "scripts/lib/deploy-target.mjs",
+		Message: tool + " mentions " + unclassified + ", a deploy-target variable the guard on the base ref does not classify",
+	}, rep.Findings[0])
+	require.Len(t, rep.Tools, 1)
+	assert.Equal(t, "node_modules/"+pkg, rep.Tools[0].Install)
+	assert.Equal(t, []string{classified, unclassified}, rep.Tools[0].Variables)
+	assert.Empty(t, rep.Notes, "a configured tool is not also a note")
+
+	r.git("checkout", "-q", "main")
+	r.commit("classify", map[string]string{"scripts/lib/deploy-target.mjs": guard + "// " + unclassified + "\n"})
+	r.git("checkout", "-q", "bump")
+	r.git("rebase", "-q", "main")
+	code, out, errOut = referee(t, nil, "envcheck", "--dir", r.dir, "--base", "main")
+	require.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
+	assert.Contains(t, out, "every deploy-target variable is classified")
+}
+
+// TestEnvcheckInngestAdapter: the built-in inngest adapter, end to end.
+// The guard's INNGEST_SIGNING_KEY_SUFFIX does not classify
+// INNGEST_SIGNING_KEY.
+func TestEnvcheckInngestAdapter(t *testing.T) {
+	builtinEnvcheck(t, "inngest", "inngest", "dist/components/Inngest.js",
+		"const env = process.env;\nconst k = env.INNGEST_EVENT_KEY;\nconst s = env.INNGEST_SIGNING_KEY;\nconst n = env.NODE_ENV;\n",
+		"INNGEST_EVENT_KEY", "INNGEST_SIGNING_KEY", 3)
+}
+
+// TestEnvcheckSupabaseAdapter: the built-in supabase adapter, end to end.
+// The guard's SUPABASE_DB_PASSWORD_SUFFIX does not classify
+// SUPABASE_DB_PASSWORD.
+func TestEnvcheckSupabaseAdapter(t *testing.T) {
+	builtinEnvcheck(t, "supabase", "supabase", "scripts/postinstall.js",
+		"const t = process.env.SUPABASE_ACCESS_TOKEN;\nconst h = process.env.HOME;\nconst p = process.env.SUPABASE_DB_PASSWORD;\n",
+		"SUPABASE_ACCESS_TOKEN", "SUPABASE_DB_PASSWORD", 3)
+}
+
+// TestEnvcheckNotesUnconfiguredBuiltins: a repository that uses Inngest
+// (through its CLI alone) and Supabase (through supabase/config.toml
+// alone) gets a note for each when tools: leaves them out.
+func TestEnvcheckNotesUnconfiguredBuiltins(t *testing.T) {
+	r := envRepo(t, envPolicy)
+	r.install(oldCLI)
+	r.write(map[string]string{
+		"package.json":         `{"dependencies":{"convex":"^1.0.0"},"devDependencies":{"inngest-cli":"^1.0.0"}}` + "\n",
+		"supabase/config.toml": "project_id = \"fixture\"\n",
+	})
+	code, out, errOut := referee(t, nil, "envcheck", "--dir", r.dir, "--base", "main")
+	require.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
+	assert.Contains(t, out, "note: inngest looks used here but is not under tools:")
+	assert.Contains(t, out, "note: supabase looks used here but is not under tools:")
+	assert.NotContains(t, out, "note: vercel")
+}

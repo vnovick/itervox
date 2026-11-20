@@ -1,0 +1,4 @@
+{
+  "name": "fixture-worker-cli",
+  "devDependencies": { "inngest-cli": "^1.0.0" }
+}
