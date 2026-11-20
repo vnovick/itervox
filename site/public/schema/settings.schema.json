@@ -973,7 +973,7 @@
           "x-itervox-group": "Tracker scope"
         },
         "kind": {
-          "description": "linear, github, local or memory. Required. Read at startup.",
+          "description": "linear, github, jira, local or memory. Required. Read at startup.",
           "title": "Tracker",
           "type": "string",
           "x-itervox-group": "Tracker connection"

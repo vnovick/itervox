@@ -1,0 +1,190 @@
+---
+title: Jira
+description: Set up Itervox to resolve Jira Cloud issues with AI agents. Covers the API token, statuses and transitions, blockers, comments and permissions.
+sidebar:
+  order: 5
+---
+
+This guide connects Itervox to a Jira Cloud project. Agents pick up issues from your board, move them between statuses and post comments. Jira has its own workflow rules, so read [States, statuses and transitions](#states-statuses-and-transitions) before your first run.
+
+## What you need
+
+- A Jira Cloud site, such as `https://your-site.atlassian.net`, and a project in it
+- An Atlassian account that can work in that project (see [What the account must be allowed to do](#what-the-account-must-be-allowed-to-do))
+- An Atlassian API token for that account
+- The `itervox` binary on your `$PATH`
+- The repository you want agents to work in, checked out locally
+
+Jira Cloud is the only supported Jira. Jira Data Center and Server are not supported.
+
+## Create an API token
+
+1. Open [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
+2. Click **Create API token**. Do not use **Create API token with scopes**: Itervox cannot use such a token yet.
+3. Give the token a name, such as `itervox`, and create it.
+4. Copy the token. Atlassian shows it once.
+
+Itervox sends the account email and the token as HTTP Basic auth over https. Put both in one value: the email, a colon, then the token. This is the same form that `curl -u` takes. The adapter refuses a plain `http` endpoint, except a loopback address, and it never follows a redirect.
+
+Store the value in `.itervox/.env`. The daemon loads this gitignored file at startup:
+
+```bash
+# .itervox/.env
+JIRA_API_KEY=you@example.com:your_api_token
+```
+
+## Configure the tracker
+
+`itervox init --tracker jira` and `itervox quickstart` do not know Jira yet. Scaffold the project with the local tracker:
+
+```bash
+itervox init --tracker local
+```
+
+Then replace the `tracker` section in `.itervox/settings.jsonc` with this one:
+
+```jsonc
+"tracker": {
+	"kind":             "jira",
+	"endpoint":         "https://your-site.atlassian.net", // the Jira Cloud site, https only
+	"api_key":          "$JIRA_API_KEY",                   // value: you@example.com:your_api_token
+	"project_slug":     "PROJ",                            // the Jira project key
+	"active_states":    ["To Do", "In Progress"],
+	"working_state":    "In Progress",
+	"completion_state": "In Review",
+	"terminal_states":  ["Done"],
+},
+```
+
+Write the URL itself in `endpoint`. Itervox does not resolve a `$VAR` reference there. Run `itervox doctor` to check the result.
+
+Itervox refuses to load the config, with a clear message, in these cases:
+
+- `endpoint` is not `https://` followed by a host and nothing else: no credentials, path, query or fragment.
+- `project_slug` is not a project key: capital letters, digits and `_`, starting with a letter.
+- `api_key` is not `email:api_token`.
+
+The message never prints the key.
+
+`itervox doctor --deploy` checks that the token works and that the project can be read.
+
+Each poll sends one JQL query, always limited to your project:
+
+```text
+project = "PROJ" AND status in (...) ORDER BY created ASC
+```
+
+The issue identifier is the Jira key, for example `PROJ-12`. Branch and workspace names come from it.
+
+## States, statuses and transitions
+
+Itervox states are Jira status names. Itervox matches them by name.
+
+| Setting | What it does |
+|---|---|
+| `active_states` | Itervox polls issues in these statuses. |
+| `working_state` | Itervox sets this status when an agent starts. |
+| `completion_state` | Itervox sets this status when an agent finishes. |
+| `terminal_states` | An issue in one of these statuses is done. |
+
+Itervox works on every issue of the project that has one of the `active_states`. It cannot filter by assignee or label yet. On a board that a team shares, an agent also starts on the issues of other people. Use a separate Jira project for agent work, or statuses that only agent work uses.
+
+A status change in Jira is a transition. To move an issue, Itervox first reads the status of the issue. If the issue already has the wanted status, Itervox sends nothing more. Otherwise Itervox lists the transitions of that issue. It picks the one whose target status has the wanted name, ignoring case, and runs it.
+
+- If no transition leads to that status, the move fails. The message names the current status and the statuses that the issue can reach.
+
+So the Jira workflow must allow two moves:
+
+1. From an active state to `working_state`.
+2. From `working_state` to `completion_state`.
+
+## Blockers
+
+A link counts as a blocker when its type is named **Blocks** or its inward text is "is blocked by". If this issue is on the **is blocked by** side of the link, the other issue blocks it.
+
+Itervox does not start a blocked issue until its blocker reaches a terminal state. This rule is the same for every tracker in Itervox.
+
+## Comments and text
+
+Jira Cloud stores rich text as Atlassian Document Format (ADF). Itervox reads descriptions and comments as plain text. A hyperlink reads as its text followed by the address in brackets.
+
+Itervox writes comments as plain paragraphs. A blank line starts a new paragraph. Markdown that an agent writes shows as typed. Jira does not render it as bold text or headings.
+
+Itervox adds marker lines to some of its own comments, such as `<!-- itervox:managed -->`. Jira shows these lines as text.
+
+Jira Cloud stores at most 32,767 characters in a comment or a description, and it counts an emoji as two characters. When a text from Itervox is longer, Itervox keeps the start of the text, adds a line that says how many characters it cut, and keeps the marker lines at the end.
+
+Itervox stores the feature branch of an issue as an issue property named `itervox.branch`. It does not use a comment. A retried run resumes on the same branch.
+
+When an agent creates a follow-up issue with `create_issue`, the new issue gets:
+
+- the same issue type as the source issue, or **Task** when the source is a sub-task
+- the labels the agent asked for
+- a **Blocks** link from the source issue, when the agent asked for one
+
+The **Blocks** link is part of the request that creates the issue. If Itervox cannot move the new issue to the wanted state, it deletes the new issue and reports the error.
+
+When Jira answers HTTP 429, Itervox retries up to four times. It waits for the later of `Retry-After` and `X-RateLimit-Reset`. If that wait is longer than 60 seconds, or longer than the caller's deadline, the call fails at once and Itervox makes no Jira call until the reset time. It uses the same retry code as the other trackers.
+
+## What the account must be allowed to do
+
+The Atlassian account behind the token needs these permissions in the project:
+
+| Permission | Used for |
+|---|---|
+| Browse projects | Reading issues |
+| Add comments | Agent comments |
+| Transition issues | Moving issues between statuses |
+| Edit issues | Storing the branch property |
+| Create issues | Follow-up issues |
+| Link issues | The **Blocks** link on follow-up issues |
+| Delete issues | Removing a follow-up issue that Itervox could not move to the wanted state. Without it, the issue stays and the error names it. |
+
+## What is not supported yet
+
+Itervox refuses these settings with `tracker.kind: jira` when the config loads:
+
+- `tracker.filter`
+- `tracker.assignee`, `tracker.team` and `tracker.labels`
+- `tracker.webhooks`
+- `tracker.sync`
+- `tracker.comment_commands`
+
+These are not available in this version:
+
+- Jira Data Center and Server
+- OAuth
+- API tokens with scopes. Atlassian accepts them only at `https://api.atlassian.com/ex/jira/` followed by the cloud id, and `endpoint` must be the site URL. So the token Itervox uses can do everything its account can do: use an account that has only the permissions listed above.
+- The local tracker store and incremental pulls. Every poll asks Jira.
+- `itervox init --tracker jira` and `itervox quickstart` detection
+
+## Troubleshooting
+
+### The move fails with "no transition"
+
+The Jira workflow has no transition from the current status to the wanted status. The error names the current status and the statuses that the issue can reach.
+
+Add the missing transition in Jira, or change `working_state` or `completion_state` to a status the issue can reach. Check the spelling too: Itervox matches the status name, ignoring case.
+
+### Jira answers 401
+
+The `api_key` value is wrong. Check these points:
+
+- The value has the form `you@example.com:your_api_token`.
+- The email is the one of the Atlassian account that owns the token.
+- The token is current and not revoked. Atlassian API tokens expire after one year at most.
+- The token has no scopes.
+
+Run `itervox doctor --deploy` to test the token.
+
+### A reply in Jira does not wake the agent
+
+Itervox does not count a comment from the account that wrote the question. When Itervox uses your own API token, its comments are yours, so it skips your reply. This rule is the same for every tracker in Itervox.
+
+Reply in the dashboard. Or give Itervox its own Atlassian account, so that your comments have another author.
+
+### The board is empty
+
+`active_states` do not match the status names in Jira exactly. Itervox polls only issues whose status is in that list.
+
+Open an issue in Jira and copy its status name. Compare it with `active_states`. Then check that `project_slug` is the project key, such as `PROJ`.

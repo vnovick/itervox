@@ -337,7 +337,7 @@ var SettingFields = []SettingField{
 		Description: "Groups of conditions, ANDed inside a group and ORed between groups. Edited in Settings → Tracker Scope."},
 	{Key: "tracker.kind", Type: TypeString, Group: "Tracker connection",
 		Label:       "Tracker",
-		Description: "linear, github, local or memory. Required. Read at startup."},
+		Description: "linear, github, jira, local or memory. Required. Read at startup."},
 	{Key: "tracker.labels", Type: TypeArray, Items: TypeString, Group: "Tracker scope", Default: []any{},
 		Label:       "Labels",
 		Description: "Only issues carrying one of these labels. Cannot be combined with tracker.filter."},

@@ -244,3 +244,30 @@ func TestDoWithRateLimitRetryReturnsTypedErrorOnExhaustion(t *testing.T) {
 	require.ErrorAs(t, err, &rle, "exhausted retries must return a typed rate-limit error")
 	assert.True(t, rle.RateLimitResetAt().Equal(reset))
 }
+
+func TestJiraRateLimitClassifier(t *testing.T) {
+	reset := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		resp    *http.Response
+		limited bool
+		resetAt time.Time
+	}{
+		{"429 with RFC3339 reset", &http.Response{StatusCode: http.StatusTooManyRequests,
+			Header: http.Header{"X-Ratelimit-Reset": []string{reset.Format(time.RFC3339)}}, Body: http.NoBody}, true, reset},
+		{"429 without reset", &http.Response{StatusCode: http.StatusTooManyRequests,
+			Header: http.Header{}, Body: http.NoBody}, true, time.Time{}},
+		{"429 with unparseable reset", &http.Response{StatusCode: http.StatusTooManyRequests,
+			Header: http.Header{"X-Ratelimit-Reset": []string{"soon"}}, Body: http.NoBody}, true, time.Time{}},
+		{"200", &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody}, false, time.Time{}},
+		{"403", &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}, Body: http.NoBody}, false, time.Time{}},
+		{"nil response", nil, false, time.Time{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			limited, resetAt := JiraRateLimitClassifier(tc.resp)
+			assert.Equal(t, tc.limited, limited)
+			assert.True(t, resetAt.Equal(tc.resetAt), "got %v want %v", resetAt, tc.resetAt)
+		})
+	}
+}

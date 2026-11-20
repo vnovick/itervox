@@ -20,6 +20,7 @@ import (
 	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/tracker/github"
+	"github.com/vnovick/itervox/internal/tracker/jira"
 	"github.com/vnovick/itervox/internal/tracker/linear"
 )
 
@@ -347,6 +348,17 @@ func trackerAPICheck(ctx context.Context, cfg *config.Config, env deployProbeEnv
 			return c
 		}
 		c.Status, c.Detail = deployOK, "github token can read and write "+cfg.Tracker.ProjectSlug
+	case "jira":
+		if cfg.Tracker.APIKey == "" {
+			c.Status, c.Detail = deployFail, "jira: tracker.api_key is empty (is JIRA_API_KEY set?)"
+			return c
+		}
+		who, err := jira.NewClient(jira.ClientConfig{Endpoint: cfg.Tracker.Endpoint, APIKey: cfg.Tracker.APIKey, ProjectSlug: cfg.Tracker.ProjectSlug}).ProbeProjectAccess(cctx)
+		if err != nil {
+			c.Status, c.Detail = deployFail, "jira probe failed: "+logging.RedactString(err.Error())
+			return c
+		}
+		c.Status, c.Detail = deployOK, "jira token valid (account: "+who+"); project "+cfg.Tracker.ProjectSlug+" can be read"
 	default:
 		c.Status, c.Detail = deploySkipped, "tracker kind "+cfg.Tracker.Kind+" has no remote API"
 	}
