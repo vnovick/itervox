@@ -64,7 +64,8 @@ func TestWithTrackerStore(t *testing.T) {
 // TestWithTrackerStoreJira: a Jira tracker gets the store like Linear and
 // GitHub when tracker.store.enabled is set (the default), and the store
 // keeps the adapter's optional interfaces: the scope check the orchestrator
-// runs on a retry's by-ID read, keyed comments and the state-list setter.
+// runs on the by-ID read of a retry and of a dispatch claim check, keyed
+// comments and the state-list setter.
 func TestWithTrackerStoreJira(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Tracker.Kind = "jira"
@@ -120,13 +121,19 @@ func TestWithTrackerStoreWebhooks(t *testing.T) {
 // TestWithTrackerStoreJiraCountsActiveViewIssuesAsCandidates: for a Jira
 // tracker the store counts an active issue that the cold pull's first
 // search (the candidates) missed and its view searches listed, as Jira's
-// lagging search index can make happen; without that it would not be
-// dispatched until the next full pull.
+// lagging search index can make happen, once a read by id confirms it;
+// without that it would not be dispatched until the next full pull.
 func TestWithTrackerStoreJiraCountsActiveViewIssuesAsCandidates(t *testing.T) {
-	var searches atomic.Int64
+	var searches, bulkReads atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issue := func(id, key string) map[string]any {
 			return map[string]any{"id": id, "key": key, "fields": map[string]any{"summary": key, "status": map[string]any{"name": "To Do"}}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/rest/api/3/issue/bulkfetch" {
+			bulkReads.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"issues": []any{issue("2", "KAN-2")}})
+			return
 		}
 		var body struct {
 			JQL string `json:"jql"`
@@ -139,7 +146,6 @@ func TestWithTrackerStoreJiraCountsActiveViewIssuesAsCandidates(t *testing.T) {
 				issues = append(issues, issue("2", "KAN-2"))
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "isLast": true})
 	}))
 	t.Cleanup(srv.Close)
@@ -162,4 +168,5 @@ func TestWithTrackerStoreJiraCountsActiveViewIssuesAsCandidates(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"KAN-1", "KAN-2"}, keys)
 	assert.Greater(t, searches.Load(), int64(1), "the views were searched after the candidates")
+	assert.Equal(t, int64(1), bulkReads.Load(), "KAN-2 was read by id before it was counted")
 }

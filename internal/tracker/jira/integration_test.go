@@ -835,7 +835,7 @@ func TestJiraLiveStore(t *testing.T) {
 		// As withTrackerStore sets it for Jira: the cold pull's candidate
 		// search can miss the issue just created while its view search
 		// lists it.
-		ActiveViewIssuesAreCandidates: true,
+		ListingsLagWrites: true,
 	})
 	require.NoError(t, err)
 	_, ok := tr.(tracker.ScopeMatcher)

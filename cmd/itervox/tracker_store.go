@@ -83,10 +83,9 @@ func withTrackerStore(ctx context.Context, cfg *config.Config, workflowPath stri
 		SyncInterval: time.Duration(storeSyncIntervalMs(t)) * time.Millisecond,
 		// #114: full pulls in between catch what a changes listing misses.
 		FullSyncInterval: time.Duration(t.Store.FullSyncIntervalMs) * time.Millisecond,
-		// Jira's candidate read is its by-states read over the active
-		// states, and its search lags writes, so a full pull's candidate
-		// search can miss an issue its view searches list.
-		ActiveViewIssuesAreCandidates: t.Kind == "jira",
+		// Jira's search lags its writes and its reads by ID do not, and its
+		// candidate read is its by-states read over the active states.
+		ListingsLagWrites: t.Kind == "jira",
 	})
 	if err != nil {
 		slog.Warn("tracker store: not used", "error", err)

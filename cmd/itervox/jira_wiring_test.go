@@ -285,7 +285,7 @@ func TestBuildTrackerJiraPassesTheScope(t *testing.T) {
 
 	assert.Equal(t, `project = "PROJ" AND assignee = "acc-ada" AND labels in ("agent") AND status in ("To Do") ORDER BY created ASC`, <-jqls)
 	_, ok := tr.(tracker.ScopeMatcher)
-	assert.True(t, ok, "the jira client checks its scope on a retry's by-ID read")
+	assert.True(t, ok, "the jira client checks its scope on a by-ID read (retries, dispatch claim checks)")
 }
 
 // TestDoctorChecksJiraAssignee: `itervox doctor` resolves a Jira

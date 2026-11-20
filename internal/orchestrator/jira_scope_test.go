@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vnovick/itervox/internal/config"
-	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/jira"
 	"github.com/vnovick/itervox/internal/tracker/store"
 )
@@ -239,7 +238,7 @@ func TestClaimCheckRefusesAJiraIssueThatLeftTheScope(t *testing.T) {
 			tr, st, err := store.Wrap(up, store.Config{
 				Path: filepath.Join(t.TempDir(), "tracker_store.json"), Scope: "jira|PROJ",
 				ActiveStates: cfg.Tracker.ActiveStates, SyncInterval: interval,
-				FullSyncInterval: time.Hour, ActiveViewIssuesAreCandidates: true,
+				FullSyncInterval: time.Hour, ListingsLagWrites: true,
 			})
 			require.NoError(t, err)
 			_, err = tr.FetchCandidateIssues(ctx) // the store's full pull
@@ -256,11 +255,13 @@ func TestClaimCheckRefusesAJiraIssueThatLeftTheScope(t *testing.T) {
 			}
 
 			// The by-id read the claim check makes, and the adapter's own
-			// verdict on it: out of the scope, and known.
-			fresh, err := tr.FetchIssueStatesByIDs(ctx, []string{"10001"})
+			// verdict on it: out of the scope, and known. Read from the
+			// adapter, not through the store, which would drop the issue on
+			// this read and leave the claim check nothing to refuse.
+			fresh, err := up.FetchIssueStatesByIDs(ctx, []string{"10001"})
 			require.NoError(t, err)
 			require.Len(t, fresh, 1)
-			in, known := tr.(tracker.ScopeMatcher).MatchesFilter(fresh[0])
+			in, known := up.MatchesFilter(fresh[0])
 			require.True(t, known)
 			require.False(t, in, "precondition: the adapter says %s is outside the scope", fresh[0].Identifier)
 

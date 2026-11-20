@@ -94,16 +94,31 @@ type Config struct {
 	// NudgeDelay is how long Run waits after RequestSync before pulling
 	// (zero: DefaultNudgeDelay).
 	NudgeDelay time.Duration
-	// ActiveViewIssuesAreCandidates makes a full pull count an issue that a
-	// view lists in an active state as a candidate, also when the candidate
-	// request did not list it. Set it only for an upstream whose candidate
-	// list is exactly its list of issues in the active states under the
-	// same scope (Jira: FetchCandidateIssues is FetchIssuesByStates over the
-	// active states) and whose listing can lag a write, so two requests of
-	// one pull can disagree. Without it such an issue stays out of the
-	// candidates until the next full pull, because an incremental pull sees
-	// an unchanged listing.
-	ActiveViewIssuesAreCandidates bool
+	// ListingsLagWrites says the upstream's listings (its list and search
+	// reads) can lag its writes, while its reads by ID do not: a listing can
+	// show an issue as it was before a change the upstream already made, and
+	// two listings of one pull can disagree (Jira's search). The store then
+	// trusts a read by ID over a listing:
+	//
+	//   - A full pull counts as a candidate an issue that a view lists in an
+	//     active state and the candidate listing missed only when a read by ID
+	//     (one FetchIssueStatesByIDs call for all such issues) shows it in an
+	//     active state and in the scope. Without this such an issue stays out
+	//     of the candidates until the next full pull, because an incremental
+	//     pull sees an unchanged listing.
+	//   - An incremental pull keeps a stored copy that is newer than the
+	//     listing (a read by ID stored it).
+	//   - A read by ID that shows an issue outside the scope
+	//     (tracker.ScopeMatcher) removes it from the store: the next listing
+	//     may not show the change yet, or not list the issue at all (moved to
+	//     another project).
+	//
+	// Set it only for an upstream whose candidate list is exactly its list of
+	// issues in the active states under the same scope, and whose reads by ID
+	// return whole issues (Jira: FetchCandidateIssues is FetchIssuesByStates
+	// over the active states, and FetchIssueStatesByIDs is the bulk fetch).
+	// Off (Linear, GitHub), none of this runs.
+	ListingsLagWrites bool
 	// Now is the clock (tests); nil means time.Now.
 	Now func() time.Time
 }
@@ -256,8 +271,8 @@ func Wrap(up tracker.Tracker, cfg Config) (tracker.Tracker, *Store, error) {
 		return &filteredStore{s, filterForward{s}}, s, nil
 	}
 	if _, ok := up.(tracker.ScopeMatcher); ok {
-		// Jira: the orchestrator checks a retry's by-ID read against the
-		// scope through it.
+		// Jira: the orchestrator checks the by-ID read of a retry and of
+		// a dispatch claim check against the scope through it.
 		return &matchingStore{s}, s, nil
 	}
 	return s, s, nil
@@ -656,6 +671,7 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 		}
 		pulls = append(pulls, pull{key, slices.Clone(v.States)})
 	}
+	active := slices.Clone(s.active)
 	s.mu.Unlock()
 
 	cands, err := s.up.FetchCandidateIssues(ctx)
@@ -672,6 +688,22 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 		s.fullNext = s.fullNext || forced
 		s.mu.Unlock()
 		return false, err
+	}
+	// Config.ListingsLagWrites: the issues only a view listed in an active
+	// state are read by ID before they may become candidates.
+	var viewOnly []string
+	var read []domain.Issue
+	readFailed := false
+	if s.cfg.ListingsLagWrites {
+		viewOnly = viewOnlyActive(cands, results, active)
+		if len(viewOnly) > 0 {
+			var rerr error
+			if read, rerr = s.up.FetchIssueStatesByIDs(ctx, viewOnly); rerr != nil {
+				slog.Warn("tracker store: could not read by ID the issues only a view listed as active; they are not candidates until the next pull",
+					"count", len(viewOnly), "error", rerr)
+				read, readFailed = nil, true
+			}
+		}
 	}
 
 	s.mu.Lock()
@@ -720,8 +752,10 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	for _, id := range mixed {
 		s.memberLocked(issues[id]) // the lists the newer copy's state belongs to
 	}
-	if s.cfg.ActiveViewIssuesAreCandidates {
-		s.addActiveViewIssuesLocked(results, issues)
+	if s.cfg.ListingsLagWrites {
+		s.promoteLocked(viewOnly, read)
+		// The next pull is a full one, so it reads them again.
+		s.fullNext = s.fullNext || readFailed
 	}
 	s.cursor, s.fullAt = newestUpdate(issues), s.now()
 	// A local change made after this pull began is newer than what it
@@ -745,24 +779,73 @@ func (s *Store) pullOnce(ctx context.Context, onlyIfUnsynced bool, trigger strin
 	return true, nil
 }
 
-// addActiveViewIssuesLocked adds to the candidates every issue a view listed
-// in an active state (Config.ActiveViewIssuesAreCandidates): the candidate
-// request missed it because the upstream's search had not caught up yet, or
-// it changed between the two requests. issues holds the newest copy of each
-// listed issue. Caller holds mu.
-func (s *Store) addActiveViewIssuesLocked(results map[string][]domain.Issue, issues map[string]domain.Issue) {
-	inCands := make(map[string]bool, len(s.candidates))
-	for _, id := range s.candidates {
-		inCands[id] = true
+// viewOnlyActive returns, sorted, the ids of the issues a view listed in an
+// active state that the candidate listing did not list
+// (Config.ListingsLagWrites).
+func viewOnlyActive(cands []domain.Issue, results map[string][]domain.Issue, active []string) []string {
+	seen := make(map[string]bool, len(cands))
+	for _, iss := range cands {
+		seen[iss.ID] = true
 	}
+	var ids []string
 	for _, list := range results {
-		for _, listed := range list {
-			if iss := issues[listed.ID]; !inCands[iss.ID] && containsFold(s.active, iss.State) {
-				inCands[iss.ID] = true
-				s.candidates = append(s.candidates, iss.ID)
+		for _, iss := range list {
+			if !seen[iss.ID] && containsFold(active, iss.State) {
+				seen[iss.ID] = true
+				ids = append(ids, iss.ID)
 			}
 		}
 	}
+	slices.Sort(ids)
+	return ids
+}
+
+// promoteLocked decides the issues only a view listed in an active state
+// (viewOnly, Config.ListingsLagWrites) from their reads by ID (read). The
+// candidate listing missed each of them: its search had not caught up yet,
+// or the view's search was the stale one and the issue has since left the
+// active states or the scope. The read by ID does not lag, so it decides: an
+// issue it shows in an active state and in the scope is a candidate, one it
+// shows outside the scope leaves the store, and the read's copy of the others
+// is placed by its state. An issue the read does not confirm (missing, or a
+// scope not known yet) is not a candidate. Caller holds mu.
+func (s *Store) promoteLocked(viewOnly []string, read []domain.Issue) {
+	for _, id := range viewOnly {
+		s.candidates = setMember(s.candidates, id, false)
+	}
+	for _, iss := range read {
+		if !slices.Contains(viewOnly, iss.ID) {
+			continue
+		}
+		in, known := s.scopeOf(iss)
+		switch {
+		case known && !in:
+			s.dropLocked(iss.ID)
+		case known:
+			s.issues[iss.ID] = iss
+			s.memberLocked(iss)
+		}
+	}
+}
+
+// scopeOf is the upstream's in-memory scope check on iss
+// (tracker.ScopeMatcher); an upstream without one has no scope to leave.
+func (s *Store) scopeOf(iss domain.Issue) (in, known bool) {
+	m, ok := s.up.(tracker.ScopeMatcher)
+	if !ok {
+		return true, true
+	}
+	return m.MatchesFilter(iss)
+}
+
+// leftScope reports whether a read by ID shows iss outside the upstream's
+// scope and Config.ListingsLagWrites makes such a read remove it.
+func (s *Store) leftScope(iss domain.Issue) bool {
+	if !s.cfg.ListingsLagWrites {
+		return false
+	}
+	in, known := s.scopeOf(iss)
+	return known && !in
 }
 
 // CursorOverlap is how far before the cursor an incremental pull asks from:
@@ -809,7 +892,9 @@ func (s *Store) pullChanges(ctx context.Context, inc tracker.IncrementalFetcher,
 		if s.touched[iss.ID] > startGen {
 			continue
 		}
-		if cur, ok := s.issues[iss.ID]; ok && sameListing(cur, iss) {
+		// Config.ListingsLagWrites: a lagging listing can be older than the
+		// copy a read by ID stored; the newer copy stays.
+		if cur, ok := s.issues[iss.ID]; ok && (sameListing(cur, iss) || (s.cfg.ListingsLagWrites && newer(cur, iss))) {
 			continue
 		}
 		s.placeLocked(iss)
@@ -1087,7 +1172,9 @@ func (s *Store) FetchIssuesByStates(ctx context.Context, stateNames []string) ([
 }
 
 // FetchIssueStatesByIDs implements tracker.Tracker from the tracker (see
-// the package doc); the states it returns refresh the store's copies.
+// the package doc); the states it returns refresh the store's copies, and
+// with Config.ListingsLagWrites an issue they show outside the scope leaves
+// the store.
 func (s *Store) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
 	issues, err := s.up.FetchIssueStatesByIDs(ctx, issueIDs)
 	if err != nil || len(issues) == 0 {
@@ -1096,7 +1183,12 @@ func (s *Store) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([
 	s.mu.Lock()
 	changed := false
 	for _, iss := range issues {
-		if cur, ok := s.issues[iss.ID]; ok && !strings.EqualFold(cur.State, iss.State) {
+		cur, ok := s.issues[iss.ID]
+		switch {
+		case ok && s.leftScope(iss):
+			s.removeLocked(iss.ID)
+			changed = true
+		case ok && !strings.EqualFold(cur.State, iss.State):
 			s.touchLocked(iss.ID, func(c *domain.Issue) { c.State = iss.State })
 			changed = true
 		}
@@ -1108,13 +1200,21 @@ func (s *Store) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([
 	return issues, nil
 }
 
-// refresh stores a detail read's issue when the store holds it.
+// refresh stores a detail read's issue when the store holds it. With
+// Config.ListingsLagWrites an issue the read shows outside the scope leaves
+// the store instead.
 func (s *Store) refresh(iss *domain.Issue) {
 	if iss == nil {
 		return
 	}
 	s.mu.Lock()
 	cur, ok := s.issues[iss.ID]
+	if ok && s.leftScope(*iss) {
+		s.removeLocked(iss.ID)
+		s.mu.Unlock()
+		s.persist()
+		return
+	}
 	moved := ok && !strings.EqualFold(cur.State, iss.State)
 	s.touchLocked(iss.ID, func(cur *domain.Issue) { *cur = *iss })
 	s.mu.Unlock()
