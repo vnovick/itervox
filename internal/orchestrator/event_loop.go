@@ -227,7 +227,7 @@ func (o *Orchestrator) tickPrelude(ctx context.Context, state State, now time.Ti
 	// cancelAndCleanupWorker so stall-driven cancels release the
 	// workerCancels-map entry even if the EventWorkerExited send drops under
 	// load (T-09).
-	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
+	state = ReconcileStalls(state, o.cfg, o.profileStallTimeouts(), now, o.events, o.cancelAndCleanupWorker, o.logBuf)
 	o.maybeScanReverts(&state, now) // #217: off the loop, paced
 	return state
 }

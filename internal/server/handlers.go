@@ -1081,7 +1081,8 @@ type ModelRefresher interface {
 
 // handleUpsertProfile creates or updates a named agent profile.
 // PUT /api/v1/settings/profiles/{name}
-// Body: {"command": "claude --model ...", "soul": "...", "instructions": "...", "backend": "codex"}
+// Body: {"command": "claude --model ...", "soul": "...", "instructions": "...", "backend": "codex",
+// "modelServer": "http://127.0.0.1:8000"} — modelServer absent keeps the saved value, "" clears it.
 func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	var body struct {
@@ -1096,10 +1097,17 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 		AllowedActions   []string `json:"allowedActions"`
 		CreateIssueState string   `json:"createIssueState"`
 		OriginalName     string   `json:"originalName"`
+		ModelServer      *string  `json:"modelServer"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil || body.Command == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "command field required")
 		return
+	}
+	if body.ModelServer != nil {
+		if err := config.CheckModelServerValue(*body.ModelServer); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_model_server", "modelServer: "+err.Error())
+			return
+		}
 	}
 	if invalid := config.InvalidAgentActions(body.AllowedActions); len(invalid) > 0 {
 		writeError(w, http.StatusBadRequest, "invalid_allowed_actions", fmt.Sprintf("unknown allowedActions: %s", strings.Join(invalid, ", ")))
@@ -1127,6 +1135,10 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 	if body.Instructions != nil {
 		def.Instructions = *body.Instructions
 		def.InstructionsSet = true
+	}
+	if body.ModelServer != nil {
+		def.ModelServer = strings.TrimSpace(*body.ModelServer)
+		def.ModelServerSet = true
 	}
 	if err := s.client.UpsertProfile(name, def, strings.TrimSpace(body.OriginalName)); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "already exists") {

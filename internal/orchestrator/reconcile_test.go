@@ -38,7 +38,7 @@ func TestReconcileStallsKillsStalled(t *testing.T) {
 	state.Running["id1"] = runningEntry("id1", "In Progress", &old)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
+	state = orchestrator.ReconcileStalls(state, cfg, nil, time.Now(), events, nil)
 	_, still := state.Running["id1"]
 	assert.False(t, still, "stalled session should be removed from running")
 }
@@ -62,7 +62,7 @@ func TestReconcileStallsSkipsRunAwaitingGuardrailApproval(t *testing.T) {
 			state.InputRequiredIssues["ENG-1"] = &orchestrator.InputRequiredEntry{
 				IssueID: "id1", Identifier: "ENG-1", GuardrailApprovalID: tc.approvalID}
 			events := make(chan orchestrator.OrchestratorEvent, 10)
-			state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
+			state = orchestrator.ReconcileStalls(state, cfg, nil, time.Now(), events, nil)
 			_, still := state.Running["id1"]
 			assert.Equal(t, tc.wantKept, still)
 		})
@@ -76,7 +76,7 @@ func TestReconcileStallsDisabledWhenZero(t *testing.T) {
 	state.Running["id1"] = runningEntry("id1", "In Progress", &old)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
+	state = orchestrator.ReconcileStalls(state, cfg, nil, time.Now(), events, nil)
 	_, still := state.Running["id1"]
 	assert.True(t, still, "stall detection disabled when stall_timeout_ms=0")
 }
@@ -206,7 +206,7 @@ func TestReconcileNeverStopsAFinishingRun(t *testing.T) {
 		}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 		events := make(chan orchestrator.OrchestratorEvent, 10)
 
-		state = orchestrator.ReconcileStalls(state, cfg, now, events, nil)
+		state = orchestrator.ReconcileStalls(state, cfg, nil, now, events, nil)
 		state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
 		_, tracked := state.Running["id1"]
 		assert.Equal(t, finishing, tracked, "terminal issue, finishing: %v", finishing)
@@ -260,7 +260,7 @@ func TestTrackerPollDoesNotResetStallClock(t *testing.T) {
 				assert.True(t, kept.LastEventAt.Equal(lastAgentEvent), "the poll must not move the stall clock")
 			}
 
-			state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
+			state = orchestrator.ReconcileStalls(state, cfg, nil, time.Now(), events, nil)
 			_, still := state.Running["id1"]
 			assert.False(t, still, "a run silent past stall_timeout_ms is stalled despite tracker polls")
 		})

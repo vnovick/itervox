@@ -13,6 +13,7 @@ import {
 import { checkboxCls, fieldLabelCls, helperTextCls, inputCls } from '../formStyles';
 import { Button } from '../../../components/ui/button';
 import { ProfileEditorFields } from './ProfileEditorFields';
+import { ModelServerField } from './ModelServerField';
 import { UnknownValueNotice } from '../../../components/itervox/UnknownValueNotice';
 import { type ProfileFormValues, profileFormSchema } from './profileForm';
 
@@ -40,6 +41,7 @@ interface ProfileFormModalProps {
       enabled: boolean;
       allowedActions?: string[];
       createIssueState?: string;
+      modelServer?: string;
     },
     originalName?: string,
   ) => Promise<boolean>;
@@ -88,6 +90,7 @@ export function ProfileFormModal({
     instructionsFile,
     allowedActions,
     createIssueState,
+    modelServer,
   ] = useWatch({
     control,
     name: [
@@ -103,6 +106,7 @@ export function ProfileFormModal({
       'instructionsFile',
       'allowedActions',
       'createIssueState',
+      'modelServer',
     ],
   });
 
@@ -120,6 +124,7 @@ export function ProfileFormModal({
         enabled: values.enabled,
         allowedActions: normalizeAllowedActions(values.allowedActions, supportedAgentActions),
         createIssueState: values.createIssueState.trim() || undefined,
+        modelServer: values.modelServer.trim(),
       },
       mode === 'edit' ? initialValues.name : undefined,
     );
@@ -250,6 +255,15 @@ export function ProfileFormModal({
             }
             dynamicModels={availableModels}
             profileName={name}
+          />
+
+          <ModelServerField
+            backend={backend}
+            value={modelServer}
+            error={errors.modelServer?.message}
+            onChange={(value) => {
+              setValue('modelServer', value, { shouldValidate: true });
+            }}
           />
 
           {errors.command && (

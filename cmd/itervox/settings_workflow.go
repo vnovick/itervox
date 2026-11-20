@@ -21,13 +21,22 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 		if !enabled {
 			enabledField = &enabled
 		}
+		pool := strings.TrimSpace(profile.Pool)
+		if profile.PoolAuto {
+			pool = "" // derived from model_server at load, never configured
+		}
 		out[name] = workflow.ProfileEntry{
 			Command:             profile.Command,
 			Prompt:              profile.Prompt,
 			SoulFile:            strings.TrimSpace(profile.SoulFile),
 			InstructionsFile:    strings.TrimSpace(profile.InstructionsFile),
 			Backend:             profile.Backend,
-			Pool:                strings.TrimSpace(profile.Pool),
+			Pool:                pool,
+			ModelServer:         strings.TrimSpace(profile.ModelServer),
+			ModelServerName:     strings.TrimSpace(profile.ModelServerName),
+			ReadTimeoutMs:       profile.ReadTimeoutMs,
+			TurnTimeoutMs:       profile.TurnTimeoutMs,
+			StallTimeoutMs:      profile.StallTimeoutMs,
 			Enabled:             enabledField,
 			AllowedActions:      config.NormalizeAllowedActions(profile.AllowedActions),
 			CreateIssueState:    strings.TrimSpace(profile.CreateIssueState),

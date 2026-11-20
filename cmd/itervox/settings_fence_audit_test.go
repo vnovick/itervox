@@ -19,6 +19,9 @@ import (
 // patchers still take the per-path edit lock themselves.
 var settingsFenceRoots = map[string]string{
 	"runModelsRefresh": "`itervox models refresh` CLI process, no daemon generation",
+	// The local-model step writes the profiles block only after quickstart
+	// found no daemon running for the workflow (it stops there otherwise).
+	"runQuickstart": "`itervox quickstart` CLI process, no daemon generation",
 }
 
 // isWorkflowPatcher reports whether a call is one of the registered

@@ -162,6 +162,8 @@ const actions = {
     allowedActions?: string[],
     createIssueState?: string,
     originalName?: string,
+    // undefined keeps the saved model_server; '' clears it.
+    modelServer?: string,
   ): Promise<boolean> =>
     settingsFetch(
       `/api/v1/settings/profiles/${encodeURIComponent(name)}`,
@@ -189,6 +191,7 @@ const actions = {
         ),
         createIssueState: createIssueState ?? '',
         originalName: originalName ?? '',
+        ...(modelServer !== undefined ? { modelServer } : {}),
       },
       `Failed to save profile "${name}".`,
     ),

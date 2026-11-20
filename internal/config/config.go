@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/vnovick/itervox/internal/issuefilter"
@@ -436,13 +438,42 @@ type AgentProfile struct {
 	Backend string
 	// Pool names a separate quota pool for the profile's backend, for a
 	// profile that points a known agent CLI at another model server (for
-	// example `ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`, pool
+	// example `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude`, pool
 	// "local"). The run's circuit breaker key is then the lane
 	// "claude/local", so a limit on plain claude does not hold it, and
 	// agent.backend_fallback can name the lane as its own step. Empty (the
 	// default) shares the backend's breaker. Matches [a-z0-9-]+. YAML key:
 	// pool. Load-time only: the dashboard profile editor carries it over.
+	// A profile with a ModelServer and no pool gets its server's pool here
+	// (AssignModelServerPools), with PoolAuto set.
 	Pool string
+	// PoolAuto is set when Pool was derived from ModelServer
+	// (AssignModelServerPools) rather than configured; such a pool is not
+	// written back to WORKFLOW.md.
+	PoolAuto bool
+	// ModelServer is the base URL of the model server this profile's agent
+	// talks to, as configured: an http(s) URL or a whole $VAR. Itervox sets
+	// the variable the profile's backend reads (ModelServerEnvVar) when it
+	// runs the agent. Empty (the default): none. YAML key: model_server.
+	ModelServer string
+	// ModelServerURL is ModelServer with a $VAR resolved, set by
+	// ApplyProfileModelServer; "" without a model server.
+	ModelServerURL string
+	// ModelServerName names the quota pool of this profile's model server,
+	// shared by every profile on that server (AssignModelServerPools);
+	// without it the pool is "model-<profile>" after the first such
+	// profile by name. Matches [a-z0-9-]+; needs ModelServer. Empty (the
+	// default): derived. YAML key: model_server_name. Load-time only: the
+	// dashboard profile editor carries it over.
+	ModelServerName string
+	// ReadTimeoutMs, TurnTimeoutMs and StallTimeoutMs override the
+	// agent-level timeouts for this profile's runs; 0 (absent) inherits
+	// them, raised to the model-server defaults when the profile uses a
+	// model server (ProfileTimeouts). YAML keys: read_timeout_ms,
+	// turn_timeout_ms, stall_timeout_ms; positive values only.
+	ReadTimeoutMs  int
+	TurnTimeoutMs  int
+	StallTimeoutMs int
 	// Enabled controls whether the profile is selectable and dispatchable.
 	// Nil means true for backward compatibility with older tests/config literals.
 	Enabled *bool
@@ -1187,6 +1218,16 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, name := range slices.Sorted(maps.Keys(profiles)) {
+		p := profiles[name]
+		if err := ApplyProfileModelServer(name, &p, cfg.Agent.Command); err != nil {
+			return nil, err
+		}
+		profiles[name] = p
+	}
+	if err := AssignModelServerPools(profiles); err != nil {
+		return nil, err
+	}
 	cfg.Agent.Profiles = profiles
 	// #258: process isolation is local only for now.
 	if err := ValidateIsolationHosts(cfg.Agent); err != nil {
@@ -1593,7 +1634,16 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			modelServer, serverName, timeouts, err := profileModelServerFields(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
+				ModelServer:         modelServer,
+				ModelServerName:     serverName,
+				ReadTimeoutMs:       timeouts.ReadMs,
+				TurnTimeoutMs:       timeouts.TurnMs,
+				StallTimeoutMs:      timeouts.StallMs,
 				Command:             cmd,
 				SoulFile:            soulFile,
 				InstructionsFile:    instructionsFile,
@@ -1639,7 +1689,16 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 		if err != nil {
 			return nil, err
 		}
+		modelServer, serverName, timeouts, err := profileModelServerFields(m, name)
+		if err != nil {
+			return nil, err
+		}
 		profiles[name] = AgentProfile{
+			ModelServer:         modelServer,
+			ModelServerName:     serverName,
+			ReadTimeoutMs:       timeouts.ReadMs,
+			TurnTimeoutMs:       timeouts.TurnMs,
+			StallTimeoutMs:      timeouts.StallMs,
 			Command:             cmd,
 			Prompt:              strField(m, "prompt", ""),
 			Backend:             strField(m, "backend", ""),

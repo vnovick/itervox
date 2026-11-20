@@ -235,6 +235,29 @@ agent:
 
 The `backend` field is an optional hint that overrides automatic runner detection. Use it when the command string is a wrapper script that Itervox cannot introspect.
 
+### Profiles on a local model
+
+A profile can talk to a model server on your own machine instead of its
+vendor's, with `model_server`:
+
+```yaml
+agent:
+  profiles:
+    local:
+      command: claude
+      model_server: http://127.0.0.1:<port>   # the port your server listens on
+      soul_file: .itervox/agents/local/SOUL.md
+      instructions_file: .itervox/agents/local/INSTRUCTIONS.md
+```
+
+Itervox sets `ANTHROPIC_BASE_URL` (Claude Code) or `OPENAI_BASE_URL` (Codex)
+for the profile's runs, gives the profile its own quota pool (`model-local`
+here, or the name in `model_server_name`) so a hosted limit never holds it, and lengthens its timeouts; set
+`read_timeout_ms`, `turn_timeout_ms` or `stall_timeout_ms` on the profile to
+choose them yourself. The Agents page has a **Model server** field for it, and
+`itervox quickstart` can add a `local` profile. See
+[Local models](/guides/local-models/).
+
 ---
 
 ## Keeping the model catalog current

@@ -13,7 +13,8 @@ import (
 )
 
 // ReconcileStalls checks all running sessions for stall timeout violations.
-// If stall_timeout_ms <= 0, stall detection is disabled and this is a no-op.
+// If stall_timeout_ms <= 0 and no profile sets its own (byProfile), stall
+// detection is disabled and this is a no-op.
 // The optional logBuf receives a stall-warning entry before the worker is killed.
 //
 // cfg.Agent.StallTimeoutMs is read without cfgMu because it is set only once at
@@ -40,11 +41,24 @@ func cancelOrFallback(cleanup CleanupWorker, identifier string, fallback context
 	}
 }
 
-func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
-	if cfg.Agent.StallTimeoutMs <= 0 {
+// ReconcileStalls (see the comment above CleanupWorker): its byProfile
+// holds per-profile stall timeouts: a running entry whose
+// ProfileName is in it uses that value (milliseconds; <= 0 skips it) instead
+// of agent.stall_timeout_ms, so a profile's own stall_timeout_ms (or the
+// longer model-server default) applies even when the agent level turned
+// stall detection off. The event loop passes
+// Orchestrator.profileStallTimeouts; nil uses the agent level for every run.
+func ReconcileStalls(state State, cfg *config.Config, byProfile map[string]int, now time.Time, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
+	if cfg.Agent.StallTimeoutMs <= 0 && len(byProfile) == 0 {
 		return state
 	}
-	stallDur := time.Duration(cfg.Agent.StallTimeoutMs) * time.Millisecond
+	stallFor := func(profile string) time.Duration {
+		ms, ok := byProfile[profile]
+		if !ok {
+			ms = cfg.Agent.StallTimeoutMs
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
 
 	var buf *logbuffer.Buffer
 	if len(logBuf) > 0 {
@@ -62,6 +76,10 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 		// is not a stall; resolveGuardrailApproval restarts the clock once
 		// the answer arrives. agent.turn_timeout_ms still bounds the wait.
 		if awaitingGuardrailApproval(state, entry) {
+			continue
+		}
+		stallDur := stallFor(entry.ProfileName)
+		if stallDur <= 0 {
 			continue
 		}
 		var elapsed time.Duration

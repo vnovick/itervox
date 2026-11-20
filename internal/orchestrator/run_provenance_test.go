@@ -281,7 +281,7 @@ func TestStalledRunHistoryKeepsPromptDigestAndSteers(t *testing.T) {
 	appendRunSteers(entry, []string{"hurry up"}, SteeringResume, time.Now())
 	entry.StartedAt = time.Now().Add(-time.Minute)
 	events := make(chan OrchestratorEvent, 4)
-	f.state = ReconcileStalls(f.state, f.cfg, time.Now(), events, nil)
+	f.state = ReconcileStalls(f.state, f.cfg, nil, time.Now(), events, nil)
 	ev := <-events
 	f.state = f.o.handleEvent(t.Context(), f.state, ev)
 	hist := f.o.RunHistory()

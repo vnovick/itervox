@@ -7,18 +7,19 @@ import (
 )
 
 // Model servers: the base URLs a profile command points its agent CLI at
-// (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`), for a local engine
+// (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude`), for a local engine
 // such as colibri or a proxy. `itervox doctor` probes them; the desktop app
-// reads them from GET /api/v1/model-servers and probes them itself. Only
-// assignments in the profile command are seen; a CLI's own config file
-// (Codex's config.toml, OpenCode's providers) is not read.
+// reads them from GET /api/v1/model-servers and probes them itself. Both a
+// profile's model_server (model_server_profile.go) and assignments in its
+// command are seen; a CLI's own config file (Codex's config.toml, OpenCode's
+// providers) is not read.
 
 // ModelServerEnvVars are the variables an agent CLI reads to talk to a
 // model server other than its vendor's.
 var ModelServerEnvVars = []string{"ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"}
 
 // ModelServerURLs returns the model-server variables assigned in command
-// before the program, e.g. `ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude`,
+// before the program, e.g. `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude`,
 // through an optional `env` prefix and its flags, quotes stripped.
 func ModelServerURLs(command string) map[string]string {
 	out := map[string]string{}
@@ -52,25 +53,40 @@ type ModelServerUse struct {
 	// Unchecked is set when the URL comes from a shell variable ($VAR),
 	// which the agent's shell expands at run time.
 	Unchecked bool
+	// ModelServer is set when at least one of the profiles names the
+	// server in model_server (Itervox sets Var itself) rather than in its
+	// command.
+	ModelServer bool
 }
 
 // ModelServerUses groups the model servers of agent.command (named
-// defaultLabel) and of every enabled profile by variable and URL, sorted by
-// URL then variable. A profile with an empty command runs defaultCommand.
+// defaultLabel) and of every enabled profile — command assignments and
+// model_server (resolved, under the variable its backend reads) — by
+// variable and URL, sorted by URL then variable. A profile with an empty
+// command runs defaultCommand.
 func ModelServerUses(defaultLabel, defaultCommand string, profiles map[string]AgentProfile) []ModelServerUse {
 	type key struct{ v, u string }
-	type users struct{ profiles, pools []string }
+	type users struct {
+		profiles, pools []string
+		modelServer     bool
+	}
 	byKey := map[key]*users{}
+	addOne := func(name, v, u, pool string, fromModelServer bool) {
+		k := key{v, u}
+		if byKey[k] == nil {
+			byKey[k] = &users{}
+		}
+		if !slices.Contains(byKey[k].profiles, name) {
+			byKey[k].profiles = append(byKey[k].profiles, name)
+		}
+		if pool != "" && !slices.Contains(byKey[k].pools, pool) {
+			byKey[k].pools = append(byKey[k].pools, pool)
+		}
+		byKey[k].modelServer = byKey[k].modelServer || fromModelServer
+	}
 	add := func(name, command, pool string) {
 		for v, u := range ModelServerURLs(command) {
-			k := key{v, u}
-			if byKey[k] == nil {
-				byKey[k] = &users{}
-			}
-			byKey[k].profiles = append(byKey[k].profiles, name)
-			if pool != "" && !slices.Contains(byKey[k].pools, pool) {
-				byKey[k].pools = append(byKey[k].pools, pool)
-			}
+			addOne(name, v, u, pool, false)
 		}
 	}
 	add(defaultLabel, defaultCommand, "")
@@ -83,17 +99,23 @@ func ModelServerUses(defaultLabel, defaultCommand string, profiles map[string]Ag
 			command = defaultCommand
 		}
 		add(name, command, p.Pool)
+		if p.ModelServerURL != "" {
+			if v := ModelServerEnvVar(ProfileRunsBackend(p, defaultCommand)); v != "" {
+				addOne(name, v, p.ModelServerURL, p.Pool, true)
+			}
+		}
 	}
 	out := make([]ModelServerUse, 0, len(byKey))
 	for k, u := range byKey {
 		sort.Strings(u.profiles)
 		sort.Strings(u.pools)
 		out = append(out, ModelServerUse{
-			Var:       k.v,
-			URL:       k.u,
-			Profiles:  u.profiles,
-			Pools:     u.pools,
-			Unchecked: strings.Contains(k.u, "$"),
+			Var:         k.v,
+			URL:         k.u,
+			Profiles:    u.profiles,
+			Pools:       u.pools,
+			Unchecked:   strings.Contains(k.u, "$"),
+			ModelServer: u.modelServer,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

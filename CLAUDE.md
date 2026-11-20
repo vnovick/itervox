@@ -948,7 +948,7 @@ Before claiming `context.WithTimeout(ctx, 0)` causes immediate cancellation:
 1. **Check the field-specific parser** — timeout fields are mixed:
    - `agent.turn_timeout_ms`: `intField`; `<= 0` reaches runtime and intentionally disables the hard turn timeout because agent runners call `context.WithTimeout` only when the value is `> 0`.
    - `agent.read_timeout_ms`: `positiveIntField`; `<= 0` is replaced with the 30s default and cannot reach the read-deadline path from config.
-   - `agent.stall_timeout_ms`: `intField`; `<= 0` reaches runtime and disables `ReconcileStalls`.
+   - `agent.stall_timeout_ms`: `intField`; `<= 0` reaches runtime and disables `ReconcileStalls` for runs whose profile sets no `stall_timeout_ms` of its own. Profile timeouts (`agent.profiles.<name>.read_timeout_ms` / `turn_timeout_ms` / `stall_timeout_ms`) accept only positive values; a `model_server` profile without them gets larger defaults, never below the agent-level value and never turning on an agent-level 0.
    - `hooks.timeout_ms`: `intField` followed by an explicit fallback; `<= 0` becomes the 60s hook default during config load.
 2. **Check what the config default is** — look at `config.go:defaultConfig()` / `LoadFromFrontMatter` before flagging timeout behavior.
 

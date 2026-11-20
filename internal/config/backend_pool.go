@@ -9,7 +9,7 @@ import (
 // Quota pools (agent.profiles.<name>.pool).
 //
 // A pool names a separate quota for a backend: a profile that points a known
-// agent CLI at another model server (`ANTHROPIC_BASE_URL=http://127.0.0.1:8000
+// agent CLI at another model server (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
 // claude`) still runs the claude backend, but does not share Anthropic's
 // usage limit. The orchestrator keys its circuit breaker (CORE-053) on the
 // backend lane — the backend plus its pool, written "claude/local" — and

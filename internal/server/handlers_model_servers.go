@@ -22,6 +22,10 @@ type ModelServerRow struct {
 	Remote bool `json:"remote"`
 	// Unchecked is set when the URL comes from a shell variable ($VAR).
 	Unchecked bool `json:"unchecked,omitempty"`
+	// ModelServer is set when a profile names the server in model_server
+	// (agent.profiles.<name>.model_server; the daemon sets Var for the
+	// run) rather than in its command.
+	ModelServer bool `json:"modelServer,omitempty"`
 }
 
 // ModelServerLister is optionally implemented by the orchestrator client:
