@@ -8,6 +8,8 @@
 //	audit   list changes that weaken checks (skips, deleted tests, …)
 //	envcheck  fail when an installed tool reads a deploy-target variable
 //	          its guard does not classify
+//	diff    run each tool's probes on the base and head installs and
+//	          report how its behaviour changed
 //	pin     fail when a policy file's sha256 is not the pinned one
 //	run     run a check and append a signed record of what it saw
 //	keygen  make the ed25519 key pair records are signed with
@@ -44,14 +46,16 @@ commands:
   audit    list changes that weaken checks
   envcheck fail when an installed tool reads a deploy-target variable its guard
            does not classify (tools: in the base ref's policy)
-  pin      check a policy file against a pinned sha256 (or --print it)
+  diff     run each tool's probes on the base install (--base-dir) and the head
+           install and report behaviour changes (exit 10)
+  pin     check a policy file against a pinned sha256 (or --print it)
   run      run a check and append a signed record ({prog} run --name N --key K --out F -- cmd...)
   keygen   make an ed25519 key pair ({prog} keygen --out DIR)
   verify   verify signed records ({prog} verify F --pubkey P [--tree DIR])
 
 Run "{prog} <command> -h" for a command's flags.
 Exit codes: 0 ok/auto, 1 check failed or record did not verify,
-10 second_opinion, 20 human lane, audit or envcheck findings or pin mismatch,
+10 second_opinion or a diff behaviour change, 20 human lane, audit or envcheck findings or pin mismatch,
 2 usage or error (never 0).`
 
 // envFunc reads an environment variable (os.Getenv; tests inject one).
@@ -79,6 +83,8 @@ func dispatch(ctx context.Context, prog string, args []string, env envFunc, stdo
 		return auditCmd(ctx, rest, env, stdout, stderr)
 	case "envcheck":
 		return envcheckCmd(ctx, rest, env, stdout, stderr)
+	case "diff":
+		return diffCmd(ctx, rest, env, stdout, stderr)
 	case "pin":
 		return pinCmd(rest, stdout, stderr)
 	case "run":

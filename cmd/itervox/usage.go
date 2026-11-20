@@ -109,6 +109,9 @@ Commands:
              audit    list changes that weaken checks (exit 20 on findings)
              envcheck fail when an installed tool reads a deploy-target
                       variable its guard does not classify (exit 20)
+             diff     run each tool's probes on the base install
+                      (--base-dir) and the head install; exit 10 when
+                      its behaviour (exit code, output, prompts) changed
              pin      check a policy file against a pinned sha256
              run      run a check and append a signed record
              keygen   make the ed25519 key pair records are signed with

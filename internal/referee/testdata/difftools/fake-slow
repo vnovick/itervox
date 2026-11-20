@@ -1,0 +1,16 @@
+#!/bin/sh
+# A deploy that prints slowly but steadily (a line every 0.2s for about
+# 1.6s, longer than the tests' idle window) and then exits: output keeps
+# resetting the idle window, so it is never taken to be waiting for input.
+case "$1" in
+--version) echo "fake 1.2.0" ;;
+deploy)
+	for step in 1 2 3 4 5 6 7 8; do
+		echo "step $step of 8"
+		sleep 0.2
+	done
+	echo "done"
+	;;
+env) env | sort ;;
+*) echo "fake: unknown command $1" >&2; exit 2 ;;
+esac

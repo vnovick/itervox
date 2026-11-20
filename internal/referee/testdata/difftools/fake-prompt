@@ -1,0 +1,22 @@
+#!/bin/sh
+# A new version whose deploy now asks for a confirmation. Its stdin is a
+# pipe nothing writes to and that never ends, so it waits for the answer
+# until the idle window kills it (the abort branch is never reached).
+case "$1" in
+--version) echo "fake 1.2.0" ;;
+deploy)
+	echo "Usage: fake deploy [--prod]"
+	echo "Deploys the current directory."
+	echo "Built 2026-01-02T03:04:05Z in 12ms"
+	echo "config: $HOME/.config/fake.json, cwd: $PWD" >&2
+	printf 'Deploy to production? [y/N] '
+	if ! read -r answer; then
+		echo
+		echo "Aborted: no answer."
+		exit 1
+	fi
+	echo "answer: $answer"
+	;;
+env) env | sort ;;
+*) echo "fake: unknown command $1" >&2; exit 2 ;;
+esac
