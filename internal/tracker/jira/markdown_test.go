@@ -208,6 +208,35 @@ func TestMarkdownCorpusRoundTrips(t *testing.T) {
 	}
 }
 
+// Each text, posted through the adapter to a fake that keeps comment
+// properties the way the live site does, reads back exactly as it was
+// written: the markers travel as properties and come back in place, and no
+// marker is stored as text. The keyed sample carries its key marker in the
+// text, as the live test posts it.
+func TestMarkdownCorpusRoundTripsThroughTheAdapter(t *testing.T) {
+	samples := append(slices.Clone(itervoxTexts), struct {
+		name string
+		text string
+		rich []string
+	}{name: "every construct", text: everyConstruct})
+	for _, tc := range samples {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &keyedFake{}
+			c, seen := newJiraServer(t, f.handler)
+
+			created, err := c.CreateComment(t.Context(), "PROJ-1", tc.text)
+			require.NoError(t, err)
+			d, err := c.FetchIssueDetail(t.Context(), "PROJ-1")
+			require.NoError(t, err)
+
+			require.Len(t, d.Comments, 1)
+			assert.Equal(t, strings.TrimRight(tc.text, " \t\r\n"), d.Comments[0].Body, "the text must read back exactly")
+			assert.Equal(t, d.Comments[0].Body, created.Body, "the created comment is what the next read gives")
+			assert.NotContains(t, jira.ADFToText(seen()[0].jsonBody(t)["body"]), "<!-- itervox:", "no marker is stored as text")
+		})
+	}
+}
+
 func TestEveryConstructRoundTrips(t *testing.T) {
 	doc := jira.TextToADF(everyConstruct)
 

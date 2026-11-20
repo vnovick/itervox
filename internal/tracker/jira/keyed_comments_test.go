@@ -40,12 +40,22 @@ type keyedFake struct {
 // add stores a comment with text and, when propKey is not empty, a property
 // propKey whose value is {"key": key}. It returns the new comment id.
 func (f *keyedFake) add(text, propKey, key string) string {
+	if propKey == "" {
+		return f.addWithProperties(text)
+	}
+	return f.addWithProperties(text, map[string]any{"key": propKey, "value": map[string]any{"key": key}})
+}
+
+// addWithProperties stores a comment with text and the given properties, each
+// {"key": name, "value": ...} as Jira lists them. It returns the new comment
+// id.
+func (f *keyedFake) addWithProperties(text string, props ...any) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id := strconv.Itoa(1000 + len(f.comments))
 	cm := commentFixture(id, "2024-03-01T00:00:00.000+0000", text)
-	if propKey != "" {
-		cm["properties"] = []any{map[string]any{"key": propKey, "value": map[string]any{"key": key}}}
+	if len(props) > 0 {
+		cm["properties"] = props
 	}
 	f.comments = append(f.comments, cm)
 	return id
@@ -415,29 +425,38 @@ func TestFetchIssueDetailWithoutCommentsSendsNoPropertyRequest(t *testing.T) {
 	assert.Empty(t, f.listRequests())
 }
 
-func TestFetchIssueDetailWhenPropertiesAreUnknown(t *testing.T) {
-	t.Run("a failed property read fails the detail read", func(t *testing.T) {
-		f := &keyedFake{failList: true}
-		c, _ := newJiraServer(t, f.handler)
-		f.add("question", "itervox.commentKey", testKey)
+// The managed marker of a comment comes from its properties only, so a
+// comment whose properties are unknown could be Itervox's own comment
+// without its marker. Read as a person's comment after the agent's question,
+// it would make the agent resume on Itervox's own text. So the detail read
+// fails, the same way it fails when the property request fails, and the
+// daemon reads again on the next poll. In each case the comment whose
+// properties are unknown is an Itervox comment.
+func TestFetchIssueDetailFailsWhenPropertiesAreUnknown(t *testing.T) {
+	cases := []struct {
+		name  string
+		fake  *keyedFake
+		badID bool // the Itervox comment has an id that is not a number
+	}{
+		{"the property read fails", &keyedFake{failList: true}, false},
+		{"a comment is left out of the property read", &keyedFake{listLeavesOut: "1001"}, false},
+		{"a comment comes back without a properties list", &keyedFake{listNoProps: "1001"}, false},
+		{"a comment id is not a number", &keyedFake{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newJiraServer(t, tc.fake.handler)
+			tc.fake.add("question", "", "")
+			tc.fake.addWithProperties("Itervox's reply", map[string]any{"key": "itervox.managed", "value": map[string]any{"managed": true}})
+			if tc.badID {
+				tc.fake.comments[1]["id"] = "x1001"
+			}
 
-		got, err := c.FetchIssueDetail(t.Context(), "PROJ-1")
+			got, err := c.FetchIssueDetail(t.Context(), "PROJ-1")
 
-		require.Error(t, err, "a detail without the keys would hide a keyed question")
-		assert.Nil(t, got)
-		assert.Contains(t, err.Error(), "jira_fetch_comments")
-	})
-	t.Run("a comment left out of the property read is still returned", func(t *testing.T) {
-		f := &keyedFake{listLeavesOut: "1001"}
-		c, _ := newJiraServer(t, f.handler)
-		f.add("question", "itervox.commentKey", testKey)
-		f.add("deleted between the two reads", "", "")
-
-		got, err := c.FetchIssueDetail(t.Context(), "PROJ-1")
-
-		require.NoError(t, err)
-		require.Len(t, got.Comments, 2)
-		assert.True(t, tracker.CommentHasKey(got.Comments[0].Body, testKey))
-		assert.Equal(t, "deleted between the two reads", got.Comments[1].Body)
-	})
+			require.Error(t, err, "Itervox's reply would read as a person's reply, without its marker: %+v", got)
+			assert.Nil(t, got)
+			assert.Contains(t, err.Error(), "jira_fetch_comments")
+		})
+	}
 }

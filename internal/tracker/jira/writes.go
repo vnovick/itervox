@@ -28,10 +28,14 @@ func issuePath(id string) string { return "/rest/api/3/issue/" + url.PathEscape(
 
 // CreateComment posts body as a comment on the issue (a numeric id or a key)
 // and returns the stored comment. Markdown in the text is sent as Jira rich
-// text that reads back as the same text (see textToADF and postText). A body
-// longer than Jira's content limit is shortened first (fitContentLimit), and
-// the returned comment holds the shortened text. A body that is blank is
-// refused, and an invalid issue id is refused, both before any request.
+// text that reads back as the same text (see textToADF and postText).
+// Itervox's markers at the end of body go in comment properties, not in the
+// text (see splitMarkers), so Jira never shows them and nobody can copy
+// them; the returned comment, like every read, has them back in place (see
+// normalizeComment). A text longer than Jira's content limit is shortened
+// first (fitContentLimit), and the returned comment holds the shortened
+// text. A body that is blank is refused, and an invalid issue id is
+// refused, both before any request.
 func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
 	return c.createComment(ctx, "jira_create_comment", issueID, body, "")
 }
@@ -58,28 +62,79 @@ func (c *Client) createComment(ctx context.Context, op, issueID, body, key strin
 	if strings.TrimSpace(body) == "" {
 		return nil, fmt.Errorf("%s: empty body", op)
 	}
-	body = fitContentLimit(body)
-	// The key travels in the same request as the text, so the plain retry
-	// of postText carries it too.
+	text, managed, textKey := splitMarkers(body, key)
+	// The markers are not stored as text, so only the text counts for the limit.
+	text = fitContentLimit(text)
+	if key == "" {
+		key = textKey
+	}
+	var props []any
+	if managed {
+		props = append(props, map[string]any{"key": managedProperty, "value": map[string]any{"managed": true}})
+	}
+	if key != "" {
+		props = append(props, map[string]any{"key": commentKeyProperty, "value": map[string]any{"key": key}})
+	}
+	// The properties travel in the same request as the text, so the plain
+	// retry of postText carries them too.
 	withDoc := func(doc map[string]any) any {
 		req := map[string]any{"body": doc}
-		if key != "" {
-			req["properties"] = []any{map[string]any{"key": commentKeyProperty, "value": map[string]any{"key": key}}}
+		if len(props) > 0 {
+			req["properties"] = props
 		}
 		return req
 	}
 	var raw map[string]any
-	if err := c.postText(ctx, issuePath(issueID)+"/comment", body, withDoc, &raw); err != nil {
+	if err := c.postText(ctx, issuePath(issueID)+"/comment", text, withDoc, &raw); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	cm := normalizeComment(raw)
-	if cm.Body == "" {
-		cm.Body = body
+	// The create response carries no properties. Read with the properties
+	// that were sent, it gives the body every later read gives.
+	if raw == nil {
+		raw = map[string]any{}
 	}
-	// The create response carries no properties, so the key is added here
-	// the same way normalizeComment adds it on a read.
-	cm.Body = tracker.MarkCommentKey(cm.Body, key)
+	if raw["body"] == nil {
+		raw["body"] = text
+	}
+	raw["properties"] = props
+	cm := normalizeComment(raw)
 	return &cm, nil
+}
+
+// splitMarkers takes Itervox's markers off the end of body, where
+// tracker.MarkManagedComment and tracker.MarkCommentKey put them (a blank
+// line, then the marker), in either order. It returns the text before them,
+// whether the body is managed, and the key of the key marker, or "". One key
+// marker is taken, and only when wantKey is "" or its key. Any other marker
+// stays in the text, and so does a marker that is the whole text. A body
+// that holds the managed marker anywhere else is managed too, because
+// tracker.MarkManagedComment adds no second marker to it.
+func splitMarkers(body, wantKey string) (text string, managed bool, key string) {
+	text = strings.TrimRight(body, " \t\r\n")
+	for {
+		i := strings.LastIndex(text, "\n\n")
+		if i < 0 || strings.TrimSpace(text[:i]) == "" {
+			break
+		}
+		last := text[i+2:]
+		if k, ok := keyOfMarker(last); ok && key == "" && (wantKey == "" || k == wantKey) {
+			key = k
+		} else if last == tracker.ManagedCommentMarker {
+			managed = true
+		} else {
+			break
+		}
+		text = text[:i]
+	}
+	return text, managed || strings.Contains(text, tracker.ManagedCommentMarker), key
+}
+
+// keyOfMarker returns the key when s is exactly tracker.CommentKeyMarker of
+// a key that is not blank.
+func keyOfMarker(s string) (string, bool) {
+	rest, hasPrefix := strings.CutPrefix(s, markerPrefix+"ck:")
+	key, hasSuffix := strings.CutSuffix(rest, " -->")
+	return key, hasPrefix && hasSuffix && strings.TrimSpace(key) != ""
 }
 
 // postText posts a request that carries text as an ADF document; withDoc

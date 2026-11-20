@@ -50,16 +50,12 @@ func TestFetchIssueByIdentifierRefusesIssueNowInOtherProject(t *testing.T) {
 }
 
 func TestCommentPagesIgnoringStartAtDoNotDuplicate(t *testing.T) {
-	c, _ := newJiraServer(t, func(_ int, r recorded, w http.ResponseWriter) {
-		if strings.HasSuffix(r.Path, "/comment") {
-			writeJSON(w, map[string]any{"startAt": 0, "maxResults": 2, "total": 4, "comments": []any{
-				commentFixture("1", "2024-01-01T00:00:00.000+0000", "a"),
-				commentFixture("2", "2024-01-02T00:00:00.000+0000", "b"),
-			}})
-			return
-		}
-		writeJSON(w, issueFixture("10001", "PROJ-1", "To Do"))
-	})
+	// The server gives the first page whatever startAt asks for.
+	first := []any{
+		commentFixture("1", "2024-01-01T00:00:00.000+0000", "a"),
+		commentFixture("2", "2024-01-02T00:00:00.000+0000", "b"),
+	}
+	c, _ := newJiraServer(t, detailHandler(issueFixture("10001", "PROJ-1", "To Do"), 4, map[int][]any{0: first, 2: first}))
 	c.SetCommentPageSize(2)
 
 	got, err := c.FetchIssueDetail(t.Context(), "10001")

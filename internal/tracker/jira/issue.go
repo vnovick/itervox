@@ -17,13 +17,20 @@ const (
 	// branchProperty is the issue property that stores the feature branch name.
 	branchProperty = "itervox.branch"
 	// commentKeyProperty is the comment property that stores a comment's
-	// idempotency key, as {"key": "<key>"}.
+	// idempotency key, as {"key": "<key>"}. It stands for
+	// tracker.CommentKeyMarker.
 	commentKeyProperty = "itervox.commentKey"
+	// managedProperty is the comment property that marks a comment Itervox
+	// wrote, as {"managed": true}. It stands for tracker.ManagedCommentMarker,
+	// which Jira would show as text.
+	managedProperty = "itervox.managed"
 )
 
 // FetchIssueDetail returns one issue with all its comments, oldest first.
 // issueID is either Jira's numeric id or an issue key such as "PROJ-12"; any
 // other value is rejected with jira_invalid_issue_id before a request is made.
+// It fails when the properties of a comment cannot be read, because
+// Itervox's markers are in them (see addCommentProperties).
 func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.Issue, error) {
 	if err := checkIssueRef(issueID); err != nil {
 		return nil, err
@@ -35,22 +42,23 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		return nil, fmt.Errorf("jira_fetch_issue_detail: %w", err)
 	}
 	issue := c.normalizeIssue(raw)
-	comments, _, err := c.fetchComments(ctx, path)
+	raws, _, err := c.fetchComments(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("jira_fetch_comments: %w", err)
 	}
-	issue.Comments = comments
+	issue.Comments = normalizeComments(raws)
 	return &issue, nil
 }
 
 // FindCommentByKey implements tracker.IdempotentCommenter. It reads the
 // issue's comments with their properties and returns the comment whose
-// itervox.commentKey property holds key. It returns (nil, false, nil) only
-// when every page was read, the properties of every comment were read, and no
-// comment holds key. Anything less is an error, because the caller treats
-// "not found" as permission to post again: a failed request, a read that ends
-// before the total Jira reports, or a comment whose properties could not be
-// read. An invalid issue id and a blank key are refused before any request.
+// itervox.commentKey property holds key; a key marker in a comment's text
+// does not count. It returns (nil, false, nil) only when every page was
+// read, the properties of every comment were read, and no comment holds key.
+// Anything less is an error, because the caller treats "not found" as
+// permission to post again: a failed request, a read that ends before the
+// total Jira reports, or a comment whose properties could not be read. An
+// invalid issue id and a blank key are refused before any request.
 //
 // Residual: Jira pages comments by offset. If an older comment is deleted
 // between two page reads, the comments after it move back one place, and the
@@ -63,17 +71,21 @@ func (c *Client) FindCommentByKey(ctx context.Context, issueID, key string) (*do
 	if strings.TrimSpace(key) == "" {
 		return nil, false, errors.New("jira_find_comment_by_key: empty key")
 	}
-	comments, complete, err := c.fetchComments(ctx, issuePath(issueID))
+	raws, complete, err := c.fetchComments(ctx, issuePath(issueID))
 	if err != nil {
 		return nil, false, fmt.Errorf("jira_find_comment_by_key: %w", err)
 	}
-	for i := range comments {
-		if tracker.CommentHasKey(comments[i].Body, key) {
-			return &comments[i], true, nil
+	var keyed []map[string]any
+	for _, raw := range raws {
+		if commentKeyOf(raw) == key {
+			keyed = append(keyed, raw)
 		}
 	}
+	if found := normalizeComments(keyed); len(found) > 0 {
+		return &found[0], true, nil
+	}
 	if !complete {
-		return nil, false, errors.New("jira_find_comment_by_key: the comment read was incomplete (pages ended before the reported total, or the properties of a comment could not be read), so the answer is unknown")
+		return nil, false, errors.New("jira_find_comment_by_key: the comment pages ended before the reported total, so the answer is unknown")
 	}
 	return nil, false, nil
 }
@@ -102,25 +114,29 @@ func (c *Client) FetchIssueByIdentifier(ctx context.Context, identifier string) 
 	return issue, nil
 }
 
-// fetchComments loads every comment of the issue at issuePath with its
-// properties and returns them oldest first. complete is false when the
-// comment pages were incomplete (see commentPages) or the properties of a
-// comment could not be read (see addCommentProperties): comments or keys can
-// then be missing. A failed request is an error.
-func (c *Client) fetchComments(ctx context.Context, issuePath string) (comments []domain.Comment, complete bool, err error) {
-	raws, complete, err := c.commentPages(ctx, issuePath)
+// fetchComments loads every raw comment of the issue at issuePath with its
+// properties. complete is false when the comment pages ended before the
+// total Jira reported (see commentPages): comments can then be missing. A
+// failed request is an error, and so is a comment whose properties could not
+// be read (see addCommentProperties).
+func (c *Client) fetchComments(ctx context.Context, issuePath string) (raws []map[string]any, complete bool, err error) {
+	raws, complete, err = c.commentPages(ctx, issuePath)
 	if err != nil {
 		return nil, false, err
 	}
-	withProperties, err := c.addCommentProperties(ctx, raws)
-	if err != nil {
+	if err := c.addCommentProperties(ctx, raws); err != nil {
 		return nil, false, err
 	}
+	return raws, complete, nil
+}
+
+// normalizeComments maps raw comments to domain comments, oldest first.
+func normalizeComments(raws []map[string]any) []domain.Comment {
 	var out []domain.Comment
 	for _, raw := range raws {
 		out = append(out, normalizeComment(raw))
 	}
-	return sortOldestFirst(out), complete && withProperties, nil
+	return sortOldestFirst(out)
 }
 
 // commentPages loads every raw comment of the issue at issuePath, page by
@@ -169,18 +185,20 @@ const commentListChunk = 1000
 // POST /rest/api/3/comment/list?expand=properties, the documented way to read
 // comment properties in bulk, in chunks of commentListChunk ids, and stores
 // each comment's list under "properties". It sends no request when raws is
-// empty. ok is false when a comment has no numeric id, is missing from the
-// response (Jira leaves out ids it cannot return), or comes back without a
-// properties list: that comment's key is then unknown.
-func (c *Client) addCommentProperties(ctx context.Context, raws []map[string]any) (ok bool, err error) {
+// empty. It fails when a request fails, and when a comment has no numeric
+// id, is missing from the response (Jira leaves out ids it cannot return),
+// or comes back without a properties list. Such a comment could be one of
+// Itervox's own comments with its markers unknown: read without them, it
+// would pass for a person's comment, and an agent waiting for a reply would
+// resume on Itervox's own text. The caller reads again on its next poll.
+func (c *Client) addCommentProperties(ctx context.Context, raws []map[string]any) error {
 	ctx = tracker.WithReadIntent(ctx) // a POST that only reads
-	ok = true
 	for start := 0; start < len(raws); start += commentListChunk {
 		chunk := raws[start:min(start+commentListChunk, len(raws))]
 		ids := make([]int64, 0, len(chunk))
 		for _, raw := range chunk {
 			// A comment without a numeric id is not asked for, so it is
-			// missing from the response below and its key is unknown.
+			// missing from the response below and the read fails.
 			if id, perr := strconv.ParseInt(str(raw["id"]), 10, 64); perr == nil {
 				ids = append(ids, id)
 			}
@@ -189,7 +207,7 @@ func (c *Client) addCommentProperties(ctx context.Context, raws []map[string]any
 			Values []map[string]any `json:"values"`
 		}
 		if err := c.do(ctx, "POST", "/rest/api/3/comment/list?expand=properties", map[string]any{"ids": ids}, &resp); err != nil {
-			return false, fmt.Errorf("read comment properties: %w", err)
+			return fmt.Errorf("read comment properties: %w", err)
 		}
 		props := map[string][]any{}
 		for _, v := range resp.Values {
@@ -200,13 +218,12 @@ func (c *Client) addCommentProperties(ctx context.Context, raws []map[string]any
 		for _, raw := range chunk {
 			list, found := props[str(raw["id"])]
 			if !found {
-				ok = false
-				continue
+				return fmt.Errorf("read comment properties: none for comment %q", str(raw["id"]))
 			}
 			raw["properties"] = list
 		}
 	}
-	return ok, nil
+	return nil
 }
 
 // sortOldestFirst orders comments by creation time. The domain contract

@@ -137,13 +137,14 @@ func TestJiraCommentOverTheContentLimitIsDelivered(t *testing.T) {
 	assert.True(t, strings.HasPrefix(body, kept+"\n"), "the stored text starts with the original text, cut at a line end")
 	original := strings.TrimSuffix(body, "\n\n"+tracker.ManagedCommentMarker)
 	assert.Equal(t, units(original)-units(kept), cut, "the note states how much was cut")
-	assert.Equal(t, "\n\n"+tracker.ManagedCommentMarker, after)
+	assert.Empty(t, after, "the marker is a comment property, not stored text")
 	assert.True(t, tracker.IsManagedComment(*got), "a shortened comment must still carry the managed marker")
-	assert.Equal(t, text, got.Body, "the returned comment holds what Jira stored")
+	assert.Equal(t, text+"\n\n"+tracker.ManagedCommentMarker, got.Body, "the returned comment holds what Jira stored, with its marker")
 }
 
 // The daemon knows its own comments by the marker lines at their end. A cut
 // that dropped them would make it read its own comment as a person's reply.
+// The markers travel as comment properties, so the cut never sees them.
 func TestCreateCommentShortenedKeepsTrailingMarkers(t *testing.T) {
 	c, seen := limitedCommentServer(t, true)
 	body := tracker.MarkCommentKey(tracker.MarkManagedComment(sessionSummary(400)), "ck-1")
@@ -153,8 +154,11 @@ func TestCreateCommentShortenedKeepsTrailingMarkers(t *testing.T) {
 	require.NoError(t, err)
 	text := sentText(t, seen)
 	_, _, after := splitAtNote(t, text)
-	assert.Equal(t, "\n\n"+tracker.ManagedCommentMarker+"\n\n"+tracker.CommentKeyMarker("ck-1"), after,
-		"both marker lines are kept, in order, after the note")
+	assert.Empty(t, after, "no marker is stored as text")
+	assert.JSONEq(t, `[{"key":"itervox.managed","value":{"managed":true}},{"key":"itervox.commentKey","value":{"key":"ck-1"}}]`,
+		string(mustJSON(t, seen()[0].jsonBody(t)["properties"])), "both markers go as properties of the shortened comment")
+	assert.True(t, strings.HasSuffix(got.Body, "\n\n"+tracker.ManagedCommentMarker+"\n\n"+tracker.CommentKeyMarker("ck-1")),
+		"both marker lines are back, in order, at the end of the returned text")
 	assert.True(t, tracker.IsManagedComment(*got))
 	assert.True(t, tracker.CommentHasKey(got.Body, "ck-1"))
 }
@@ -259,7 +263,7 @@ func TestCreateCommentReturnsTheShortenedText(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Equal(t, sentText(t, seen), got.Body)
+	assert.Equal(t, sentText(t, seen)+"\n\n"+tracker.ManagedCommentMarker, got.Body)
 	assert.NotEqual(t, body, got.Body)
 	assert.True(t, tracker.IsManagedComment(*got))
 }

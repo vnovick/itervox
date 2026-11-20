@@ -200,7 +200,8 @@ func TestJiraLiveRoundTrip(t *testing.T) {
 	assert.Contains(t, stored, "\n\n[Shortened by Itervox: ")
 	assert.True(t, strings.HasSuffix(stored, "\n\n"+tracker.ManagedCommentMarker), "the marker is the last line")
 	assert.NotContains(t, stored, "�")
-	assert.LessOrEqual(t, units(stored), jiraLimit)
+	// The marker is a comment property; only the text counts for the limit.
+	assert.LessOrEqual(t, units(strings.TrimSuffix(stored, "\n\n"+tracker.ManagedCommentMarker)), jiraLimit)
 	t.Logf("over-limit comment: sent %d UTF-16 units, Jira stored %d; last line before the marker: %q",
 		units(longBody), units(stored), stored[strings.LastIndex(stored, "\n\n[Shortened"):len(stored)-len(tracker.ManagedCommentMarker)-2])
 
@@ -494,6 +495,148 @@ func TestJiraLiveMarkdownRoundTrip(t *testing.T) {
 	last, err := json.Marshal(raw.Comments[len(raw.Comments)-1].Body)
 	require.NoError(t, err)
 	t.Logf("stored body of the every-construct comment: %s", last)
+}
+
+// liveJSON sends one request to the Jira site, outside the adapter, and
+// decodes a JSON answer into out when out is not nil. It returns the status.
+func liveJSON(t *testing.T, endpoint, apiKey, method, path string, in, out any) int {
+	t.Helper()
+	var body *bytes.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		require.NoError(t, err)
+		body = bytes.NewReader(b)
+	} else {
+		body = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), method, strings.TrimSuffix(endpoint, "/")+path, body)
+	require.NoError(t, err)
+	email, token, _ := strings.Cut(apiKey, ":")
+	req.SetBasicAuth(email, token)
+	req.Header.Set("Accept", "application/json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	if out != nil && resp.StatusCode < 300 {
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(out))
+	}
+	return resp.StatusCode
+}
+
+// TestJiraLiveCommentMarkers proves on a real Jira Cloud project that
+// Itervox's markers travel as comment properties. It posts a managed, keyed
+// question through the adapter and checks, from Jira's own answers, that the
+// stored text and the rendered HTML hold no marker and that the
+// itervox.managed and itervox.commentKey properties are there. It reads the
+// comment back through the adapter and checks that the body is the one
+// written. Then it posts two comments as a person would, outside the
+// adapter: a reply that quotes the question with the managed marker pasted
+// in, and a comment with the question's key marker typed in. Both read back
+// as neither managed nor keyed, and FindCommentByKey still finds only the
+// question. It needs the same environment as TestJiraLiveRoundTrip, logs the
+// issue key, and moves the issue to the done state at the end.
+func TestJiraLiveCommentMarkers(t *testing.T) {
+	endpoint := os.Getenv("JIRA_ENDPOINT")
+	project := os.Getenv("JIRA_PROJECT")
+	apiKey := os.Getenv("JIRA_API_KEY")
+	if endpoint == "" || project == "" || apiKey == "" {
+		t.Skip("set JIRA_ENDPOINT, JIRA_PROJECT and JIRA_API_KEY to run the live comment marker test")
+	}
+	ctx := t.Context()
+	c := jira.NewClient(jira.ClientConfig{Endpoint: endpoint, APIKey: apiKey, ProjectSlug: project})
+	is, err := c.CreateIssue(ctx, "", tracker.NewIssue{Title: fmt.Sprintf("itervox comment markers %d", time.Now().Unix())})
+	require.NoError(t, err)
+	t.Logf("test issue: %s", is.Identifier)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := c.UpdateIssueState(cleanupCtx, is.ID, envOr("JIRA_DONE_STATE", "Done")); err != nil {
+			t.Logf("cleanup: move %s to done: %v", is.Identifier, err)
+		}
+	})
+
+	// a. Itervox's question, managed and keyed, through the adapter.
+	key, err := outbox.NewCommentKey()
+	require.NoError(t, err)
+	written := tracker.MarkManagedComment(questionPrefix + "\n\nShould I keep the old API?\n\n---\n_Reply to this comment to continue._")
+	created, err := c.CreateCommentWithKey(ctx, is.ID, key, written)
+	require.NoError(t, err)
+	want := written + "\n\n" + tracker.CommentKeyMarker(key)
+	assert.Equal(t, want, created.Body, "the comment the create returns")
+
+	// b. Jira's own answer: no marker in the stored text or the HTML, and the
+	// two properties.
+	var stored struct {
+		Body         map[string]any `json:"body"`
+		RenderedBody string         `json:"renderedBody"`
+	}
+	require.Equal(t, http.StatusOK, liveJSON(t, endpoint, apiKey, "GET", "/rest/api/3/issue/"+is.Identifier+"/comment/"+created.ID+"?expand=renderedBody", nil, &stored))
+	storedJSON, err := json.Marshal(stored.Body)
+	require.NoError(t, err)
+	t.Logf("Jira's stored body: %s", storedJSON)
+	t.Logf("Jira's rendered body: %s", stored.RenderedBody)
+	assert.NotContains(t, string(storedJSON), "itervox:", "no marker in the stored text")
+	assert.NotContains(t, stored.RenderedBody, "itervox:", "no marker in what Jira shows")
+	for _, prop := range []struct{ name, want string }{
+		{"itervox.managed", `{"managed":true}`},
+		{"itervox.commentKey", `{"key":"` + key + `"}`},
+	} {
+		var got struct {
+			Key   string          `json:"key"`
+			Value json.RawMessage `json:"value"`
+		}
+		require.Equal(t, http.StatusOK, liveJSON(t, endpoint, apiKey, "GET", "/rest/api/3/comment/"+created.ID+"/properties/"+prop.name, nil, &got), prop.name)
+		t.Logf("Jira's comment property %s: %s", got.Key, got.Value)
+		assert.JSONEq(t, prop.want, string(got.Value), prop.name)
+	}
+
+	// c. A person's reply that quotes the question with the marker pasted in,
+	// and a person's comment with the question's key marker typed in, both
+	// posted outside the adapter, as the Jira editor stores them.
+	para := func(text string) any {
+		return map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": text}}}
+	}
+	var reply, typed struct {
+		ID string `json:"id"`
+	}
+	require.Equal(t, http.StatusCreated, liveJSON(t, endpoint, apiKey, "POST", "/rest/api/3/issue/"+is.Identifier+"/comment",
+		map[string]any{"body": map[string]any{"type": "doc", "version": 1, "content": []any{
+			map[string]any{"type": "blockquote", "content": []any{para("Should I keep the old API?"), para(tracker.ManagedCommentMarker)}},
+			para("No, drop it."),
+		}}}, &reply))
+	require.Equal(t, http.StatusCreated, liveJSON(t, endpoint, apiKey, "POST", "/rest/api/3/issue/"+is.Identifier+"/comment",
+		map[string]any{"body": map[string]any{"type": "doc", "version": 1, "content": []any{
+			para("copied from somewhere: " + tracker.CommentKeyMarker(key)),
+		}}}, &typed))
+
+	// d. Through the adapter: the question reads back as written, the person's
+	// comments as neither managed nor keyed.
+	d, err := c.FetchIssueDetail(ctx, is.ID)
+	require.NoError(t, err)
+	require.Len(t, d.Comments, 3)
+	byID := map[string]domain.Comment{}
+	for _, cm := range d.Comments {
+		byID[cm.ID] = cm
+	}
+	question := byID[created.ID]
+	assert.Equal(t, want, question.Body, "the question reads back as written")
+	assert.True(t, tracker.IsManagedComment(question))
+	assert.True(t, tracker.CommentHasKey(question.Body, key))
+	for _, id := range []string{reply.ID, typed.ID} {
+		cm := byID[id]
+		t.Logf("a person's comment %s reads as %q", id, cm.Body)
+		assert.False(t, tracker.IsManagedComment(cm), "comment %s", id)
+		assert.False(t, tracker.CommentHasKey(cm.Body, key), "comment %s", id)
+		assert.NotContains(t, cm.Body, "<!-- itervox:", "comment %s", id)
+	}
+	found, ok, err := c.FindCommentByKey(ctx, is.ID, key)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, created.ID, found.ID, "only the property is the key")
+	t.Logf("question %s, reply %s, typed key %s on %s", created.ID, reply.ID, typed.ID, is.Identifier)
 }
 
 // editLabelsLive replaces the issue's labels through PUT

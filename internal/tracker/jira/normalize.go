@@ -61,33 +61,75 @@ func (c *Client) normalizeIssue(raw map[string]any) domain.Issue {
 	return issue
 }
 
-// normalizeComment maps one raw Jira comment to a domain.Comment. When the
-// comment has a key in its itervox.commentKey property, the body gets that
-// key's hidden marker (tracker.MarkCommentKey), which is how the orchestrator
-// finds a keyed comment. The marker exists only in the returned value, never
-// in Jira.
+// normalizeComment maps one raw Jira comment to a domain.Comment. Itervox's
+// markers come from the comment's properties only. Marker text in the
+// comment itself (typed, pasted or quoted by a person, or written by an
+// older version) is made inert first (see defuseMarkers). Then the
+// itervox.managed property adds tracker.ManagedCommentMarker, and the
+// itervox.commentKey property adds tracker.CommentKeyMarker of its key, at
+// the end, as tracker.MarkManagedComment and tracker.MarkCommentKey add
+// them. So a comment Itervox wrote reads back as the body it handed to
+// CreateComment, and the orchestrator's marker checks see only what the
+// properties say. The markers exist only in the returned value, never in
+// Jira's text.
 func normalizeComment(raw map[string]any) domain.Comment {
+	body := defuseMarkers(adfToText(raw["body"]))
+	if commentProperty(raw, managedProperty)["managed"] == true {
+		body = withMarker(body, tracker.ManagedCommentMarker)
+	}
+	if key := commentKeyOf(raw); key != "" {
+		body = withMarker(body, tracker.CommentKeyMarker(key))
+	}
 	return domain.Comment{
 		ID:         str(raw["id"]),
-		Body:       tracker.MarkCommentKey(adfToText(raw["body"]), commentKeyOf(raw)),
+		Body:       body,
 		CreatedAt:  parseJiraTime(raw["created"]),
 		AuthorID:   str(nested(raw, "author", "accountId")),
 		AuthorName: str(nested(raw, "author", "displayName")),
 	}
 }
 
+// markerPrefix begins every marker package tracker writes:
+// tracker.ManagedCommentMarker and tracker.CommentKeyMarker.
+const markerPrefix = "<!-- itervox:"
+
+// defuseMarkers makes marker text inert: each markerPrefix becomes
+// "&lt;!-- itervox:", its "<" written the way HTML writes one as text. No
+// marker check in package tracker matches the result, and no new marker can
+// form, because the replacement holds no "<".
+func defuseMarkers(text string) string {
+	return strings.ReplaceAll(text, markerPrefix, "&lt;"+markerPrefix[1:])
+}
+
+// withMarker adds marker to text after a blank line, as
+// tracker.MarkManagedComment and tracker.MarkCommentKey add theirs. A blank
+// text gives the marker alone, so the marker is never lost.
+func withMarker(text, marker string) string {
+	if text = strings.TrimSpace(text); text == "" {
+		return marker
+	}
+	return text + "\n\n" + marker
+}
+
 // commentKeyOf returns the key in a raw comment's itervox.commentKey
-// property, or "". A raw comment has properties only after
-// addCommentProperties stored them.
+// property, or "".
 func commentKeyOf(raw map[string]any) string {
+	return str(commentProperty(raw, commentKeyProperty)["key"])
+}
+
+// commentProperty returns the value of a raw comment's property name, or
+// nil. A raw comment has properties only after addCommentProperties stored
+// them, or createComment added the ones it sent.
+func commentProperty(raw map[string]any, name string) map[string]any {
 	props, _ := raw["properties"].([]any)
 	for _, p := range props {
 		prop, _ := p.(map[string]any)
-		if str(prop["key"]) == commentKeyProperty {
-			return str(nested(prop, "value", "key"))
+		if str(prop["key"]) == name {
+			value, _ := prop["value"].(map[string]any)
+			return value
 		}
 	}
-	return ""
+	return nil
 }
 
 // blockersOf returns the issues that block this one: links with an inward
