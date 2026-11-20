@@ -76,6 +76,71 @@ func TestAdapterVercelFixture(t *testing.T) {
 	assert.Equal(t, EnvRead{Name: "VERCEL_ORG_ID", Path: "dist/index.js", Line: 2, Count: 2}, reads[0])
 }
 
+// TestAdapterInngestFixture: the inngest adapter scans the SDK
+// (node_modules/inngest) and finds every INNGEST_* word in its JS files
+// (an alias of process.env, a bracket read, a destructured read, a
+// message), with its first file:line: INNGEST_SIGNING_KEY and the longer
+// INNGEST_SIGNING_KEY_FALLBACK are separate words, and a longer word that
+// contains the prefix, a lowercase name, NODE_ENV and a README are not
+// mentions. A dependency on the SDK or on the CLI shows it is used; the
+// probes run the CLI.
+func TestAdapterInngestFixture(t *testing.T) {
+	tool := load(t, "inngest", Config{})
+	assert.Equal(t, "inngest", tool.Name())
+	assert.Equal(t, "node_modules/inngest", tool.InstallRoot())
+	assert.True(t, tool.Detect("testdata/inngest/repo"), "the SDK")
+	assert.True(t, tool.Detect("testdata/inngest/repo-cli"), "the CLI alone")
+	assert.False(t, tool.Detect("testdata/none/repo"), "inngest-fixture-helpers is not inngest")
+	assert.False(t, tool.Detect("testdata/supabase/repo"))
+	assert.True(t, tool.DeployVar("INNGEST_EVENT_KEY"))
+	assert.False(t, tool.DeployVar("SUPABASE_ACCESS_TOKEN"))
+
+	reads, err := tool.EnvReads("testdata/inngest/install")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"INNGEST_BASE_URL", "INNGEST_DEV", "INNGEST_ENV", "INNGEST_EVENT_KEY", "INNGEST_SIGNING_KEY", "INNGEST_SIGNING_KEY_FALLBACK"}, names(reads))
+	assert.Equal(t, EnvRead{Name: "INNGEST_SIGNING_KEY", Path: "components/Inngest.js", Line: 4, Count: 2}, reads[4])
+	assert.Equal(t, EnvRead{Name: "INNGEST_SIGNING_KEY_FALLBACK", Path: "components/Inngest.js", Line: 5, Count: 1}, reads[5])
+	assert.Equal(t, 6, reads[2].Line)
+	assert.Equal(t, 7, reads[0].Line)
+
+	var probes []string
+	for _, p := range tool.Probes() {
+		probes = append(probes, p.Text)
+		assert.Equal(t, "inngest-cli", p.Argv[0])
+	}
+	assert.Equal(t, []string{"inngest-cli --help", "inngest-cli dev --help"}, probes)
+}
+
+// TestAdapterSupabaseFixture: the supabase adapter scans the CLI's npm
+// package for SUPABASE_* words, and is detected by a dependency on the CLI
+// or by supabase/config.toml alone (a project with the CLI installed
+// elsewhere). The client library (@supabase/supabase-js) is not the CLI.
+func TestAdapterSupabaseFixture(t *testing.T) {
+	tool := load(t, "supabase", Config{})
+	assert.Equal(t, "supabase", tool.Name())
+	assert.Equal(t, "node_modules/supabase", tool.InstallRoot())
+	assert.True(t, tool.Detect("testdata/supabase/repo"), "the CLI dependency")
+	assert.True(t, tool.Detect("testdata/supabase/repo-config"), "supabase/config.toml")
+	assert.False(t, tool.Detect("testdata/none/repo"), "@supabase/supabase-js is not the CLI")
+	assert.False(t, tool.Detect("testdata/inngest/repo"))
+	assert.True(t, tool.DeployVar("SUPABASE_DB_PASSWORD"))
+	assert.False(t, tool.DeployVar("INNGEST_EVENT_KEY"))
+
+	reads, err := tool.EnvReads("testdata/supabase/install")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"SUPABASE_ACCESS_TOKEN", "SUPABASE_DB_PASSWORD", "SUPABASE_PROJECT_ID"}, names(reads))
+	assert.Equal(t, EnvRead{Name: "SUPABASE_ACCESS_TOKEN", Path: "scripts/postinstall.js", Line: 3, Count: 2}, reads[0])
+	assert.Equal(t, 4, reads[1].Line)
+	assert.Equal(t, 5, reads[2].Line)
+
+	var probes []string
+	for _, p := range tool.Probes() {
+		probes = append(probes, p.Text)
+		assert.Equal(t, "supabase", p.Argv[0])
+	}
+	assert.Equal(t, []string{"supabase --version", "supabase db push --help", "supabase functions deploy --help"}, probes)
+}
+
 // TestAdapterBuiltinOverrides: a built-in's install, deploy_vars and
 // probes can be replaced in the policy.
 func TestAdapterBuiltinOverrides(t *testing.T) {
@@ -217,10 +282,21 @@ func TestAdapterMentionsWholeWords(t *testing.T) {
 
 // TestAdapterBuiltinsAreValid: every built-in loads with its defaults.
 func TestAdapterBuiltinsAreValid(t *testing.T) {
-	assert.Equal(t, []string{"convex", "vercel"}, BuiltinNames())
+	assert.Equal(t, []string{"convex", "inngest", "supabase", "vercel"}, BuiltinNames())
 	for _, a := range Builtins() {
 		assert.NotEmpty(t, a.Probes(), a.Name())
 		assert.True(t, strings.HasPrefix(a.InstallRoot(), "node_modules/"), a.Name())
+		// Every default probe only asks for a version or help text: nothing
+		// that deploys, pushes a migration or sends an event.
+		for _, p := range a.Probes() {
+			last := p.Argv[len(p.Argv)-1]
+			assert.True(t, last == "--help" || last == "--version", "%s probe %q is not --help/--version", a.Name(), p.Text)
+		}
+	}
+	// Each built-in loads from a tools: entry, install override included.
+	for _, n := range BuiltinNames() {
+		_, err := Load(n, Config{Guard: "scripts/guard.mjs", Install: "apps/web/node_modules/" + n})
+		assert.NoError(t, err, n)
 	}
 }
 

@@ -22,7 +22,7 @@ deploy CLI start reading a new variable without touching any CI file; this
 catches it before the deploy step runs.
 
   tools:                         # in .referee.yml, read from the BASE ref
-    convex:                      # a built-in adapter (convex, vercel)
+    convex:                      # a built-in adapter (convex, inngest, supabase, vercel)
       guard: scripts/deploy-guard.mjs
     mycli:                       # a generic adapter
       guard: scripts/deploy-guard.mjs

@@ -200,9 +200,35 @@ The built-in adapters are deliberately small:
 | Adapter | Install root | Deploy-target variables | Probes | Detected by |
 |---|---|---|---|---|
 | `convex` | `node_modules/convex` | `CONVEX_*` | `convex --version`, `convex deploy --help` | a `convex` dependency in `package.json`, or `convex.json` |
+| `inngest` | `node_modules/inngest` | `INNGEST_*` | `inngest-cli --help`, `inngest-cli dev --help` | an `inngest` or `inngest-cli` dependency in `package.json` |
+| `supabase` | `node_modules/supabase` | `SUPABASE_*` | `supabase --version`, `supabase db push --help`, `supabase functions deploy --help` | a `supabase` dependency in `package.json`, or `supabase/config.toml` |
 | `vercel` | `node_modules/vercel` | `VERCEL_*` | `vercel --version`, `vercel deploy --help` | a `vercel` dependency in `package.json`, `vercel.json` or `.vercel/project.json` |
 
 A built-in scans the `.js`, `.cjs` and `.mjs` files under its install root.
+The default probes only print a version or help text: none deploys, pushes a
+migration or sends an event.
+
+Two of them need a note:
+
+- **`inngest`** scans the SDK (`inngest`), not the CLI. The SDK is what
+  reads the event key, the signing keys and the environment and URL
+  variables (`INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_ENV`,
+  `INNGEST_BASE_URL` and others) that choose which Inngest environment the
+  app syncs to and sends events to. The probes run the CLI (`inngest-cli`),
+  so they need it installed.
+- **`supabase`** scans the CLI's npm package, but that package installs a
+  native binary, and the binary is what reads `SUPABASE_ACCESS_TOKEN`,
+  `SUPABASE_DB_PASSWORD` and the project settings. A scan of the package
+  sees only its JS files, so a new variable the binary starts to read is not
+  found (see **Limits** below). Detection by `supabase/config.toml` still
+  notes a project that uses the CLI without listing it under `tools:`.
+
+The globs are prefixes on purpose. These tools read their target, keys and
+URLs from variables that share the prefix, and a new version can add one; an
+explicit list would miss exactly the variable this check exists to catch. A
+prefix variable that does not choose a target (a log level, say) is
+classified by mentioning it in the guard, in a comment if need be. To narrow
+a built-in, set `deploy_vars` in its `tools:` entry.
 Any other name under `tools:` is a generic adapter. A tool the repository
 looks like it uses but `tools:` leaves out is printed as a note and does not
 change the exit code.

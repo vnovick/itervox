@@ -1,0 +1,4 @@
+{
+  "name": "fixture-worker",
+  "dependencies": { "inngest": "^1.0.0" }
+}
