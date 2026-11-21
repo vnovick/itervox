@@ -169,6 +169,47 @@ func TestWatchShowsLanePerRunningIssueWithLatestActivity(t *testing.T) {
 	assert.Equal(t, 1, countPath(d, "/api/v1/issues/ENG-1/context")-before, "an unchanged run is not read again")
 }
 
+// TestWatchApprovalShowsWhy: a held pipeline push (guardrails.lanes) lists
+// why it needs a person under its prompt — file and line — the first few in
+// the text view and every line in --json's needsYou.
+func TestWatchApprovalShowsWhy(t *testing.T) {
+	reasons := []any{
+		map[string]any{"kind": "finding", "path": ".github/workflows/ci.yml", "line": 10, "rule": "ci_continue_on_error",
+			"message": "failure ignored in a CI workflow", "text": "continue-on-error: true"},
+		map[string]any{"kind": "lane_rule", "path": ".github/workflows/ci.yml", "lane": "human", "rule": ".github/**"},
+		map[string]any{"kind": "lane_rule", "path": ".github/workflows/deploy.yml", "lane": "human", "rule": ".github/**"},
+		map[string]any{"kind": "lane_rule", "path": "Makefile", "lane": "human", "rule": "Makefile"},
+	}
+	state := map[string]any{"maxConcurrentAgents": 1, "inputRequired": []any{
+		map[string]any{"identifier": "ENG-4", "state": "input_required", "guardrailApproval": true,
+			"context":              "Pipeline change: the agent wants to push changes to `.github/workflows/ci.yml`",
+			"guardrailLaneReasons": reasons, "guardrailLaneReasonsTotal": 4},
+	}}
+	feed := &fakeFeed{}
+	d := newFakeDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/state":
+			writeJSONBody(w, state)
+		case "/api/v1/feed":
+			feed.serve(t, w, r)
+		default:
+			writeJSONBody(w, map[string]any{"ok": true})
+		}
+	})
+	code, out, errOut := runClient(t, t.Context(), d, "watch", "--once", "--since", "0")
+	require.Equal(t, 0, code, errOut)
+	assert.Contains(t, out, "why: .github/workflows/ci.yml:10: failure ignored in a CI workflow [ci_continue_on_error]")
+	assert.NotContains(t, out, "continue-on-error: true", "the text view never prints the added line")
+	assert.Contains(t, out, "why: .github/workflows/ci.yml matched .github/** → human")
+	assert.Contains(t, out, "why: .github/workflows/deploy.yml matched .github/** → human")
+	assert.NotContains(t, out, "why: Makefile", "the text view prints the first few")
+	assert.Contains(t, out, "why: … more in the dashboard's Lanes view")
+
+	code, out, errOut = runClient(t, t.Context(), d, "watch", "--once", "--json", "--since", "0")
+	require.Equal(t, 0, code, errOut)
+	assert.Contains(t, out, `"Makefile matched Makefile → human"`, "--json carries every line")
+}
+
 // TestWatchHighlightsInputAndApprovalWithReplyCommand: an input request and
 // a guardrail approval stand out under NEEDS YOU (in bold yellow on a
 // colour terminal) with the exact command that answers each — reaching the

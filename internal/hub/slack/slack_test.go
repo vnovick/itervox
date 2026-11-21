@@ -70,6 +70,34 @@ func TestSlackSocketModeSingleConnectionRoutesByProject(t *testing.T) {
 	assert.EqualValues(t, 1, r.ch.Connections())
 }
 
+// TestSlackApprovalShowsWhyAndLinksLanes: a held pipeline push's Slack
+// message lists why it needs a person (file and line, from the member's
+// run context) and its dashboard link opens the issue's Lanes view; an
+// approval without reasons keeps the plain issue link.
+func TestSlackApprovalShowsWhyAndLinksLanes(t *testing.T) {
+	r := newRig(t, func(c *Config) { c.DefaultChannel = "C0OPS" }, "alpha")
+	alpha := r.members.project("alpha")
+	alpha.pending["ENG-4"], alpha.approve["ENG-4"] = "Pipeline change: the agent wants to push changes to `.github/workflows/ci.yml`", true
+	alpha.reasons["ENG-4"] = []string{
+		".github/workflows/ci.yml:10 adds `continue-on-error: true` (failure ignored in a CI workflow)",
+		".github/workflows/ci.yml matched .github/** → human",
+	}
+	r.send(approvalNotification("alpha", "ENG-4"))
+	blocks := fmt.Sprint(r.lastPost().Blocks)
+	assert.Contains(t, blocks, "*Why this needs a person*")
+	assert.Contains(t, blocks, "• .github/workflows/ci.yml:10 adds `continue-on-error: true`")
+	assert.Contains(t, blocks, "• .github/workflows/ci.yml matched .github/** → human")
+	assert.Contains(t, blocks, "http://127.0.0.1:8089/hub/p/alpha/?issue=ENG-4&lanes=1")
+
+	alpha.mu.Lock()
+	alpha.pending["ENG-5"], alpha.approve["ENG-5"] = "Agent wants to run: `vercel --prod`", true
+	alpha.mu.Unlock()
+	r.send(approvalNotification("alpha", "ENG-5"))
+	blocks = fmt.Sprint(r.lastPost().Blocks)
+	assert.NotContains(t, blocks, "Why this needs a person")
+	assert.Contains(t, blocks, "url:http://127.0.0.1:8089/hub/p/alpha/?issue=ENG-5]")
+}
+
 // TestSlackApproveCallsMemberApproval (#230): Approve calls the member's
 // approval path (provide-input with "approve", via slack) once; a second
 // click gets an ephemeral "already handled" and calls nothing; the

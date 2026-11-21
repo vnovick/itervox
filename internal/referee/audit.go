@@ -1,16 +1,15 @@
 package referee
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/vnovick/itervox/internal/guardrails"
 )
 
 const auditUsage = `usage: referee audit --base <ref> [--head HEAD] [--json] [--dir .]
@@ -18,7 +17,7 @@ const auditUsage = `usage: referee audit --base <ref> [--head HEAD] [--json] [--
 Lists changes in the diff from the merge base of <base> and <head> to <head>
 that weaken what CI checks:
 
-  test_deleted          a test file deleted or renamed
+  test_deleted          a test file (incl. a Detox *.e2e.ts) deleted or renamed
   go_skip               t.Skip / t.SkipNow / t.Skipf added in a _test.go file
   js_skip               it.skip / test.skip / describe.skip / xit( added
   js_only               it.only / test.only / describe.only added
@@ -28,7 +27,27 @@ that weaken what CI checks:
   ci_or_true            "|| true" added in a CI workflow
   git_no_verify         git commit/push --no-verify, or git commit -n, in a script
 
-Only added lines are read, and comment lines are skipped. --base defaults to
+TypeScript, lint and JS test runners:
+
+  ts_ignore             // @ts-ignore added in a JS/TS file
+  ts_expect_error       // @ts-expect-error added outside a test file
+  ts_nocheck            // @ts-nocheck added
+  ts_strict_off         strict, noImplicitAny, strictNullChecks, noEmitOnError
+                        ... set to false (noCheck to true) in tsconfig*.json
+  eslint_disable        eslint-disable-line / eslint-disable-next-line added
+  eslint_disable_file   /* eslint-disable */ added
+  eslint_rule_off       a rule set to "off" or 0 in an ESLint config
+  eslint_max_warnings   eslint --max-warnings raised, made -1 or dropped
+  flow_suppress         $FlowFixMe / $FlowIgnore / @noflow added
+  check_or_true         "|| true" after a lint, type or test command in a script
+  script_stubbed        a package.json test/lint/typecheck script set to true,
+                        exit 0 or echo
+  test_pass_with_no_tests  --passWithNoTests / passWithNoTests: true added
+  snapshot_update       jest/vitest -u, --updateSnapshot, --ci=false in CI
+  test_path_ignored     a test file excluded (testPathIgnorePatterns, exclude)
+
+Only added lines are read, and comment lines are skipped (except by the
+rules whose construct is a comment). --base defaults to
 origin/$GITHUB_BASE_REF in a pull_request workflow.
 
 Exit codes: 0 no findings, 20 findings, 2 usage or error.`
@@ -93,7 +112,7 @@ func audit(ctx context.Context, dir, base, head string) (auditReport, error) {
 		return auditReport{}, err
 	}
 	rep.Findings = append(rep.Findings, deletedTests(status)...)
-	patch, err := git(ctx, dir, "-c", "core.quotePath=false", "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+	patch, err := git(ctx, dir, "-c", "core.quotePath=false", "diff", "-U"+strconv.Itoa(guardrails.AuditContext), "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
 		"--src-prefix=a/", "--dst-prefix=b/", r.MergeBase, r.Head, "--")
 	if err != nil {
 		return auditReport{}, err
@@ -109,94 +128,13 @@ func audit(ctx context.Context, dir, base, head string) (auditReport, error) {
 	return rep, nil
 }
 
-// deletedTests reads `git diff --name-status -z --no-renames`: a test file
-// that is deleted (a rename is a deletion plus an addition) is a finding.
-func deletedTests(status []byte) []finding {
-	var out []finding
-	fields := bytes.Split(status, []byte{0})
-	for i := 0; i+1 < len(fields); i += 2 {
-		st, p := string(fields[i]), string(fields[i+1])
-		if st == "D" && isTestFile(p) {
-			out = append(out, finding{Rule: "test_deleted", Path: p, Message: "test file deleted or renamed"})
-		}
-	}
-	return out
-}
+// The rules and the patch reader live in internal/guardrails (the daemon
+// shares them); these names keep the referee's code and tests readable.
+type finding = guardrails.AuditFinding
 
-// hunk is one -U0 hunk's removed and added lines.
-type hunk struct {
-	firstNew       int
-	removed, added []string
-}
+func deletedTests(status []byte) []finding { return guardrails.AuditDeletedTests(status) }
 
-var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
-
-// auditPatch applies the line rules and the threshold rule to a -U0 patch.
-func auditPatch(patch []byte) ([]finding, error) {
-	var out []finding
-	var file string
-	var cur *hunk
-	flush := func() {
-		if cur != nil && file != "" {
-			out = append(out, lowered(file, *cur)...)
-		}
-		cur = nil
-	}
-	sc := bufio.NewScanner(bytes.NewReader(patch))
-	sc.Buffer(make([]byte, 64*1024), 16<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.HasPrefix(line, "diff --git "):
-			flush()
-			file = ""
-		case cur == nil && strings.HasPrefix(line, "+++ "):
-			file = patchPath(strings.TrimPrefix(line, "+++ "))
-		case strings.HasPrefix(line, "@@ "):
-			flush()
-			m := hunkHeader.FindStringSubmatch(line)
-			if m == nil {
-				return nil, fmt.Errorf("unexpected hunk header %q", line)
-			}
-			n, _ := strconv.Atoi(m[1])
-			cur = &hunk{firstNew: n}
-		case cur != nil && strings.HasPrefix(line, "-"):
-			cur.removed = append(cur.removed, line[1:])
-		case cur != nil && strings.HasPrefix(line, "+"):
-			text := line[1:]
-			lineNo := cur.firstNew + len(cur.added)
-			cur.added = append(cur.added, text)
-			if file == "" {
-				continue
-			}
-			for _, r := range lineRules {
-				if r.Files(file) && r.match(text) {
-					out = append(out, finding{Rule: r.ID, Path: file, Line: lineNo, Message: r.Message, Text: text})
-				}
-			}
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read diff: %w", err)
-	}
-	flush()
-	return out, nil
-}
-
-// patchPath is the repository path of a "+++ b/path" line ("" for
-// /dev/null: a deleted file has no added lines).
-func patchPath(s string) string {
-	s = strings.TrimSuffix(s, "\t")
-	if strings.HasPrefix(s, `"`) {
-		if u, err := strconv.Unquote(s); err == nil {
-			s = u
-		}
-	}
-	if s == "/dev/null" {
-		return ""
-	}
-	return strings.TrimPrefix(s, "b/")
-}
+func auditPatch(patch []byte) ([]finding, error) { return guardrails.AuditPatch(patch) }
 
 func printAudit(w io.Writer, rep auditReport) {
 	if len(rep.Findings) == 0 {

@@ -33,6 +33,7 @@ describe('uiStore', () => {
       'dashboardViewMode',
       'expandedPausedId',
       'expandedRunningId',
+      'issueLanesFor', // guardrails.lanes — open an issue on Changes → Lanes
       'logsAutomationOnly',
       'logsIssueSearch',
       // #202 — Memory page.

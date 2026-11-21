@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,8 @@ type laneDaemon struct {
 	mu        sync.Mutex
 	events    []Event
 	lanes     []LaneReport
+	requests  []ApprovalRequest
+	bodies    []string
 }
 
 func newLaneDaemon(t *testing.T) *laneDaemon {
@@ -56,7 +59,12 @@ func newLaneDaemon(t *testing.T) *laneDaemon {
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && route == "approvals":
 			var req ApprovalRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &req)
+			d.mu.Lock()
+			d.requests = append(d.requests, req)
+			d.bodies = append(d.bodies, string(body))
+			d.mu.Unlock()
 			st, _ := d.approvals.Request("ENG-1", "run1", req)
 			_ = json.NewEncoder(w).Encode(st)
 		case r.Method == http.MethodGet && strings.HasPrefix(route, "approvals/"):
@@ -276,6 +284,69 @@ func TestPrePushNewBranchClassifiesAgainstBase(t *testing.T) {
 	assert.Equal(t, LaneHuman, res.Lane)
 	require.Len(t, res.Human, 1)
 	assert.Contains(t, res.Human[0], "changed files unknown for refs/heads/x")
+}
+
+// A held push names its refs, never its reasons (the hook runs in the
+// agent's environment): the daemon recomputes why from its own worktree
+// read (AgentPushReasons) — the audit finding on the pushed workflow, with
+// file and line, and the lane pattern it matched. Reasons in a request
+// body are never decoded.
+func TestPrePushHeldPushSendsRefsDaemonRecomputesReasons(t *testing.T) {
+	d := newLaneDaemon(t)
+	r := newLaneRig(t, d, true)
+	r.writeCommit(".github/workflows/ci.yml", "jobs:\n  test:\n    continue-on-error: true\n", "make CI pass")
+	head := strings.TrimSpace(git(t, r.work, "rev-parse", "HEAD"))
+	wait := r.startPush()
+	a := d.pending(t)
+	d.mu.Lock()
+	require.NotEmpty(t, d.requests)
+	req, body := d.requests[len(d.requests)-1], d.bodies[len(d.bodies)-1]
+	d.mu.Unlock()
+	assert.NotContains(t, body, `"reasons"`, "the hook sends no reasons")
+	require.Len(t, req.Refs, 1)
+	assert.Equal(t, PushedRef{RemoteRef: "refs/heads/itervox/eng-1", LocalSHA: head, RemoteSHA: strings.Repeat("0", 40)}, req.Refs[0])
+
+	reasons, total, err := AgentPushReasons(r.work, req.Refs, testLanes, []string{"origin/main", "main"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	assert.Equal(t, []string{
+		".github/workflows/ci.yml:3: failure ignored in a CI workflow (continue-on-error / allow_failure: true) [ci_continue_on_error]",
+		".github/workflows/ci.yml matched .github/** → human",
+	}, LaneReasonLines(reasons, total, MaxLaneReasonsShown))
+	assert.Equal(t, "continue-on-error: true", reasons[0].Text, "the structured reason keeps the line for operators")
+
+	var spoofed ApprovalRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"key":"k","command":"c","lane":"human","reasons":[{"kind":"finding","path":"x","message":"trust me"}],"reasons_total":1}`), &spoofed))
+	assert.Empty(t, spoofed.Reasons, "reasons are never read from the wire")
+	assert.Zero(t, spoofed.ReasonsTotal)
+
+	require.True(t, d.approvals.Decide(a.ID, false, "no"))
+	_, code := wait()
+	assert.Equal(t, 1, code)
+}
+
+// AgentPushReasons refuses refs it cannot trust or resolve: none, a
+// non-branch ref, a short or non-hex SHA, an option-looking ref, a commit
+// the worktree does not have.
+func TestAgentPushReasonsUnavailable(t *testing.T) {
+	r := newLaneRig(t, nil, false)
+	head := strings.TrimSpace(git(t, r.work, "rev-parse", "HEAD"))
+	missing := strings.Repeat("ab", 20)
+	for name, refs := range map[string][]PushedRef{
+		"none":           nil,
+		"tag":            {{RemoteRef: "refs/tags/v1", LocalSHA: head}},
+		"short sha":      {{RemoteRef: "refs/heads/x", LocalSHA: head[:12]}},
+		"not hex":        {{RemoteRef: "refs/heads/x", LocalSHA: strings.Repeat("z", 40)}},
+		"option":         {{RemoteRef: "refs/heads/--upload-pack=x", LocalSHA: head}},
+		"dotdot":         {{RemoteRef: "refs/heads/a..b", LocalSHA: head}},
+		"bad remote sha": {{RemoteRef: "refs/heads/x", LocalSHA: head, RemoteSHA: "HEAD"}},
+		"unknown commit": {{RemoteRef: "refs/heads/x", LocalSHA: missing}},
+	} {
+		_, _, err := AgentPushReasons(r.work, refs, testLanes, []string{"origin/main", "main"})
+		assert.ErrorIs(t, err, ErrPushReasonsUnavailable, name)
+	}
+	_, _, err := AgentPushReasons(r.work, []PushedRef{{RemoteRef: "refs/heads/itervox/eng-1", LocalSHA: head}}, testLanes, []string{"origin/main"})
+	assert.NoError(t, err, "a valid ref of a commit the worktree has")
 }
 
 func TestLanePathSummary(t *testing.T) {

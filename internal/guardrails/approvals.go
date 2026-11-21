@@ -36,6 +36,20 @@ type ApprovalRequest struct {
 	// MaxLanePathsSent); PathsTotal is how many there were.
 	Paths      []string `json:"paths,omitempty"`
 	PathsTotal int      `json:"paths_total,omitempty"`
+	// Refs are the ref updates of a held push (at most MaxPushedRefs): the
+	// daemon recomputes the push's reasons from them in the issue's
+	// worktree (guardrails.AgentPushReasons).
+	Refs []PushedRef `json:"refs,omitempty"`
+	// Reasons say why, with file and line: audit findings on the pushed
+	// diff and the lane pattern each path matched (at most
+	// MaxLaneReasons); ReasonsTotal is how many there were. Never read
+	// from the wire (json:"-"): the hook runs in the agent's environment,
+	// so only the daemon fills them, from its own git reads.
+	Reasons      []LaneReason `json:"-"`
+	ReasonsTotal int          `json:"-"`
+	// ReasonsUnavailable: the daemon could not recompute the reasons of a
+	// held push; the question shows its paths with a note instead.
+	ReasonsUnavailable bool `json:"-"`
 }
 
 // ApprovalStatus is an approval request's state as a shim sees it.

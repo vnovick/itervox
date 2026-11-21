@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
@@ -41,9 +43,13 @@ type guardrailApprovalEvent struct {
 	Command string
 	// Lane, Paths and PathsTotal describe a push held by
 	// guardrails.lanes.human (empty for an approval command).
-	Lane       string
-	Paths      []string
-	PathsTotal int
+	Lane         string
+	Paths        []string
+	PathsTotal   int
+	Reasons      []guardrails.LaneReason
+	ReasonsTotal int
+	// ReasonsUnavailable: the reasons could not be recomputed.
+	ReasonsUnavailable bool
 }
 
 // guardrailTokenTTL bounds a guardrail token: a run's turns plus slack, as
@@ -152,11 +158,49 @@ func (o *Orchestrator) GuardrailReport(identifier, runID string, ev guardrails.E
 	return nil
 }
 
-// RequestGuardrailApproval raises (or joins) an approval request for the
-// run's command. Safe from any goroutine: the request itself lives in
-// o.guardApprovals, and the input-required entry that shows it to a human
-// is created by the event loop.
+// RequestGuardrailApproval raises (or joins) an approval request for an
+// agent's command or held push (the token-gated guardrail route). Safe
+// from any goroutine: the request itself lives in o.guardApprovals, and
+// the input-required entry that shows it to a human is created by the
+// event loop. A held push's reasons are recomputed here, from the issue's
+// worktree and the refs the hook named (agentPushReasons: git on the
+// caller's goroutine, an HTTP handler's); whatever reasons the request
+// carries are discarded, since the hook runs in the agent's environment.
 func (o *Orchestrator) RequestGuardrailApproval(identifier, runID string, req guardrails.ApprovalRequest) (guardrails.ApprovalStatus, error) {
+	req.Reasons, req.ReasonsTotal, req.ReasonsUnavailable = nil, 0, false
+	if req.Lane == guardrails.LaneHuman && o.guardApprovals != nil {
+		req.Reasons, req.ReasonsTotal, req.ReasonsUnavailable = o.agentPushReasons(identifier, req.Refs)
+	}
+	return o.raiseGuardrailApproval(identifier, runID, req)
+}
+
+// agentPushReasons recomputes why an agent's held push needs a person:
+// the daemon's own lanes and base refs, the issue's worktree, the pushed
+// refs. unavailable when they cannot be recomputed (the question then
+// shows the paths only, with a note). Caller's goroutine, never the loop.
+func (o *Orchestrator) agentPushReasons(identifier string, refs []guardrails.PushedRef) (reasons []guardrails.LaneReason, total int, unavailable bool) {
+	dir, err := o.worktreePath(identifier)
+	if err != nil || o.cfg == nil {
+		return nil, 0, true
+	}
+	bases, err := o.diffBases(identifier, "")
+	if err != nil {
+		return nil, 0, true
+	}
+	g := o.cfg.Guardrails // read-only after startup (not in the cfgMu list)
+	reasons, total, err = guardrails.AgentPushReasons(dir, refs,
+		guardrails.Lanes{Human: g.Lanes.Human, SecondOpinion: g.Lanes.SecondOpinion}, bases)
+	if err != nil {
+		slog.Warn("guardrails: cannot recompute a held push's reasons", "issue_identifier", identifier, "error", err)
+		return nil, 0, true
+	}
+	return reasons, total, false
+}
+
+// raiseGuardrailApproval raises (or joins) an approval request whose
+// reasons, if any, the daemon computed itself (RequestGuardrailApproval
+// for an agent, awaitDaemonPushApproval for a daemon push).
+func (o *Orchestrator) raiseGuardrailApproval(identifier, runID string, req guardrails.ApprovalRequest) (guardrails.ApprovalStatus, error) {
 	if o.guardApprovals == nil {
 		return guardrails.ApprovalStatus{}, errors.New("orchestrator: guardrail approvals are not configured")
 	}
@@ -165,6 +209,10 @@ func (o *Orchestrator) RequestGuardrailApproval(identifier, runID string, req gu
 		return guardrails.ApprovalStatus{}, fmt.Errorf("orchestrator: only a human-lane push asks for approval, not %q", req.Lane)
 	}
 	req.Paths, req.PathsTotal = sanitizeLanePaths(req.Paths, req.PathsTotal)
+	req.Reasons, req.ReasonsTotal = guardrails.SanitizeLaneReasons(req.Reasons, req.ReasonsTotal)
+	if req.Lane != guardrails.LaneHuman {
+		req.Reasons, req.ReasonsTotal, req.ReasonsUnavailable = nil, 0, false
+	}
 	st, created := o.guardApprovals.Request(identifier, runID, req)
 	if !created {
 		return st, nil
@@ -172,7 +220,8 @@ func (o *Orchestrator) RequestGuardrailApproval(identifier, runID string, req gu
 	select {
 	case o.events <- OrchestratorEvent{Type: EventGuardrailApproval, Identifier: identifier,
 		guardrail: &guardrailApprovalEvent{ID: st.ID, RunID: runID, Command: req.Command,
-			Lane: req.Lane, Paths: req.Paths, PathsTotal: req.PathsTotal}}:
+			Lane: req.Lane, Paths: req.Paths, PathsTotal: req.PathsTotal,
+			Reasons: req.Reasons, ReasonsTotal: req.ReasonsTotal, ReasonsUnavailable: req.ReasonsUnavailable}}:
 		return st, nil
 	default:
 		o.guardApprovals.Remove(st.ID)
@@ -213,13 +262,43 @@ func guardrailQuestion(g *guardrailApprovalEvent) string {
 	if g.Lane == guardrails.LaneHuman {
 		return "Pipeline change: the agent wants to push changes to " +
 			guardrails.LanePathSummary(g.Paths, g.PathsTotal, guardrails.MaxLanePathsShown) +
-			" (`" + g.Command + "`)\n\nThese files are in guardrails.lanes.human: an agent may change what CI checks, never how CI checks. " +
+			" (`" + g.Command + "`)\n\n" + laneReasonsBlock(g.Reasons, g.ReasonsTotal, g.ReasonsUnavailable) +
+			"These files are in guardrails.lanes.human: an agent may change what CI checks, never how CI checks. " +
 			"Review the change, then reply `approve` to let this push through once; any other reply rejects it and is passed to the agent as the reason. " +
 			"Itervox will not auto-merge this pull request."
 	}
 	command := g.Command
 	return "Agent wants to run: `" + command + "`\n\nThis command is in guardrails.approval_commands. " +
 		"Reply `approve` to run it once; any other reply rejects it and is passed to the agent as the reason."
+}
+
+// laneReasonsUnavailableNote is the "why" of a held push whose reasons the
+// daemon could not recompute.
+const laneReasonsUnavailableNote = "reasons unavailable (Itervox could not recompute them from the worktree; the files are listed above)"
+
+// laneReasonsBlock is the "why" list of a held push's question (it is the
+// tracker comment, and the text Slack and viewers see): one Markdown
+// bullet per reason (at most guardrails.MaxLaneReasonsShown) with the
+// location, the rule's message and id, never the added line itself; a
+// note when the reasons are unavailable; "" when there is none.
+func laneReasonsBlock(reasons []guardrails.LaneReason, total int, unavailable bool) string {
+	if unavailable {
+		return "Why this needs a person: " + laneReasonsUnavailableNote + "\n\n"
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Why this needs a person:\n")
+	shown := reasons[:min(len(reasons), guardrails.MaxLaneReasonsShown)]
+	for _, r := range shown {
+		b.WriteString("- " + r.Markdown() + "\n")
+	}
+	if more := max(total, len(reasons)) - len(shown); more > 0 {
+		b.WriteString("- and " + strconv.Itoa(more) + " more\n")
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // handleGuardrailApproval shows an approval request to a human as an
@@ -256,6 +335,8 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 	}
 	if g.Lane == guardrails.LaneHuman {
 		entry.GuardrailLanePaths, entry.GuardrailLanePathsTotal = slices.Clone(g.Paths), g.PathsTotal
+		entry.GuardrailLaneReasons, entry.GuardrailLaneReasonsTotal = slices.Clone(g.Reasons), g.ReasonsTotal
+		entry.GuardrailLaneReasonsUnavailable = g.ReasonsUnavailable
 	}
 	entry.QuestionCommentKey = o.newInputRequiredCommentKey(ev.Identifier)
 	body := tracker.MarkManagedComment(buildInputRequiredComment(entry, o.InlineInputCfg()))

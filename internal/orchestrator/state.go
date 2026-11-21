@@ -8,6 +8,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/extsessions"
+	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/sysmon"
 )
 
@@ -329,6 +330,15 @@ type InputRequiredEntry struct {
 	// approval_commands command.
 	GuardrailLanePaths      []string
 	GuardrailLanePathsTotal int
+	// GuardrailLaneReasons say why the push needs a person, with file and
+	// line (audit findings, the lane pattern each path matched), at most
+	// guardrails.MaxLaneReasons, sanitized; GuardrailLaneReasonsTotal how
+	// many there were.
+	GuardrailLaneReasons      []guardrails.LaneReason
+	GuardrailLaneReasonsTotal int
+	// GuardrailLaneReasonsUnavailable: the daemon could not recompute the
+	// held push's reasons (its question says so; only paths are shown).
+	GuardrailLaneReasonsUnavailable bool
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not

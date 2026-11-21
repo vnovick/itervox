@@ -618,6 +618,22 @@ export const ConfigInvalidStatusSchema = z.object({
   retryAt: z.string().optional(),
 });
 
+// guardrails.lanes — one concrete reason a change is in its lane: an audit
+// finding on an added line ("finding": rule id, line, the line's text), the
+// lane pattern a path matched ("lane_rule": rule = the glob), or a tool
+// whose behaviour changed ("tool_behaviour", reserved). Unknown kinds are
+// kept and shown by their message.
+export const LaneReasonSchema = z.object({
+  kind: z.string(),
+  path: z.string(),
+  line: z.number().optional(),
+  lane: z.string().optional(),
+  rule: z.string().optional(),
+  message: z.string().optional(),
+  text: z.string().optional(),
+});
+export type LaneReason = z.infer<typeof LaneReasonSchema>;
+
 export const InputRequiredEntrySchema = z.object({
   identifier: z.string(),
   sessionId: z.string(),
@@ -641,6 +657,14 @@ export const InputRequiredEntrySchema = z.object({
   // "pipeline change"): the files (at most 50) and how many there were.
   guardrailLanePaths: z.array(z.string()).optional(),
   guardrailLanePathsTotal: z.number().optional(),
+  // Why that push needs a person, with file and line (at most 20, computed
+  // and redacted by the daemon), and how many there were. A finding's
+  // `text` (the added line) is withheld below operator scope.
+  guardrailLaneReasons: z.array(LaneReasonSchema).optional(),
+  guardrailLaneReasonsTotal: z.number().optional(),
+  // The daemon could not recompute the reasons from the worktree (it never
+  // shows the agent's own): only the paths are known.
+  guardrailLaneReasonsUnavailable: z.boolean().optional(),
 });
 
 export const AutomationQueueBackpressureSchema = z.object({
@@ -2284,6 +2308,8 @@ export const RunContextRunSchema = z.object({
   totalTokens: z.number().default(0),
   pendingInput: z.string().optional(),
   pendingApproval: z.boolean().optional(),
+  // guardrails.lanes — why a held push needs a person, one line each.
+  pendingReasons: z.array(z.string()).optional(),
   queuedSteers: z.number().default(0),
   steers: z
     .array(z.object({ text: z.string(), at: z.string(), delivery: z.string().optional() }))
@@ -2345,6 +2371,67 @@ export const FileDiffResponseSchema = z.object({
   source: z.string().optional(), // #238
 });
 export type FileDiffResponse = z.infer<typeof FileDiffResponseSchema>;
+
+// guardrails.lanes — GET /api/v1/issues/{identifier}/lanes: the worktree's
+// files in their lanes (with the pattern that put each there), the audit
+// findings per file (a finding's `text` only for operator and above), why
+// the change needs a person, and the stack split decision.
+export const LaneFileSchema = DiffFileSchema.extend({
+  lane: z.string(),
+  rule: z.string().optional(),
+  findings: z
+    .array(LaneReasonSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+});
+export type LaneFile = z.infer<typeof LaneFileSchema>;
+
+export const StackSplitSchema = z.object({
+  order: z.string(), // code_first | pipeline_first | combined
+  reason: z.string().optional(),
+  codeFiles: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  codeFilesTotal: z.number().default(0),
+  pipelineFiles: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
+  pipelineFilesTotal: z.number().default(0),
+  codeLane: z.string().optional(),
+  lowerBranch: z.string().optional(),
+  upperBranch: z.string().optional(),
+  lowerPr: z.number().optional(),
+  lowerPrUrl: z.string().optional(),
+  upperPrUrl: z.string().optional(),
+  decidedAt: z.string().optional(),
+});
+export type StackSplit = z.infer<typeof StackSplitSchema>;
+
+export const IssueLanesResponseSchema = z.object({
+  identifier: z.string(),
+  base: z.string(),
+  mergeBase: z.string(),
+  enforced: z.boolean(),
+  lane: z.string(),
+  files: z
+    .array(LaneFileSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  truncated: z.boolean().optional(),
+  findingsTruncated: z.boolean().optional(),
+  reasons: z
+    .array(LaneReasonSchema)
+    .nullish()
+    .transform((v) => v ?? []),
+  reasonsTotal: z.number().default(0),
+  split: StackSplitSchema.optional(),
+  recordedLane: z.string().optional(),
+  approvalPending: z.boolean().optional(),
+  textAllowed: z.boolean().default(false),
+});
+export type IssueLanesResponse = z.infer<typeof IssueLanesResponseSchema>;
 
 // #238 — change review: a line comment sent to the running agent or posted
 // on the PR, and an operator's PR review (one GitHub review, never a merge).

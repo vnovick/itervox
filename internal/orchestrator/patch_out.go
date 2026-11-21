@@ -193,7 +193,7 @@ func (o *Orchestrator) daemonPush(ctx context.Context, run daemonPushRun) daemon
 	lr := guardrails.ClassifyPush(ws, branch, sha, remoteSHA,
 		guardrails.Lanes{Human: g.Lanes.Human, SecondOpinion: g.Lanes.SecondOpinion}, run.baseRefs)
 	if lr.Lane == guardrails.LaneHuman {
-		if reason, ok := o.awaitDaemonPushApproval(ctx, run, branch, sha, lr); !ok {
+		if reason, ok := o.awaitDaemonPushApproval(ctx, run, branch, sha, remoteSHA, lr); !ok {
 			return hold(reason)
 		}
 	}
@@ -219,20 +219,25 @@ func (o *Orchestrator) daemonPush(ctx context.Context, run daemonPushRun) daemon
 // approval, through the approval flow an agent's held push uses. ok means
 // approved (the lane is then recorded by resolveGuardrailApproval);
 // otherwise reason says why the push is refused.
-func (o *Orchestrator) awaitDaemonPushApproval(ctx context.Context, run daemonPushRun, branch, sha string, lr guardrails.LaneResult) (reason string, ok bool) {
+func (o *Orchestrator) awaitDaemonPushApproval(ctx context.Context, run daemonPushRun, branch, sha, remoteSHA string, lr guardrails.LaneResult) (reason string, ok bool) {
 	identifier := run.issue.Identifier
 	sent := lr.Human[:min(len(lr.Human), guardrails.MaxLanePathsSent)]
+	g := o.cfg.Guardrails // read-only after startup
+	reasons, reasonsTotal := guardrails.PushReasons(run.wsPath, branch, sha, remoteSHA,
+		guardrails.Lanes{Human: g.Lanes.Human, SecondOpinion: g.Lanes.SecondOpinion}, run.baseRefs, lr)
 	req := guardrails.ApprovalRequest{
-		Key:        guardrails.DaemonPushKey(run.wsPath, branch, sha),
-		Command:    "git push origin " + branch + " (by Itervox for a patches-only run)",
-		Lane:       guardrails.LaneHuman,
-		Paths:      sent,
-		PathsTotal: len(lr.Human),
+		Key:          guardrails.DaemonPushKey(run.wsPath, branch, sha),
+		Command:      "git push origin " + branch + " (by Itervox for a patches-only run)",
+		Lane:         guardrails.LaneHuman,
+		Paths:        sent,
+		PathsTotal:   len(lr.Human),
+		Reasons:      reasons,
+		ReasonsTotal: reasonsTotal,
 	}
 	var st guardrails.ApprovalStatus
 	err := o.retryBusy(ctx, func() error {
 		var rerr error
-		st, rerr = o.RequestGuardrailApproval(identifier, run.runLogID, req)
+		st, rerr = o.raiseGuardrailApproval(identifier, run.runLogID, req) // reasons computed here, by the daemon
 		return rerr
 	})
 	if err != nil {

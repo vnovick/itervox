@@ -59,6 +59,31 @@ unified diff. The diff viewer loads only when you open the tab.
 Diffs are computed by `git` on request, never on the orchestrator's event
 loop, under a 15-second timeout, so a large worktree cannot slow dispatch.
 
+### Lanes view
+
+**Files | Lanes** at the top of the Changes tab switches to a diagram of the
+same changes sorted by [lanes](/guides/lanes/):
+
+- **Three columns**, Auto, Second opinion and Human, of file cards. Under
+  each file is the pattern that put it in its lane (`matched .github/**`)
+  and its line counts.
+- **Findings on their file**, with the line: red for a change that turns a
+  check off or hides its failure (`continue-on-error`, `|| true`, a deleted
+  test, a lowered coverage threshold, `--no-verify`, `.only`), amber for a
+  test skip. They come from the same rules as `itervox referee audit`, run
+  over the worktree (uncommitted edits and untracked files included).
+- **Edges into the pull request.** After a [stack split](/guides/lanes/#stack-split-code-and-pipeline-as-two-pull-requests)
+  there are two: which one goes first, the one stacked on it, and why. A
+  **Split / One PR** switch compares that with the single pull request.
+- **Why this needs a person** under the diagram: the same reasons a held
+  push gives, findings first.
+
+Click a file's name to open its diff in **Files**. A held push's approval
+card on the dashboard has **Open the Lanes view**, and its Slack message
+links straight here (`?issue=<id>&lanes=1`). A viewer token sees where each
+finding is but not the added line itself (that needs operator, like hunks).
+The diagram's library loads only when you open the view.
+
 ## Issue view
 
 The **issue view** (`/focus`) shows one issue on a page of its own: **Now**
@@ -86,9 +111,10 @@ app's **Go** menu, where a project's window opens on it (see
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8090/api/v1/issues/ENG-12/context
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8090/api/v1/issues/ENG-12/diff
 curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8090/api/v1/issues/ENG-12/diff?file=web/src/App.tsx"
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8090/api/v1/issues/ENG-12/lanes
 ```
 
-Both endpoints and their fields are in the
+The endpoints and their fields are in the
 [API reference](/api-reference/#run-context-and-changes-215).
 
 To comment on lines, review the pull request or open a file in your editor

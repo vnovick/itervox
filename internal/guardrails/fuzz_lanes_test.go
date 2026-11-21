@@ -130,8 +130,8 @@ func FuzzLanes(f *testing.F) {
 		// A path a human pattern list matches is human, never auto or
 		// second_opinion; one only the second_opinion list matches is
 		// second_opinion.
-		human := matchLaneList(lanes.Human, p)
-		second := matchLaneList(lanes.SecondOpinion, p)
+		human := inLaneList(lanes.Human, p)
+		second := inLaneList(lanes.SecondOpinion, p)
 		switch {
 		case human && lane != LaneHuman:
 			t.Fatalf("human patterns %q match %q, but its lane is %s", lanes.Human, p, lane)
@@ -161,10 +161,10 @@ func FuzzLanes(f *testing.F) {
 				continue
 			}
 			m := MatchLanePattern(q, p)
-			if got := matchLaneList(append(slices.Clone(lanes.Human), "!"+q), p); got != (human && !m) {
+			if got := inLaneList(append(slices.Clone(lanes.Human), "!"+q), p); got != (human && !m) {
 				t.Fatalf("%q + !%q on %q = %v; want %v", lanes.Human, q, p, got, human && !m)
 			}
-			if got := matchLaneList(append(slices.Clone(lanes.Human), q), p); got != (human || m) {
+			if got := inLaneList(append(slices.Clone(lanes.Human), q), p); got != (human || m) {
 				t.Fatalf("%q + %q on %q = %v; want %v", lanes.Human, q, p, got, human || m)
 			}
 		}

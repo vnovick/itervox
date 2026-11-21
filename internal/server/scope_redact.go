@@ -81,7 +81,23 @@ func snapshotForScope(snap StateSnapshot, scope apitokens.Scope) StateSnapshot {
 	snap.CallerScope = string(scope)
 	snap.ProfileDefs = profileDefsForScope(snap.ProfileDefs, scope)
 	snap.Running = runningForScope(snap.Running, scope)
+	snap.InputRequired = inputRequiredForScope(snap.InputRequired, scope)
 	return snap
+}
+
+// inputRequiredForScope withholds the added line of a held push's finding
+// (GuardrailLaneReasons[].Text) below operator and redacts it again below
+// admin (laneReasonsForScope). The question (Context) never holds it.
+func inputRequiredForScope(rows []InputRequiredRow, scope apitokens.Scope) []InputRequiredRow {
+	if scope == apitokens.ScopeAdmin || rows == nil {
+		return rows
+	}
+	out := make([]InputRequiredRow, len(rows))
+	for i, r := range rows {
+		r.GuardrailLaneReasons = laneReasonsForScope(r.GuardrailLaneReasons, scope)
+		out[i] = r
+	}
+	return out
 }
 
 // profileDefsForScope redacts profile commands below admin.

@@ -66,25 +66,28 @@ type HandoffRow struct {
 // RunContextRow is what a ChangesClient knows about an issue's current run
 // (Live) or its latest finished one.
 type RunContextRow struct {
-	RunID             string        `json:"runId"`
-	Live              bool          `json:"live"`
-	Kind              string        `json:"kind,omitempty"`
-	Profile           string        `json:"profile,omitempty"`
-	Backend           string        `json:"backend,omitempty"`
-	StartedAt         time.Time     `json:"startedAt,omitzero"`
-	FinishedAt        time.Time     `json:"finishedAt,omitzero"`
-	Outcome           string        `json:"outcome,omitempty"`
-	UpdatedAt         time.Time     `json:"updatedAt,omitzero"`
-	BaseBranch        string        `json:"baseBranch,omitempty"`
-	CurrentStep       string        `json:"currentStep,omitempty"`
-	LastToolCall      *RunToolCall  `json:"lastToolCall,omitempty"`
-	ToolCalls         int           `json:"toolCalls"`
-	TurnCount         int           `json:"turnCount"`
-	InputTokens       int           `json:"inputTokens"`
-	OutputTokens      int           `json:"outputTokens"`
-	TotalTokens       int           `json:"totalTokens"`
-	PendingInput      string        `json:"pendingInput,omitempty"`
-	PendingApproval   bool          `json:"pendingApproval,omitempty"`
+	RunID           string       `json:"runId"`
+	Live            bool         `json:"live"`
+	Kind            string       `json:"kind,omitempty"`
+	Profile         string       `json:"profile,omitempty"`
+	Backend         string       `json:"backend,omitempty"`
+	StartedAt       time.Time    `json:"startedAt,omitzero"`
+	FinishedAt      time.Time    `json:"finishedAt,omitzero"`
+	Outcome         string       `json:"outcome,omitempty"`
+	UpdatedAt       time.Time    `json:"updatedAt,omitzero"`
+	BaseBranch      string       `json:"baseBranch,omitempty"`
+	CurrentStep     string       `json:"currentStep,omitempty"`
+	LastToolCall    *RunToolCall `json:"lastToolCall,omitempty"`
+	ToolCalls       int          `json:"toolCalls"`
+	TurnCount       int          `json:"turnCount"`
+	InputTokens     int          `json:"inputTokens"`
+	OutputTokens    int          `json:"outputTokens"`
+	TotalTokens     int          `json:"totalTokens"`
+	PendingInput    string       `json:"pendingInput,omitempty"`
+	PendingApproval bool         `json:"pendingApproval,omitempty"`
+	// PendingReasons say why a held push needs a person, one line each
+	// (guardrails.lanes; Slack shows them under the cut-short question).
+	PendingReasons    []string      `json:"pendingReasons,omitempty"`
 	QueuedSteers      int           `json:"queuedSteers"`
 	Steers            []RunSteerRow `json:"steers"`
 	GuardrailBlocks   int           `json:"guardrailBlocks"`

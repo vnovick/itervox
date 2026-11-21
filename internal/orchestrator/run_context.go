@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/metrics"
 )
@@ -328,6 +329,10 @@ type RunContextView struct {
 	// PendingApproval marks a guardrail approval request.
 	PendingInput    string
 	PendingApproval bool
+	// PendingReasons say why a held push needs a person (one line each,
+	// at most guardrails.MaxLaneReasonsShown plus "and K more"), for
+	// clients that show the question cut short (Slack).
+	PendingReasons []string
 	// QueuedSteers counts operator messages not yet delivered; Steers are
 	// the newest delivered ones (already redacted and bounded, #186).
 	QueuedSteers int
@@ -371,6 +376,12 @@ func (o *Orchestrator) RunContext(identifier string) (RunContextView, bool) {
 	if in := snap.InputRequiredIssues[identifier]; in != nil {
 		v.PendingInput = sanitizeRunText(in.Context, runContextPendingMaxBytes)
 		v.PendingApproval = in.GuardrailApprovalID != ""
+		switch {
+		case in.GuardrailLaneReasonsUnavailable:
+			v.PendingReasons = []string{laneReasonsUnavailableNote}
+		case len(in.GuardrailLaneReasons) > 0: // never the added lines (String leaves Text out)
+			v.PendingReasons = guardrails.LaneReasonLines(in.GuardrailLaneReasons, in.GuardrailLaneReasonsTotal, guardrails.MaxLaneReasonsShown)
+		}
 	}
 	for _, m := range snap.SessionMessages[identifier] {
 		if m.Status == SessionMessageQueued {

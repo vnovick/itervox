@@ -32,6 +32,7 @@ export function resetAllStores(): void {
     expandedRunningId: null,
     expandedPausedId: null,
     newTaskOpen: false,
+    issueLanesFor: null, // guardrails.lanes
     logsIssueSearch: '',
     rulesLayer: 'project',
     rulesView: 'form',

@@ -136,7 +136,7 @@ what the rule says, and skips comment lines:
 
 | Rule | Flags |
 |---|---|
-| `test_deleted` | a test file (`*_test.go`, `*.test.ts`, `*.spec.js`, `test_*.py`, `*_spec.rb`, `*Test.java`, `__tests__/…`) deleted or renamed |
+| `test_deleted` | a test file (`*_test.go`, `*.test.ts`, `*.spec.js`, `*.e2e.ts`, `test_*.py`, `*_spec.rb`, `*Test.java`, `__tests__/…`) deleted or renamed |
 | `go_skip` | `t.Skip(`, `t.SkipNow(`, `t.Skipf(` added in a `_test.go` file |
 | `js_skip` | `it.skip(`, `test.skip(`, `describe.skip(`, `xit(` added in a JS/TS file |
 | `js_only` | `it.only(`, `test.only(`, `describe.only(` added |
@@ -145,6 +145,36 @@ what the rule says, and skips comment lines:
 | `ci_continue_on_error` | `continue-on-error: true` (or GitLab `allow_failure: true`) added in a workflow |
 | `ci_or_true` | `\|\| true` added in a workflow |
 | `git_no_verify` | `git commit --no-verify`, `git push --no-verify` or `git commit -n` added in a script, Makefile, `package.json`, hook config or workflow |
+
+For TypeScript, React, React Native and other JS projects:
+
+| Rule | Flags |
+|---|---|
+| `ts_ignore` | `// @ts-ignore` added in a JS/TS file (`.ts`, `.tsx`, `.mts`, `.js`, `.jsx`, …) |
+| `ts_expect_error` | `// @ts-expect-error` added outside a test file (in a test it is the usual way to pass a wrong type on purpose) |
+| `ts_nocheck` | `// @ts-nocheck` added |
+| `ts_strict_off` | `strict`, `noImplicitAny`, `strictNullChecks`, `noEmitOnError`, `checkJs` or another strict-family check set to `false`, or `noCheck` / `allowUnreachableCode` set to `true`, in `tsconfig*.json` / `jsconfig*.json` |
+| `eslint_disable` | `eslint-disable-line` or `eslint-disable-next-line` added |
+| `eslint_disable_file` | `/* eslint-disable */` (with or without rule names) added |
+| `eslint_rule_off` | a rule set to `"off"`, `0` or `[0]` in `.eslintrc*` or `eslint.config.*` (a `0` for any rule inside a `rules` block, core rules such as `semi`, `eqeqeq`, `curly` included, but not an option such as `{ "max": 0 }`): `react-hooks/rules-of-hooks`, `react-hooks/exhaustive-deps`, `@typescript-eslint/no-explicit-any`, `tailwindcss/*` and any other |
+| `eslint_max_warnings` | `eslint --max-warnings` raised, set to `-1`, or dropped from the eslint command, compared with the same `package.json` script (or the same command of the matching script or workflow line); an eslint script or dependency added next to it is not compared |
+| `flow_suppress` | `$FlowFixMe`, `$FlowIgnore`, `$FlowExpectedError`, `$FlowIssue` or `@noflow` added |
+| `check_or_true` | `\|\| true` (or `\|\| exit 0`, `\|\| :`) after eslint, tsc, jest, vitest, `prettier --check`, `npm run lint` and the like in `package.json`, a script, Makefile or hook config |
+| `script_stubbed` | a `package.json` `test`, `lint`, `typecheck` or `check` script set to `true`, `exit 0` or a bare `echo` |
+| `test_pass_with_no_tests` | `--passWithNoTests` or `passWithNoTests: true` added in a script, workflow or Jest/Vitest config |
+| `snapshot_update` | `jest -u`, `--updateSnapshot`, `vitest --update`, `playwright test --update-snapshots` or `--ci=false` added in a workflow, or in `package.json`'s `test` / `test:ci` script |
+| `test_path_ignored` | a test file (`*.test.*`, `*.spec.*`, `__tests__/`) added to `testPathIgnorePatterns`, Vitest's test `exclude` (not `coverage.exclude`) or `vitest --exclude`, also in a multi-line array and when one entry is added to an existing array |
+
+The suppression rules (`ts_*`, `eslint_disable*`, `flow_suppress`) match
+comments on purpose, so the directive has to open the line's first comment
+(after `//`, `/*` or `{/*`, or start the last line of a block comment, as
+in `   @ts-ignore */`), outside a string literal: a mention in
+prose ("we removed the @ts-ignore") is not flagged. `as any` is not flagged
+(too common to be worth a look one by one); `eslint_rule_off` covers turning
+off `@typescript-eslint/no-explicit-any` instead. Coverage thresholds in
+Jest's `coverageThreshold` (in `jest.config.*` or `package.json`) and
+Vitest's `coverage.thresholds` are read by `coverage_lowered`, and a deleted
+Detox spec (`*.e2e.ts`) is a `test_deleted` finding.
 
 `git push -n` is not flagged: for `push`, `-n` is `--dry-run`. A threshold
 removed outright is not flagged either; the human lane covers the common

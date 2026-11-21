@@ -505,6 +505,34 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   (`prdetector.Detect` with a skip) never continues a lower branch as the issue's
   PR. An agent's own pushes are never split
   (`config.StackSplitIgnoredReason` → startup warning).
+- **Lane reasons and the Lanes view.** The audit rules (`referee audit`'s
+  table) live in `internal/guardrails` (`audit_rules.go`, the JS/TS/lint
+  rules in `audit_rules_web.go`, `AuditPatch`, `AuditRange`; the working
+  tree's untracked files are read through an `os.Root`, never via the
+  index, and audited as one all-added change), shared by the referee and
+  the daemon — guardrails cannot import referee. Every audit diff is
+  `-U<AuditContext>` (20): `AuditPatch` is a context-line reader (head line
+  numbers count context lines; a change's `hunk.before` holds the head
+  lines above it, so a hunk rule sees the array or `rules` block it sits
+  in; a `+++ ` line inside a hunk is an added line) and runs every
+  `hunkRules` entry. `maxAuditPatchBytes` (4 MiB) caps that larger patch
+  (cut at a whole line, `Truncated`). Reasons (`guardrails.LaneReason`:
+  `finding` file:line, `lane_rule` path → pattern, `tool_behaviour`
+  reserved) are computed **by the daemon only**: the hook sends the pushed
+  refs (`ApprovalRequest.Refs`; `Reasons` is `json:"-"`), and
+  `RequestGuardrailApproval` recomputes them (`AgentPushReasons`, git on the
+  HTTP goroutine, never the loop) or marks them unavailable (paths only,
+  never the hook's text); a daemon push uses `raiseGuardrailApproval` with
+  `PushReasons`. They ride on `InputRequiredEntry.GuardrailLaneReasons`.
+  A finding's `Text` (the added line) is operator scope: `String` /
+  `Markdown` (question text = tracker comment, run context
+  `PendingReasons` for Slack, `itervox watch`) never include it, and
+  `snapshotForScope` (`inputRequiredForScope`) and `lanesForScope` strip it
+  below operator. `GET /api/v1/issues/{identifier}/lanes` (viewer) is
+  `Orchestrator.WorktreeLanes`: git on the caller's goroutine like
+  `WorktreeDiff`, `StackSplits` / `PushLanes` / the pending approval read
+  only through `Snapshot()`. Finding de-duplication is map-based and
+  capped (no scans of kept output). No new State.
 
 ### Workspace port ledger is workspace state, not `State`
 
