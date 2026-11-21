@@ -39,8 +39,8 @@ use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJEC
 use crate::registry::{registry_dir, DaemonLister};
 use crate::remote::is_remote_key;
 use crate::sessions::{
-    new_session_link, page_action, push_script, read_all, session_link, terminal_target,
-    PageAction, SessionsView,
+    live_terminal_target, new_session_link, page_action, push_script, read_all, session_link,
+    terminal_target, LiveTerminalTarget, PageAction, SessionsView,
 };
 use crate::supervisor::{self, last_line, output_log_name, record_for};
 use crate::token::{generate_token, platform_store, TokenStore};
@@ -91,6 +91,11 @@ struct Shared {
     /// The view last pushed to the Sessions window: the only sessions its
     /// "Open in Terminal" may attach to (#278).
     sessions_last: Mutex<SessionsView>,
+    /// The open "Live terminal" windows, by session window key
+    /// ([`crate::terminal_window::window_label`]): the window's label and
+    /// what it was built with (origin and a token fingerprint, never the
+    /// token).
+    terminal_windows: Mutex<HashMap<String, (String, crate::terminal_window::Built)>>,
 }
 
 /// A hub window: label, token, origin.
@@ -151,6 +156,7 @@ pub fn run() {
         } => {
             if let Some(shared) = app.try_state::<Arc<Shared>>() {
                 shared.dash.forget(&label);
+                lock(&shared.terminal_windows).retain(|_, (l, _)| *l != label);
                 let mut hub = lock(&shared.hub_window);
                 if hub.as_ref().is_some_and(|(l, _, _)| *l == label) {
                     *hub = None;
@@ -236,6 +242,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         machine: Arc::default(),
         welcome_last: Mutex::default(),
         sessions_last: Mutex::default(),
+        terminal_windows: Mutex::default(),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -1172,5 +1179,107 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
                 }
             });
         }
+        PageAction::OpenLiveTerminal { daemon, session } => {
+            // Only a session the window was shown "Live terminal" for.
+            let Some(target) =
+                live_terminal_target(&lock(&shared.sessions_last), &daemon, &session)
+            else {
+                error_dialog(app, "That session's live terminal can no longer be opened.");
+                return;
+            };
+            open_live_terminal(app, shared, &daemon, target);
+        }
     }
+}
+
+/// Opens (or focuses) the terminal window of one session (#278 phase 2,
+/// terminal_window.rs): the daemon's terminal-only page from its own
+/// origin, the token handed over by the origin-guarded initialization
+/// script, never in the URL. One window per session; closing it detaches.
+fn open_live_terminal(
+    app: &AppHandle,
+    shared: &Arc<Shared>,
+    daemon: &str,
+    target: LiveTerminalTarget,
+) {
+    // A remote daemon's link is rebased onto its tunnel by dash::target.
+    let base = if is_remote_key(daemon) {
+        Some("http://127.0.0.1/".to_string())
+    } else {
+        lock(&shared.core)
+            .last_records()
+            .iter()
+            .find(|r| r.workflow == daemon)
+            .map(|r| r.base_url())
+    };
+    let Some(base) = base else {
+        error_dialog(app, "That project's daemon is not running.");
+        return;
+    };
+    let link = crate::terminal_window::page_link(&base, &target.id);
+    let (t, _) = match dash::target(shared, daemon, Some(link)) {
+        Ok(x) => x,
+        Err(e) => {
+            error_dialog(app, &e);
+            return;
+        }
+    };
+    let (Ok(url), Some(origin)) = (tauri::Url::parse(&t.url), t.origin.clone()) else {
+        error_dialog(app, "That project's dashboard has no web address to open.");
+        return;
+    };
+    let app2 = app.clone();
+    let shared2 = Arc::clone(shared);
+    let _ = app.run_on_main_thread(move || {
+        use crate::terminal_window::{reopen_plan, Built, Reopen};
+        let next = Built::new(&origin, t.token.as_deref());
+        let held = lock(&shared2.terminal_windows).get(&target.window).cloned();
+        let open = held
+            .as_ref()
+            .and_then(|(label, _)| app2.get_webview_window(label));
+        match reopen_plan(open.is_some(), held.as_ref().map(|(_, b)| b), &next) {
+            Reopen::Focus => {
+                if let Some(w) = open {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+                return;
+            }
+            // The daemon's origin or token changed since the window was
+            // built: its page cannot reconnect. Close it and build anew
+            // under a fresh label (the old one is released only once the
+            // close is processed).
+            Reopen::Rebuild => {
+                if let Some(w) = open {
+                    let _ = w.destroy();
+                }
+            }
+            Reopen::Create => {}
+        }
+        let n = shared2
+            .window_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let label = format!("{}-{n}", target.window);
+        #[cfg(target_os = "macos")]
+        let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let nav_origin = origin.clone();
+        let mut builder = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
+            .title(&target.title)
+            .inner_size(960.0, 600.0)
+            .min_inner_size(480.0, 280.0)
+            .on_navigation(move |u| {
+                crate::terminal_window::navigation_allowed(&nav_origin, u.as_str())
+            });
+        if let Some(token) = t.token.as_deref() {
+            builder = builder.initialization_script(token_init_script(&origin, token));
+        }
+        match builder.build() {
+            Ok(w) => {
+                lock(&shared2.terminal_windows).insert(target.window.clone(), (label, next));
+                let _ = w.set_focus();
+            }
+            Err(e) => eprintln!("itervox desktop: could not open the terminal window: {e}"),
+        }
+    });
 }

@@ -8,6 +8,32 @@ import { createTerminal } from './createTerminal';
 /** Where a live terminal is: connecting, attached, detached, or refused. */
 export type TerminalStatus = 'connecting' | 'live' | 'closed' | 'error';
 
+/** How a socket closed: its WebSocket close code and reason (#278). */
+export interface TerminalClose {
+  code: number;
+  reason: string;
+}
+
+/**
+ * The socket's close code and reason as the status line shows them: any
+ * code the daemon (or the browser) closed with, e.g. an access re-check's.
+ */
+export function closeText({ code, reason }: TerminalClose): string {
+  return reason ? `closed ${String(code)}: ${reason}` : `closed ${String(code)}`;
+}
+
+/** What a live terminal is doing, and what the daemon granted. */
+export interface TerminalState {
+  status: TerminalStatus;
+  error: string;
+  /** The mode the daemon's ticket granted; null until it answered. */
+  granted: TerminalMode | null;
+  /** How the socket closed, once it did (any code, with its reason). */
+  closed: TerminalClose | null;
+}
+
+const CONNECTING: TerminalState = { status: 'connecting', error: '', granted: null, closed: null };
+
 /**
  * #298 — attaches a live terminal to session `id` inside `host`: renders
  * the terminal (createTerminal), mints a ticket, opens the socket, pipes
@@ -20,28 +46,26 @@ export function useTmuxTerminal(
   id: string,
   mode: TerminalMode,
   attempt: number,
-): { status: TerminalStatus; error: string } {
+): TerminalState {
   // The state of one connection; a new id, mode or attempt starts over at
   // 'connecting' (derived below, not reset inside the effect).
   const key = `${id}\n${mode}\n${String(attempt)}`;
-  const [state, setState] = useState<{ key: string; status: TerminalStatus; error: string }>({
-    key,
-    status: 'connecting',
-    error: '',
-  });
+  const [state, setState] = useState<TerminalState & { key: string }>({ key, ...CONNECTING });
 
   useEffect(() => {
     const el = host.current;
     if (!el) return;
     let cancelled = false;
     let socket: TerminalSocket | null = null;
-    const setStatus = (status: TerminalStatus, error = '') => {
-      if (!cancelled) setState({ key, status, error });
+    let granted: TerminalMode | null = null;
+    const setStatus = (status: TerminalStatus, error = '', closed: TerminalClose | null = null) => {
+      if (!cancelled) setState({ key, status, error, granted, closed });
     };
     const term = createTerminal({ readOnly: mode === 'read' });
     term.open(el);
     const offData = term.onData((data) => {
-      if (mode === 'write') socket?.send(encodeInput(data));
+      // Keys go out only when asked for AND granted read-write.
+      if (mode === 'write' && granted === 'write') socket?.send(encodeInput(data));
     });
     const offResize = term.onResize((size) => {
       socket?.send(encodeResize(size));
@@ -57,6 +81,8 @@ export function useTmuxTerminal(
     requestTerminalTicket(id, mode)
       .then((ticket) => {
         if (cancelled) return;
+        granted = ticket.mode;
+        setStatus('connecting');
         socket = openTerminalSocket(ticket.url, term.size(), {
           onData: (bytes) => {
             term.write(bytes);
@@ -65,8 +91,8 @@ export function useTmuxTerminal(
             setStatus('live');
             term.focus();
           },
-          onClose: () => {
-            setStatus('closed');
+          onClose: (ev) => {
+            setStatus('closed', '', { code: ev.code, reason: ev.reason });
           },
         });
       })
@@ -88,7 +114,7 @@ export function useTmuxTerminal(
     };
   }, [host, id, mode, key]);
 
-  return state.key === key
-    ? { status: state.status, error: state.error }
-    : { status: 'connecting', error: '' };
+  if (state.key !== key) return CONNECTING;
+  const { status, error, granted, closed } = state;
+  return { status, error, granted, closed };
 }

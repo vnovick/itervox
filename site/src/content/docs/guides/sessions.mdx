@@ -148,6 +148,8 @@ In the [Mac app's Sessions window](/guides/desktop-app/#sessions-window), **New 
 
 The [desktop app's Sessions window](/guides/desktop-app/#open-in-terminal) has **Open in Terminal** on each tmux session it may attach to: the sessions started with New session, and sessions started by hand in tmux while `sessions.tmux_control` is on. It opens the system terminal running `tmux attach -t itervox-<id>` — over `ssh -t <host>` for a remote daemon — so you take over the session yourself. The app attaches; it does not start the CLI. The daemon still owns the session, the dashboard (and the phone and Slack) keep working on it, and closing the terminal only detaches: tmux keeps it running. A hand-started session without `sessions.tmux_control` has no such action.
 
+The same window's **Live terminal** shows a session's [live terminal](#live-terminal) in its own app window instead, through the daemon's ticketed socket and with the same read-only or read-write rules as the dashboard (see [Live terminal](/guides/desktop-app/#live-terminal)).
+
 ### When tmux is not installed
 
 If `tmux` is not on the daemon's `PATH`, the panel stays read-only for tmux: a banner at the top and the composer of a session started by hand both say **tmux not found — install it to control sessions from here**, with the install command for the daemon's platform (`brew install tmux` on macOS, `sudo apt install tmux` or your distribution's package manager on Linux) and a copy button, and **New session** is disabled. Every tmux write is refused with `409 tmux_unavailable`. The daemon looks for tmux again on every discovery pass, so installing it lifts the warning within seconds, without a restart. The Mac app's Sessions window shows the same warning under that daemon.
