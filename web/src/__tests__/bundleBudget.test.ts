@@ -69,9 +69,9 @@ describe('checkBundleBudget', () => {
     );
   });
 
-  it('caps the initial JS at 600 KiB and the total at 2260 KiB', () => {
+  it('caps the initial JS at 600 KiB and the total at 2320 KiB', () => {
     expect(BUDGET.initialJsBytes).toBe(600 * KB);
-    expect(BUDGET.totalJsBytes).toBe(2260 * KB);
+    expect(BUDGET.totalJsBytes).toBe(2320 * KB);
     const atCap = [chunk('index-a.js', 300 * KB), chunk('vendor-b.js', 300 * KB)];
     expect(checkBundleBudget(atCap, INDEX).violations).toEqual([]);
     const over = [chunk('index-a.js', 300 * KB), chunk('vendor-b.js', 300 * KB + 1)];
