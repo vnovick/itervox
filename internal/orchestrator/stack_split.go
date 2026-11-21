@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -9,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/vnovick/itervox/internal/attest"
 	"github.com/vnovick/itervox/internal/config"
@@ -34,19 +32,30 @@ import (
 //     human-lane files go to the pipeline side, lockfiles and Itervox's own
 //     bookkeeping stay with the code, and no file is ever divided;
 //   - the order is decided by testing: the profile's verify checks run on
-//     base + code alone (a temporary worktree). Pass: the code PR goes
-//     first, against the base, and the pipeline PR is stacked on it. Fail:
-//     the checks run on base + pipeline alone; pass: the pipeline PR goes
-//     first and the code is stacked on it. Fail again: one combined PR, as
-//     without the split, and the reason is recorded;
+//     base + code alone (a temporary worktree, after the workspace's
+//     hooks.after_create, so it has the installed dependencies a worktree
+//     of the run has). Pass: the code PR goes first, against the base, and
+//     the pipeline PR is stacked on it. Fail: the checks run on base +
+//     pipeline alone; pass: the pipeline PR goes first and the code is
+//     stacked on it. Fail again: one combined PR, as without the split, and
+//     the reason is recorded;
 //   - the stack's top commit has exactly the run's tree, which its signed
 //     checks already passed on, and the lower commit passed its own checks,
 //     so no branch in the stack is a broken middle. Each push goes through
 //     daemonPush (the seal's tree, the lanes, a human approval for the
-//     human-lane push);
+//     human-lane push). Both commits keep the head commit's message, with a
+//     trailer saying which half they are;
 //   - the top lives on the issue branch (the worktree's branch is moved to
 //     it, with no change to the files), the lower one on <branch>-code or
-//     <branch>-pipeline.
+//     <branch>-pipeline. A lower branch that already exists on the remote
+//     and is not exactly the commit to push is never pushed over: one
+//     combined PR instead;
+//   - a later run of the issue whose split's lower branch is already pushed
+//     (its top was held or refused, or the daemon restarted between the two
+//     pushes) keeps the split: it updates the lower branch only by a
+//     fast-forward from the commit it pushed (StackSplitRecord.LowerSHA),
+//     when that side changed and still passes its checks, and stacks the
+//     top on it; it never splits from scratch.
 //
 // All of it runs on the worker goroutine and touches no State: the decision
 // reaches the event loop as EventStackSplit (State.StackSplits, a feed
@@ -64,6 +73,12 @@ const (
 	stackSplitCodeSuffix     = "-code"
 	stackSplitPipelineSuffix = "-pipeline"
 )
+
+// isStackSplitLowerBranch reports whether branch is the lower branch a
+// stack split of issueBranch pushes: never the issue's working branch.
+func isStackSplitLowerBranch(branch, issueBranch string) bool {
+	return issueBranch != "" && (branch == issueBranch+stackSplitCodeSuffix || branch == issueBranch+stackSplitPipelineSuffix)
+}
 
 // stackSplitRun is what a stack split needs beyond the daemon push.
 type stackSplitRun struct {
@@ -91,103 +106,47 @@ type stackSplitOutcome struct {
 	order                string
 }
 
-// stackSplitAuthorEnv makes a split commit's author and committer those of
-// the run's head commit, so the same split builds the same commits again
-// (a resumed run pushes the lower branch it already pushed, unchanged).
-func stackSplitAuthorEnv(ctx context.Context, ws, sha string) ([]string, error) {
-	out, err := gitexec.Command(ctx, ws, "log", "-1", "--date=raw",
-		"--format=%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd", sha).Output()
-	if err != nil {
-		return nil, fmt.Errorf("orchestrator: read the head commit's author: %w", err)
-	}
-	f := strings.Split(strings.TrimRight(string(out), "\n"), "\x00")
-	if len(f) != 6 {
-		return nil, fmt.Errorf("orchestrator: unexpected author line for %s", shortHash(sha))
-	}
-	return []string{
-		"GIT_AUTHOR_NAME=" + f[0], "GIT_AUTHOR_EMAIL=" + f[1], "GIT_AUTHOR_DATE=" + f[2],
-		"GIT_COMMITTER_NAME=" + f[3], "GIT_COMMITTER_EMAIL=" + f[4], "GIT_COMMITTER_DATE=" + f[5],
-	}, nil
+// stackSplitBuild is one stack split in progress. Worker goroutine.
+type stackSplitBuild struct {
+	o              *Orchestrator
+	run            stackSplitRun
+	ws, identifier string
+	branch, sha    string
+	base           string
+	code, pipeline []string
+	env            []string
+	headMsg        string
+	rec            StackSplitRecord
+	hooked         bool
+	// prev is the earlier split a resumed run keeps (nil: a new split);
+	// keepLower: its lower branch stays as it is.
+	prev      *StackSplitRecord
+	keepLower bool
 }
 
-// splitTree writes the tree of base with paths taken from commit from (a
-// path from does not have is removed) and returns its id. A temporary
-// index; the worktree's own index and files are untouched.
-func splitTree(ctx context.Context, ws, base, from string, paths []string) (string, error) {
-	tmp, err := os.MkdirTemp("", "itervox-split-index-")
-	if err != nil {
-		return "", fmt.Errorf("orchestrator: temp index: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(tmp) }()
-	index := filepath.Join(tmp, "index")
-	git := func(args ...string) ([]byte, error) {
-		cmd := gitexec.Command(ctx, ws, args...)
-		cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+index)
-		out, err := cmd.Output()
-		if err != nil {
-			return nil, fmt.Errorf("orchestrator: git %s: %w", args[0], err)
-		}
-		return out, nil
-	}
-	if _, err := git("read-tree", base); err != nil {
-		return "", err
-	}
-	listing, err := git("ls-tree", "-r", "-z", "--full-tree", from)
-	if err != nil {
-		return "", err
-	}
-	entries := map[string]string{} // path → "mode type id"
-	for _, rec := range bytes.Split(listing, []byte{0}) {
-		if meta, p, ok := strings.Cut(string(rec), "\t"); ok {
-			entries[p] = meta
-		}
-	}
-	// The paths go to update-index as arguments, never on its stdin
-	// (TestNoWritesToProcessesItervoxDidNotStart), in batches that keep the
-	// argument list well under the OS limit.
-	var add, remove []string
-	for _, p := range paths {
-		if meta, ok := entries[p]; ok {
-			mode, rest, _ := strings.Cut(meta, " ")
-			_, id, _ := strings.Cut(rest, " ")
-			add = append(add, "--cacheinfo", mode+","+id+","+p)
-		} else {
-			remove = append(remove, p)
-		}
-	}
-	const batch = 400
-	for i := 0; i < len(add); i += 2 * batch {
-		args := append([]string{"update-index", "--add"}, add[i:min(i+2*batch, len(add))]...)
-		if _, err := git(args...); err != nil {
-			return "", err
-		}
-	}
-	for i := 0; i < len(remove); i += batch {
-		args := append([]string{"update-index", "--force-remove", "--"}, remove[i:min(i+batch, len(remove))]...)
-		if _, err := git(args...); err != nil {
-			return "", err
-		}
-	}
-	out, err := git("write-tree")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+// combined records that the run is pushed as one pull request, and why.
+func (b *stackSplitBuild) combined(ctx context.Context, reason string) stackSplitOutcome {
+	b.rec.Order, b.rec.Reason = StackSplitCombined, reason
+	b.rec.LowerBranch, b.rec.UpperBranch, b.rec.LowerSHA = "", "", ""
+	b.rec.LowerPR, b.rec.LowerPRURL, b.rec.UpperPRURL = 0, "", ""
+	b.o.logPatchOut(b.identifier, b.run.push.runLogID, "INFO", "worker: stack split: one combined pull request: "+reason)
+	b.o.sendStackSplit(ctx, b.identifier, b.rec)
+	return stackSplitOutcome{}
 }
 
-// commitTree commits tree on parent with msg and the head commit's author.
-func commitTree(ctx context.Context, ws, tree, parent, msg string, env []string) (string, error) {
-	cmd := gitexec.Command(ctx, ws, "commit-tree", tree, "-p", parent, "-m", msg)
-	cmd.Env = append(cmd.Env, env...)
-	out, err := cmd.Output()
+// commit builds the commit of base plus files from the head commit, on
+// parent, with the head commit's message and note.
+func (b *stackSplitBuild) commit(ctx context.Context, files []string, parent, note string) (string, error) {
+	tree, err := splitTree(ctx, b.ws, b.base, b.sha, files)
 	if err != nil {
-		return "", fmt.Errorf("orchestrator: git commit-tree: %w", err)
+		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return commitTree(ctx, b.ws, tree, parent, stackSplitMessage(b.headMsg, note), b.env)
 }
 
 // checkSplitCommit runs the profile's signed checks on commit in a
-// temporary worktree, records them under role, and returns the verdict.
+// temporary worktree, after the workspace's after_create hook, records
+// them under role, and returns the verdict.
 func (o *Orchestrator) checkSplitCommit(ctx context.Context, run stackSplitRun, commit, role string) (verifyVerdict, error) {
 	ws := run.push.wsPath
 	dir, err := os.MkdirTemp("", "itervox-split-")
@@ -195,21 +154,25 @@ func (o *Orchestrator) checkSplitCommit(ctx context.Context, run stackSplitRun, 
 		return verifyVerdict{}, fmt.Errorf("orchestrator: temp worktree: %w", err)
 	}
 	wt := filepath.Join(dir, "wt")
-	defer func() {
-		rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = gitexec.Command(rmCtx, ws, "worktree", "remove", "--force", wt).Run()
-		_ = gitexec.Command(rmCtx, ws, "worktree", "prune").Run()
-		_ = os.RemoveAll(dir)
-	}()
+	defer removeTempWorktree(ws, wt, dir)
 	// No repository hooks run for the daemon's own checkout.
 	if out, err := gitexec.Command(ctx, ws, "-c", "core.hooksPath="+os.DevNull,
 		"worktree", "add", "--detach", "--quiet", wt, commit).CombinedOutput(); err != nil {
 		return verifyVerdict{}, fmt.Errorf("orchestrator: git worktree add: %w: %s", err, logging.RedactString(strings.TrimSpace(string(out))))
 	}
+	identifier, runLogID := run.push.issue.Identifier, run.push.runLogID
+	// The worktree has the commit's files only: the workspace's ignored
+	// ones (node_modules, vendor, build output) are installed by the same
+	// hook a new workspace runs, bounded by hooks.timeout_ms.
+	if hook := o.cfg.Hooks.AfterCreate; strings.TrimSpace(hook) != "" { // read-only after startup
+		o.logPatchOut(identifier, runLogID, "INFO", "worker: stack split: running hooks.after_create in the temporary worktree of the "+role+" change")
+		if err := workspace.RunHook(ctx, hook, wt, o.cfg.Hooks.TimeoutMs, o.hookLogFn(identifier, runLogID)); err != nil {
+			return verifyVerdict{}, fmt.Errorf("hooks.after_create failed in the temporary worktree: %w", err)
+		}
+	}
 	vr := verifyRun{issue: run.push.issue, runID: attestRunID(run.runTimestamp, run.profile) + "_split-" + role,
-		profile: run.profile, runLogID: run.push.runLogID}
-	o.logPatchOut(vr.issue.Identifier, vr.runLogID, "INFO", "worker: stack split: running the signed checks on the "+role+" change alone")
+		profile: run.profile, runLogID: runLogID}
+	o.logPatchOut(identifier, runLogID, "INFO", "worker: stack split: running the signed checks on the "+role+" change alone")
 	return o.runVerifyChecks(ctx, wt, vr, run.checks), nil
 }
 
@@ -250,114 +213,219 @@ func (o *Orchestrator) stackSplit(ctx context.Context, run stackSplitRun) stackS
 	if len(code) == 0 || len(pipeline) == 0 {
 		return stackSplitOutcome{} // nothing to split: one PR as before
 	}
-	rec := StackSplitRecord{RunID: run.push.runLogID, Order: StackSplitCombined, CodeLane: lanes.Classify(code).Lane}
-	rec.CodeFiles, rec.CodeFilesTotal = sanitizeLanePaths(code, len(code))
-	rec.PipelineFiles, rec.PipelineFilesTotal = sanitizeLanePaths(pipeline, len(pipeline))
-	combined := func(reason string) stackSplitOutcome {
-		rec.Order, rec.Reason = StackSplitCombined, reason
-		rec.LowerBranch, rec.UpperBranch = "", ""
-		o.logPatchOut(identifier, run.push.runLogID, "INFO", "worker: stack split: one combined pull request: "+reason)
-		o.sendStackSplit(ctx, identifier, rec)
-		return stackSplitOutcome{}
-	}
+	b := &stackSplitBuild{o: o, run: run, ws: ws, identifier: identifier, branch: branch, sha: sha, base: base,
+		code: code, pipeline: pipeline, hooked: strings.TrimSpace(o.cfg.Hooks.AfterCreate) != ""}
+	b.rec = StackSplitRecord{RunID: run.push.runLogID, Order: StackSplitCombined, CodeLane: lanes.Classify(code).Lane}
+	b.rec.CodeFiles, b.rec.CodeFilesTotal = sanitizeLanePaths(code, len(code))
+	b.rec.PipelineFiles, b.rec.PipelineFilesTotal = sanitizeLanePaths(pipeline, len(pipeline))
 	switch {
 	case run.stackedOn != "":
-		return combined("the issue is stacked on its blocker's branch " + run.stackedOn + "; a split is not stacked a second time")
+		return b.combined(ctx, "the issue is stacked on its blocker's branch "+run.stackedOn+"; a split is not stacked a second time")
 	case len(run.checks) == 0:
-		return combined("the profile has no verify checks, so the order cannot be decided by testing")
+		return b.combined(ctx, "the profile has no verify checks, so the order cannot be decided by testing")
 	case run.push.sealTree == "":
-		return combined("the run's signed checks recorded no tree")
+		return b.combined(ctx, "the run's signed checks recorded no tree")
 	}
-	env, err := stackSplitAuthorEnv(ctx, ws, sha)
+	if b.env, err = stackSplitAuthorEnv(ctx, ws, sha); err != nil {
+		return b.combined(ctx, "the split commits could not be built ("+err.Error()+")")
+	}
+	b.headMsg = gitOutput(ctx, ws, "log", "-1", "--format=%B", sha)
+	// The latest decision, from the loop's published copy (off the loop).
+	if prev, ok := o.Snapshot().StackSplits[identifier]; ok && prev.LowerSHA != "" && prev.UpperBranch == branch &&
+		isStackSplitLowerBranch(prev.LowerBranch, branch) && (prev.Order == StackSplitCodeFirst || prev.Order == StackSplitPipelineFirst) {
+		return b.resume(ctx, prev)
+	}
+	return b.fresh(ctx)
+}
+
+// fresh decides a new split's order by testing and stacks it.
+func (b *stackSplitBuild) fresh(ctx context.Context) stackSplitOutcome {
+	o, run := b.o, b.run
+	codeCommit, err := b.commit(ctx, b.code, b.base, "code change only (guardrails.lanes.split)")
 	if err != nil {
-		return combined("the split commits could not be built (" + err.Error() + ")")
+		return b.combined(ctx, "the code commit could not be built ("+err.Error()+")")
 	}
-	subject := strings.TrimSpace(gitOutput(ctx, ws, "log", "-1", "--format=%s", sha))
-	build := func(side string, files []string) (string, error) {
-		tree, err := splitTree(ctx, ws, base, sha, files)
-		if err != nil {
-			return "", err
-		}
-		return commitTree(ctx, ws, tree, base, subject+" ("+side+" only)\n\nStack split by Itervox (guardrails.lanes.split).", env)
-	}
-	codeCommit, err := build("code", code)
-	if err != nil {
-		return combined("the code commit could not be built (" + err.Error() + ")")
-	}
-	lower, lowerBranch := codeCommit, branch+stackSplitCodeSuffix
+	lower, lowerBranch := codeCommit, b.branch+stackSplitCodeSuffix
 	verdict, err := o.checkSplitCommit(ctx, run, codeCommit, "code")
 	if err != nil {
-		return combined("the code change could not be checked alone (" + err.Error() + ")")
+		return b.combined(ctx, "the code change could not be checked alone ("+err.Error()+")")
 	}
 	if ctx.Err() != nil {
 		return stackSplitOutcome{}
 	}
 	if verdict.ok() {
-		rec.Order, rec.Reason = StackSplitCodeFirst, "the signed checks pass on the code change alone"
+		b.rec.Order, b.rec.Reason = StackSplitCodeFirst, "the signed checks pass on the code change alone"
 	} else {
 		codeFailure := firstLine(verdict.Failed)
-		pipeCommit, err := build("pipeline", pipeline)
+		pipeCommit, err := b.commit(ctx, b.pipeline, b.base, "pipeline change only (guardrails.lanes.split)")
 		if err != nil {
-			return combined("the pipeline commit could not be built (" + err.Error() + ")")
+			return b.combined(ctx, "the pipeline commit could not be built ("+err.Error()+")")
 		}
 		verdict, err = o.checkSplitCommit(ctx, run, pipeCommit, "pipeline")
 		if err != nil {
-			return combined("the pipeline change could not be checked alone (" + err.Error() + ")")
+			return b.combined(ctx, "the pipeline change could not be checked alone ("+err.Error()+")")
 		}
 		if ctx.Err() != nil {
 			return stackSplitOutcome{}
 		}
 		if !verdict.ok() {
-			return combined("the signed checks fail on the code change alone (" + codeFailure +
-				") and on the pipeline change alone (" + firstLine(verdict.Failed) + ")")
+			reason := "the signed checks fail on the code change alone (" + codeFailure +
+				") and on the pipeline change alone (" + firstLine(verdict.Failed) + ")"
+			if !b.hooked {
+				reason += "; they ran in temporary worktrees with the committed files only, so they may lack installed dependencies " +
+					"(node_modules, vendor): set hooks.after_create to install them"
+			}
+			return b.combined(ctx, reason)
 		}
-		lower, lowerBranch = pipeCommit, branch+stackSplitPipelineSuffix
-		rec.Order = StackSplitPipelineFirst
-		rec.Reason = "the signed checks fail on the code change alone (" + codeFailure + ") and pass on the pipeline change alone"
+		lower, lowerBranch = pipeCommit, b.branch+stackSplitPipelineSuffix
+		b.rec.Order = StackSplitPipelineFirst
+		b.rec.Reason = "the signed checks fail on the code change alone (" + codeFailure + ") and pass on the pipeline change alone"
 	}
-	lowerSeal := verdict.sealTree()
-	top, err := commitTree(ctx, ws, sha+"^{tree}", lower, subject+"\n\nStack split by Itervox (guardrails.lanes.split): stacked on "+lowerBranch+".", env)
+	// Never push over a branch Itervox did not push: exactly this commit
+	// (a split rebuilt after a restart) is the only remote state accepted.
+	if remote := workspace.RemoteBranchSHA(ctx, b.ws, lowerBranch); remote != "" && remote != lower {
+		return b.combined(ctx, fmt.Sprintf("the branch %s already exists on the remote (at %s) and is not the commit the split would push; "+
+			"Itervox does not push over a branch it did not push", lowerBranch, shortHash(remote)))
+	}
+	return b.stack(ctx, lower, lowerBranch, verdict.sealTree(), true)
+}
+
+// resume keeps an earlier split whose lower branch is pushed: the lower
+// branch moves only by a fast-forward from the commit Itervox pushed, and
+// only when its side changed and still passes the checks; the top is
+// stacked on it.
+func (b *stackSplitBuild) resume(ctx context.Context, prev StackSplitRecord) stackSplitOutcome {
+	b.rec.LowerPR, b.rec.LowerPRURL = prev.LowerPR, prev.LowerPRURL
+	lowerBranch := prev.LowerBranch
+	remote := workspace.RemoteBranchSHA(ctx, b.ws, lowerBranch)
+	switch {
+	case remote == "":
+		return b.combined(ctx, "the lower branch "+lowerBranch+" of the earlier stack split is no longer on the remote")
+	case remote != prev.LowerSHA:
+		return b.combined(ctx, fmt.Sprintf("the lower branch %s of the earlier stack split moved since Itervox pushed it (%s, now %s); "+
+			"Itervox does not push over it", lowerBranch, shortHash(prev.LowerSHA), shortHash(remote)))
+	case !haveCommit(ctx, b.ws, remote, lowerBranch):
+		return b.combined(ctx, "the lower branch "+lowerBranch+" of the earlier stack split could not be fetched")
+	}
+	// Until a new commit is pushed, the remote lower branch is still the
+	// commit the split pushed (a held fast-forward keeps it so).
+	b.rec.Order, b.rec.LowerSHA = prev.Order, prev.LowerSHA
+	b.prev, b.keepLower = &prev, true
+	side, files := "code", b.code
+	if prev.Order == StackSplitPipelineFirst {
+		side, files = "pipeline", b.pipeline
+	}
+	tree, err := splitTree(ctx, b.ws, b.base, b.sha, files)
 	if err != nil {
-		return combined("the stacked commit could not be built (" + err.Error() + ")")
+		return b.combined(ctx, "the "+side+" commit could not be built ("+err.Error()+")")
+	}
+	if tree == treeOf(ctx, b.ws, remote) {
+		b.rec.Reason = "the earlier stack split is kept; its lower branch " + lowerBranch + " is unchanged"
+		return b.stack(ctx, remote, lowerBranch, "", false)
+	}
+	cand, err := commitTree(ctx, b.ws, tree, remote, stackSplitMessage(b.headMsg, side+" change only, updated (guardrails.lanes.split)"), b.env)
+	if err != nil {
+		return b.combined(ctx, "the "+side+" commit could not be built ("+err.Error()+")")
+	}
+	verdict, err := b.o.checkSplitCommit(ctx, b.run, cand, side)
+	if ctx.Err() != nil {
+		return stackSplitOutcome{}
+	}
+	if err != nil || !verdict.ok() {
+		why := "fail on it"
+		if err != nil {
+			why = "could not run (" + err.Error() + ")"
+		} else {
+			why += " (" + firstLine(verdict.Failed) + ")"
+		}
+		b.rec.Reason = "the earlier stack split is kept; the " + side + " change made since then stays above " + lowerBranch +
+			" because the signed checks " + why
+		return b.stack(ctx, remote, lowerBranch, "", false)
+	}
+	b.keepLower = false // the lower branch is to carry this run's side
+	b.rec.Reason = "the earlier stack split is kept; its lower branch " + lowerBranch + " is fast-forwarded with the " + side + " change made since then"
+	return b.stack(ctx, cand, lowerBranch, verdict.sealTree(), true)
+}
+
+// stack moves the issue branch to the top commit (the run's tree on
+// lower), pushes lower when pushLower (with lowerSeal, the tree its checks
+// ran on), opens or reuses the lower pull request, then pushes the top and
+// opens or reuses its pull request.
+func (b *stackSplitBuild) stack(ctx context.Context, lower, lowerBranch, lowerSeal string, pushLower bool) stackSplitOutcome {
+	o, run := b.o, b.run
+	// The record's code side describes what is on the lower branch: the
+	// earlier run's until this run's is pushed there.
+	usePrevCode := func() {
+		if b.prev != nil {
+			b.rec.CodeLane, b.rec.CodeFiles, b.rec.CodeFilesTotal = b.prev.CodeLane, b.prev.CodeFiles, b.prev.CodeFilesTotal
+		}
+	}
+	codeSide := b.rec
+	if b.keepLower {
+		usePrevCode()
+	}
+	topSide := "pipeline"
+	if b.rec.Order == StackSplitPipelineFirst {
+		topSide = "code"
+	}
+	top, err := commitTree(ctx, b.ws, b.sha+"^{tree}", lower, stackSplitMessage(b.headMsg, topSide+" change, stacked on "+lowerBranch+" (guardrails.lanes.split)"), b.env)
+	if err != nil {
+		return b.combined(ctx, "the stacked commit could not be built ("+err.Error()+")")
 	}
 	// The top has the run's own tree, so moving the issue branch to it
 	// changes no file in the worktree.
-	if out, err := gitexec.Command(ctx, ws, "reset", "--soft", "--quiet", top).CombinedOutput(); err != nil {
-		return combined("the issue branch could not be moved to the stacked commit (" + logging.RedactString(strings.TrimSpace(string(out))) + ")")
+	if out, err := gitexec.Command(ctx, b.ws, "reset", "--soft", "--quiet", top).CombinedOutput(); err != nil {
+		return b.combined(ctx, "the issue branch could not be moved to the stacked commit ("+logging.RedactString(strings.TrimSpace(string(out)))+")")
 	}
-	rec.LowerBranch, rec.UpperBranch = lowerBranch, branch
-	o.logPatchOut(identifier, run.push.runLogID, "INFO", fmt.Sprintf("worker: stack split (%s): %s, then %s stacked on it", rec.Order, lowerBranch, branch))
+	b.rec.LowerBranch, b.rec.UpperBranch = lowerBranch, b.branch
+	o.logPatchOut(b.identifier, run.push.runLogID, "INFO", fmt.Sprintf("worker: stack split (%s): %s, then %s stacked on it", b.rec.Order, lowerBranch, b.branch))
 
-	res := stackSplitOutcome{handled: true, topBranch: branch, order: rec.Order}
+	res := stackSplitOutcome{handled: true, topBranch: b.branch, order: b.rec.Order}
+	if pushLower {
+		push := run.push
+		push.branch, push.sha, push.sealTree = lowerBranch, lower, lowerSeal
+		if r := o.daemonPush(ctx, push); r.hold != "" {
+			res.hold = r.hold
+			usePrevCode()
+			o.sendStackSplit(ctx, b.identifier, b.rec)
+			return res
+		}
+		b.rec.CodeLane, b.rec.CodeFiles, b.rec.CodeFilesTotal = codeSide.CodeLane, codeSide.CodeFiles, codeSide.CodeFilesTotal
+	}
+	b.rec.LowerSHA = lower
+	if b.rec.LowerPRURL == "" {
+		if url := o.openStackPR(ctx, run, lowerBranch, run.prBase, b.rec, true); url != "" {
+			b.rec.LowerPRURL, b.rec.LowerPR = url, prdetector.PRNumber(url)
+		}
+	}
+	res.lowerPRURL = b.rec.LowerPRURL
+	o.sendStackSplit(ctx, b.identifier, b.rec) // before the top's push, which may wait for a human
+
 	push := run.push
-	push.branch, push.sha, push.sealTree = lowerBranch, lower, lowerSeal
-	if r := o.daemonPush(ctx, push); r.hold != "" {
-		res.hold = r.hold
-		o.sendStackSplit(ctx, identifier, rec)
-		return res
-	}
-	res.lowerPRURL = o.openStackPR(ctx, run, lowerBranch, run.prBase, rec, true)
-	rec.LowerPRURL, rec.LowerPR = res.lowerPRURL, prdetector.PRNumber(res.lowerPRURL)
-	o.sendStackSplit(ctx, identifier, rec) // before the top's push, which may wait for a human
-
-	push = run.push
-	push.branch, push.sha, push.baseRefs = branch, top, []string{lower}
+	push.branch, push.sha, push.baseRefs = b.branch, top, []string{lower}
 	if r := o.daemonPush(ctx, push); r.hold != "" {
 		res.hold = r.hold
 		return res
 	}
-	res.topPRURL = o.openStackPR(ctx, run, branch, lowerBranch, rec, false)
-	rec.UpperPRURL = res.topPRURL
-	o.sendStackSplit(ctx, identifier, rec)
+	res.topPRURL = o.openStackPR(ctx, run, b.branch, lowerBranch, b.rec, false)
+	if res.topPRURL != "" {
+		b.rec.UpperPRURL = res.topPRURL
+		o.sendStackSplit(ctx, b.identifier, b.rec)
+	}
 	return res
 }
 
-// openStackPR opens one pull request of a stack split. The lower one names
-// the issue without closing it; the top one, merged last, closes it.
+// openStackPR opens one pull request of a stack split, or returns the one
+// already open for head (a resumed run). The lower one names the issue
+// without closing it; the top one, merged last, closes it.
 func (o *Orchestrator) openStackPR(ctx context.Context, run stackSplitRun, head, base string, rec StackSplitRecord, lower bool) string {
 	issue := run.push.issue
 	prCtx, cancel := context.WithTimeout(ctx, postRunTimeout)
 	defer cancel()
+	if url := o.prFinder()(prCtx, run.push.wsPath, head); url != "" {
+		o.logPatchOut(issue.Identifier, run.push.runLogID, "INFO", "worker: stack split: the pull request for "+head+" is already open: "+url)
+		return url
+	}
 	codeOnLower := rec.Order == StackSplitCodeFirst
 	side := "pipeline"
 	if lower == codeOnLower {
@@ -390,14 +458,6 @@ func (o *Orchestrator) openStackPR(ctx context.Context, run stackSplitRun, head,
 // patches-only run's (push: daemon), where Itervox controls the push.
 func (o *Orchestrator) stackSplitApplies(patchOut bool) bool {
 	return patchOut && o.cfg.Guardrails.Enabled && o.cfg.Guardrails.Lanes.Split
-}
-
-func gitOutput(ctx context.Context, ws string, args ...string) string {
-	out, err := gitexec.Command(ctx, ws, args...).Output()
-	if err != nil {
-		return ""
-	}
-	return string(out)
 }
 
 // firstLine is the first line of the first reason, for a one-line record.

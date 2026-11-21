@@ -177,7 +177,15 @@ How it works, after the run's own checks passed and before anything is pushed:
    files, nothing changes: one pull request as before.
 2. Itervox builds a code-only and a pipeline-only commit on the base and
    runs the profile's `verify` checks on **the code alone**, in a temporary
-   worktree. They are signed and stored like the run's own.
+   worktree. They are signed and stored like the run's own. A temporary
+   worktree has the committed files only, so Itervox first runs your
+   [`hooks.after_create`](/configuration/#hooks) in it (bounded by
+   `hooks.timeout_ms`), the same hook a new workspace runs: install the
+   dependencies there (`pnpm install --frozen-lockfile`, `go mod download`,
+   …) and the checks see them. A failing hook gives one combined pull
+   request, with the reason recorded. Both commits keep the agent's commit
+   message (body and trailers), with an `Itervox-Stack-Split:` trailer
+   saying which half they are.
 3. **The code passes alone:** the code goes first. `<branch>-code` is pushed
    and its pull request opened against the base right away; the pipeline
    change is the issue branch, stacked on it (its pull request targets
@@ -187,7 +195,14 @@ How it works, after the run's own checks passed and before anything is pushed:
    (after your approval) against the base, and the code stacked on it as the
    issue branch.
 5. **Both fail alone:** no stack is offered. One combined pull request, as
-   without the split, and the reason is recorded.
+   without the split, and the reason is recorded. Without an `after_create`
+   hook the reason also says the checks may have lacked installed
+   dependencies.
+
+Itervox never pushes over a branch it did not push: when `<branch>-code` (or
+`<branch>-pipeline`) already exists on the remote at any other commit than the
+one the split would push, the run gets one combined pull request and the
+reason names the branch.
 
 No branch in the stack is a broken middle: the lower one passed its own
 checks, and the top has exactly the tree the run's checks passed on. The
@@ -204,16 +219,38 @@ Merge policy stays per pull request: `merge_pr` judges the lower, code-only
 pull request of a code-first split by the code's own lane (`auto` merges;
 `second_opinion` still needs its reviewer), and every other pull request of
 the issue, the pipeline one included, by the issue's lane (`lane_human`).
+The code's own lane holds only for the commit the split pushed (kept as
+`lowerSha` in the record): `merge_pr` reads the pull request's head
+(`gh pr view --json headRefOid`) and merges it with `--match-head-commit`.
+Once anything else reaches `<branch>-code` (the pipeline pull request merged
+into it first, a push by hand), it is judged by the issue's lane, which a
+split's pipeline files make `lane_human`.
+
+When the top's push is held or refused (or the daemon restarts between the
+two pushes), the resumed run keeps the split rather than starting over:
+
+- the lower branch moves only by a **fast-forward** from the commit Itervox
+  pushed, and only when that side changed since and still passes the checks
+  alone; otherwise it stays as it is and the new change rides in the top;
+- the top is stacked on it again and pushed (with its approval);
+- the pull requests already open are reused, never opened twice;
+- if the lower branch moved since Itervox pushed it, or is gone, the run gets
+  one combined pull request instead.
+
+A later run never continues the lower branch as the issue's pull request,
+even after the top was merged into it.
 
 Limits of this version:
 
 - Only a branch's first push is split; a branch already on the remote, an
   issue [stacked on its blocker](/guides/stacked-prs/) and a run without
   `verify` get one pull request (the last two with the reason recorded).
-- The checks on each half run in a fresh worktree of that commit: a check
-  that needs ignored files the agent's worktree has (installed dependencies,
-  build output) can fail there, and the split then falls back to one pull
-  request.
+- The checks on each half run in a fresh worktree of that commit, prepared
+  only by `hooks.after_create`: a check that needs ignored files the hook
+  does not create (build output, `workspace.copy_files` copies) can fail
+  there, and the split then falls back to one pull request. A hook that
+  writes files git does not ignore makes the lower push refuse (its tree no
+  longer matches the checks'): ignore what it installs.
 - Later runs on the issue push to the issue branch, the top of the stack.
 
 ## Check your lanes

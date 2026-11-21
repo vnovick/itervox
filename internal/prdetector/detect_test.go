@@ -251,3 +251,41 @@ func TestFetchPRContext_GhFailureIsNonFatal(t *testing.T) {
 	assert.Empty(t, pr.ReviewComments, "no review comments when gh fails")
 	assert.NotEmpty(t, pr.DiffStat, "DiffStat still populated from local git")
 }
+
+// guardrails.lanes.split: the lower pull request of a stack split names
+// the issue too, and is linked last when the top's comment never came (or
+// the top was merged into it). Detect with a skip passes over it, so the issue's
+// next run continues the top (the issue branch) or starts fresh, never the
+// lower branch.
+func TestDetectSkipPassesOverSkippedBranches(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$3\" in\n" +
+		"*/pull/2) printf '%s' '{\"state\":\"OPEN\",\"headRefName\":\"eng-4-fix-code\",\"body\":\"Part of ENG-4\"}' ;;\n" +
+		"*) printf '%s' '{\"state\":\"OPEN\",\"headRefName\":\"eng-4-fix\",\"body\":\"Resolves ENG-4\"}' ;;\nesac\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	now := time.Now()
+	issue := domain.Issue{
+		ID:          "i4",
+		Identifier:  "ENG-4",
+		Description: strPtr("https://github.com/org/repo/pull/1"),
+		Comments:    []domain.Comment{{Body: "Pull request created: https://github.com/org/repo/pull/2", CreatedAt: &now}},
+	}
+	pr, err := prdetector.Detect(context.Background(), issue)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "eng-4-fix-code", pr.Branch, "Detect alone takes the latest link")
+
+	skip := func(b string) bool { return b == "eng-4-fix-code" }
+	pr, err = prdetector.Detect(context.Background(), issue, skip)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+	assert.Equal(t, "eng-4-fix", pr.Branch)
+	assert.Equal(t, "https://github.com/org/repo/pull/1", pr.URL)
+
+	issue.Description = nil
+	pr, err = prdetector.Detect(context.Background(), issue, skip)
+	require.NoError(t, err)
+	assert.Nil(t, pr, "only the lower PR is linked: none")
+}

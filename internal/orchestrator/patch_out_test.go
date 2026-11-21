@@ -53,6 +53,13 @@ type patchOutOpts struct {
 	extra []string
 	// split is guardrails.lanes.split.
 	split bool
+	// rerun makes the agent script re-runnable (a resumed run): it reuses
+	// the branch and writes a new content (the run's number) each time.
+	rerun bool
+	// afterCreate is hooks.after_create.
+	afterCreate string
+	// setup runs on the clone and its bare remote before the daemon starts.
+	setup func(ws, remote string)
 }
 
 func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
@@ -77,8 +84,15 @@ func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
 
 	script := filepath.Join(root, "agent.sh")
 	body := "set -e\ngit checkout -q -b eng-1-fix\n"
+	content := "echo 'change'"
+	if o.rerun {
+		count := filepath.Join(root, "agent.count")
+		body = "set -e\ngit checkout -q eng-1-fix 2>/dev/null || git checkout -q -b eng-1-fix\n" +
+			"n=$(cat " + count + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + count + "\n"
+		content = "echo \"change $n\""
+	}
 	for _, f := range append([]string{o.file}, o.extra...) {
-		body += "mkdir -p " + filepath.Dir(f) + "\necho 'change' > " + f + "\n"
+		body += "mkdir -p " + filepath.Dir(f) + "\n" + content + " > " + f + "\n"
 	}
 	body += "git add -A\ngit commit -q -m change\n"
 	if o.dirty {
@@ -100,6 +114,10 @@ func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
 	cfg.Guardrails.Enabled = true
 	cfg.Guardrails.Lanes.Human = o.human
 	cfg.Guardrails.Lanes.Split = o.split
+	cfg.Hooks.AfterCreate = o.afterCreate
+	if o.setup != nil {
+		o.setup(r.ws, r.remote)
+	}
 	cfg.Agent.Profiles = map[string]config.AgentProfile{
 		"impl": {Command: "/bin/sh " + script, Instructions: "Implement it.", Push: config.PushDaemon, Verify: o.verify},
 	}
@@ -113,6 +131,16 @@ func newPatchOutRig(t *testing.T, o patchOutOpts) *patchOutRig {
 		defer r.mu.Unlock()
 		r.prs = append(r.prs, head+"->"+base)
 		return fmt.Sprintf("https://example.invalid/o/r/pull/%d", len(r.prs)), nil
+	})
+	r.orch.SetPRFinder(func(_ context.Context, _, branch string) string { // the PRs opened so far stay open
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for i, pr := range r.prs {
+			if head, _, _ := strings.Cut(pr, "->"); head == branch {
+				return fmt.Sprintf("https://example.invalid/o/r/pull/%d", i+1)
+			}
+		}
+		return ""
 	})
 
 	store := agentactions.NewStore()

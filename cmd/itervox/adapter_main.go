@@ -284,12 +284,13 @@ func (a *orchestratorAdapter) MergeLaneRefusal(ctx context.Context, identifier s
 
 // MergeLaneRefusalForPR implements server.MergePRLaneChecker
 // (guardrails.lanes.split): a stack split's lower, code-only pull request
-// is judged by its own lane.
-func (a *orchestratorAdapter) MergeLaneRefusalForPR(ctx context.Context, identifier string, pr int) string {
+// is judged by its own lane while its head is the commit the split pushed.
+func (a *orchestratorAdapter) MergeLaneRefusalForPR(ctx context.Context, identifier string, pr int,
+	headSHA func(context.Context) (string, error)) (reason, matchHead string) {
 	if a.orch == nil {
-		return ""
+		return "", ""
 	}
-	return a.orch.MergeLaneRefusalForPR(ctx, identifier, pr)
+	return a.orch.MergeLaneRefusalForPR(ctx, identifier, pr, headSHA)
 }
 
 // EmitPRMerged implements server.PRMergedEmitter so the merge_pr action

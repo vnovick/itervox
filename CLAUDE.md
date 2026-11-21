@@ -482,16 +482,29 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   After the verify gate the worker sorts the run's files (`Lanes.SplitPaths`:
   human lane vs the rest, lockfiles and handoffs with the code), builds
   code-only / pipeline-only commits on the merge base through a temporary
-  index (gitexec), runs the profile's `verify` checks on them in a temporary
-  worktree, and pushes lower then top through `daemonPush` (top on the issue
-  branch, `reset --soft` to a commit with the run's own tree). The decision
-  reaches the loop only as `EventStackSplit` → `State.StackSplits` (per issue,
-  persisted to `stack_splits.json` by the ledger writer, pruned on terminal,
-  one `stack_split` feed event per decision). `merge_pr` asks
-  `MergeLaneRefusalForPR` (PR number through `EventMergeLaneCheck`): only a
-  code-first split's lower PR is judged by the code side's lane; everything
-  else keeps the issue's `PushLanes` record. An agent's own pushes are never
-  split (`config.StackSplitIgnoredReason` → startup warning).
+  index (gitexec), runs `hooks.after_create` and then the profile's `verify`
+  checks on them in a temporary worktree, and pushes lower then top through
+  `daemonPush` (top on the issue branch, `reset --soft` to a commit with the
+  run's own tree). It never pushes over a lower branch it did not push (an
+  existing remote `<branch>-code`/`-pipeline` at another commit → one
+  combined PR). The decision reaches the loop only as `EventStackSplit` →
+  `State.StackSplits` (per issue, persisted to `stack_splits.json` by the
+  ledger writer, pruned on terminal, one `stack_split` feed event per
+  decision); `StackSplitRecord.LowerSHA` is the commit last pushed to the
+  lower branch. A later run of the issue reads the record from `Snapshot()`
+  (off the loop) and, while the remote lower branch is still `LowerSHA`,
+  keeps the split: it fast-forwards the lower branch (or leaves it) and
+  stacks a new top, never re-splitting from scratch. `merge_pr` asks
+  `MergeLaneRefusalForPR` (PR number through `EventMergeLaneCheck`; the
+  loop answers with both lanes, and the PR's head is read with
+  `gh pr view --json headRefOid` off the loop, only for that PR): a
+  code-first split's lower PR is judged by the code side's lane only while
+  its head is `LowerSHA` (then merged with `--match-head-commit`);
+  everything else keeps the issue's `PushLanes` record (a split's pipeline
+  files when the issue has none: fail closed). PR detection
+  (`prdetector.Detect` with a skip) never continues a lower branch as the issue's
+  PR. An agent's own pushes are never split
+  (`config.StackSplitIgnoredReason` → startup warning).
 
 ### Workspace port ledger is workspace state, not `State`
 
