@@ -21,9 +21,13 @@ export const BUDGET = {
    * the diff review upgrades, which together leave the visual refresh no
    * headroom under the old cap. Raised from 2200 KiB by #298: the live
    * terminal's renderer (@xterm/xterm + fit, ~286 KiB) in its own lazy
-   * TmuxTerminal chunk, loaded only when a live terminal opens.
+   * TmuxTerminal chunk, loaded only when a live terminal opens. Raised from
+   * 2260 KiB for 0.3.4: the terminal follow-ups, the desktop terminal
+   * window page, the Lanes view (its React Flow diagram is a lazy chunk)
+   * and the local-models profile field together reach ~2261 KiB; 2320 KiB
+   * leaves room without hiding a regression the size of a new dependency.
    */
-  totalJsBytes: 2260 * KB,
+  totalJsBytes: 2320 * KB,
   /**
    * The entry script plus its modulepreloads from index.html (before #211:
    * 499,682). Raised from 520 KiB with the total: the visual refresh's shell
