@@ -210,9 +210,62 @@ func TestAdapterMentionsWholeWords(t *testing.T) {
 	m := Mentions([]byte("const known = ['CONVEX_DEPLOY_KEY', \"CONVEX_URL\"];\n// $CONVEX_SITE\n"))
 	assert.True(t, m["CONVEX_DEPLOY_KEY"])
 	assert.True(t, m["CONVEX_URL"])
-	assert.True(t, m["$CONVEX_SITE"], "$ is part of a JS identifier")
+	assert.True(t, m["CONVEX_SITE"], "$ is never part of a name")
+	assert.False(t, m["$CONVEX_SITE"])
 	assert.False(t, m["CONVEX_DEPLOY"])
-	assert.False(t, m["CONVEX_SITE"])
+}
+
+// TestAdapterShellGuardClassifiesDollarName: a shell guard that tests
+// "$NAME" or "${NAME}" classifies NAME.
+func TestAdapterShellGuardClassifiesDollarName(t *testing.T) {
+	m := Mentions([]byte("#!/bin/sh\nif [ -z \"$CONVEX_DEPLOY_KEY\" ]; then exit 1; fi\n: \"${CONVEX_URL:?}\"\n"))
+	assert.True(t, m["CONVEX_DEPLOY_KEY"])
+	assert.True(t, m["CONVEX_URL"])
+	for w := range m {
+		assert.NotContains(t, w, "$")
+	}
+}
+
+// TestAdapterShellInstallFileReadsDollarNames: a generic tool whose
+// installed files are shell scripts: $NAME and ${NAME} are reads of NAME
+// in word mode, and an env_pattern that captures the $ records NAME.
+func TestAdapterShellInstallFileReadsDollarNames(t *testing.T) {
+	root := t.TempDir()
+	script := "#!/bin/sh\ncurl -H \"Authorization: $MYCLI_TOKEN\" \"${MYCLI_URL}/deploy\"\necho \"$HOME\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "mycli.sh"), []byte(script), 0o644))
+
+	words := load(t, "mycli", Config{EnvScan: "node_modules/mycli/bin/*.sh", DeployVars: list("MYCLI_*")})
+	reads, err := words.EnvReads(root)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"MYCLI_TOKEN", "MYCLI_URL"}, names(reads))
+	assert.Equal(t, EnvRead{Name: "MYCLI_TOKEN", Path: "mycli.sh", Line: 2, Count: 1}, reads[0])
+
+	pat := load(t, "mycli", Config{EnvScan: "node_modules/mycli/bin/*.sh", EnvPattern: `\$\{?([$]?[A-Z_][A-Z0-9_]*)`, DeployVars: list("MYCLI_*")})
+	reads, err = pat.EnvReads(root)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"MYCLI_TOKEN", "MYCLI_URL"}, names(reads))
+
+	dollar := load(t, "mycli", Config{EnvScan: "node_modules/mycli/bin/*.sh", EnvPattern: `(\$[A-Z_][A-Z0-9_]*)`, DeployVars: list("MYCLI_*")})
+	reads, err = dollar.EnvReads(root)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"MYCLI_TOKEN"}, names(reads), "a pattern group that captures $NAME records NAME")
+}
+
+// TestAdapterJSReadsStillFound: removing $ from names does not change JS
+// reads: process.env.NAME, a bracket read and a destructured read.
+func TestAdapterJSReadsStillFound(t *testing.T) {
+	root := t.TempDir()
+	js := "const a = process.env.MYCLI_A;\nconst { MYCLI_B, MYCLI_C: c } = process.env;\nconst d = process.env['MYCLI_D'];\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cli.js"), []byte(js), 0o644))
+	tool := load(t, "mycli", Config{EnvScan: "node_modules/mycli/*.js", DeployVars: list("MYCLI_*")})
+	reads, err := tool.EnvReads(root)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"MYCLI_A", "MYCLI_B", "MYCLI_C", "MYCLI_D"}, names(reads))
+
+	pat := load(t, "mycli", Config{EnvScan: "node_modules/mycli/*.js", EnvPattern: `process\.env(?:\.|\[["'])([A-Z_][A-Z0-9_]*)`, DeployVars: list("MYCLI_*")})
+	reads, err = pat.EnvReads(root)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"MYCLI_A", "MYCLI_D"}, names(reads))
 }
 
 // TestAdapterBuiltinsAreValid: every built-in loads with its defaults.

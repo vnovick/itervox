@@ -232,3 +232,32 @@ func TestEnvcheckPolicyWithToolsStillWorksForLanes(t *testing.T) {
 	code, out, errOut := referee(t, nil, "lanes", "--dir", r.dir, "--base", "main")
 	assert.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
 }
+
+// TestEnvcheckShellToolAndShellGuard: a tool whose installed files are
+// shell scripts reads $NAME and ${NAME}, and a shell guard classifies
+// "$NAME". The classified read passes; the unclassified one is a finding
+// (exit 20, never a silent 0), named without the $.
+func TestEnvcheckShellToolAndShellGuard(t *testing.T) {
+	policy := "tools:\n  mycli:\n    guard: scripts/deploy-guard.sh\n" +
+		"    env_scan: node_modules/mycli/bin/*.sh\n" +
+		"    deploy_vars: [MYCLI_*]\n"
+	r := newTestRepo(t)
+	r.commit("base", map[string]string{
+		".gitignore":              "node_modules/\n",
+		".referee.yml":            policy,
+		"scripts/deploy-guard.sh": "#!/bin/sh\nif [ -z \"$MYCLI_TOKEN\" ]; then echo refused; exit 1; fi\n",
+	})
+	r.git("checkout", "-q", "-b", "bump")
+	r.commit("bump", map[string]string{"package-lock.json": "{}\n"})
+	r.write(map[string]string{
+		"node_modules/mycli/bin/mycli.sh": "#!/bin/sh\ncurl -H \"Authorization: $MYCLI_TOKEN\" \"${MYCLI_URL}/deploy\"\n",
+	})
+	code, out, errOut := referee(t, nil, "envcheck", "--dir", r.dir, "--base", "main", "--json")
+	require.Equal(t, exitHuman, code, "stdout=%s stderr=%s", out, errOut)
+	var rep envReport
+	require.NoError(t, json.Unmarshal([]byte(out), &rep))
+	require.Len(t, rep.Findings, 1)
+	assert.Equal(t, "MYCLI_URL", rep.Findings[0].Variable)
+	assert.Equal(t, "node_modules/mycli/bin/mycli.sh", rep.Findings[0].Path)
+	assert.Equal(t, []string{"MYCLI_TOKEN", "MYCLI_URL"}, rep.Tools[0].Variables)
+}

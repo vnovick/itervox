@@ -93,7 +93,10 @@ func readBounded(p string) ([]byte, error) {
 // scanFile records each deploy-target name in raw, line by line.
 func scanFile(rel string, raw []byte, pattern *regexp.Regexp, deployVar func(string) bool, found map[string]*EnvRead) {
 	note := func(name string, line int) {
-		if !deployVar(name) {
+		// A name is recorded without a shell's leading $ (an env_pattern
+		// may capture "$NAME"), so it matches deploy_vars and the guard.
+		name = strings.TrimLeft(name, "$")
+		if name == "" || !deployVar(name) {
 			return
 		}
 		if r, ok := found[name]; ok {
@@ -123,12 +126,17 @@ func scanFile(rel string, raw []byte, pattern *regexp.Regexp, deployVar func(str
 	}
 }
 
+// isWordByte reports whether c is part of a variable name. $ never is: a
+// shell reads $NAME and ${NAME}, and both must yield NAME, or a shell
+// install file's reads are missed (envcheck would fail open) and a shell
+// guard's [ -z "$NAME" ] would classify nothing.
 func isWordByte(c byte) bool {
-	return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
-// words splits b into identifier-like words ([A-Za-z0-9_$]+), so a name is
-// matched whole: CONVEX_DEPLOY is not a mention inside CONVEX_DEPLOY_KEY.
+// words splits b into identifier-like words ([A-Za-z0-9_]+), so a name is
+// matched whole: CONVEX_DEPLOY is not a mention inside CONVEX_DEPLOY_KEY,
+// and $NAME / ${NAME} are the word NAME.
 func words(b []byte) []string {
 	var out []string
 	for i := 0; i < len(b); {

@@ -224,7 +224,12 @@ What each side comes from:
 
 "Classified" means the guard mentions the variable's name as a whole word
 (`CONVEX_DEPLOY` is not mentioned by `CONVEX_DEPLOY_KEY`), in code, in a list
-or in a comment. envcheck does not judge what the guard does with it.
+or in a comment. A name is letters, digits and `_`; a `$` is never part of
+it, so a shell guard's `[ -z "$CONVEX_DEPLOY_KEY" ]` classifies
+`CONVEX_DEPLOY_KEY`, and a shell file in a tool's install that reads
+`$NAME` or `${NAME}` is found as `NAME`. An `env_pattern` group that
+captures a leading `$` is recorded without it. envcheck does not judge what
+the guard does with it.
 
 **Limits.** A scan finds the variable names a tool's files mention, not
 every way it can read one. It does not see a name built at run time
