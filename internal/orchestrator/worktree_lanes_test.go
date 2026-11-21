@@ -93,8 +93,8 @@ func TestWorktreeLanesGroupsFilesWithRulesFindingsAndSplit(t *testing.T) {
 
 	lines := guardrails.LaneReasonLines(v.Reasons, v.ReasonsTotal, 10)
 	assert.Equal(t, []string{
-		".github/workflows/ci.yml:3 adds `continue-on-error: true` (failure ignored in a CI workflow (continue-on-error / allow_failure: true))",
-		"calc_test.go:6 adds `t.Skip(\"flaky\")` (test skip added (t.Skip))",
+		".github/workflows/ci.yml:3: failure ignored in a CI workflow (continue-on-error / allow_failure: true) [ci_continue_on_error]",
+		"calc_test.go:6: test skip added (t.Skip) [go_skip]",
 		".github/workflows/ci.yml matched .github/** → human",
 		"auth/login.go matched auth/** → second_opinion",
 	}, lines)

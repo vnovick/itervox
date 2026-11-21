@@ -376,7 +376,10 @@ func (o *Orchestrator) RunContext(identifier string) (RunContextView, bool) {
 	if in := snap.InputRequiredIssues[identifier]; in != nil {
 		v.PendingInput = sanitizeRunText(in.Context, runContextPendingMaxBytes)
 		v.PendingApproval = in.GuardrailApprovalID != ""
-		if len(in.GuardrailLaneReasons) > 0 {
+		switch {
+		case in.GuardrailLaneReasonsUnavailable:
+			v.PendingReasons = []string{laneReasonsUnavailableNote}
+		case len(in.GuardrailLaneReasons) > 0: // never the added lines (String leaves Text out)
 			v.PendingReasons = guardrails.LaneReasonLines(in.GuardrailLaneReasons, in.GuardrailLaneReasonsTotal, guardrails.MaxLaneReasonsShown)
 		}
 	}

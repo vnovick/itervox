@@ -86,20 +86,27 @@ func (o *Orchestrator) WorktreeLanes(ctx context.Context, identifier string) (La
 	v := LanesView{Base: sum.Base, MergeBase: sum.MergeBase, Truncated: sum.Truncated,
 		Enforced: enabled && !lanes.Empty()}
 
+	// Every changed path the audit saw (tracked and untracked, not cut at
+	// workspace.DiffMaxFiles: classifying a path is cheap), so Lane is the
+	// highest lane of the whole change; the listed files when the audit
+	// failed.
 	paths := make([]string, 0, len(sum.Files))
 	for _, f := range sum.Files {
 		paths = append(paths, f.Path)
 	}
 	audit, err := guardrails.AuditRange(ctx, path, sum.MergeBase, "")
-	if err != nil {
+	switch {
+	case err != nil:
 		if ctx.Err() != nil {
 			return LanesView{}, ctx.Err()
 		}
 		v.FindingsTruncated = true // the files still classify; their findings are unknown
+	case len(audit.Paths) > 0 || len(paths) == 0:
+		paths = audit.Paths
+		v.Truncated = v.Truncated || audit.PathsTruncated
 	}
-	findings := laneViewFindings(audit.Findings, paths)
-	v.FindingsTruncated = v.FindingsTruncated || audit.Truncated || len(findings) > maxLaneFindings
-	findings = findings[:min(len(findings), maxLaneFindings)]
+	found := laneViewFindings(audit.Findings, paths)
+	v.FindingsTruncated = v.FindingsTruncated || audit.Truncated || found.truncated
 
 	res := lanes.Classify(paths)
 	v.Lane = res.Lane
@@ -107,16 +114,15 @@ func (o *Orchestrator) WorktreeLanes(ctx context.Context, identifier string) (La
 	for _, f := range sum.Files {
 		lane, rule := lanes.Match(f.Path)
 		lf := LaneFile{DiffFile: f, Lane: lane, Rule: rule}
-		var mine []guardrails.LaneReason
-		for _, fd := range findings {
-			if fd.Path == f.Path {
-				mine = append(mine, guardrails.FindingReason(fd))
-			}
+		mine := found.byFile[f.Path]
+		reasons := make([]guardrails.LaneReason, 0, len(mine))
+		for _, fd := range mine {
+			reasons = append(reasons, guardrails.FindingReason(fd))
 		}
-		lf.Findings, _ = guardrails.SanitizeLaneReasons(mine[:min(len(mine), maxLaneFileFindings)], len(mine))
+		lf.Findings, _ = guardrails.SanitizeLaneReasons(reasons, found.fileTotal[f.Path])
 		v.Files = append(v.Files, lf)
 	}
-	v.Reasons, v.ReasonsTotal = guardrails.LaneReasons(res, findings)
+	v.Reasons, v.ReasonsTotal = guardrails.LaneReasons(res, found.ordered, found.total)
 
 	snap := o.Snapshot()
 	if s, ok := snap.StackSplits[identifier]; ok {
@@ -131,23 +137,67 @@ func (o *Orchestrator) WorktreeLanes(ctx context.Context, identifier string) (La
 	return v, nil
 }
 
-// laneViewFindings keeps the findings on the listed files, in file order
-// then line order, each (rule, path, line) once.
-func laneViewFindings(found []guardrails.AuditFinding, paths []string) []guardrails.AuditFinding {
-	out := make([]guardrails.AuditFinding, 0, len(found))
+// laneFindings are the Lanes view's findings, each (rule, path, line)
+// once: ordered (file order, then line) up to maxLaneFindings, byFile up
+// to maxLaneFileFindings per file (by line), and how many there were in
+// all and per file.
+type laneFindings struct {
+	ordered   []guardrails.AuditFinding
+	byFile    map[string][]guardrails.AuditFinding
+	fileTotal map[string]int
+	total     int
+	// truncated: a finding was dropped over a cap.
+	truncated bool
+}
+
+type laneFindingKey struct {
+	rule, path string
+	line       int
+}
+
+// laneViewFindings keeps the findings on paths. Linear in the findings
+// (a map de-duplicates, a precomputed path index orders) and bounded: a
+// file keeps at most maxLaneFileFindings, so a change with hundreds of
+// thousands of findings costs one pass, never a scan of what was kept.
+func laneViewFindings(found []guardrails.AuditFinding, paths []string) laneFindings {
+	index := make(map[string]int, len(paths))
+	for i, p := range paths {
+		if _, ok := index[p]; !ok {
+			index[p] = i
+		}
+	}
+	out := laneFindings{byFile: map[string][]guardrails.AuditFinding{}, fileTotal: map[string]int{}}
+	seen := map[laneFindingKey]struct{}{}
 	for _, f := range found {
-		if !slices.Contains(paths, f.Path) || slices.ContainsFunc(out, func(o guardrails.AuditFinding) bool {
-			return o.Rule == f.Rule && o.Path == f.Path && o.Line == f.Line
-		}) {
+		if _, ok := index[f.Path]; !ok {
 			continue
 		}
-		out = append(out, f)
-	}
-	slices.SortStableFunc(out, func(a, b guardrails.AuditFinding) int {
-		if a.Path != b.Path {
-			return slices.Index(paths, a.Path) - slices.Index(paths, b.Path)
+		k := laneFindingKey{f.Rule, f.Path, f.Line}
+		if _, dup := seen[k]; dup {
+			continue
 		}
-		return a.Line - b.Line
-	})
+		seen[k] = struct{}{}
+		out.total++
+		out.fileTotal[f.Path]++
+		if len(out.byFile[f.Path]) < maxLaneFileFindings {
+			out.byFile[f.Path] = append(out.byFile[f.Path], f)
+		} else {
+			out.truncated = true
+		}
+	}
+	files := make([]string, 0, len(out.byFile))
+	for p, fs := range out.byFile {
+		files = append(files, p)
+		slices.SortStableFunc(fs, func(a, b guardrails.AuditFinding) int { return a.Line - b.Line })
+	}
+	slices.SortFunc(files, func(a, b string) int { return index[a] - index[b] })
+	for _, p := range files {
+		if len(out.ordered) >= maxLaneFindings {
+			break
+		}
+		fs := out.byFile[p]
+		out.ordered = append(out.ordered, fs[:min(len(fs), maxLaneFindings-len(out.ordered))]...)
+	}
+	out.truncated = out.truncated || out.total > len(out.ordered)
 	return out
 }

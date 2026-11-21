@@ -94,6 +94,55 @@ describe('PipelineChangeNotice', () => {
     expect(screen.getByText('and 9 more')).toBeInTheDocument();
   });
 
+  it('shows a viewer the location and rule, without the added line', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        inputRequired: [
+          makeInputRequiredRow({
+            identifier: 'ENG-1',
+            guardrailLanePaths: ['.github/workflows/ci.yml'],
+            // The daemon withholds `text` below operator scope.
+            guardrailLaneReasons: [
+              {
+                kind: 'finding',
+                path: '.github/workflows/ci.yml',
+                line: 10,
+                rule: 'ci_continue_on_error',
+                message: 'failure ignored in a CI workflow',
+              },
+            ],
+            guardrailLaneReasonsTotal: 1,
+          }),
+        ],
+      }),
+    });
+    render(<PipelineChangeNotice identifier="ENG-1" />);
+    const why = screen.getByRole('list', { name: 'Why this needs a person' });
+    const [item] = within(why).getAllByRole('listitem');
+    expect(item).toHaveTextContent(
+      '.github/workflows/ci.yml:10 — failure ignored in a CI workflow',
+    );
+    expect(item).not.toHaveTextContent('adds');
+  });
+
+  it('says the reasons are unavailable when the daemon could not recompute them', () => {
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        inputRequired: [
+          makeInputRequiredRow({
+            identifier: 'ENG-1',
+            guardrailLanePaths: ['.github/workflows/ci.yml'],
+            guardrailLaneReasonsUnavailable: true,
+          }),
+        ],
+      }),
+    });
+    render(<PipelineChangeNotice identifier="ENG-1" />);
+    expect(screen.getByText('.github/workflows/ci.yml')).toBeInTheDocument();
+    expect(screen.getByTestId('lane-reasons-unavailable')).toHaveTextContent('reasons unavailable');
+    expect(screen.queryByRole('list', { name: 'Why this needs a person' })).toBeNull();
+  });
+
   it('links straight to the issue Lanes view when the daemon serves it', async () => {
     useItervoxStore.setState({
       selectedIdentifier: null,

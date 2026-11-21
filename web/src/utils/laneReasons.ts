@@ -16,14 +16,21 @@ export function laneReasonLocation(r: LaneReason): string {
 /**
  * How serious a finding looks: "high" (red) when it switches a check off or
  * hides its failure, "medium" (amber) for a skip a person may well accept.
+ * Rule ids the daemon does not send yet are harmless here.
  */
-const HIGH_RULES = new Set([
+const HIGH_RULES: ReadonlySet<string> = new Set([
   'ci_continue_on_error',
   'ci_or_true',
   'test_deleted',
   'git_no_verify',
   'coverage_lowered',
   'js_only',
+  'ts_strict_off',
+  'script_stubbed',
+  'check_or_true',
+  'snapshot_update',
+  'test_pass_with_no_tests',
+  'eslint_rule_off',
 ]);
 
 export function findingSeverity(r: LaneReason): 'high' | 'medium' {

@@ -69,11 +69,7 @@ func AuditPatch(patch []byte) ([]AuditFinding, error) {
 			if file == "" {
 				continue
 			}
-			for _, r := range lineRules {
-				if r.Files(file) && r.match(text) {
-					out = append(out, AuditFinding{Rule: r.ID, Path: file, Line: lineNo, Message: r.Message, Text: text})
-				}
-			}
+			out = appendLineFindings(out, file, lineNo, text)
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -81,6 +77,16 @@ func AuditPatch(patch []byte) ([]AuditFinding, error) {
 	}
 	flush()
 	return out, nil
+}
+
+// appendLineFindings appends the line rules' findings on one added line.
+func appendLineFindings(out []AuditFinding, file string, lineNo int, text string) []AuditFinding {
+	for _, r := range lineRules {
+		if r.Files(file) && r.match(text) {
+			out = append(out, AuditFinding{Rule: r.ID, Path: file, Line: lineNo, Message: r.Message, Text: text})
+		}
+	}
+	return out
 }
 
 // patchPath is the repository path of a "+++ b/path" line ("" for

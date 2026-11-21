@@ -336,6 +336,9 @@ type InputRequiredEntry struct {
 	// many there were.
 	GuardrailLaneReasons      []guardrails.LaneReason
 	GuardrailLaneReasonsTotal int
+	// GuardrailLaneReasonsUnavailable: the daemon could not recompute the
+	// held push's reasons (its question says so; only paths are shown).
+	GuardrailLaneReasonsUnavailable bool
 }
 
 // PendingInputResumeEntry holds a user reply that has been accepted but not

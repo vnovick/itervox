@@ -657,10 +657,14 @@ export const InputRequiredEntrySchema = z.object({
   // "pipeline change"): the files (at most 50) and how many there were.
   guardrailLanePaths: z.array(z.string()).optional(),
   guardrailLanePathsTotal: z.number().optional(),
-  // Why that push needs a person, with file and line (at most 20, redacted
-  // by the daemon), and how many there were.
+  // Why that push needs a person, with file and line (at most 20, computed
+  // and redacted by the daemon), and how many there were. A finding's
+  // `text` (the added line) is withheld below operator scope.
   guardrailLaneReasons: z.array(LaneReasonSchema).optional(),
   guardrailLaneReasonsTotal: z.number().optional(),
+  // The daemon could not recompute the reasons from the worktree (it never
+  // shows the agent's own): only the paths are known.
+  guardrailLaneReasonsUnavailable: z.boolean().optional(),
 });
 
 export const AutomationQueueBackpressureSchema = z.object({

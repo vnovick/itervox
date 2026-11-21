@@ -18,7 +18,7 @@ const MAX_SHOWN = 10;
 // says WHY, with file and line (the audit findings on the pushed diff, the
 // lane pattern each path matched).
 export function PipelineChangeNotice({ identifier }: { identifier: string }) {
-  const { paths, total, reasons, reasonsTotal, lanesView } = useItervoxStore(
+  const { paths, total, reasons, reasonsTotal, reasonsUnavailable, lanesView } = useItervoxStore(
     useShallow((s) => {
       const row = s.snapshot?.inputRequired?.find((r) => r.identifier === identifier);
       return {
@@ -26,6 +26,7 @@ export function PipelineChangeNotice({ identifier }: { identifier: string }) {
         total: row?.guardrailLanePathsTotal ?? 0,
         reasons: row?.guardrailLaneReasons ?? EMPTY_REASONS,
         reasonsTotal: row?.guardrailLaneReasonsTotal ?? 0,
+        reasonsUnavailable: row?.guardrailLaneReasonsUnavailable ?? false,
         // The Lanes view lives in the issue's Changes tab (run_context).
         lanesView: s.snapshot?.capabilities?.includes('run_context') ?? false,
       };
@@ -54,7 +55,14 @@ export function PipelineChangeNotice({ identifier }: { identifier: string }) {
         ))}
       </ul>
       {more > 0 && <p className="text-theme-muted text-xs">and {more} more</p>}
-      <LaneReasonList reasons={reasons} total={reasonsTotal} />
+      {reasonsUnavailable ? (
+        <p className="text-theme-muted text-xs" data-testid="lane-reasons-unavailable">
+          Why this needs a person: reasons unavailable (Itervox could not recompute them from the
+          worktree).
+        </p>
+      ) : (
+        <LaneReasonList reasons={reasons} total={reasonsTotal} />
+      )}
       {lanesView && (
         <button
           type="button"

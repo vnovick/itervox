@@ -235,7 +235,7 @@ func TestPatchOutHumanLaneHolds(t *testing.T) {
 	assert.Equal(t, []string{".github/workflows/ci.yml"}, entry.GuardrailLanePaths)
 	assert.Contains(t, entry.Context, "Pipeline change:")
 	assert.Contains(t, entry.Context, "by Itervox for a patches-only run")
-	assert.Contains(t, entry.Context, "- .github/workflows/ci.yml matched .github/** → human", "the daemon's hold says why too")
+	assert.Contains(t, entry.Context, "- `.github/workflows/ci.yml` matched `.github/**` → human", "the daemon's hold says why too")
 	assert.Empty(t, r.remoteRef("refs/heads/eng-1-fix"), "held: nothing on the remote yet")
 	assert.Empty(t, r.openedPRs())
 

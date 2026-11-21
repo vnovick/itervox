@@ -84,6 +84,28 @@ type LanesResponse struct {
 	TextAllowed bool `json:"textAllowed"`
 }
 
+// laneReasonsForScope is reasons as a caller of scope may see them: a
+// finding's line text (a hunk line) withheld below operator and redacted
+// again below admin. rs may be shared with other callers, so it copies.
+// Every response that carries a guardrails.LaneReason goes through it
+// (the Lanes view, the snapshot's input-required rows).
+func laneReasonsForScope(rs []guardrails.LaneReason, scope apitokens.Scope) []guardrails.LaneReason {
+	if scope == apitokens.ScopeAdmin || rs == nil {
+		return rs
+	}
+	textAllowed := scope.Allows(apitokens.ScopeOperator)
+	out := make([]guardrails.LaneReason, len(rs))
+	for i, r := range rs {
+		if textAllowed {
+			r.Text = logging.RedactString(r.Text)
+		} else {
+			r.Text = ""
+		}
+		out[i] = r
+	}
+	return out
+}
+
 // lanesForScope withholds a finding's line text below operator and
 // redacts it again below admin.
 func lanesForScope(resp LanesResponse, scope apitokens.Scope) LanesResponse {
@@ -91,24 +113,12 @@ func lanesForScope(resp LanesResponse, scope apitokens.Scope) LanesResponse {
 	if scope == apitokens.ScopeAdmin {
 		return resp
 	}
-	text := func(rs []guardrails.LaneReason) []guardrails.LaneReason {
-		out := make([]guardrails.LaneReason, len(rs))
-		for i, r := range rs {
-			if resp.TextAllowed {
-				r.Text = logging.RedactString(r.Text)
-			} else {
-				r.Text = ""
-			}
-			out[i] = r
-		}
-		return out
-	}
 	files := make([]LaneFileRow, len(resp.Files))
 	for i, f := range resp.Files {
-		f.Findings = text(f.Findings)
+		f.Findings = laneReasonsForScope(f.Findings, scope)
 		files[i] = f
 	}
-	resp.Files, resp.Reasons = files, text(resp.Reasons)
+	resp.Files, resp.Reasons = files, laneReasonsForScope(resp.Reasons, scope)
 	return resp
 }
 

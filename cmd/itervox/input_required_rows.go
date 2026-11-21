@@ -25,6 +25,7 @@ func sortedInputRequiredRows(entries map[string]*orchestrator.InputRequiredEntry
 			row.GuardrailLanePathsTotal = entry.GuardrailLanePathsTotal
 			row.GuardrailLaneReasons = append([]guardrails.LaneReason(nil), entry.GuardrailLaneReasons...)
 			row.GuardrailLaneReasonsTotal = entry.GuardrailLaneReasonsTotal
+			row.GuardrailLaneReasonsUnavailable = entry.GuardrailLaneReasonsUnavailable
 		}
 		rows = append(rows, row)
 	}

@@ -1,7 +1,6 @@
 package guardrails
 
 import (
-	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -52,7 +51,10 @@ type LaneReason struct {
 	Lane    string `json:"lane,omitempty"`
 	Rule    string `json:"rule,omitempty"`
 	Message string `json:"message,omitempty"`
-	// Text is the added line a finding matched (trimmed, redacted, clipped).
+	// Text is the added line a finding matched (trimmed, redacted,
+	// clipped). It is a hunk line, so it needs operator scope: String and
+	// Markdown never include it (they reach the tracker comment, Slack and
+	// viewer clients), and the server withholds it below operator.
 	Text string `json:"text,omitempty"`
 }
 
@@ -69,13 +71,14 @@ func (r LaneReason) Location() string {
 	return r.Path
 }
 
-// String is the reason as one line of text.
+// String is the reason as one line of plain text: location, rule message
+// and rule id, never the added line itself (Text needs operator scope).
 func (r LaneReason) String() string {
 	loc := r.Location()
 	switch r.Kind {
 	case ReasonFinding:
-		if r.Text != "" {
-			return loc + " adds `" + r.Text + "` (" + r.Message + ")"
+		if r.Rule != "" {
+			return loc + ": " + r.Message + " [" + r.Rule + "]"
 		}
 		return loc + ": " + r.Message
 	case ReasonLaneRule:
@@ -87,20 +90,56 @@ func (r LaneReason) String() string {
 	return loc + ": " + r.Message
 }
 
+// Markdown is String for a Markdown reader (the tracker comment): the
+// location and the rule in code spans (a reason field never holds a
+// backtick, cleanReasonField turns them into quotes) and the message
+// escaped. Never the added line itself.
+func (r LaneReason) Markdown() string {
+	loc := "`" + r.Location() + "`"
+	switch r.Kind {
+	case ReasonFinding:
+		if r.Rule != "" {
+			return loc + ": " + EscapeMarkdown(r.Message) + " (`" + r.Rule + "`)"
+		}
+		return loc + ": " + EscapeMarkdown(r.Message)
+	case ReasonLaneRule:
+		if r.Rule == "" {
+			return loc + ": " + EscapeMarkdown(r.Message)
+		}
+		return loc + " matched `" + r.Rule + "` → " + EscapeMarkdown(r.Lane)
+	}
+	return loc + ": " + EscapeMarkdown(r.Message)
+}
+
+// markdownEscaper escapes the characters Markdown (CommonMark, GitHub and
+// Linear comments) gives a meaning inside a line: emphasis, code, links,
+// HTML, tables, strike-through, mentions. A reason never starts a line, so
+// block markers ("#", "-", "1.") need nothing.
+var markdownEscaper = strings.NewReplacer(
+	`\`, `\\`, "`", "\\`", "*", `\*`, "_", `\_`, "[", `\[`, "]", `\]`,
+	"<", `\<`, ">", `\>`, "|", `\|`, "~", `\~`, "@", `\@`)
+
+// EscapeMarkdown escapes s so a Markdown renderer shows it as typed (no
+// emphasis, links, HTML, mentions or headings).
+func EscapeMarkdown(s string) string { return markdownEscaper.Replace(s) }
+
 // LaneReasons builds the reasons for a classified push: the findings first
 // (they name a line), then one lane-rule reason per path above auto, human
-// before second_opinion. At most MaxLaneReasons are returned; total is how
-// many there were. Sanitized (see SanitizeLaneReasons).
-func LaneReasons(r LaneResult, findings []AuditFinding) ([]LaneReason, int) {
-	out := make([]LaneReason, 0, len(findings)+len(r.Human)+len(r.SecondOpinion))
-	for _, f := range findings {
+// before second_opinion. findings may be cut short: findingsTotal is how
+// many there were in all (at least len(findings)). Only the first
+// MaxLaneReasons reasons are built and returned; total is how many there
+// were. Sanitized (see SanitizeLaneReasons).
+func LaneReasons(r LaneResult, findings []AuditFinding, findingsTotal int) ([]LaneReason, int) {
+	total := max(findingsTotal, len(findings)) + len(r.Human) + len(r.SecondOpinion)
+	out := make([]LaneReason, 0, min(total, MaxLaneReasons))
+	for _, f := range findings[:min(len(findings), MaxLaneReasons)] {
 		out = append(out, FindingReason(f))
 	}
 	for _, lane := range []struct {
 		name  string
 		paths []string
 	}{{LaneHuman, r.Human}, {LaneSecondOpinion, r.SecondOpinion}} {
-		for _, p := range lane.paths {
+		for _, p := range lane.paths[:min(len(lane.paths), max(MaxLaneReasons-len(out), 0))] {
 			rule := r.Rules[p]
 			reason := LaneReason{Kind: ReasonLaneRule, Path: p, Lane: lane.name, Rule: rule}
 			if rule == "" { // the stand-in of a push whose files could not be listed
@@ -109,7 +148,7 @@ func LaneReasons(r LaneResult, findings []AuditFinding) ([]LaneReason, int) {
 			out = append(out, reason)
 		}
 	}
-	return SanitizeLaneReasons(out, len(out))
+	return SanitizeLaneReasons(out, total)
 }
 
 // FindingReason is the reason an audit finding gives.
@@ -146,11 +185,11 @@ func SanitizeLaneReasons(in []LaneReason, total int) ([]LaneReason, int) {
 	return out, max(total, len(out))
 }
 
-// cleanReasonField redacts secrets, flattens control characters and clips
-// one text field at a rune boundary.
+// cleanReasonField redacts secrets, flattens control characters (C0, DEL
+// and C1) and clips one text field at a rune boundary.
 func cleanReasonField(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return ' '
 		}
 		return r
@@ -180,18 +219,51 @@ func LaneReasonLines(reasons []LaneReason, total, n int) []string {
 	return lines
 }
 
-// filterFindings keeps the findings on paths (all of them when paths is
-// nil), each (rule, path, line) once.
-func filterFindings(findings []AuditFinding, paths []string) []AuditFinding {
-	out := findings[:0:0]
+// findingKey identifies a finding for de-duplication.
+type findingKey struct {
+	rule, path string
+	line       int
+}
+
+// findingSet collects findings each (rule, path, line) once, in order:
+// the first limit are kept, and total counts every distinct one. Linear in
+// the findings it is given (a map, never a scan of what it kept).
+type findingSet struct {
+	seen  map[findingKey]struct{}
+	kept  []AuditFinding
+	limit int
+	total int
+}
+
+func newFindingSet(limit int) *findingSet {
+	return &findingSet{seen: map[findingKey]struct{}{}, limit: limit}
+}
+
+// add adds the findings on paths (all of them when paths is nil).
+func (s *findingSet) add(findings []AuditFinding, paths map[string]struct{}) {
 	for _, f := range findings {
-		if paths != nil && !slices.Contains(paths, f.Path) {
+		if paths != nil {
+			if _, ok := paths[f.Path]; !ok {
+				continue
+			}
+		}
+		k := findingKey{f.Rule, f.Path, f.Line}
+		if _, dup := s.seen[k]; dup {
 			continue
 		}
-		if slices.ContainsFunc(out, func(o AuditFinding) bool { return o.Rule == f.Rule && o.Path == f.Path && o.Line == f.Line }) {
-			continue
+		s.seen[k] = struct{}{}
+		s.total++
+		if len(s.kept) < s.limit {
+			s.kept = append(s.kept, f)
 		}
-		out = append(out, f)
 	}
-	return out
+}
+
+// pathSet is paths as a set.
+func pathSet(paths []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		set[p] = struct{}{}
+	}
+	return set
 }

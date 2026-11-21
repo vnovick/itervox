@@ -1337,11 +1337,17 @@ type InputRequiredRow struct {
 	GuardrailLanePathsTotal int      `json:"guardrailLanePathsTotal,omitempty"`
 	// GuardrailLaneReasons say why that push needs a person, with file and
 	// line (audit findings on the pushed diff, the lane pattern each path
-	// matched): at most 20, redacted by the daemon; the question (Context)
-	// lists the same reasons as text. GuardrailLaneReasonsTotal is how many
-	// there were.
+	// matched): at most 20, computed and redacted by the daemon; the
+	// question (Context) lists the same reasons as text without the added
+	// lines. A finding's Text (the added line) is withheld below operator
+	// (inputRequiredForScope). GuardrailLaneReasonsTotal is how many there
+	// were.
 	GuardrailLaneReasons      []guardrails.LaneReason `json:"guardrailLaneReasons,omitempty"`
 	GuardrailLaneReasonsTotal int                     `json:"guardrailLaneReasonsTotal,omitempty"`
+	// GuardrailLaneReasonsUnavailable: the daemon could not recompute the
+	// held push's reasons from the worktree (it never shows the hook's);
+	// only the paths are known.
+	GuardrailLaneReasonsUnavailable bool `json:"guardrailLaneReasonsUnavailable,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.

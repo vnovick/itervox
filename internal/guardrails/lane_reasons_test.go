@@ -38,17 +38,45 @@ func TestLaneReasonsFromLanesAndFindings(t *testing.T) {
 	r := l.Classify([]string{".github/workflows/deploy.yml", ".github/workflows/ci.yml", "auth/login.go", "main.go"})
 	findings := []AuditFinding{{Rule: "ci_continue_on_error", Path: ".github/workflows/ci.yml", Line: 10,
 		Message: "failure ignored in a CI workflow (continue-on-error / allow_failure: true)", Text: "      continue-on-error: true"}}
-	reasons, total := LaneReasons(r, findings)
+	reasons, total := LaneReasons(r, findings, len(findings))
 	require.Equal(t, 4, total)
 	assert.Equal(t, []string{
-		".github/workflows/ci.yml:10 adds `continue-on-error: true` (failure ignored in a CI workflow (continue-on-error / allow_failure: true))",
+		".github/workflows/ci.yml:10: failure ignored in a CI workflow (continue-on-error / allow_failure: true) [ci_continue_on_error]",
 		".github/workflows/ci.yml matched .github/workflows/** → human",
 		".github/workflows/deploy.yml matched .github/workflows/** → human",
 		"auth/login.go matched auth/** → second_opinion",
 	}, LaneReasonLines(reasons, total, 10))
 	assert.Equal(t, ReasonFinding, reasons[0].Kind)
 	assert.Equal(t, 10, reasons[0].Line)
+	assert.Equal(t, "continue-on-error: true", reasons[0].Text, "the structured reason keeps the line")
 	assert.Equal(t, ReasonLaneRule, reasons[1].Kind)
+	for _, r := range reasons {
+		assert.NotContains(t, r.String(), "continue-on-error: true", "String never carries the added line")
+		assert.NotContains(t, r.Markdown(), "continue-on-error: true", "Markdown never carries the added line")
+	}
+	assert.Equal(t, "`.github/workflows/ci.yml:10`: failure ignored in a CI workflow (continue-on-error / allow\\_failure: true) (`ci_continue_on_error`)",
+		reasons[0].Markdown())
+	assert.Equal(t, "`auth/login.go` matched `auth/**` → second\\_opinion", reasons[3].Markdown())
+}
+
+// Markdown escapes what a tracker would render in a rule message: no
+// emphasis, link, HTML or mention survives; the location and the rule stay
+// in code spans.
+func TestLaneReasonMarkdownEscapes(t *testing.T) {
+	r, _ := SanitizeLaneReasons([]LaneReason{{Kind: ReasonFinding, Path: "a`b.yml", Line: 2, Rule: "x*y",
+		Message: "see [here](http://evil) <img src=x> **bold** @everyone ~~s~~ | t"}}, 1)
+	require.Len(t, r, 1)
+	md := r[0].Markdown()
+	assert.Equal(t, "`a'b.yml:2`: see \\[here\\](http://evil) \\<img src=x\\> \\*\\*bold\\*\\* \\@everyone \\~\\~s\\~\\~ \\| t (`x*y`)", md)
+}
+
+// cleanReasonField flattens C0, DEL and C1 control characters (a C1 CSI,
+// U+009B, starts a terminal escape in some terminals; NEL breaks lines).
+func TestCleanReasonFieldStripsC1Controls(t *testing.T) {
+	assert.Equal(t, "a b c d e", cleanReasonField("a\u009bb\u0085c\u007fd\x1be"))
+	for _, c := range []rune{0x80, 0x85, 0x9b, 0x9f} {
+		assert.NotContains(t, cleanReasonField("x"+string(c)+"y"), string(c))
+	}
 }
 
 // Reasons are bounded (MaxLaneReasons kept, the total counted, "and K
@@ -61,7 +89,7 @@ func TestLaneReasonsBoundedAndRedacted(t *testing.T) {
 		findings = append(findings, AuditFinding{Rule: "ci_or_true", Path: ".github/workflows/ci.yml", Line: i + 1,
 			Message: "exit status discarded in a CI workflow (|| true)", Text: "run: make test || true"})
 	}
-	reasons, total := LaneReasons(LaneResult{Lane: LaneHuman}, findings)
+	reasons, total := LaneReasons(LaneResult{Lane: LaneHuman}, findings, len(findings))
 	assert.Len(t, reasons, MaxLaneReasons)
 	assert.Equal(t, 30, total)
 	lines := LaneReasonLines(reasons, total, MaxLaneReasonsShown)

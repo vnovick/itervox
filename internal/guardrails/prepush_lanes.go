@@ -105,7 +105,8 @@ func (p Policy) pushedPaths(u RefUpdate, repo laneRepo) ([]string, error) {
 			if err != nil {
 				return changed, nil
 			}
-			return slices.DeleteFunc(changed, func(f string) bool { return !slices.Contains(vsBase, f) }), nil
+			inBase := pathSet(vsBase)
+			return slices.DeleteFunc(changed, func(f string) bool { _, ok := inBase[f]; return !ok }), nil
 		}
 	}
 	if base == "" {
@@ -146,10 +147,12 @@ func (p Policy) classifyPush(updates []RefUpdate, repo laneRepo) LaneResult {
 // pushFindings applies the audit rules to what each ref update changes
 // (the range pushedPaths compares: from the issue base's merge base, else
 // from the remote tip), keeping the findings on the files the push
-// changes. Best effort: a range that cannot be audited adds nothing (the
-// lane-rule reasons still say why the push is held).
-func (p Policy) pushFindings(updates []RefUpdate, repo laneRepo) []AuditFinding {
-	var out []AuditFinding
+// changes, each (rule, path, line) once. Only the first MaxLaneReasons are
+// kept (findings come first among the reasons, so no later one is shown);
+// total counts them all. Best effort: a range that cannot be audited adds
+// nothing (the lane-rule reasons still say why the push is held).
+func (p Policy) pushFindings(updates []RefUpdate, repo laneRepo) (kept []AuditFinding, total int) {
+	set := newFindingSet(MaxLaneReasons)
 	for _, u := range updates {
 		if zeroSHA(u.LocalSHA) || !strings.HasPrefix(u.RemoteRef, "refs/heads/") {
 			continue
@@ -175,9 +178,9 @@ func (p Policy) pushFindings(updates []RefUpdate, repo laneRepo) []AuditFinding 
 		if err != nil {
 			continue
 		}
-		out = append(out, filterFindings(found, paths)...)
+		set.add(found, pathSet(paths))
 	}
-	return filterFindings(out, nil)
+	return set.kept, set.total
 }
 
 // PushReasons are the reasons a daemon push (push: daemon) classified as
@@ -186,7 +189,93 @@ func (p Policy) pushFindings(updates []RefUpdate, repo laneRepo) []AuditFinding 
 // through gitexec on the caller's goroutine (a worker's).
 func PushReasons(dir, branch, sha, remoteSHA string, lanes Lanes, baseRefs []string, r LaneResult) ([]LaneReason, int) {
 	p := Policy{Lanes: lanes, BaseRefs: baseRefs}
-	return LaneReasons(r, p.pushFindings([]RefUpdate{daemonRefUpdate(branch, sha, remoteSHA)}, gitRepo{dir: dir}))
+	findings, total := p.pushFindings([]RefUpdate{daemonRefUpdate(branch, sha, remoteSHA)}, gitRepo{dir: dir})
+	return LaneReasons(r, findings, total)
+}
+
+// MaxPushedRefs bounds the refs an approval request names.
+const MaxPushedRefs = 20
+
+// PushedRef is one ref update of a held push, as the hook saw it: the
+// daemon recomputes the push's reasons from these and never shows reasons
+// the hook wrote (the hook runs in the agent's environment).
+type PushedRef struct {
+	RemoteRef string `json:"remote_ref"`
+	LocalSHA  string `json:"local_sha"`
+	RemoteSHA string `json:"remote_sha,omitempty"`
+}
+
+// pushedRefs are the refs of updates an approval request names.
+func pushedRefs(updates []RefUpdate) []PushedRef {
+	out := make([]PushedRef, 0, min(len(updates), MaxPushedRefs))
+	for _, u := range updates[:min(len(updates), MaxPushedRefs)] {
+		out = append(out, PushedRef{RemoteRef: u.RemoteRef, LocalSHA: u.LocalSHA, RemoteSHA: u.RemoteSHA})
+	}
+	return out
+}
+
+// ErrPushReasonsUnavailable: the reasons of an agent's push could not be
+// recomputed (no refs, a malformed ref, a commit the worktree does not
+// have).
+var ErrPushReasonsUnavailable = errors.New("guardrails: the push's reasons could not be recomputed")
+
+// AgentPushReasons recomputes, in the daemon, why an agent's held push is
+// in the human lane, from the issue's worktree at dir (the daemon's path,
+// never the hook's) and the refs the hook named: every ref must be a
+// branch with full hex SHAs whose pushed commit the worktree has, else
+// ErrPushReasonsUnavailable. Lanes and base refs are the daemon's own.
+// Runs git through gitexec on the caller's goroutine (an HTTP handler's,
+// never the event loop's).
+func AgentPushReasons(dir string, refs []PushedRef, lanes Lanes, baseRefs []string) ([]LaneReason, int, error) {
+	if len(refs) == 0 || len(refs) > MaxPushedRefs {
+		return nil, 0, ErrPushReasonsUnavailable
+	}
+	repo := gitRepo{dir: dir}
+	updates := make([]RefUpdate, 0, len(refs))
+	for _, ref := range refs {
+		if !validPushedRef(ref) || zeroSHA(ref.LocalSHA) || !repo.hasCommit(ref.LocalSHA) {
+			return nil, 0, ErrPushReasonsUnavailable
+		}
+		remote := ref.RemoteSHA
+		if remote == "" {
+			remote = strings.Repeat("0", len(ref.LocalSHA))
+		}
+		updates = append(updates, RefUpdate{LocalSHA: ref.LocalSHA, RemoteRef: ref.RemoteRef, RemoteSHA: remote})
+	}
+	p := Policy{Lanes: lanes, BaseRefs: baseRefs}
+	r := p.classifyPush(updates, repo)
+	findings, total := p.pushFindings(updates, repo)
+	reasons, n := LaneReasons(LaneResult{Lane: r.Lane, Human: r.Human, Rules: r.Rules}, findings, total)
+	return reasons, n, nil
+}
+
+// validPushedRef: a branch ref without control characters, spaces, "..",
+// a leading "-" or characters git refuses in a ref name, and full hex SHAs
+// (the remote one may be empty for a new branch).
+func validPushedRef(r PushedRef) bool {
+	name, ok := strings.CutPrefix(r.RemoteRef, "refs/heads/")
+	if !ok || name == "" || len(r.RemoteRef) > 255 || strings.Contains(name, "..") || strings.HasPrefix(name, "-") ||
+		strings.ContainsFunc(name, func(c rune) bool {
+			return c <= ' ' || c == 0x7f || c == '~' || c == '^' || c == ':' || c == '?' || c == '*' || c == '[' || c == '\\'
+		}) {
+		return false
+	}
+	return isFullSHA(r.LocalSHA) && (r.RemoteSHA == "" || isFullSHA(r.RemoteSHA))
+}
+
+// isFullSHA: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
+func isFullSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	return !strings.ContainsFunc(s, func(c rune) bool { return (c < '0' || c > '9') && (c < 'a' || c > 'f') })
+}
+
+// hasCommit reports whether the repository has commit sha.
+func (g gitRepo) hasCommit(sha string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return gitexec.Command(ctx, g.dir, "cat-file", "-e", sha+"^{commit}").Run() == nil
 }
 
 // laneKey identifies a held push: the same refs and commits join the
@@ -201,17 +290,17 @@ func laneKey(dir string, updates []RefUpdate) string {
 
 // holdHumanLane waits for a human to approve a push that changes human-lane
 // files. ok means approved, once; otherwise code is the hook's exit status.
-func holdHumanLane(p Policy, dir, remote string, updates []RefUpdate, r LaneResult, repo laneRepo, stderr io.Writer) (code int, ok bool) {
+func holdHumanLane(p Policy, dir, remote string, updates []RefUpdate, r LaneResult, stderr io.Writer) (code int, ok bool) {
 	refs := make([]string, 0, len(updates))
 	for _, u := range updates {
 		refs = append(refs, u.RemoteRef)
 	}
 	display := displayCommand("git", append([]string{"push", remote}, refs...))
 	sent := r.Human[:min(len(r.Human), MaxLanePathsSent)]
-	reasons, reasonsTotal := LaneReasons(LaneResult{Lane: r.Lane, Human: r.Human, Rules: r.Rules}, p.pushFindings(updates, repo))
+	// The refs, not reasons: the daemon recomputes why (AgentPushReasons).
 	return waitForApproval(p, approvalAsk{
 		req: ApprovalRequest{Key: laneKey(dir, updates), Command: display, Lane: LaneHuman,
-			Paths: sent, PathsTotal: len(r.Human), Reasons: reasons, ReasonsTotal: reasonsTotal},
+			Paths: sent, PathsTotal: len(r.Human), Refs: pushedRefs(updates)},
 		why: "(guardrails.lanes.human: it changes " + LanePathSummary(sent, len(r.Human), MaxLanePathsShown) +
 			"; an agent may change what CI checks, never how CI checks)",
 		unavailableKind: KindLaneHuman,

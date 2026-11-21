@@ -71,8 +71,7 @@ same changes sorted by [lanes](/guides/lanes/):
   check off or hides its failure (`continue-on-error`, `|| true`, a deleted
   test, a lowered coverage threshold, `--no-verify`, `.only`), amber for a
   test skip. They come from the same rules as `itervox referee audit`, run
-  over the worktree (uncommitted edits included; untracked files are listed
-  but not audited).
+  over the worktree (uncommitted edits and untracked files included).
 - **Edges into the pull request.** After a [stack split](/guides/lanes/#stack-split-code-and-pipeline-as-two-pull-requests)
   there are two: which one goes first, the one stacked on it, and why. A
   **Split / One PR** switch compares that with the single pull request.

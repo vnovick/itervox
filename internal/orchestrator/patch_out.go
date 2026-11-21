@@ -222,7 +222,7 @@ func (o *Orchestrator) awaitDaemonPushApproval(ctx context.Context, run daemonPu
 	var st guardrails.ApprovalStatus
 	err := o.retryBusy(ctx, func() error {
 		var rerr error
-		st, rerr = o.RequestGuardrailApproval(identifier, run.runLogID, req)
+		st, rerr = o.raiseGuardrailApproval(identifier, run.runLogID, req) // reasons computed here, by the daemon
 		return rerr
 	})
 	if err != nil {

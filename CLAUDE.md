@@ -494,17 +494,25 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   split (`config.StackSplitIgnoredReason` → startup warning).
 - **Lane reasons and the Lanes view.** The audit rules (`referee audit`'s
   table) live in `internal/guardrails` (`audit_rules.go`, `AuditPatch`,
-  `AuditRange`), shared by the referee, the pre-push hook and the daemon —
-  guardrails cannot import referee. A held push's `ApprovalRequest.Reasons`
-  (`guardrails.LaneReason`: `finding` file:line, `lane_rule` path → pattern,
-  `tool_behaviour` reserved) are re-sanitized by the daemon
-  (`SanitizeLaneReasons`: redacted, clipped, ≤ 20) and ride on
-  `InputRequiredEntry.GuardrailLaneReasons` (question text, snapshot row,
-  run context `PendingReasons` for Slack). `GET
-  /api/v1/issues/{identifier}/lanes` (viewer; a finding's `text` needs
-  operator, `lanesForScope`) is `Orchestrator.WorktreeLanes`: git on the
-  caller's goroutine like `WorktreeDiff`, `StackSplits` / `PushLanes` /
-  the pending approval read only through `Snapshot()`. No new State.
+  `AuditRange`; the working tree's untracked files are read through an
+  `os.Root`, never via the index), shared by the referee and the daemon —
+  guardrails cannot import referee. Reasons (`guardrails.LaneReason`:
+  `finding` file:line, `lane_rule` path → pattern, `tool_behaviour`
+  reserved) are computed **by the daemon only**: the hook sends the pushed
+  refs (`ApprovalRequest.Refs`; `Reasons` is `json:"-"`), and
+  `RequestGuardrailApproval` recomputes them (`AgentPushReasons`, git on the
+  HTTP goroutine, never the loop) or marks them unavailable (paths only,
+  never the hook's text); a daemon push uses `raiseGuardrailApproval` with
+  `PushReasons`. They ride on `InputRequiredEntry.GuardrailLaneReasons`.
+  A finding's `Text` (the added line) is operator scope: `String` /
+  `Markdown` (question text = tracker comment, run context
+  `PendingReasons` for Slack, `itervox watch`) never include it, and
+  `snapshotForScope` (`inputRequiredForScope`) and `lanesForScope` strip it
+  below operator. `GET /api/v1/issues/{identifier}/lanes` (viewer) is
+  `Orchestrator.WorktreeLanes`: git on the caller's goroutine like
+  `WorktreeDiff`, `StackSplits` / `PushLanes` / the pending approval read
+  only through `Snapshot()`. Finding de-duplication is map-based and
+  capped (no scans of kept output). No new State.
 
 ### Workspace port ledger is workspace state, not `State`
 

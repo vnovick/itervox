@@ -184,15 +184,22 @@ func TestHeldPushQuestionSaysWhy(t *testing.T) {
 		return entry != nil && entry.GuardrailApprovalID != ""
 	}, 30*time.Second, 20*time.Millisecond, "the pipeline push never raised an input request")
 	want := []string{
-		".github/workflows/ci.yml:1 adds `continue-on-error: true` (failure ignored in a CI workflow (continue-on-error / allow_failure: true))",
+		".github/workflows/ci.yml:1: failure ignored in a CI workflow (continue-on-error / allow_failure: true) [ci_continue_on_error]",
 		".github/workflows/ci.yml matched .github/** → human",
 	}
+	// Recomputed by the daemon from the worktree (the hook sends refs only).
+	assert.False(t, entry.GuardrailLaneReasonsUnavailable)
 	assert.Equal(t, want, guardrails.LaneReasonLines(entry.GuardrailLaneReasons, entry.GuardrailLaneReasonsTotal, guardrails.MaxLaneReasonsShown))
-	assert.Contains(t, entry.Context, "Why this needs a person:\n- "+want[0]+"\n- "+want[1]+"\n")
+	assert.Equal(t, "continue-on-error: true", entry.GuardrailLaneReasons[0].Text, "operators see the line through the structured reason")
+	assert.Contains(t, entry.Context, "Why this needs a person:\n"+
+		"- `.github/workflows/ci.yml:1`: failure ignored in a CI workflow (continue-on-error / allow\\_failure: true) (`ci_continue_on_error`)\n"+
+		"- `.github/workflows/ci.yml` matched `.github/**` → human\n")
+	assert.NotContains(t, entry.Context, "continue-on-error: true", "the question (tracker comment, Slack) never carries the added line")
 	rc, ok := r.orch.RunContext("ENG-1")
 	require.True(t, ok)
 	assert.True(t, rc.PendingApproval)
 	assert.Equal(t, want, rc.PendingReasons)
+	assert.NotContains(t, rc.PendingInput, "continue-on-error: true")
 
 	require.NoError(t, r.orch.ProvideInput("ENG-1", "no"))
 	assert.Contains(t, r.agentOutput(), "exit=1")
