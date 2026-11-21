@@ -60,9 +60,11 @@ pub fn page_link(base: &str, id: &str) -> String {
     format!("{b}{TERMINAL_PAGE_PATH}?id={}", percent_encode(id))
 }
 
-/// The window label of session `id` of `daemon`: stable, so a second
+/// The window key of session `id` of `daemon`: stable, so a second
 /// "Live terminal" finds the window already open, and only `[a-z0-9-]`
-/// as Tauri requires.
+/// as Tauri requires. The window's label is this key plus a generation
+/// (`-<n>`), so a rebuilt window ([`Reopen::Rebuild`]) never waits for
+/// the stale one's label to be released.
 pub fn window_label(daemon: &str, id: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in daemon.bytes().chain([0u8]).chain(id.bytes()) {
@@ -83,10 +85,66 @@ pub fn window_title(session: &str, project: &str, remote: Option<&str>) -> Strin
 }
 
 /// Whether the terminal window may navigate to `url`: only pages of the
-/// daemon's own origin (the page reloading, or a reconnect); a link out
-/// goes nowhere. The token script is origin-guarded as well.
+/// daemon's own origin (the page reloading, or a reconnect), and
+/// `about:blank`, which some webviews route through the handler and which
+/// carries nothing (the token script is origin-guarded, so it never runs
+/// there); a link out goes nowhere.
 pub fn navigation_allowed(origin: &str, url: &str) -> bool {
-    origin_of(url).is_some_and(|o| o == origin)
+    url == "about:blank" || origin_of(url).is_some_and(|o| o == origin)
+}
+
+/// What a terminal window was built with: the daemon origin its page and
+/// token script are bound to, and a fingerprint of that token. Never the
+/// token itself, and never logged or persisted: the fingerprint is a hash
+/// keyed per process, only compared in memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Built {
+    origin: String,
+    token: Option<u64>,
+}
+
+impl Built {
+    pub fn new(origin: &str, token: Option<&str>) -> Self {
+        Built {
+            origin: origin.to_string(),
+            token: token.map(token_fingerprint),
+        }
+    }
+}
+
+/// A keyed (random per process) hash of `token`.
+fn token_fingerprint(token: &str) -> u64 {
+    use std::hash::BuildHasher;
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    KEY.get_or_init(Default::default).hash_one(token)
+}
+
+/// What "Live terminal" does with the session's window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reopen {
+    /// No window yet: build one.
+    Create,
+    /// The window was built for this origin and token: show and focus it.
+    Focus,
+    /// The window was built for another origin or token (the daemon
+    /// restarted with a new token or port, or its tunnel reconnected on
+    /// another local port): its page and token script are dead, so close
+    /// it and build a fresh one. A window's initialization script cannot
+    /// be changed in place: this is the dashboard windows' `Replace`
+    /// (`rail::switch_plan`).
+    Rebuild,
+}
+
+/// The plan for the session's window: `open` whether one is open, `held`
+/// what it was built with (`None` when unknown), `next` the daemon's
+/// current target.
+pub fn reopen_plan(open: bool, held: Option<&Built>, next: &Built) -> Reopen {
+    match (open, held) {
+        (false, _) => Reopen::Create,
+        (true, Some(h)) if h == next => Reopen::Focus,
+        (true, _) => Reopen::Rebuild,
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +226,57 @@ mod tests {
         assert!(!navigation_allowed(o, "http://127.0.0.1:8090/"));
         assert!(!navigation_allowed(o, "https://example.com/"));
         assert!(!navigation_allowed(o, "file:///etc/passwd"));
+    }
+
+    /// `about:blank` carries no token and is allowed; nothing that only
+    /// looks like it is.
+    #[test]
+    fn terminal_window_allows_about_blank() {
+        let o = "http://127.0.0.1:50001";
+        assert!(navigation_allowed(o, "about:blank"));
+        assert!(!navigation_allowed(o, "about:blank#x"));
+        assert!(!navigation_allowed(o, "about:srcdoc"));
+        assert!(!navigation_allowed(o, "data:text/html,hi"));
+        assert!(!navigation_allowed(o, "javascript:alert(1)"));
+    }
+
+    /// Same target → focus; a changed origin (new port, tunnel reconnect)
+    /// or token (daemon restart), or a token gained or lost → rebuild; no
+    /// window → create. The fingerprint never shows the token.
+    #[test]
+    fn terminal_window_reopen_rebuilds_on_changed_origin_or_token() {
+        let o = "http://127.0.0.1:50001";
+        let built = Built::new(o, Some("tok-1"));
+        assert_eq!(
+            reopen_plan(true, Some(&built), &Built::new(o, Some("tok-1"))),
+            Reopen::Focus
+        );
+        assert_eq!(
+            reopen_plan(true, Some(&built), &Built::new(o, Some("tok-2"))),
+            Reopen::Rebuild
+        );
+        assert_eq!(
+            reopen_plan(
+                true,
+                Some(&built),
+                &Built::new("http://127.0.0.1:50002", Some("tok-1"))
+            ),
+            Reopen::Rebuild
+        );
+        assert_eq!(
+            reopen_plan(true, Some(&built), &Built::new(o, None)),
+            Reopen::Rebuild
+        );
+        let none = Built::new(o, None);
+        assert_eq!(
+            reopen_plan(true, Some(&none), &Built::new(o, None)),
+            Reopen::Focus
+        );
+        // A window whose build is unknown is not trusted.
+        assert_eq!(reopen_plan(true, None, &built), Reopen::Rebuild);
+        assert_eq!(reopen_plan(false, Some(&built), &built), Reopen::Create);
+        assert_eq!(reopen_plan(false, None, &built), Reopen::Create);
+        assert!(!format!("{built:?}").contains("tok-1"));
     }
 
     /// Drift guard: the route the app opens is the one the dashboard

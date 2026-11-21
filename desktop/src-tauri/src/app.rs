@@ -91,6 +91,11 @@ struct Shared {
     /// The view last pushed to the Sessions window: the only sessions its
     /// "Open in Terminal" may attach to (#278).
     sessions_last: Mutex<SessionsView>,
+    /// The open "Live terminal" windows, by session window key
+    /// ([`crate::terminal_window::window_label`]): the window's label and
+    /// what it was built with (origin and a token fingerprint, never the
+    /// token).
+    terminal_windows: Mutex<HashMap<String, (String, crate::terminal_window::Built)>>,
 }
 
 /// A hub window: label, token, origin.
@@ -151,6 +156,7 @@ pub fn run() {
         } => {
             if let Some(shared) = app.try_state::<Arc<Shared>>() {
                 shared.dash.forget(&label);
+                lock(&shared.terminal_windows).retain(|_, (l, _)| *l != label);
                 let mut hub = lock(&shared.hub_window);
                 if hub.as_ref().is_some_and(|(l, _, _)| *l == label) {
                     *hub = None;
@@ -236,6 +242,7 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         machine: Arc::default(),
         welcome_last: Mutex::default(),
         sessions_last: Mutex::default(),
+        terminal_windows: Mutex::default(),
     });
     app.manage(Arc::clone(&shared));
     // A tunnel that comes up or goes down is shown, and read, at once.
@@ -1222,29 +1229,54 @@ fn open_live_terminal(
         return;
     };
     let app2 = app.clone();
+    let shared2 = Arc::clone(shared);
     let _ = app.run_on_main_thread(move || {
-        if let Some(w) = app2.get_webview_window(&target.window) {
-            let _ = w.show();
-            let _ = w.unminimize();
-            let _ = w.set_focus();
-            return;
+        use crate::terminal_window::{reopen_plan, Built, Reopen};
+        let next = Built::new(&origin, t.token.as_deref());
+        let held = lock(&shared2.terminal_windows).get(&target.window).cloned();
+        let open = held
+            .as_ref()
+            .and_then(|(label, _)| app2.get_webview_window(label));
+        match reopen_plan(open.is_some(), held.as_ref().map(|(_, b)| b), &next) {
+            Reopen::Focus => {
+                if let Some(w) = open {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+                return;
+            }
+            // The daemon's origin or token changed since the window was
+            // built: its page cannot reconnect. Close it and build anew
+            // under a fresh label (the old one is released only once the
+            // close is processed).
+            Reopen::Rebuild => {
+                if let Some(w) = open {
+                    let _ = w.destroy();
+                }
+            }
+            Reopen::Create => {}
         }
+        let n = shared2
+            .window_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let label = format!("{}-{n}", target.window);
         #[cfg(target_os = "macos")]
         let _ = app2.set_activation_policy(tauri::ActivationPolicy::Regular);
         let nav_origin = origin.clone();
-        let mut builder =
-            WebviewWindowBuilder::new(&app2, &target.window, WebviewUrl::External(url))
-                .title(&target.title)
-                .inner_size(960.0, 600.0)
-                .min_inner_size(480.0, 280.0)
-                .on_navigation(move |u| {
-                    crate::terminal_window::navigation_allowed(&nav_origin, u.as_str())
-                });
+        let mut builder = WebviewWindowBuilder::new(&app2, &label, WebviewUrl::External(url))
+            .title(&target.title)
+            .inner_size(960.0, 600.0)
+            .min_inner_size(480.0, 280.0)
+            .on_navigation(move |u| {
+                crate::terminal_window::navigation_allowed(&nav_origin, u.as_str())
+            });
         if let Some(token) = t.token.as_deref() {
             builder = builder.initialization_script(token_init_script(&origin, token));
         }
         match builder.build() {
             Ok(w) => {
+                lock(&shared2.terminal_windows).insert(target.window.clone(), (label, next));
                 let _ = w.set_focus();
             }
             Err(e) => eprintln!("itervox desktop: could not open the terminal window: {e}"),
