@@ -1,0 +1,191 @@
+# referee for CircleCI: the setup config. Copy to .circleci/config.yml, and
+# merge referee/ci/circleci-continue-config.yml into the config your
+# pipeline continues with (.circleci/continue-config.yml).
+#
+# This uses CircleCI's dynamic config (Project Settings > Advanced > "Enable
+# dynamic config using setup workflows"): the setup workflow's `referee` job
+# decides whether the change needs an approval, then continues the pipeline
+# with your config and the pipeline parameter `referee-needs-approval`. The
+# continued config runs `referee-gate` at once, or after the
+# `pipeline-approval` job (type: approval) when an approval is needed.
+#
+# The `referee` job installs a pinned referee release (its SHA-256 checked
+# against the release's checksums.txt and against REFEREE_SHA256), fetches
+# the base branch, and runs `referee lanes` and `referee audit` on the
+# branch's changes. The policy (.referee.yml) is read from the base branch,
+# never from the branch. Exit codes are the referee GitHub Action's:
+#
+#   exit 0   auto lane, no audit findings: referee-gate passes.
+#   exit 10  second_opinion lane: reported, passes like exit 0
+#            (REFEREE_FAIL_ON: second_opinion fails the job with 10).
+#   exit 20  human lane, or audit found weakened checks: referee-gate waits
+#            for a maintainer to approve `pipeline-approval`.
+#            REFEREE_APPROVAL: none fails the job with 20 instead, like the
+#            Action's default.
+#   exit 2   any error (a base that cannot be fetched, a malformed policy, a
+#            checksum mismatch): the job fails and the pipeline never
+#            continues. Never approvable.
+#
+# The base branch. CircleCI has no variable for the branch a pull request
+# merges into (CIRCLE_PULL_REQUEST is only the pull request's URL, and
+# pipeline.git.base_revision is the previous pipeline's commit, not the
+# pull request's base). So the base is REFEREE_BASE_BRANCH, your default
+# branch by default: a pull request into another branch is then judged
+# against the default branch's policy and diffed from its merge base with
+# the default branch. Set REFEREE_BASE_BRANCH (here or in a context) if your
+# pull requests merge elsewhere.
+#
+# Set up:
+# - Keep the config outside the branch's reach. CircleCI reads this file
+#   AND .circleci/continue-config.yml from the pull request's own branch, so
+#   a pull request can rewrite either one: drop the approval, or make its
+#   own `referee-gate` that always passes. The required status check then
+#   goes green, and referee never sees the change. .circleci/** is in
+#   referee's default human lane, but that cannot help: the job that would
+#   judge it is the one the branch rewrote. The gate holds only if one of
+#   these is true:
+#     - every change to .circleci/ needs a code owner's review: a
+#       CODEOWNERS entry for /.circleci/ AND branch protection's "Require
+#       review from Code Owners" (and the agent is not a code owner); or
+#     - the config does not come from the repository (a CircleCI config
+#       source the agent cannot push to, for example a pipeline whose
+#       config comes from another repository).
+#   Nothing in this config can enforce it: a check here is in the file the
+#   branch controls, so it can be deleted with the rest.
+# - In branch protection, require the `referee-gate` job's status check. A
+#   change that removes the job then never reports it and cannot merge.
+# - Give `referee-gate` a restricted context (here `pipeline-approval`,
+#   restricted to a maintainers group), so only members of that group can
+#   approve the job that runs it. Never give the agent a CircleCI token: it
+#   could approve through the API.
+# - Pin the image by digest and the orb by exact version in real use, and
+#   update REFEREE_VERSION and REFEREE_SHA256 together (both from the
+#   release's checksums.txt).
+version: 2.1
+setup: true
+
+orbs:
+  continuation: circleci/continuation@1.0.0
+
+jobs:
+  referee:
+    docker:
+      - image: cimg/base:2024.12
+    resource_class: small
+    environment:
+      REFEREE_VERSION: "0.3.3"
+      # referee_linux_amd64.tar.gz in v0.3.3's checksums.txt
+      # (referee_linux_arm64.tar.gz: 0573b6cbc8e00393bafa1edd0542d31fa2ac81427890aaba150da4d46e7fa87f).
+      REFEREE_SHA256: "81718e5be5bfabcc2fdff4ce0e4052371dda3c36df87b70bc4660d581b7d820d"
+      REFEREE_BASE_BRANCH: main
+      REFEREE_FAIL_ON: human # human, second_opinion or never (report only)
+      REFEREE_APPROVAL: step # step (the approval job) or none (fail with 20)
+    steps:
+      - checkout
+      - run:
+          name: referee lanes and audit
+          command: |
+            referee_base_branch=${REFEREE_BASE_BRANCH:-main}
+
+            # >>> referee install (keep in sync across referee/ci/*.yml)
+            set -eu
+            : "${REFEREE_VERSION:?set REFEREE_VERSION, a referee release such as 0.3.3}"
+            : "${REFEREE_SHA256:?set REFEREE_SHA256, the archive line of the release checksums.txt}"
+            case $(uname -s) in
+              Linux) referee_os=linux ;;
+              Darwin) referee_os=darwin ;;
+              *) echo "referee: unsupported OS $(uname -s)" >&2; exit 2 ;;
+            esac
+            case $(uname -m) in
+              x86_64 | amd64) referee_arch=amd64 ;;
+              aarch64 | arm64) referee_arch=arm64 ;;
+              *) echo "referee: unsupported architecture $(uname -m)" >&2; exit 2 ;;
+            esac
+            referee_asset="referee_${referee_os}_${referee_arch}.tar.gz"
+            referee_url="${REFEREE_DOWNLOAD_URL:-https://github.com/vnovick/itervox/releases/download}/v${REFEREE_VERSION#v}"
+            referee_dir=$(mktemp -d) || exit 2
+            curl -fsSL --retry 3 -o "$referee_dir/$referee_asset" "$referee_url/$referee_asset" || exit 2
+            curl -fsSL --retry 3 -o "$referee_dir/checksums.txt" "$referee_url/checksums.txt" || exit 2
+            referee_listed=$(awk -v f="$referee_asset" '$2 == f || $2 == "*" f { print $1 }' "$referee_dir/checksums.txt")
+            if command -v sha256sum >/dev/null 2>&1; then
+              referee_got=$(sha256sum "$referee_dir/$referee_asset" | awk '{ print $1 }')
+            else
+              referee_got=$(shasum -a 256 "$referee_dir/$referee_asset" | awk '{ print $1 }')
+            fi
+            if [ "$referee_listed" != "$REFEREE_SHA256" ] || [ "$referee_got" != "$REFEREE_SHA256" ]; then
+              echo "referee: $referee_asset: checksums.txt lists '$referee_listed', the download is $referee_got, REFEREE_SHA256 is $REFEREE_SHA256" >&2
+              exit 2
+            fi
+            tar -xzf "$referee_dir/$referee_asset" -C "$referee_dir" referee || exit 2
+            PATH="$referee_dir:$PATH"
+            referee --version
+            # <<< referee install
+
+            # >>> referee fetch base (keep in sync across referee/ci/*.yml)
+            case $referee_base_branch in
+              '' | -* | *..*) echo "referee: invalid base branch '$referee_base_branch'" >&2; exit 2 ;;
+            esac
+            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+              git fetch --quiet --no-tags --unshallow origin || exit 2
+            fi
+            git fetch --quiet --no-tags origin "+refs/heads/$referee_base_branch:refs/remotes/origin/$referee_base_branch" ||
+              { echo "referee: cannot fetch the base branch '$referee_base_branch' from origin" >&2; exit 2; }
+            referee_base="origin/$referee_base_branch"
+            # <<< referee fetch base
+
+            referee_code=0
+            (
+              # >>> referee check (keep in sync across referee/ci/*.yml): exits like the referee GitHub Action
+              referee_fail_on=${REFEREE_FAIL_ON:-human}
+              case $referee_fail_on in
+                human | second_opinion | never) ;;
+                *) echo "referee: REFEREE_FAIL_ON must be human, second_opinion or never (got '$referee_fail_on')" >&2; exit 2 ;;
+              esac
+              referee_lanes=0
+              referee lanes --base "$referee_base" --policy "${REFEREE_POLICY:-.referee.yml}" || referee_lanes=$?
+              referee_audit=0
+              referee audit --base "$referee_base" || referee_audit=$?
+              echo "referee: lanes exit $referee_lanes, audit exit $referee_audit"
+              case $referee_lanes in
+                0 | 10 | 20) ;;
+                *) echo "referee: lanes failed (exit $referee_lanes)" >&2; exit "$referee_lanes" ;;
+              esac
+              case $referee_audit in
+                0 | 20) ;;
+                *) echo "referee: audit failed (exit $referee_audit)" >&2; exit "$referee_audit" ;;
+              esac
+              if [ "$referee_fail_on" != never ]; then
+                if [ "$referee_lanes" = 20 ] || [ "$referee_audit" = 20 ]; then
+                  echo "referee: this change touches how CI checks (human lane, or weakened checks): a maintainer must approve it" >&2
+                  exit 20
+                fi
+                if [ "$referee_lanes" = 10 ] && [ "$referee_fail_on" = second_opinion ]; then
+                  echo "referee: second_opinion lane" >&2
+                  exit 10
+                fi
+              fi
+              exit 0
+              # <<< referee check
+            ) || referee_code=$?
+
+            case ${REFEREE_APPROVAL:-step} in
+              step | none) ;;
+              *) echo "referee: REFEREE_APPROVAL must be step or none (got '$REFEREE_APPROVAL')" >&2; exit 2 ;;
+            esac
+            case $referee_code in
+              0) echo '{"referee-needs-approval": false}' >referee-parameters.json ;;
+              20)
+                [ "${REFEREE_APPROVAL:-step}" = step ] || exit 20
+                echo '{"referee-needs-approval": true}' >referee-parameters.json
+                echo "referee: approve the pipeline-approval job to let referee-gate pass"
+                ;;
+              *) exit "$referee_code" ;;
+            esac
+      - continuation/continue:
+          configuration_path: .circleci/continue-config.yml
+          parameters: referee-parameters.json
+
+workflows:
+  setup:
+    jobs:
+      - referee
