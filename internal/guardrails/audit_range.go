@@ -7,16 +7,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/vnovick/itervox/internal/gitexec"
 )
 
-// maxAuditPatchBytes bounds the -U0 patch AuditRange reads: a larger diff
-// is audited up to here (Truncated), never read whole into memory. The
-// file list and the untracked files of a working tree are read within the
-// same bound.
+// maxAuditPatchBytes bounds the patch AuditRange reads, context lines
+// (AuditContext) included: a larger diff is audited up to here
+// (Truncated), never read whole into memory. The file list and the
+// untracked files of a working tree are read within the same bound.
 var maxAuditPatchBytes = 4 << 20 // a var so tests can lower it
 
 // auditRangeTimeout bounds one AuditRange's git calls from the hook.
@@ -70,7 +71,7 @@ func AuditRange(ctx context.Context, dir, from, to string) (AuditResult, error) 
 	res := AuditResult{Findings: AuditDeletedTests(status), Paths: nameStatusPaths(status),
 		Truncated: statusTruncated, PathsTruncated: statusTruncated}
 	patch, truncated, err := boundedGit(ctx, dir, maxAuditPatchBytes,
-		append(append([]string{"-c", "core.quotePath=false", "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+		append(append([]string{"-c", "core.quotePath=false", "diff", "-U" + strconv.Itoa(AuditContext), "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
 			"--src-prefix=a/", "--dst-prefix=b/"}, rangeArgs...), "--")...)
 	if err != nil {
 		return AuditResult{}, fmt.Errorf("guardrails: audit: diff: %w", err)
@@ -178,15 +179,19 @@ func readUntracked(root *os.Root, p string, budget int) ([]byte, bool) {
 	return data, true
 }
 
-// auditAddedFile applies the line rules to every line of a new file.
+// auditAddedFile audits a new file as the patch reader reads an added
+// file: the line rules on every line (numbered from 1), then the hunk
+// rules on the file as one all-added change.
 func auditAddedFile(p string, data []byte) []AuditFinding {
 	var out []AuditFinding
+	h := hunk{firstNew: 1}
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 64*1024), maxAuditUntrackedFileBytes+1)
 	for n := 1; sc.Scan(); n++ {
+		h.added = append(h.added, sc.Text())
 		out = appendLineFindings(out, p, n, sc.Text())
 	}
-	return out
+	return appendHunkFindings(out, p, h)
 }
 
 // boundedGit runs git and reads at most limit bytes of its output; a

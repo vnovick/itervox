@@ -3,6 +3,7 @@ package guardrails
 import (
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -70,7 +71,8 @@ func baseMatch(p string, globs ...string) bool {
 	return false
 }
 
-var jsTestFile = regexp.MustCompile(`\.(test|spec)\.[cm]?[jt]sx?$`)
+// jsTestFile also matches Detox's e2e naming (login.e2e.ts).
+var jsTestFile = regexp.MustCompile(`\.(test|spec|e2e)\.[cm]?[jt]sx?$`)
 
 // isTestFile reports whether p is a test file by the common conventions.
 func isTestFile(p string) bool {
@@ -125,8 +127,16 @@ func stripCommitMessages(line string) string {
 	return commitMessageArg.ReplaceAllString(line, "$1 MSG")
 }
 
-// lineRules is the table of added-line rules.
-var lineRules = []lineRule{
+// lineRules is the table of added-line rules: these, then the TypeScript,
+// lint and JS test runner rules (audit_rules_web.go).
+var lineRules = slices.Concat(coreLineRules, webLineRules)
+
+// hunkRules compare one change's removed lines with its added lines, or
+// read its added lines with the lines above them: these, then the web
+// hunk rules (audit_rules_web.go).
+var hunkRules = slices.Concat([]func(p string, h hunk) []AuditFinding{lowered}, webHunkRules)
+
+var coreLineRules = []lineRule{
 	{
 		ID: "go_skip", Message: "test skip added (t.Skip)", Files: isGoTest, Comment: slashSlash,
 		Pattern: regexp.MustCompile(`\b[tb]\.Skip(?:Now|f)?\(`),

@@ -17,7 +17,7 @@ const auditUsage = `usage: referee audit --base <ref> [--head HEAD] [--json] [--
 Lists changes in the diff from the merge base of <base> and <head> to <head>
 that weaken what CI checks:
 
-  test_deleted          a test file deleted or renamed
+  test_deleted          a test file (incl. a Detox *.e2e.ts) deleted or renamed
   go_skip               t.Skip / t.SkipNow / t.Skipf added in a _test.go file
   js_skip               it.skip / test.skip / describe.skip / xit( added
   js_only               it.only / test.only / describe.only added
@@ -27,7 +27,27 @@ that weaken what CI checks:
   ci_or_true            "|| true" added in a CI workflow
   git_no_verify         git commit/push --no-verify, or git commit -n, in a script
 
-Only added lines are read, and comment lines are skipped. --base defaults to
+TypeScript, lint and JS test runners:
+
+  ts_ignore             // @ts-ignore added in a JS/TS file
+  ts_expect_error       // @ts-expect-error added outside a test file
+  ts_nocheck            // @ts-nocheck added
+  ts_strict_off         strict, noImplicitAny, strictNullChecks, noEmitOnError
+                        ... set to false (noCheck to true) in tsconfig*.json
+  eslint_disable        eslint-disable-line / eslint-disable-next-line added
+  eslint_disable_file   /* eslint-disable */ added
+  eslint_rule_off       a rule set to "off" or 0 in an ESLint config
+  eslint_max_warnings   eslint --max-warnings raised, made -1 or dropped
+  flow_suppress         $FlowFixMe / $FlowIgnore / @noflow added
+  check_or_true         "|| true" after a lint, type or test command in a script
+  script_stubbed        a package.json test/lint/typecheck script set to true,
+                        exit 0 or echo
+  test_pass_with_no_tests  --passWithNoTests / passWithNoTests: true added
+  snapshot_update       jest/vitest -u, --updateSnapshot, --ci=false in CI
+  test_path_ignored     a test file excluded (testPathIgnorePatterns, exclude)
+
+Only added lines are read, and comment lines are skipped (except by the
+rules whose construct is a comment). --base defaults to
 origin/$GITHUB_BASE_REF in a pull_request workflow.
 
 Exit codes: 0 no findings, 20 findings, 2 usage or error.`
@@ -92,7 +112,7 @@ func audit(ctx context.Context, dir, base, head string) (auditReport, error) {
 		return auditReport{}, err
 	}
 	rep.Findings = append(rep.Findings, deletedTests(status)...)
-	patch, err := git(ctx, dir, "-c", "core.quotePath=false", "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+	patch, err := git(ctx, dir, "-c", "core.quotePath=false", "diff", "-U"+strconv.Itoa(guardrails.AuditContext), "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
 		"--src-prefix=a/", "--dst-prefix=b/", r.MergeBase, r.Head, "--")
 	if err != nil {
 		return auditReport{}, err

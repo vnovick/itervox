@@ -117,3 +117,88 @@ func TestFindingSetIsLinear(t *testing.T) {
 	assert.Equal(t, n/2+len(paths), total)
 	assert.Less(t, elapsed, linearBound, "de-duplicating %d findings took %s", n, elapsed)
 }
+
+// The audit diff carries AuditContext lines of context (so a hunk rule
+// sees what a change sits inside), and the read cap applies to that larger
+// patch: a range whose -U0 patch would fit is cut at the cap, audited up
+// to the last whole line and marked Truncated. Line numbers stay the head
+// version's.
+func TestAuditRangeContextPatchIsCappedAndMarked(t *testing.T) {
+	r := newRig(t, nil)
+	const wf = ".github/workflows/ci.yml"
+	lines := make([]string, 200)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("      - run: step %03d", i+1)
+	}
+	r.writeCommit(wf, strings.Join(lines, "\n")+"\n", "base")
+	base := strings.TrimSpace(git(t, r.work, "rev-parse", "HEAD"))
+	lines[99] = "      - run: make test || true"
+	lines[179] = "      - run: make lint || true"
+	r.writeCommit(wf, strings.Join(lines, "\n")+"\n", "weaken")
+	head := strings.TrimSpace(git(t, r.work, "rev-parse", "HEAD"))
+
+	locations := func(res AuditResult) []string {
+		var out []string
+		for _, f := range res.Findings {
+			out = append(out, FindingReason(f).Location()+" "+f.Rule)
+		}
+		return out
+	}
+	full, err := AuditRange(context.Background(), r.work, base, head)
+	require.NoError(t, err)
+	assert.Equal(t, []string{wf + ":100 ci_or_true", wf + ":180 ci_or_true"}, locations(full))
+	assert.False(t, full.Truncated)
+
+	ctxPatch := git(t, r.work, "diff", fmt.Sprintf("-U%d", AuditContext), "--no-renames", "--no-color", base, head, "--")
+	zeroPatch := git(t, r.work, "diff", "-U0", "--no-renames", "--no-color", base, head, "--")
+	second := strings.Index(ctxPatch, "+      - run: make lint || true")
+	require.Positive(t, second)
+	require.Less(t, len(zeroPatch), second, "the -U0 patch would fit under the cap below")
+
+	old := maxAuditPatchBytes
+	t.Cleanup(func() { maxAuditPatchBytes = old })
+	maxAuditPatchBytes = second + 5 // inside the second change's line
+	cut, err := AuditRange(context.Background(), r.work, base, head)
+	require.NoError(t, err)
+	assert.True(t, cut.Truncated, "the context patch is larger than the cap, and that is said")
+	assert.False(t, cut.PathsTruncated)
+	assert.Equal(t, []string{wf + ":100 ci_or_true"}, locations(cut), "audited up to the last whole line")
+}
+
+// AuditRange's diff carries context, so the Lanes view and the pre-push
+// lane reasons see a test file added to an existing multi-line Vitest
+// exclude (its opener is a context line), as `referee audit` does.
+func TestAuditRangeHunkRulesSeeContext(t *testing.T) {
+	r := newRig(t, nil)
+	cfg := "import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: {\n    exclude: [\n      'node_modules',\n%s    ],\n  },\n});\n"
+	r.writeCommit("vitest.config.ts", fmt.Sprintf(cfg, ""), "base")
+	base := strings.TrimSpace(git(t, r.work, "rev-parse", "HEAD"))
+	r.writeCommit("vitest.config.ts", fmt.Sprintf(cfg, "      'src/flaky.test.ts',\n"), "exclude")
+	head := strings.TrimSpace(git(t, r.work, "rev-parse", "HEAD"))
+	for _, to := range []string{head, ""} { // the commit range and the worktree
+		res, err := AuditRange(context.Background(), r.work, base, to)
+		require.NoError(t, err)
+		var got []string
+		for _, f := range res.Findings {
+			got = append(got, FindingReason(f).Location()+" "+f.Rule)
+		}
+		assert.Equal(t, []string{"vitest.config.ts:7 test_path_ignored"}, got, "to %q", to)
+	}
+}
+
+// An untracked file goes through the hunk rules as one all-added change
+// (as the patch reader reads a new tracked file): a test file added to a
+// multi-line Vitest exclude in a new config is a finding.
+func TestAuditRangeUntrackedFileRunsHunkRules(t *testing.T) {
+	r := newRig(t, nil)
+	head := strings.TrimSpace(git(t, r.work, "rev-parse", "HEAD"))
+	body := "import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: {\n    exclude: [\n      'node_modules',\n      'src/flaky.test.ts',\n    ],\n  },\n});\n"
+	require.NoError(t, os.WriteFile(filepath.Join(r.work, "vitest.config.ts"), []byte(body), 0o644))
+	res, err := AuditRange(context.Background(), r.work, head, "")
+	require.NoError(t, err)
+	var got []string
+	for _, f := range res.Findings {
+		got = append(got, FindingReason(f).Location()+" "+f.Rule)
+	}
+	assert.Equal(t, []string{"vitest.config.ts:7 test_path_ignored"}, got)
+}
