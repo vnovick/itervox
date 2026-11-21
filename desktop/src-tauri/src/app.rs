@@ -40,7 +40,7 @@ use crate::registry::{registry_dir, DaemonLister};
 use crate::remote::is_remote_key;
 use crate::sessions::{
     live_terminal_target, new_session_link, page_action, push_script, read_all, session_link,
-    terminal_target, LiveTerminalTarget, PageAction, SessionsView,
+    terminal_target, LiveTerminalTarget, PageAction, SessionsView, TerminalPref,
 };
 use crate::supervisor::{self, last_line, output_log_name, record_for};
 use crate::token::{generate_token, platform_store, TokenStore};
@@ -204,6 +204,14 @@ fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             SavedProjects::default()
         }
     };
+    // #278: an unusable terminal command is reported (and shown in the
+    // Sessions window); Open in Terminal uses the default meanwhile.
+    if let Err(e) = crate::terminal_command::from_saved(
+        saved.terminal_command.as_ref(),
+        crate::platform::Os::current(),
+    ) {
+        eprintln!("itervox desktop: {e} Open in Terminal uses the default terminal.");
+    }
     let exe = std::env::current_exe().ok();
     let sidecar = supervisor::resolve_sidecar(&supervisor::sidecar_candidates(
         exe.as_deref(),
@@ -1055,16 +1063,23 @@ fn push_sessions(app: &AppHandle, shared: &Arc<Shared>) {
     let Some(window) = app.get_webview_window(SESSIONS_LABEL) else {
         return;
     };
-    let mut jobs = {
+    let (mut jobs, terminal) = {
         let core = lock(&shared.core);
-        core.session_jobs(
-            core.last_records(),
-            shared.tokens.as_ref(),
-            &read_token_file,
+        (
+            core.session_jobs(
+                core.last_records(),
+                shared.tokens.as_ref(),
+                &read_token_file,
+            ),
+            TerminalPref::of(
+                core.saved.terminal_command.as_ref(),
+                crate::platform::Os::current(),
+            ),
         )
     };
     jobs.extend(shared.remote.session_jobs());
-    let view = read_all(&jobs, client::fetch_sessions);
+    let mut view = read_all(&jobs, client::fetch_sessions);
+    view.terminal = terminal;
     let _ = window.eval(push_script(&view));
     *lock(&shared.sessions_last) = view;
 }
@@ -1170,14 +1185,27 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
                 error_dialog(app, "That session can no longer be opened in a terminal.");
                 return;
             };
+            // The configured terminal, validated again now; an invalid one
+            // is never run: the default is (the window shows why).
+            let custom = crate::terminal_command::from_saved(
+                lock(&shared.core).saved.terminal_command.as_ref(),
+                crate::platform::Os::current(),
+            )
+            .ok()
+            .flatten();
             let app2 = app.clone();
             let shared2 = Arc::clone(shared);
             // Off the main thread: resolving ssh/gcloud may run the login shell.
             std::thread::spawn(move || {
-                if let Err(e) = crate::terminal::open(&host, &name, shared2.remote.tools()) {
+                if let Err(e) =
+                    crate::terminal::open(&host, &name, shared2.remote.tools(), custom.as_ref())
+                {
                     error_dialog(&app2, &e);
                 }
             });
+        }
+        PageAction::SetTerminalCommand { value } => {
+            set_terminal_command(app, shared, &value);
         }
         PageAction::OpenLiveTerminal { daemon, session } => {
             // Only a session the window was shown "Live terminal" for.
@@ -1190,6 +1218,49 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
             open_live_terminal(app, shared, &daemon, target);
         }
     }
+}
+
+/// Saves the Sessions window's "Terminal command" field (#278): `value` is
+/// its JSON text, empty for Reset to default. An invalid value is refused
+/// and nothing is saved; either way the page is told the outcome
+/// (`window.__itervoxTerminalSaved(pref, error)`).
+fn set_terminal_command(app: &AppHandle, shared: &Arc<Shared>, value: &str) {
+    let os = crate::platform::Os::current();
+    let result = if value.trim().is_empty() {
+        Ok(None)
+    } else {
+        crate::terminal_command::parse_text(value, os).map(|(v, _)| Some(v))
+    }
+    .and_then(|next| {
+        let mut core = lock(&shared.core);
+        let before = std::mem::replace(&mut core.saved.terminal_command, next);
+        match core.saved.save(&shared.projects_file) {
+            Ok(()) => Ok(TerminalPref::of(core.saved.terminal_command.as_ref(), os)),
+            Err(e) => {
+                core.saved.terminal_command = before;
+                Err(format!("Could not save the terminal command: {e}"))
+            }
+        }
+    });
+    let (pref, error) = match result {
+        Ok(p) => {
+            lock(&shared.sessions_last).terminal = p.clone();
+            (Some(p), None)
+        }
+        Err(e) => (None, Some(e)),
+    };
+    let js = |v: Option<String>| v.unwrap_or_else(|| "null".into());
+    let script = format!(
+        "window.__itervoxTerminalSaved&&window.__itervoxTerminalSaved({},{});",
+        js(pref.and_then(|p| serde_json::to_string(&p).ok())),
+        js(error.and_then(|e| serde_json::to_string(&e).ok())),
+    )
+    .replace('\u{2028}', "\\u2028")
+    .replace('\u{2029}', "\\u2029");
+    if let Some(w) = app.get_webview_window(SESSIONS_LABEL) {
+        let _ = w.eval(script);
+    }
+    wake(shared);
 }
 
 /// Opens (or focuses) the terminal window of one session (#278 phase 2,

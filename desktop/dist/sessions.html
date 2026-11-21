@@ -12,8 +12,12 @@
      attached to it. A session the daemon offers a live terminal for (#278
      phase 2) has "Live terminal", which navigates to
      /__itervox/open-live-terminal; the app opens (or focuses) that
-     session's own app window with the daemon's live terminal in it. No
-     network access of its own. -->
+     session's own app window with the daemon's live terminal in it. The
+     "Terminal command" field (#278) edits the terminal Open in Terminal
+     uses (a JSON argv, projects.json terminal_command): Save navigates to
+     /__itervox/terminal-command?value=<text>, Reset to default sends an
+     empty value; the app validates, saves and answers through
+     window.__itervoxTerminalSaved. No network access of its own. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -60,6 +64,16 @@
   .session-row button.session { flex:1; min-width:0; }
   button.terminal { font-size:12px; min-height:32px; padding:0 12px; white-space:nowrap; }
   .terminal-note { color:var(--muted); margin:4px 2px; font-size:12px; }
+  #terminal-settings { margin:0 10px 20px; }
+  #terminal-settings h2 { margin-bottom:4px; }
+  #terminal-settings label { display:block; color:var(--text2); font-size:12px; margin:0 2px 6px; }
+  #terminal-settings code { font-family:var(--font-mono); }
+  #terminal-command { width:100%; box-sizing:border-box; font-family:var(--font-mono); font-size:12px;
+    min-height:32px; padding:6px 10px; border-radius:var(--r-row); border:1px solid var(--dashed);
+    background:var(--card-faint); color:inherit; }
+  #terminal-command:focus { outline:2px solid var(--focus); outline-offset:1px; }
+  .terminal-actions { display:flex; gap:6px; margin-top:6px; }
+  .terminal-actions button { font-size:12px; min-height:32px; padding:0 12px; }
 </style>
 </head>
 <body class="page">
@@ -68,6 +82,19 @@
   <div id="summary">Reading the daemons…</div>
 </header>
 <main id="groups" aria-label="Agent sessions by daemon"></main>
+<section id="terminal-settings" class="glass" aria-labelledby="terminal-settings-title">
+  <h2 id="terminal-settings-title">Terminal command</h2>
+  <label for="terminal-command">The terminal <b>Open in Terminal</b> runs, as a JSON list of arguments with
+    <code>{command}</code> (the attach command) or <code>{script}</code> (a script that runs it), for example
+    <code>["ghostty", "-e", "{command}"]</code>. Empty: the system terminal.</label>
+  <input id="terminal-command" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"
+    placeholder="Default: the system terminal">
+  <div class="terminal-actions">
+    <button id="terminal-save" type="button" class="chip">Save</button>
+    <button id="terminal-reset" type="button" class="chip">Reset to default</button>
+  </div>
+  <p id="terminal-error" class="error" role="alert" hidden></p>
+</section>
 <script>
 (function () {
   var OPEN_PATH = '/__itervox/open-session';
@@ -75,8 +102,42 @@
   var NEW_SESSION_PATH = '/__itervox/new-session';
   var OPEN_TERMINAL_PATH = '/__itervox/open-terminal';
   var OPEN_LIVE_TERMINAL_PATH = '/__itervox/open-live-terminal';
+  var TERMINAL_COMMAND_PATH = '/__itervox/terminal-command';
   var groupsEl = document.getElementById('groups');
   var summaryEl = document.getElementById('summary');
+  var termInput = document.getElementById('terminal-command');
+  var termError = document.getElementById('terminal-error');
+  // The field keeps what is being typed: a push only fills it while it is
+  // not being edited.
+  var termDirty = false;
+  var termStoredError = null;
+
+  function showTermError(msg) {
+    termError.textContent = msg || '';
+    termError.hidden = !msg;
+  }
+
+  function applyTerminal(t) {
+    if (!t) return;
+    if (!termDirty && document.activeElement !== termInput) termInput.value = t.command || '';
+    termStoredError = t.error ? t.error + ' Open in Terminal uses the default terminal.' : null;
+    if (!termDirty) showTermError(termStoredError);
+  }
+
+  function saveTerminal(value) {
+    window.location.href = TERMINAL_COMMAND_PATH + '?value=' + encodeURIComponent(value);
+  }
+
+  termInput.addEventListener('input', function () { termDirty = true; });
+  termInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); saveTerminal(termInput.value); }
+  });
+  document.getElementById('terminal-save').addEventListener('click', function () {
+    saveTerminal(termInput.value);
+  });
+  document.getElementById('terminal-reset').addEventListener('click', function () {
+    saveTerminal('');
+  });
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -108,7 +169,12 @@
     window.location.href = NEW_SESSION_PATH + '?daemon=' + encodeURIComponent(daemon);
   }
 
+  var lastView = null;
+
   function render(view) {
+    lastView = view;
+    applyTerminal(view.terminal);
+    var termLabel = (view.terminal && view.terminal.label) || 'Open in Terminal';
     var focused = document.activeElement && document.activeElement.dataset
       ? document.activeElement.dataset.ref : null;
     summaryEl.textContent = view.total === 0
@@ -168,7 +234,7 @@
             row.appendChild(live);
           }
           if (s.openTerminal) {
-            var term = el('button', 'terminal chip', 'Open in Terminal');
+            var term = el('button', 'terminal chip', termLabel);
             term.type = 'button';
             term.title = 'Open a terminal attached to this tmux session (closing it leaves the session running)';
             term.addEventListener('click', function () { openTerminal(g.daemon, s.key); });
@@ -187,6 +253,7 @@
 
   // Arrow keys move between sessions across groups; Enter opens (native).
   document.addEventListener('keydown', function (e) {
+    if (e.target === termInput) return;
     var list = buttons();
     if (list.length === 0) return;
     var i = list.indexOf(document.activeElement);
@@ -201,6 +268,15 @@
   });
 
   window.__itervoxSessions = render;
+  // The app's answer to Save / Reset: the saved preference, or why the
+  // value was refused (nothing saved; the field keeps the text).
+  window.__itervoxTerminalSaved = function (pref, error) {
+    if (error) { showTermError(error); return; }
+    termDirty = false;
+    termInput.value = (pref && pref.command) || '';
+    if (lastView) { lastView.terminal = pref; render(lastView); }
+    else applyTerminal(pref);
+  };
   // Ask the app for the current view (the navigation is intercepted).
   window.location.href = READY_PATH;
 })();

@@ -310,6 +310,47 @@ pub struct SessionsView {
     /// Sessions started by hand, across daemons (included in `total`).
     pub external: usize,
     pub groups: Vec<SessionGroup>,
+    /// "Open in Terminal"'s configured terminal (#278).
+    pub terminal: TerminalPref,
+}
+
+/// The `terminal_command` preference as the window shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalPref {
+    /// The button's label: "Open in Terminal", or "Open in <name>".
+    pub label: String,
+    /// The stored value as JSON text (empty for the default).
+    pub command: String,
+    /// Why the stored value is not used (the default is used instead).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Default for TerminalPref {
+    fn default() -> Self {
+        TerminalPref {
+            label: crate::terminal_command::label(None),
+            command: String::new(),
+            error: None,
+        }
+    }
+}
+
+impl TerminalPref {
+    /// The preference stored as `value`, validated for `os`.
+    pub fn of(value: Option<&serde_json::Value>, os: crate::platform::Os) -> Self {
+        use crate::terminal_command::{field_text, from_saved, label};
+        let (cmd, error) = match from_saved(value, os) {
+            Ok(c) => (c, None),
+            Err(e) => (None, Some(e)),
+        };
+        TerminalPref {
+            label: label(cmd.as_ref()),
+            command: field_text(value),
+            error,
+        }
+    }
 }
 
 /// Groups the reads by daemon. Within a group, sessions waiting for input
@@ -369,6 +410,7 @@ pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
         total: groups.iter().map(|g| g.sessions.len()).sum(),
         external: groups.iter().map(|g| g.external).sum(),
         groups,
+        terminal: TerminalPref::default(),
     }
 }
 
@@ -446,6 +488,9 @@ pub const NEW_SESSION_PATH: &str = "/__itervox/new-session";
 pub const OPEN_TERMINAL_PATH: &str = "/__itervox/open-terminal";
 /// The path the page navigates to for "Live terminal" (#278 phase 2).
 pub const OPEN_LIVE_TERMINAL_PATH: &str = "/__itervox/open-live-terminal";
+/// The path the page navigates to to save the terminal command
+/// (`?value=<JSON text>`; an empty value resets it to the default).
+pub const TERMINAL_COMMAND_PATH: &str = "/__itervox/terminal-command";
 
 /// What a navigation of the Sessions page asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -460,6 +505,8 @@ pub enum PageAction {
     OpenTerminal { daemon: String, session: String },
     /// Open the live terminal window of `session` (its key) of `daemon`.
     OpenLiveTerminal { daemon: String, session: String },
+    /// Save `value` (JSON text) as the terminal command; empty resets it.
+    SetTerminalCommand { value: String },
 }
 
 /// The action behind a navigation of the Sessions page, or `None` for an
@@ -478,6 +525,13 @@ pub fn page_action(url: &str) -> Option<PageAction> {
             .and_then(percent_decode)
             .filter(|d| !d.is_empty())
             .map(|daemon| PageAction::NewSession { daemon }),
+        TERMINAL_COMMAND_PATH => {
+            let raw = query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("value="))
+                .unwrap_or("");
+            percent_decode(raw).map(|value| PageAction::SetTerminalCommand { value })
+        }
         OPEN_PATH | OPEN_TERMINAL_PATH | OPEN_LIVE_TERMINAL_PATH => {
             let mut daemon = None;
             let mut session = None;
@@ -1326,5 +1380,55 @@ mod tests {
             "hand-started sessions are labelled in the list"
         );
         assert!(html.contains("s.label"));
+        assert!(html.contains(TERMINAL_COMMAND_PATH));
+        assert!(html.contains("view.terminal"));
+        assert!(html.contains("window.__itervoxTerminalSaved ="));
+    }
+
+    /// #278: the terminal command is saved through an intercepted
+    /// navigation; the view carries the label, the field's text and why a
+    /// stored value is not used.
+    #[test]
+    fn terminal_command_setting_in_the_sessions_window() {
+        assert_eq!(
+            page_action(
+                "tauri://localhost/__itervox/terminal-command?value=%5B%22ghostty%22%2C%22-e%22%2C%22%7Bcommand%7D%22%5D"
+            ),
+            Some(PageAction::SetTerminalCommand {
+                value: r#"["ghostty","-e","{command}"]"#.into()
+            })
+        );
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/terminal-command?value="),
+            Some(PageAction::SetTerminalCommand { value: "".into() })
+        );
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/terminal-command"),
+            Some(PageAction::SetTerminalCommand { value: "".into() })
+        );
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/terminal-command?value=%ZZ"),
+            None
+        );
+
+        use crate::platform::Os;
+        let default = TerminalPref::of(None, Os::Linux);
+        assert_eq!(default, TerminalPref::default());
+        assert_eq!(default.label, "Open in Terminal");
+        let good = serde_json::json!(["ghostty", "-e", "{command}"]);
+        let p = TerminalPref::of(Some(&good), Os::Linux);
+        assert_eq!(p.label, "Open in ghostty");
+        assert_eq!(p.command, r#"["ghostty","-e","{command}"]"#);
+        assert_eq!(p.error, None);
+        let bad = serde_json::json!(["ghostty", "-e"]);
+        let p = TerminalPref::of(Some(&bad), Os::Linux);
+        assert_eq!(p.label, "Open in Terminal");
+        assert_eq!(p.command, r#"["ghostty","-e"]"#);
+        assert!(p.error.unwrap().contains("{command}"));
+
+        let mut view = aggregate(vec![]);
+        view.terminal = TerminalPref::of(Some(&good), Os::Linux);
+        let js = push_script(&view);
+        assert!(js.contains(r#""terminal":{"label":"Open in ghostty","command":"[\"ghostty\",\"-e\",\"{command}\"]"}"#), "{js}");
     }
 }

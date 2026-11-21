@@ -68,17 +68,27 @@ struct FileShape {
     /// Absent in files written before #244; ignored by older apps.
     #[serde(default, skip_serializing_if = "is_default_rail")]
     rail: RailPrefs,
+    /// "Open in Terminal"'s terminal (#278), an argv with a placeholder
+    /// (`crate::terminal_command`). Absent before it existed and while the
+    /// default is used; ignored by older apps. Kept as raw JSON so a value
+    /// of the wrong shape is reported, never a reason to drop the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_command: Option<serde_json::Value>,
 }
 
 fn is_default_rail(r: &RailPrefs) -> bool {
     *r == RailPrefs::default()
 }
 
-/// The added projects, in the order they were added, and the rail layout.
+/// The added projects, in the order they were added, the rail layout, and
+/// the app's other preferences.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SavedProjects {
     pub projects: Vec<SavedProject>,
     pub rail: RailPrefs,
+    /// The `terminal_command` preference as stored (validated where it is
+    /// used: `crate::terminal_command::from_saved`); `None` = the default.
+    pub terminal_command: Option<serde_json::Value>,
 }
 
 /// The project key for a WORKFLOW.md path: absolute, `.` and `..` resolved
@@ -121,6 +131,8 @@ impl SavedProjects {
                 Ok(Self {
                     projects: shape.projects,
                     rail: shape.rail,
+                    // An explicit null is the default too.
+                    terminal_command: shape.terminal_command.filter(|v| !v.is_null()),
                 })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -138,6 +150,7 @@ impl SavedProjects {
             version: FILE_VERSION,
             projects: self.projects.clone(),
             rail: self.rail.clone(),
+            terminal_command: self.terminal_command.clone(),
         })
         .map_err(|e| e.to_string())?;
         let tmp = path.with_extension("json.tmp");
@@ -213,6 +226,55 @@ mod tests {
             }]
         );
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    /// #278: `terminal_command` roundtrips; absent (an older file) is the
+    /// default and is not written back; a value of the wrong shape still
+    /// loads, to be reported rather than lose the project list.
+    #[test]
+    fn terminal_command_persists_in_projects_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROJECTS_FILE);
+        std::fs::write(
+            &path,
+            br#"{"version": 1, "projects": [{"workflow": "/a/WORKFLOW.md"}], "rail": {"collapsed": true}}"#,
+        )
+        .unwrap();
+        let mut s = SavedProjects::load(&path).unwrap();
+        assert_eq!(s.terminal_command, None);
+        assert!(s.rail.collapsed);
+        s.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("terminal_command"), "{text}");
+
+        let cmd = serde_json::json!(["ghostty", "-e", "{command}"]);
+        s.terminal_command = Some(cmd.clone());
+        s.save(&path).unwrap();
+        let back = SavedProjects::load(&path).unwrap();
+        assert_eq!(back.terminal_command, Some(cmd));
+        assert_eq!(back, s);
+
+        // Reset to the default removes it from the file.
+        s.terminal_command = None;
+        s.save(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("terminal_command"));
+
+        for (raw, want) in [
+            (
+                r#""ghostty -e {command}""#,
+                Some(serde_json::json!("ghostty -e {command}")),
+            ),
+            ("null", None),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"version": 1, "projects": [], "terminal_command": {raw}}}"#),
+            )
+            .unwrap();
+            assert_eq!(SavedProjects::load(&path).unwrap().terminal_command, want);
+        }
     }
 
     #[test]
