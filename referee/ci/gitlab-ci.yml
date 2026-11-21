@@ -37,6 +37,23 @@
 #   .gitlab-ci.yml code owners who must review every change to it.
 # - Pin the image by digest in real use, and update REFEREE_VERSION and
 #   REFEREE_SHA256 together (both from the release's checksums.txt).
+# - Keep the `workflow: rules` below (merge them into yours if your
+#   .gitlab-ci.yml already has a `workflow:`; a `workflow:` in an included
+#   file applies to the whole pipeline).
+
+# Run merge request pipelines, and no branch pipeline for a branch that has
+# an open merge request. Without this a push to such a branch also starts a
+# branch pipeline, which has no `referee` job (it runs only in merge request
+# pipelines); when the branch pipeline is the latest one for the head
+# commit, GitLab can take it as the merge request's head pipeline, and
+# "Pipelines must succeed" passes without referee. Branches without a merge
+# request (the default branch, say) still get branch pipelines.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
 
 stages:
   - referee

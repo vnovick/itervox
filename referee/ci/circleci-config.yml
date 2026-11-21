@@ -36,14 +36,28 @@
 # pull requests merge elsewhere.
 #
 # Set up:
+# - Keep the config outside the branch's reach. CircleCI reads this file
+#   AND .circleci/continue-config.yml from the pull request's own branch, so
+#   a pull request can rewrite either one: drop the approval, or make its
+#   own `referee-gate` that always passes. The required status check then
+#   goes green, and referee never sees the change. .circleci/** is in
+#   referee's default human lane, but that cannot help: the job that would
+#   judge it is the one the branch rewrote. The gate holds only if one of
+#   these is true:
+#     - every change to .circleci/ needs a code owner's review: a
+#       CODEOWNERS entry for /.circleci/ AND branch protection's "Require
+#       review from Code Owners" (and the agent is not a code owner); or
+#     - the config does not come from the repository (a CircleCI config
+#       source the agent cannot push to, for example a pipeline whose
+#       config comes from another repository).
+#   Nothing in this config can enforce it: a check here is in the file the
+#   branch controls, so it can be deleted with the rest.
 # - In branch protection, require the `referee-gate` job's status check. A
 #   change that removes the job then never reports it and cannot merge.
 # - Give `referee-gate` a restricted context (here `pipeline-approval`,
 #   restricted to a maintainers group), so only members of that group can
 #   approve the job that runs it. Never give the agent a CircleCI token: it
 #   could approve through the API.
-# - .circleci/** is in referee's default human lane, so a change to this
-#   config waits for the approval. Add CODEOWNERS for .circleci/ too.
 # - Pin the image by digest and the orb by exact version in real use, and
 #   update REFEREE_VERSION and REFEREE_SHA256 together (both from the
 #   release's checksums.txt).

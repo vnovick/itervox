@@ -328,6 +328,15 @@ manual job `approve-pipeline-change` (`allow_failure: false`) in the
 `pipeline-approval` environment. The merge request's pipeline does not
 succeed until someone runs it.
 
+The template's `workflow: rules` run merge request pipelines and skip the
+branch pipeline for a branch that has an open merge request
+(`$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS` → `never`). Without them, a
+push starts both, the branch pipeline has no `referee` job, and when it is
+the latest pipeline for the head commit GitLab can take it as the merge
+request's head pipeline, so **Pipelines must succeed** passes without
+referee. Branches without a merge request still get branch pipelines. If
+your `.gitlab-ci.yml` already has a `workflow:`, merge the rules into it.
+
 - Turn on **Pipelines must succeed** for merge requests.
 - Protect the `pipeline-approval` environment and allow only maintainers to
   deploy to it: otherwise anyone who can run jobs can approve, the agent's
@@ -357,12 +366,28 @@ on its diff from the merge base with the default branch. Set
 `REFEREE_BASE_BRANCH` in the job or a context if your pull requests merge
 elsewhere.
 
+- **Keep the config outside the branch's reach.** CircleCI reads both
+  `.circleci/config.yml` and `.circleci/continue-config.yml` from the pull
+  request's own branch. A pull request can rewrite either one to drop the
+  approval, or to define its own `referee-gate` that always passes: the
+  required check goes green and referee never judges the change.
+  `.circleci/**` is in the default human lane, but that does not help here,
+  because the job that would judge the change is the one it rewrote. On
+  CircleCI the gate holds only if one of these is true:
+  - every change to `.circleci/` needs a code owner's review: a `CODEOWNERS`
+    entry for `/.circleci/` **and** branch protection's **Require review from
+    Code Owners**, with the agent not among the code owners; or
+  - the config does not come from the repository: a config source the agent
+    cannot push to, such as a pipeline whose config lives in another
+    repository.
+
+  The templates add no check of their own for this: anything in the config
+  is in the file the branch controls, and is deleted with the rest.
 - Require the `referee-gate` status check in branch protection; a change that
   removes the job never reports it.
 - Run `referee-gate` in a restricted context (`pipeline-approval` in the
   template), so only that context's group can approve the job before it. Never
   give the agent a CircleCI token: it could approve through the API.
-- `.circleci/**` is in the default human lane.
 
 ### Buildkite
 

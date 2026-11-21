@@ -6,7 +6,8 @@
 # release directory, and asserts:
 #
 #   - each YAML file parses, and the jobs that carry the approval are wired
-#     (GitLab child pipeline with strategy: depend, CircleCI setup config
+#     (GitLab child pipeline with strategy: depend and the workflow rules
+#     that suppress duplicate branch pipelines, CircleCI setup config
 #     and approval workflow, Buildkite block step);
 #   - the install, fetch-base and check blocks are the same in all three;
 #   - on every fixture branch the template sees the exit codes the referee
@@ -73,6 +74,11 @@ def want(cond, msg) = (cond or abort("templates_test: #{msg}"))
 gl = load("#{dir}/gitlab-ci.yml")
 want gl.dig("referee", "artifacts", "paths")&.include?("referee-approval.yml"), "gitlab: referee keeps referee-approval.yml"
 want gl.dig("referee", "variables", "GIT_DEPTH") == "0", "gitlab: GIT_DEPTH 0"
+want gl.dig("workflow", "rules") == [
+  { "if" => '$CI_PIPELINE_SOURCE == "merge_request_event"' },
+  { "if" => "$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS", "when" => "never" },
+  { "if" => "$CI_COMMIT_BRANCH" },
+], "gitlab: workflow rules run merge request pipelines and no duplicate branch pipeline"
 bridge = gl["referee-approval"]
 want bridge.dig("trigger", "strategy") == "depend", "gitlab: the child pipeline is strategy: depend"
 want bridge.dig("trigger", "include", 0) == { "artifact" => "referee-approval.yml", "job" => "referee" }, "gitlab: the child pipeline is the referee job's artifact"

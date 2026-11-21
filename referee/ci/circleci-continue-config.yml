@@ -8,6 +8,14 @@
 #          maintainer approves `pipeline-approval` (type: approval).
 # Require the `referee-gate` status check in branch protection: both
 # workflows report it, so a change cannot merge until it passes.
+#
+# This file is read from the pull request's own branch, like the setup
+# config: a pull request that edits it can make `referee-gate` pass without
+# the approval. The gate holds only if changes to .circleci/ need a code
+# owner's review (CODEOWNERS for /.circleci/ plus branch protection's
+# "Require review from Code Owners") or the config comes from outside the
+# repository. See "Keep the config outside the branch's reach" in
+# circleci-config.yml.
 version: 2.1
 
 parameters:
