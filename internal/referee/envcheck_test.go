@@ -271,6 +271,7 @@ func builtinEnvcheck(t *testing.T, tool, pkg, file, cli, classified, unclassifie
 	assert.Equal(t, "node_modules/"+pkg, rep.Tools[0].Install)
 	assert.Equal(t, []string{classified, unclassified}, rep.Tools[0].Variables)
 	assert.Empty(t, rep.Notes, "a configured tool is not also a note")
+	assert.Contains(t, rep.Tools[0].ProbeSetup, "--ignore-scripts", "a native-binary tool says what its probes need")
 
 	r.git("checkout", "-q", "main")
 	r.commit("classify", map[string]string{"scripts/lib/deploy-target.mjs": guard + "// " + unclassified + "\n"})
@@ -279,6 +280,7 @@ func builtinEnvcheck(t *testing.T, tool, pkg, file, cli, classified, unclassifie
 	code, out, errOut = referee(t, nil, "envcheck", "--dir", r.dir, "--base", "main")
 	require.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
 	assert.Contains(t, out, "every deploy-target variable is classified")
+	assert.Contains(t, out, "      probes: the probes run ")
 }
 
 // TestEnvcheckInngestAdapter: the built-in inngest adapter, end to end.

@@ -222,6 +222,22 @@ Two of them need a note:
   sees only its JS files, so a new variable the binary starts to read is not
   found (see **Limits** below). Detection by `supabase/config.toml` still
   notes a project that uses the CLI without listing it under `tools:`.
+- **Their probes need install scripts.** Both CLIs are npm wrappers around
+  a native binary that an install script provides. `inngest-cli` downloads
+  it in a `postinstall` script; until then its `bin/inngest` is a
+  placeholder that prints `Inngest CLI binary not found` and exits `1` for
+  every command, on the base install and the head install alike, so the
+  probes would compare two placeholders. `supabase` 2.x downloads its
+  binary in a `postinstall` script too (without it
+  `node_modules/.bin/supabase` names a file that is not there), and 3.x
+  installs it as a per-platform optional dependency, which `--omit=optional`
+  drops. The scan does not need the binary, so `envcheck` can still run
+  after `npm ci --ignore-scripts`, but the job that runs these probes must
+  not skip install scripts: run `npm ci` (with optional dependencies), or
+  after an `--ignore-scripts` install run
+  `npm rebuild --ignore-scripts=false inngest-cli supabase` (or warm up with
+  `npx supabase --version`), in **both** checkouts. `envcheck` prints this
+  under each such tool (`probes: …`, and `probe_setup` in `--json`).
 
 The globs are prefixes on purpose. These tools read their target, keys and
 URLs from variables that share the prefix, and a new version can add one; an
@@ -264,7 +280,8 @@ outside the install root, or a target chosen in a config file instead of a
 variable. Symlinks below the install root are not followed (a symlinked
 root, as pnpm installs, is). Install scripts run by
 your package manager can change the installed files, so install with
-`--ignore-scripts` before `envcheck` if you can. Treat `envcheck` as a
+`--ignore-scripts` before `envcheck` if you can (the probes of `inngest`
+and `supabase` need those scripts; see above). Treat `envcheck` as a
 tripwire for the common case, not as proof.
 
 Exit `0` when every deploy-target variable is classified (or there is no
@@ -281,8 +298,9 @@ envcheck: 1 unclassified deploy-target variable(s) (policy: .referee.yml@1a2b3c4
   convex: 3 deploy-target variable(s) in node_modules/convex, guard scripts/lib/deploy-target.mjs
 ```
 
-`--json` prints `version` 1 with `tools` (each with its `variables` and
-parsed `probes`), `findings` (`tool`, `variable`, `path`, `line`, `guard`,
+`--json` prints `version` 1 with `tools` (each with its `variables`,
+parsed `probes` and `probe_setup`, empty unless the probes need more than an
+install without scripts), `findings` (`tool`, `variable`, `path`, `line`, `guard`,
 `message`) and `notes`. `GITHUB_STEP_SUMMARY` gets a summary here too.
 
 ### `referee pin`

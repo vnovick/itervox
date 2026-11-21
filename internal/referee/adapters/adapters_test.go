@@ -353,6 +353,23 @@ func TestAdapterBuiltinsAreValid(t *testing.T) {
 	}
 }
 
+// TestAdapterProbeSetupForNativeBinaries: inngest and supabase run a
+// native binary that an install with --ignore-scripts does not provide, and
+// say so; convex, vercel and a generic tool need nothing more.
+func TestAdapterProbeSetupForNativeBinaries(t *testing.T) {
+	for _, n := range []string{"inngest", "supabase"} {
+		setup := load(t, n, Config{}).ProbeSetup()
+		assert.Contains(t, setup, "--ignore-scripts", n)
+		assert.Contains(t, setup, "npm rebuild --ignore-scripts=false", n)
+	}
+	assert.Contains(t, load(t, "inngest", Config{}).ProbeSetup(), "Inngest CLI binary not found")
+	assert.Contains(t, load(t, "supabase", Config{}).ProbeSetup(), "npx supabase --version")
+	for _, n := range []string{"convex", "vercel"} {
+		assert.Empty(t, load(t, n, Config{}).ProbeSetup(), n)
+	}
+	assert.Empty(t, load(t, "mycli", Config{EnvScan: "node_modules/mycli/*.js", DeployVars: list("MYCLI_*")}).ProbeSetup())
+}
+
 // TestAdaptersImportGuard keeps the package where CLAUDE.md puts it: its
 // production files import the standard library (and at most gitexec), and
 // nothing but internal/referee imports it, so the daemon never does.

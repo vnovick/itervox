@@ -13,13 +13,16 @@ import (
 // deliberately small: the package that is scanned (installed at
 // node_modules/<pkg>), its command, the prefix its deploy-target variables
 // share, a few read-only probes, and what shows it is used: a dependency on
-// pkg or on one of alsoDetect, or one of the config files.
+// pkg or on one of alsoDetect, or one of the config files. probeSetup is
+// set when the probes run a native binary that an install without scripts
+// does not provide.
 type builtinSpec struct {
 	pkg, command string
 	alsoDetect   []string
 	deployVars   []string
 	probes       []string
 	configFiles  []string
+	probeSetup   string
 }
 
 var builtins = map[string]builtinSpec{
@@ -45,6 +48,13 @@ var builtins = map[string]builtinSpec{
 		alsoDetect: []string{"inngest-cli"},
 		deployVars: []string{"INNGEST_*"},
 		probes:     []string{"inngest-cli --help", "inngest-cli dev --help"},
+		// inngest-cli's bin/inngest is a placeholder until its postinstall
+		// replaces it with the downloaded binary; the placeholder prints
+		// "Inngest CLI binary not found" and exits 1 for every command.
+		probeSetup: "the probes run inngest-cli, whose npm package downloads its native binary in a postinstall script: " +
+			"after an install with --ignore-scripts every probe runs a placeholder that prints \"Inngest CLI binary not found\" and exits 1, " +
+			"on both sides alike. Before referee diff, run the install scripts in both checkouts " +
+			"(npm ci, or npm rebuild --ignore-scripts=false inngest-cli)",
 	},
 	// The Supabase CLI's npm package wraps a native binary, which is what
 	// reads the access token, the database password and the project
@@ -55,6 +65,11 @@ var builtins = map[string]builtinSpec{
 		deployVars:  []string{"SUPABASE_*"},
 		probes:      []string{"supabase --version", "supabase db push --help", "supabase functions deploy --help"},
 		configFiles: []string{"supabase/config.toml"},
+		probeSetup: "the probes run the supabase native binary: supabase 2.x downloads it in a postinstall script " +
+			"(after an install with --ignore-scripts node_modules/.bin/supabase names a file that is not there), " +
+			"and 3.x installs it as a per-platform optional dependency (--omit=optional drops it). Before referee diff, " +
+			"run the install scripts with optional dependencies in both checkouts (npm ci, or npm rebuild --ignore-scripts=false supabase), " +
+			"or warm it up with npx supabase --version in each",
 	},
 }
 
@@ -87,7 +102,7 @@ func loadBuiltin(name string, spec builtinSpec, c Config) (*adapter, error) {
 	case c.EnvScan != "", c.EnvPattern != "", c.Command != "":
 		return nil, fmt.Errorf("%s is a built-in adapter: env_scan, env_pattern and command are for a generic tool (use another name)", name)
 	}
-	a := &adapter{name: name, command: spec.command, install: "node_modules/" + spec.pkg, include: isJS}
+	a := &adapter{name: name, command: spec.command, install: "node_modules/" + spec.pkg, include: isJS, probeSetup: spec.probeSetup}
 	if c.Install != "" {
 		p, err := cleanRel(c.Install)
 		if err != nil {

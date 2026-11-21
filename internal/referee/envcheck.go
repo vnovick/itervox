@@ -62,6 +62,9 @@ type envTool struct {
 	Install   string           `json:"install"`
 	Variables []string         `json:"variables"` // deploy-target variables the install mentions
 	Probes    []adapters.Probe `json:"probes"`
+	// ProbeSetup: what the probes need beyond an install without scripts
+	// (a native binary), for the referee diff job; "" when nothing.
+	ProbeSetup string `json:"probe_setup"`
 }
 
 type envFinding struct {
@@ -190,7 +193,7 @@ func checkTool(ctx context.Context, dir, baseCommit, headCommit string, tool ada
 	if err != nil {
 		return envTool{}, nil, err
 	}
-	t := envTool{Name: tool.Name(), Guard: tool.Guard, Install: tool.InstallRoot(), Variables: []string{}, Probes: tool.Probes()}
+	t := envTool{Name: tool.Name(), Guard: tool.Guard, Install: tool.InstallRoot(), Variables: []string{}, Probes: tool.Probes(), ProbeSetup: tool.ProbeSetup()}
 	var out []envFinding
 	for _, r := range reads {
 		t.Variables = append(t.Variables, r.Name)
@@ -238,6 +241,9 @@ func printEnvcheck(w io.Writer, rep envReport) {
 	}
 	for _, t := range rep.Tools {
 		_, _ = fmt.Fprintf(w, "  %s: %d deploy-target variable(s) in %s, guard %s\n", t.Name, len(t.Variables), displayPath(t.Install), displayPath(t.Guard))
+		if t.ProbeSetup != "" && len(t.Probes) > 0 {
+			_, _ = fmt.Fprintf(w, "      probes: %s\n", t.ProbeSetup)
+		}
 	}
 	for _, n := range rep.Notes {
 		_, _ = fmt.Fprintf(w, "note: %s\n", displayPath(n))
