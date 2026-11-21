@@ -45,6 +45,10 @@ check "bad mode fails closed" 2 MODE=judge
 check "audit findings fail" 20 MODE=audit FAKE_CODE=20
 check "audit findings reported with fail-on never" 0 MODE=audit FAKE_CODE=20 FAIL_ON=never
 check "audit error fails with fail-on never" 2 MODE=audit FAKE_CODE=2 FAIL_ON=never
+check "envcheck findings fail" 20 MODE=envcheck FAKE_CODE=20
+check "envcheck findings reported with fail-on never" 0 MODE=envcheck FAKE_CODE=20 FAIL_ON=never
+check "envcheck error fails with fail-on never" 2 MODE=envcheck FAKE_CODE=2 FAIL_ON=never
+check "envcheck clean passes" 0 MODE=envcheck FAKE_CODE=0
 check "pin mismatch fails" 20 MODE=pin FAKE_CODE=20 POLICY_SHA256=x
 check "verify failure fails" 1 MODE=verify FAKE_CODE=1 RECORDS=r PUBKEY=p
 

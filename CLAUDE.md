@@ -835,6 +835,11 @@ referee (internal/referee: the CI referee behind `itervox referee` and the
          guardrails; never orchestrator. Its policy is read from the base
          ref only, never the working tree. `itervox referee` dispatches
          before loadDotEnv so checks never inherit .itervox/.env)
+     └── referee/adapters (tool adapters behind `referee envcheck`:
+         built-in and generic deploy-tool adapters, install scans, probe
+         parsing — stdlib only, gitexec at most; imported by
+         internal/referee alone, never the daemon:
+         TestAdaptersImportGuard)
 
 cmd/itervox (wires everything)
 ```
