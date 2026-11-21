@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -256,4 +257,29 @@ func TestOpenTerminalWithAnUnchangedTokenStaysOpen(t *testing.T) {
 	assert.False(t, bootConn.isClosed())
 	conn.out <- []byte("still here")
 	c.readUntilData(t, "still here")
+}
+
+// A revoke that lands right after a passing check (while the watcher has
+// not yet gone back to waiting) still closes the terminal at once: the
+// watcher holds the store's change signal from before the check, so the
+// revoke fires it. The periodic recheck is an hour away here.
+func TestOpenTerminalSeesARevokeRightAfterItsCheck(t *testing.T) {
+	withRecheck(t, time.Hour)
+	r := newTerminalRig(t, false)
+	id := r.tokenID(t, apitokens.ScopeOperator)
+	var once sync.Once
+	r.srv.terminalChecked = func() {
+		once.Do(func() {
+			_, err := r.store.Revoke(id, "test")
+			assert.NoError(t, err)
+		})
+	}
+	ts := httptest.NewServer(r.srv)
+	defer ts.Close()
+	c, conn := r.openRawTerminal(t, ts, r.secrets[apitokens.ScopeOperator], "read")
+
+	code, reason := c.closeWithin(t, 2*time.Second)
+	assert.Equal(t, terminalCloseAccessLost, code)
+	assert.Equal(t, terminalLostTokenRevoked, reason)
+	require.Eventually(t, conn.isClosed, 5*time.Second, 10*time.Millisecond)
 }

@@ -52,21 +52,29 @@ func (s *Server) watchTerminalAccess(t terminalTicket, done <-chan struct{}, rev
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
+		// The next change signal is taken BEFORE the check: a revoke that
+		// lands while the check reads the store fires this channel, where
+		// taking it after the check would miss that revoke until the next
+		// tick. The first pass also covers a change between the ticket's
+		// redeem and this watcher starting.
 		var changed <-chan struct{}
 		if s.tokens != nil {
 			changed = s.tokens.Changed()
-		}
-		select {
-		case <-done:
-			return
-		case <-tick.C:
-		case <-changed:
 		}
 		if reason := s.terminalAccessLost(t); reason != "" {
 			slog.Info("server: live terminal closed: its token lost access", "session_id", t.sessionID,
 				"actor", t.principal.actor(), "write", t.write, "reason", reason)
 			revoke(reason)
 			return
+		}
+		if s.terminalChecked != nil {
+			s.terminalChecked()
+		}
+		select {
+		case <-done:
+			return
+		case <-tick.C:
+		case <-changed:
 		}
 	}
 }

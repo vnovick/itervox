@@ -21,12 +21,30 @@ export interface TmuxTerminalProps {
   mode: TerminalMode;
   /** Switch to the polled snapshot view. */
   onSnapshot: () => void;
+  /**
+   * The daemon refused this read-write terminal for scope (closed it with
+   * `scope_insufficient`, or a 403 on the ticket): called by Reconnect,
+   * which then comes back read-only (the panel switches the mode).
+   */
+  onWriteLost?: () => void;
+  /**
+   * Set when a read-only terminal stands in for a read-write one after a
+   * scope loss: offers to check, with a fresh read of the caller's scope,
+   * whether read-write is allowed again.
+   */
+  onRetryWrite?: () => void;
 }
 
-export default function TmuxTerminal({ id, mode, onSnapshot }: TmuxTerminalProps) {
+export default function TmuxTerminal({
+  id,
+  mode,
+  onSnapshot,
+  onWriteLost,
+  onRetryWrite,
+}: TmuxTerminalProps) {
   const host = useRef<HTMLDivElement>(null);
   const [attempt, setAttempt] = useState(0);
-  const { status, error } = useTmuxTerminal(host, id, mode, attempt);
+  const { status, error, scopeLost } = useTmuxTerminal(host, id, mode, attempt);
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="tmux-terminal">
       <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-xs">
@@ -47,10 +65,16 @@ export default function TmuxTerminal({ id, mode, onSnapshot }: TmuxTerminalProps
             variant="glass"
             pill
             onClick={() => {
-              setAttempt((n) => n + 1);
+              if (scopeLost && mode === 'write' && onWriteLost) onWriteLost();
+              else setAttempt((n) => n + 1);
             }}
           >
             Reconnect
+          </Button>
+        )}
+        {mode === 'read' && onRetryWrite && (
+          <Button size="sm" variant="glass" pill onClick={onRetryWrite}>
+            Check read-write access
           </Button>
         )}
         <Button size="sm" variant="glass" pill className="ml-auto" onClick={onSnapshot}>

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import TmuxTerminal from '../TmuxTerminal';
 import type { TerminalSocketHandlers } from '../../../auth/terminalSocket';
 import type * as TerminalSocketModule from '../../../auth/terminalSocket';
+import { ApiError } from '../../../auth/apiRequest';
 import { UnauthorizedError } from '../../../auth/UnauthorizedError';
 
 // #298 — the live terminal view: ticket → socket → renderer, keys out only
@@ -216,5 +217,70 @@ describe('TmuxTerminal', () => {
     });
     expect(screen.getByTestId('tmux-terminal-status')).toHaveTextContent('Detached');
     expect(screen.queryByTestId('tmux-terminal-closed-reason')).toBeNull();
+  });
+
+  it('hands a scope-lost read-write terminal back for a read-only reconnect', async () => {
+    m.ticket.mockResolvedValue(ticket('write'));
+    const onWriteLost = vi.fn();
+    render(
+      <TmuxTerminal id="itervox-a" mode="write" onSnapshot={vi.fn()} onWriteLost={onWriteLost} />,
+    );
+    await waitFor(() => {
+      expect(m.sockets).toHaveLength(1);
+    });
+    act(() => {
+      m.sockets[0].handlers.onOpen?.();
+      m.sockets[0].handlers.onClose?.({ code: 4403, reason: 'scope_insufficient' });
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(onWriteLost).toHaveBeenCalledTimes(1);
+    // No second read-write ticket: the panel reconnects read-only.
+    expect(m.ticket).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a 403 insufficient_scope on a write ticket as a scope loss', async () => {
+    m.ticket.mockRejectedValue(
+      new ApiError('this action needs the admin scope', 403, 'insufficient_scope'),
+    );
+    const onWriteLost = vi.fn();
+    render(
+      <TmuxTerminal id="itervox-a" mode="write" onSnapshot={vi.fn()} onWriteLost={onWriteLost} />,
+    );
+    expect(await screen.findByTestId('tmux-terminal-error')).toHaveTextContent(
+      'no longer allows a read-write terminal',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(onWriteLost).toHaveBeenCalledTimes(1);
+    expect(m.ticket).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconnects in place after an ordinary detach even with onWriteLost', async () => {
+    m.ticket.mockResolvedValue(ticket('write'));
+    const onWriteLost = vi.fn();
+    render(
+      <TmuxTerminal id="itervox-a" mode="write" onSnapshot={vi.fn()} onWriteLost={onWriteLost} />,
+    );
+    await waitFor(() => {
+      expect(m.sockets).toHaveLength(1);
+    });
+    act(() => {
+      m.sockets[0].handlers.onClose?.({ code: 4403, reason: 'token_revoked' });
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await waitFor(() => {
+      expect(m.sockets).toHaveLength(2);
+    });
+    expect(onWriteLost).not.toHaveBeenCalled();
+    expect(m.ticket).toHaveBeenLastCalledWith('itervox-a', 'write');
+  });
+
+  it('offers a read-write check on a held read-only terminal', async () => {
+    m.ticket.mockResolvedValue(ticket('read'));
+    const onRetryWrite = vi.fn();
+    render(
+      <TmuxTerminal id="itervox-a" mode="read" onSnapshot={vi.fn()} onRetryWrite={onRetryWrite} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Check read-write access' }));
+    expect(onRetryWrite).toHaveBeenCalled();
   });
 });

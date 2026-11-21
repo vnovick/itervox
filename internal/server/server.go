@@ -1694,6 +1694,9 @@ type Server struct {
 	terminalsOpen   atomic.Int32
 	// terminalRecheck is terminalRecheckInterval when the server was made.
 	terminalRecheck time.Duration
+	// terminalChecked, when set (tests only), runs after each passing
+	// access check of an open terminal, before its watcher waits again.
+	terminalChecked func()
 	allowedOrigins  []string
 	// repoReadiness mirrors Config.RepoReadiness (#200).
 	repoReadiness RepoReadinessFunc
