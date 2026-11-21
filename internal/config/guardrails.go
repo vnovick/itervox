@@ -63,6 +63,14 @@ type GuardrailLanesConfig struct {
 	// then needs an approving review from a reviewer on a different backend
 	// than the writer's. Default empty.
 	SecondOpinion []string
+	// Split (guardrails.lanes.split, default false): a patches-only run
+	// (push: daemon) whose changes touch human-lane files and other files
+	// is offered as two stacked pull requests, the code and the pipeline
+	// change, ordered by running the profile's verify checks on the code
+	// alone. Load-time; ignored (with a startup warning) unless some
+	// profile pushes with push: daemon, since only then does Itervox
+	// control the push.
+	Split bool
 }
 
 // GuardrailsConfig is the guardrails: block (#204): limits on what an agent
@@ -248,7 +256,27 @@ func parseGuardrailLanes(m map[string]any) GuardrailLanesConfig {
 	return GuardrailLanesConfig{
 		Human:         cleanLanePatterns(human),
 		SecondOpinion: cleanLanePatterns(strSliceField(m, "second_opinion", nil)),
+		Split:         boolField(m, "split", false),
 	}
+}
+
+// StackSplitIgnoredReason is why guardrails.lanes.split, when set, can
+// have no effect, or "" when it can: the split happens where the daemon
+// pushes (push: daemon), so without such a profile, without the
+// guardrails or without a human lane it does nothing. Logged at startup.
+func StackSplitIgnoredReason(cfg *Config) string {
+	if cfg == nil || !cfg.Guardrails.Lanes.Split {
+		return ""
+	}
+	switch {
+	case !cfg.Guardrails.Enabled:
+		return "guardrails.enabled is false"
+	case len(cfg.Guardrails.Lanes.Human) == 0:
+		return "guardrails.lanes.human is empty, so no file is a pipeline file"
+	case len(PatchOutProfiles(cfg.Agent)) == 0:
+		return "no profile pushes with push: daemon; the split needs Itervox to push the branch, and an agent's own pushes are never rewritten"
+	}
+	return ""
 }
 
 func cleanLanePatterns(raw []string) []string {

@@ -102,6 +102,13 @@ type MergePRGate struct {
 	// refuses the merge with MergePRReasonUnarmedGate; true logs a loud
 	// warning and proceeds. Wired from cfg.Agent.AllowUncheckedMerge.
 	AllowUnchecked bool
+	// MatchHeadCommit, when set, is the only head commit the pull request
+	// may be merged at (a stack split's lower pull request, judged by its
+	// own lane for exactly that commit): the gate refuses a pull request
+	// whose head moved (MergePRReasonHeadMoved) and merges with
+	// --match-head-commit, so GitHub refuses a head that moves after the
+	// check.
+	MatchHeadCommit string
 	// gh is the gh-CLI invoker. Tests inject a fake; production uses runGH.
 	GH func(ctx context.Context, args ...string) ([]byte, error)
 }
@@ -118,7 +125,32 @@ const (
 	// can never fail is not a gate"). Refused by default; operators opt out
 	// via agent.allow_unchecked_merge: true.
 	MergePRReasonUnarmedGate = "unarmed_gate"
+	// MergePRReasonHeadMoved is returned when MatchHeadCommit is set and
+	// the pull request's head is another commit.
+	MergePRReasonHeadMoved = "head_moved"
 )
+
+// HeadSHA is the pull request's current head commit (gh pr view
+// --json headRefOid).
+func (g MergePRGate) HeadSHA(ctx context.Context, pr int) (string, error) {
+	if g.GH == nil {
+		return "", fmt.Errorf("merge_pr: GH invoker not configured")
+	}
+	out, err := g.GH(ctx, "pr", "view", fmt.Sprint(pr), "--json", "headRefOid")
+	if err != nil {
+		return "", fmt.Errorf("gh pr view: %w", err)
+	}
+	var v struct {
+		HeadRefOid string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		return "", fmt.Errorf("parse gh pr view: %w", err)
+	}
+	if v.HeadRefOid == "" {
+		return "", fmt.Errorf("gh pr view: no head commit for #%d", pr)
+	}
+	return v.HeadRefOid, nil
+}
 
 // runGH shells out to the gh CLI and returns stdout. On a non-zero exit,
 // exec.Cmd.Output() populates (*exec.ExitError).Stderr (since we never set
@@ -188,14 +220,23 @@ func (s *Server) handleAgentMergePR(w http.ResponseWriter, r *http.Request) {
 	// guardrails.lanes: a pull request whose pushes changed human-lane
 	// files is a human's to merge; second-opinion files need a reviewer on
 	// another backend first. Asked before any gh call.
-	if lc, ok := s.client.(MergeLaneChecker); ok {
-		if reason := lc.MergeLaneRefusal(r.Context(), identifier); reason != "" {
-			writeError(w, http.StatusConflict, "merge_blocked", reason)
-			return
-		}
+	// A stack split's lower pull request (guardrails.lanes.split) is judged
+	// by its own lane only while its head is the commit the split pushed:
+	// the checker asks for the head through gh only in that case, and the
+	// merge then insists on that commit.
+	gate := s.mergePRGate(req.Strategy)
+	laneReason := ""
+	if lc, ok := s.client.(MergePRLaneChecker); ok {
+		laneReason, gate.MatchHeadCommit = lc.MergeLaneRefusalForPR(r.Context(), identifier, req.PR,
+			func(ctx context.Context) (string, error) { return gate.HeadSHA(ctx, req.PR) })
+	} else if lc, ok := s.client.(MergeLaneChecker); ok {
+		laneReason = lc.MergeLaneRefusal(r.Context(), identifier)
+	}
+	if laneReason != "" {
+		writeError(w, http.StatusConflict, "merge_blocked", laneReason)
+		return
 	}
 
-	gate := s.mergePRGate(req.Strategy)
 	merged, err := gate.MergeResult(r.Context(), req.PR)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "merge_failed", err.Error())
@@ -301,7 +342,11 @@ func (g MergePRGate) MergeResult(ctx context.Context, pr int) (MergePRResult, er
 
 	// 1. PR view: labels + mergeable + mergeStateStatus + state, plus the
 	// url and base/head branch the pr_merged automation needs (CORE-108).
-	out, err := g.GH(ctx, "pr", "view", fmt.Sprint(pr), "--json", "labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName")
+	fields := "labels,mergeable,mergeStateStatus,state,url,baseRefName,headRefName"
+	if g.MatchHeadCommit != "" {
+		fields += ",headRefOid"
+	}
+	out, err := g.GH(ctx, "pr", "view", fmt.Sprint(pr), "--json", fields)
 	if err != nil {
 		return MergePRResult{}, fmt.Errorf("gh pr view: %w", err)
 	}
@@ -315,6 +360,7 @@ func (g MergePRGate) MergeResult(ctx context.Context, pr int) (MergePRResult, er
 		URL              string `json:"url"`
 		BaseRefName      string `json:"baseRefName"`
 		HeadRefName      string `json:"headRefName"`
+		HeadRefOid       string `json:"headRefOid"`
 	}
 	if err := json.Unmarshal(out, &view); err != nil {
 		return MergePRResult{}, fmt.Errorf("parse gh pr view: %w", err)
@@ -322,6 +368,9 @@ func (g MergePRGate) MergeResult(ctx context.Context, pr int) (MergePRResult, er
 	refuse := func(reason string) (MergePRResult, error) { return MergePRResult{Reason: reason}, nil }
 	if strings.EqualFold(view.State, "MERGED") {
 		return refuse(MergePRReasonAlreadyMerged)
+	}
+	if g.MatchHeadCommit != "" && view.HeadRefOid != g.MatchHeadCommit {
+		return refuse(MergePRReasonHeadMoved + ": the pull request's head is no longer the commit its lane was judged for; ask again")
 	}
 	if strings.ToUpper(view.Mergeable) != "MERGEABLE" {
 		return refuse(MergePRReasonNotMergeable + ":" + view.Mergeable)
@@ -364,8 +413,11 @@ func (g MergePRGate) MergeResult(ctx context.Context, pr int) (MergePRResult, er
 	// that failure would otherwise surface as a spurious merge error even
 	// though the PR merged successfully. Remote cleanup is handled
 	// separately, best-effort, below.
-	strategyFlag := "--" + g.Strategy
-	mergeOut, err := g.GH(ctx, "pr", "merge", fmt.Sprint(pr), strategyFlag)
+	mergeArgs := []string{"pr", "merge", fmt.Sprint(pr), "--" + g.Strategy}
+	if g.MatchHeadCommit != "" {
+		mergeArgs = append(mergeArgs, "--match-head-commit", g.MatchHeadCommit)
+	}
+	mergeOut, err := g.GH(ctx, mergeArgs...)
 	if err != nil {
 		return MergePRResult{}, fmt.Errorf("gh pr merge: %w: %s", err, string(mergeOut))
 	}

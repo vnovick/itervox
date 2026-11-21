@@ -83,6 +83,21 @@ func (o *Orchestrator) SetPRCreator(fn func(ctx context.Context, dir, head, base
 	o.createPR = fn
 }
 
+// SetPRFinder replaces how the daemon finds the open pull request of a
+// branch before it opens one for a stack split (guardrails.lanes.split);
+// workspace.FindOpenPRURLForBranch (gh) by default. Must be called before
+// Run.
+func (o *Orchestrator) SetPRFinder(fn func(ctx context.Context, dir, branch string) string) {
+	o.findBranchPR = fn
+}
+
+func (o *Orchestrator) prFinder() func(ctx context.Context, dir, branch string) string {
+	if o.findBranchPR != nil {
+		return o.findBranchPR
+	}
+	return workspace.FindOpenPRURLForBranch
+}
+
 func (o *Orchestrator) prCreator() func(ctx context.Context, dir, head, base, title, body string) (string, error) {
 	if o.createPR != nil {
 		return o.createPR
@@ -101,6 +116,9 @@ type daemonPushRun struct {
 	// were sealed on ("" when the seal could not hash the tree).
 	verify   bool
 	sealTree string
+	// branch and sha, when set, are what to push instead of the worktree's
+	// current branch and HEAD: a stack split's two commits.
+	branch, sha string
 }
 
 // daemonPushResult is the outcome of a daemon push.
@@ -124,7 +142,10 @@ func patchOutHoldContext(reason string) string {
 // daemonPush pushes the run's branch for a patch-out run. Worker goroutine.
 func (o *Orchestrator) daemonPush(ctx context.Context, run daemonPushRun) daemonPushResult {
 	ws, identifier := run.wsPath, run.issue.Identifier
-	branch := workspace.GetCurrentBranch(ctx, ws)
+	branch := run.branch
+	if branch == "" {
+		branch = workspace.GetCurrentBranch(ctx, ws)
+	}
 	res := daemonPushResult{branch: branch}
 	hold := func(reason string) daemonPushResult {
 		res.hold = patchOutHoldContext(reason)
@@ -135,7 +156,10 @@ func (o *Orchestrator) daemonPush(ctx context.Context, run daemonPushRun) daemon
 	if branch == "" || slices.Contains(protectedBranches(o.cfg), branch) {
 		return hold(fmt.Sprintf("the worktree is not on an issue branch (it is on %s): Itervox pushes only the issue's own branch, never a protected one", cmp.Or(branch, "a detached HEAD")))
 	}
-	sha := attest.Head(ctx, ws)
+	sha := run.sha
+	if sha == "" {
+		sha = attest.Head(ctx, ws)
+	}
 	if sha == "" {
 		return hold("the worktree has no commit to push")
 	}

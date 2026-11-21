@@ -61,7 +61,8 @@ func (s State) Clone() State {
 	c.ReviewVerdicts = copyReviewVerdictsMap(s.ReviewVerdicts)
 	c.ReviewChainIndex = maps.Clone(s.ReviewChainIndex)
 	c.ReviewOutcomes = maps.Clone(s.ReviewOutcomes)
-	c.PushLanes = clonePushLanes(s.PushLanes) // guardrails.lanes
+	c.PushLanes = clonePushLanes(s.PushLanes)       // guardrails.lanes
+	c.StackSplits = cloneStackSplits(s.StackSplits) // guardrails.lanes.split
 	c.DependencyAudit = copyDependencyAuditMap(s.DependencyAudit)
 	c.PROpenedDispatched = maps.Clone(s.PROpenedDispatched)
 	c.PRMergedDispatched = maps.Clone(s.PRMergedDispatched)

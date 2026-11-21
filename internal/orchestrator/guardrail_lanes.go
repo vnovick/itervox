@@ -70,9 +70,11 @@ type guardrailLaneEvent struct {
 	Report guardrails.LaneReport
 }
 
-// mergeLaneQuery is the payload of EventMergeLaneCheck.
+// mergeLaneQuery is the payload of EventMergeLaneCheck. pr is the pull
+// request's number (0 when the caller did not say).
 type mergeLaneQuery struct {
-	reply chan string
+	reply chan mergeLaneAnswer
+	pr    int
 }
 
 // laneBackend names a run's backend for the second-opinion comparison: the
@@ -182,13 +184,58 @@ const (
 	MergeRefusalLaneSecondOpinion = "lane_second_opinion"
 )
 
-// mergeLaneRefusal is why merge_pr must not merge identifier's pull request
-// under guardrails.lanes, or "" when it may. Pure over State.
-func mergeLaneRefusal(state State, identifier string) string {
-	rec, ok := state.PushLanes[identifier]
-	if !ok {
-		return ""
+// mergeLaneAnswer is the event loop's answer to a merge lane query.
+type mergeLaneAnswer struct {
+	// reason is why merge_pr must not merge the pull request by the
+	// issue's lane ("" when it may).
+	reason string
+	// lowerSHA, when set, says the pull request is the lower, code-only one
+	// of a code-first stack split: while its head is exactly this commit
+	// (the one the daemon pushed after the code side's own checks), it is
+	// judged by lowerReason, the code side's own lane, instead of reason.
+	lowerSHA    string
+	lowerReason string
+}
+
+// mergeLaneDecision is the lane answer for identifier's pull request
+// number pr (0: unknown). Pure over State.
+func mergeLaneDecision(state State, identifier string, pr int) mergeLaneAnswer {
+	var ans mergeLaneAnswer
+	if rec, ok := state.PushLanes[identifier]; ok {
+		ans.reason = laneRecordRefusal(state, identifier, rec)
 	}
+	split, sha, ok := stackSplitLaneRecord(state, identifier, pr)
+	if !ok {
+		return ans
+	}
+	if _, has := state.PushLanes[identifier]; !has {
+		// The split put pipeline files above this pull request, so the
+		// issue's lane is human even before its push reported it: a lower
+		// pull request whose head moved fails closed.
+		s := state.StackSplits[identifier]
+		ans.reason = laneRecordRefusal(state, identifier, PushLaneRecord{Lane: guardrails.LaneHuman,
+			Paths: s.PipelineFiles, PathsTotal: s.PipelineFilesTotal})
+	}
+	ans.lowerSHA = sha
+	if split != nil {
+		ans.lowerReason = laneRecordRefusal(state, identifier, *split)
+	}
+	return ans
+}
+
+// refusalFor is the answer's reason for a pull request whose head is
+// headSHA ("" when unknown): the lower pull request's own lane only while
+// its head is the commit the split pushed, the issue's otherwise.
+func (a mergeLaneAnswer) refusalFor(headSHA string) (reason string, matched bool) {
+	if a.lowerSHA != "" && headSHA != "" && headSHA == a.lowerSHA {
+		return a.lowerReason, true
+	}
+	return a.reason, false
+}
+
+// laneRecordRefusal is why a pull request whose pushes reached rec's lane
+// must not be merged, or "" when it may. Pure over State.
+func laneRecordRefusal(state State, identifier string, rec PushLaneRecord) string {
 	paths := guardrails.LanePathSummary(rec.Paths, rec.PathsTotal, guardrails.MaxLanePathsShown)
 	switch rec.Lane {
 	case guardrails.LaneSecondOpinion:
@@ -217,31 +264,68 @@ func mergeLaneRefusal(state State, identifier string) string {
 // agent's push sent before it. Fails closed (a reason) when the loop does
 // not answer. Safe from any goroutine.
 func (o *Orchestrator) MergeLaneRefusal(ctx context.Context, identifier string) string {
+	reason, _ := o.MergeLaneRefusalForPR(ctx, identifier, 0, nil)
+	return reason
+}
+
+// MergeLaneRefusalForPR is MergeLaneRefusal for pull request number pr of
+// identifier. A stack split's lower, code-only pull request is judged by
+// its own lane (guardrails.lanes.split) only while its head is the commit
+// the split pushed: headSHA (asked only for that pull request, off the
+// loop; nil or an error: unknown) reads the pull request's current head.
+// matchHead is that commit when the decision depended on it, so the merge
+// can insist on it (gh pr merge --match-head-commit); "" otherwise. pr 0
+// judges by the issue's lane. Safe from any goroutine.
+func (o *Orchestrator) MergeLaneRefusalForPR(ctx context.Context, identifier string, pr int,
+	headSHA func(context.Context) (string, error)) (reason, matchHead string) {
 	done := o.loopExitedCh()
 	if done == nil {
-		return "lane_unknown: the orchestrator is not running, so the pushed lanes cannot be checked"
+		return "lane_unknown: the orchestrator is not running, so the pushed lanes cannot be checked", ""
 	}
-	reply := make(chan string, 1)
+	reply := make(chan mergeLaneAnswer, 1)
 	select {
-	case o.events <- OrchestratorEvent{Type: EventMergeLaneCheck, Identifier: identifier, mergeLane: &mergeLaneQuery{reply: reply}}:
+	case o.events <- OrchestratorEvent{Type: EventMergeLaneCheck, Identifier: identifier, mergeLane: &mergeLaneQuery{reply: reply, pr: pr}}:
 	case <-done:
-		return "lane_unknown: the orchestrator stopped"
+		return "lane_unknown: the orchestrator stopped", ""
 	case <-ctx.Done():
-		return "lane_unknown: " + ctx.Err().Error()
+		return "lane_unknown: " + ctx.Err().Error(), ""
 	}
+	var ans mergeLaneAnswer
 	select {
-	case r := <-reply:
-		return r
+	case ans = <-reply:
 	case <-done:
 		select {
-		case r := <-reply:
-			return r
+		case ans = <-reply:
 		default:
-			return "lane_unknown: the orchestrator stopped"
+			return "lane_unknown: the orchestrator stopped", ""
 		}
 	case <-ctx.Done():
-		return "lane_unknown: " + ctx.Err().Error()
+		return "lane_unknown: " + ctx.Err().Error(), ""
 	}
+	head := ""
+	if ans.lowerSHA != "" && headSHA != nil {
+		h, err := headSHA(ctx)
+		if err != nil {
+			slog.Warn("guardrails: merge_pr could not read the pull request's head; judging it by the issue's lane",
+				"issue_identifier", identifier, "pr", pr, "error", err)
+		}
+		head = strings.TrimSpace(h)
+	}
+	reason, matched := ans.refusalFor(head)
+	if matched {
+		matchHead = head
+	} else if ans.lowerSHA != "" {
+		slog.Info("guardrails: the stack split's lower pull request moved since the split; judging it by the issue's lane",
+			"issue_identifier", identifier, "pr", pr, "split_commit", shortHash(ans.lowerSHA), "head", shortHash(head))
+	}
+	if reason != "" {
+		kind, _, _ := strings.Cut(reason, ":")
+		slog.Warn("guardrails: merge_pr refused", "issue_identifier", identifier, "reason", kind)
+		if o.logBuf != nil {
+			o.logBuf.Add(identifier, makeBufLine("WARN", "guardrails: merge_pr refused: "+reason))
+		}
+	}
+	return reason, matchHead
 }
 
 // handleMergeLaneCheck answers an EventMergeLaneCheck. Event loop; changes
@@ -251,15 +335,7 @@ func (o *Orchestrator) handleMergeLaneCheck(state State, ev OrchestratorEvent) {
 	if ev.mergeLane == nil {
 		return
 	}
-	reason := mergeLaneRefusal(state, ev.Identifier)
-	if reason != "" {
-		kind, _, _ := strings.Cut(reason, ":")
-		slog.Warn("guardrails: merge_pr refused", "issue_identifier", ev.Identifier, "reason", kind)
-		if o.logBuf != nil {
-			o.logBuf.Add(ev.Identifier, makeBufLine("WARN", "guardrails: merge_pr refused: "+reason))
-		}
-	}
-	ev.mergeLane.reply <- reason
+	ev.mergeLane.reply <- mergeLaneDecision(state, ev.Identifier, ev.mergeLane.pr)
 }
 
 // stampVerdictBackend records the backend of the reviewer whose verdict

@@ -876,6 +876,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	orch.SetDepsOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "deps_overrides.json"))
 	orch.SetPlaybookOverridesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "playbook_overrides.json")) // #218
 	orch.SetPushLanesFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "push_lanes.json"))                 // guardrails.lanes
+	orch.SetStackSplitsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "stack_splits.json"))             // guardrails.lanes.split
 	orch.SetTaskSpecsFile(filepath.Join(filepath.Dir(workflowPath), ".itervox", "task_specs.json"))                 // #251
 	// Per-issue profile overrides: loaded by every generation, so they survive
 	// a WORKFLOW.md / settings reload as well as a restart.

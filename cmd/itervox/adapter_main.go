@@ -282,6 +282,17 @@ func (a *orchestratorAdapter) MergeLaneRefusal(ctx context.Context, identifier s
 	return a.orch.MergeLaneRefusal(ctx, identifier)
 }
 
+// MergeLaneRefusalForPR implements server.MergePRLaneChecker
+// (guardrails.lanes.split): a stack split's lower, code-only pull request
+// is judged by its own lane while its head is the commit the split pushed.
+func (a *orchestratorAdapter) MergeLaneRefusalForPR(ctx context.Context, identifier string, pr int,
+	headSHA func(context.Context) (string, error)) (reason, matchHead string) {
+	if a.orch == nil {
+		return "", ""
+	}
+	return a.orch.MergeLaneRefusalForPR(ctx, identifier, pr, headSHA)
+}
+
 // EmitPRMerged implements server.PRMergedEmitter so the merge_pr action
 // handler can fire pr_merged automations after a successful gh merge. P1.
 func (a *orchestratorAdapter) EmitPRMerged(ctx context.Context, identifier, prURL string, prNumber int, mergedSHA, baseRef, headRef string) error {

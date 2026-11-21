@@ -140,7 +140,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	var openedPRURL string   // PR URL first discovered during this run.
 	var openedPRBranch string
 	if !skipPRCheck {
-		prCtx, _ = prdetector.Detect(ctx, issue)
+		// guardrails.lanes.split: the lower branch of a stack split is never
+		// the issue's working pull request, even when its top is gone.
+		issueBranch := branchName
+		prCtx, _ = prdetector.Detect(ctx, issue, func(b string) bool { return isStackSplitLowerBranch(b, issueBranch) })
 		if prCtx != nil && prCtx.Branch == "" {
 			// Treat a PR with no head branch as "not found" — an empty branch name
 			// passed to EnsureWorkspace produces an unnamed worktree.
@@ -1220,6 +1223,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// A refused push holds the run input-required.
 	daemonPushes := patchOut && wsPath != "" && !automationRun && !readOnlyReviewer
 	var daemonPushed daemonPushResult
+	var split stackSplitOutcome // guardrails.lanes.split: the two stacked PRs, when handled
 	holdPatchOut := func(holdContext string) {
 		o.queueInputRequiredEntry(ctx, issue, attempt, runLogID, claudeSessionID, backend, agentCommand,
 			workerHost, profileName, activeBranchName, holdContext, "",
@@ -1246,7 +1250,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				return
 			}
 		}
-		if prCtx == nil { // an existing PR's branch is pushed below, after the handoff commit
+		if prCtx == nil && o.stackSplitApplies(patchOut) { // guardrails.lanes.split
+			split = o.stackSplit(ctx, stackSplitRun{
+				push: pushRun, checks: verifyChecks, runTimestamp: runTimestamp, profile: profileName,
+				prBase: o.prBaseBranch(cmp.Or(stackedOn, taskBase)), stackedOn: stackedOn,
+			})
+			if split.hold != "" {
+				holdPatchOut(split.hold)
+				return
+			}
+		}
+		if prCtx == nil && !split.handled { // an existing PR's branch is pushed below, after the handoff commit
 			daemonPushed = o.daemonPush(ctx, pushRun)
 			if daemonPushed.hold != "" {
 				holdPatchOut(daemonPushed.hold)
@@ -1261,7 +1275,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// pre-run guard (now the workspace is on the newly-created branch).
 	if wsPath != "" && prCtx == nil && !automationRun {
 		prURL := workspace.FindOpenPRURL(ctx, wsPath)
-		if prURL == "" && !readOnlyReviewer { // #252: `itervox run` opens the PR itself
+		if prURL == "" && split.handled { // the stack's top: the issue branch's PR
+			prURL = split.topPRURL
+		}
+		if split.lowerPRURL != "" {
+			o.commentStackLowerPR(ctx, issue, split, runLogID)
+		}
+		if prURL == "" && !readOnlyReviewer && !split.handled { // #252: `itervox run` opens the PR itself
 			prURL = o.openOneShotPR(ctx, wsPath, activeBranchName, issue)
 		}
 		if prURL == "" && daemonPushed.pushed { // push: daemon: the agent could not open it
