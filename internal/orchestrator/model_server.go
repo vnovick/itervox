@@ -24,36 +24,53 @@ func withLocalModelServer(ctx context.Context, assignment, workerHost string) co
 }
 
 // withRemoteModelServer returns the turn's command for an SSH worker with
-// the model-server assignment in front: the local environment does not
-// reach the remote shell. Only the turn's command line carries it; the
-// command recorded for a later resume stays as configured.
+// the model-server assignment exported in front (agent.ExportStatement):
+// the local environment does not reach the remote shell. A statement, not
+// `NAME=value command`, so a compound command (`source ~/.nvm/nvm.sh &&
+// claude`) gets it for the CLI and not only for its first command. The
+// command's backend (its hint, else its program) moves into a leading hint,
+// because the runner picks its backend from the command's first word, which
+// is now `export`. Only the turn's command line carries it; the command
+// recorded for a later resume stays as configured.
 func withRemoteModelServer(agentCommand, assignment, workerHost string) string {
 	if assignment == "" || workerHost == "" {
 		return agentCommand
 	}
-	name, value, _ := strings.Cut(assignment, "=")
-	return prependEnvToCommand(agentCommand, map[string]string{name: value})
+	backend, rest := config.SplitBackendFromCommand(agentCommand)
+	export := agent.ExportStatement(assignment) + strings.TrimSpace(rest)
+	if backend == "" {
+		return export // the default runner, as for the command alone
+	}
+	return config.BackendHintPrefix + backend + " " + export
 }
 
-// profileStallTimeouts returns the stall timeout of each profile whose runs
-// differ from agent.stall_timeout_ms (config.ProfileTimeouts), keyed by
-// profile name; "" is a run without a profile, which runs agent.command.
-// Event loop: agent.profiles is read under cfgMu, agent.command and
+// runStallTimeouts returns the stall timeout of each running entry whose
+// run differs from agent.stall_timeout_ms (config.ProfileTimeouts for the
+// entry's profile and the backend it runs on), keyed like state.Running.
+// A run without a profile ("") runs agent.command and keeps the agent
+// level. Event loop: agent.profiles is read under cfgMu, agent.command and
 // agent.stall_timeout_ms are read-only after startup.
-func (o *Orchestrator) profileStallTimeouts() map[string]int {
+func (o *Orchestrator) runStallTimeouts(state State) map[string]int {
+	if len(state.Running) == 0 {
+		return nil
+	}
 	agentStall := o.cfg.Agent.StallTimeoutMs
 	defaultCommand := o.cfg.Agent.Command
+	out := map[string]int{}
 	o.cfgMu.RLock()
 	profiles := o.cfg.Agent.Profiles
-	out := map[string]int{}
-	for name, p := range profiles {
-		if t := config.ProfileTimeouts(p, defaultCommand, config.RunTimeouts{StallMs: agentStall}).StallMs; t != agentStall {
-			out[name] = t
+	for id, entry := range state.Running {
+		if entry == nil || entry.ProfileName == "" {
+			continue
+		}
+		p, ok := profiles[entry.ProfileName]
+		if !ok {
+			continue
+		}
+		if t := config.ProfileTimeouts(p, entry.Backend, defaultCommand, config.RunTimeouts{StallMs: agentStall}).StallMs; t != agentStall {
+			out[id] = t
 		}
 	}
 	o.cfgMu.RUnlock()
-	if t := config.ProfileTimeouts(config.AgentProfile{}, defaultCommand, config.RunTimeouts{StallMs: agentStall}).StallMs; t != agentStall {
-		out[""] = t
-	}
 	return out
 }

@@ -468,9 +468,10 @@ type AgentProfile struct {
 	ModelServerName string
 	// ReadTimeoutMs, TurnTimeoutMs and StallTimeoutMs override the
 	// agent-level timeouts for this profile's runs; 0 (absent) inherits
-	// them, raised to the model-server defaults when the profile uses a
-	// model server (ProfileTimeouts). YAML keys: read_timeout_ms,
-	// turn_timeout_ms, stall_timeout_ms; positive values only.
+	// them, raised to the model-server defaults when the profile has a
+	// model_server and the run uses its own backend (ProfileTimeouts). YAML
+	// keys: read_timeout_ms, turn_timeout_ms, stall_timeout_ms; positive
+	// values up to MaxTimeoutMs.
 	ReadTimeoutMs  int
 	TurnTimeoutMs  int
 	StallTimeoutMs int
@@ -1136,6 +1137,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.TurnTimeoutMs = intField(agent, "turn_timeout_ms", 3600000)
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
+	if err := checkAgentTimeoutsMax(agent); err != nil {
+		return nil, err
+	}
 	cfg.Agent.DependencyAuditRefreshIntervalMs = positiveIntField(agent, "dependency_audit_refresh_interval_ms", DefaultDependencyAuditRefreshIntervalMs)
 	cfg.Agent.DependencyAuditRefreshTimeoutMs = positiveIntField(agent, "dependency_audit_refresh_timeout_ms", DefaultDependencyAuditRefreshTimeoutMs)
 	cfg.Agent.DependencyAuditRefreshBatchSize = positiveIntField(agent, "dependency_audit_refresh_batch_size", DefaultDependencyAuditRefreshBatchSize)

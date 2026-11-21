@@ -83,3 +83,67 @@ func TestWithSetEnv(t *testing.T) {
 	assert.Equal(t, []string{"A=1"}, env.Vars)
 	assert.Equal(t, []string{"ANTHROPIC_BASE_URL=http://x"}, env.Set)
 }
+
+// A profile command that is not a single external program (a sourced
+// setup file, a cd, exec, a shell function) still gets the run
+// environment through the login shell: the model server and the shim PATH
+// are exported, and Unset names removed, as statements before the command
+// line, not as `env` in front of its first command (which failed with
+// "env: 'source': No such file or directory", or bound the variable to
+// `source` alone). The login profile exports values of its own for every
+// name. The CLI is a fake script; no real agent runs.
+func TestRunEnvReachesCompoundShellCommands(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "http://daemon-value")
+	t.Setenv("GH_TOKEN", "daemon-token")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".profile"),
+		[]byte("export ANTHROPIC_BASE_URL=http://from-profile\nexport GH_TOKEN=from-profile\n"), 0o644))
+	setup := filepath.Join(home, "setup.sh")
+	require.NoError(t, os.WriteFile(setup, []byte("SETUP_RAN=1; export SETUP_RAN\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "sub"), 0o755))
+	type tc struct{ name, shell, command string }
+	cases := []tc{
+		{"dot", "/bin/sh", ". " + setup + " && claude"},
+		{"cd", "/bin/sh", "cd " + filepath.Join(home, "sub") + " && claude"},
+		{"exec", "/bin/sh", "exec claude"},
+		{"function", "/bin/sh", `run() { claude "$@"; }; run`},
+	}
+	if _, err := os.Stat("/bin/bash"); err == nil {
+		cases = append(cases, tc{"bash-source", "/bin/bash", "source " + setup + " && claude"})
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("SHELL", c.shell)
+			dir := t.TempDir()
+			shim := filepath.Join(dir, "shim")
+			require.NoError(t, os.MkdirAll(shim, 0o755))
+			envFile := filepath.Join(dir, "env.out")
+			script := "#!/bin/sh\nenv > " + envFile + "\n" +
+				"printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s1\"}'\n"
+			require.NoError(t, os.WriteFile(filepath.Join(shim, "claude"), []byte(script), 0o755))
+			ctx := agent.WithRunEnv(context.Background(), agent.RunEnv{PathPrepend: shim, Unset: []string{"GH_TOKEN"}})
+			ctx = agent.WithSetEnv(ctx, "ANTHROPIC_BASE_URL=http://127.0.0.1:8000")
+			res, runErr := agent.NewClaudeRunner().RunTurn(ctx, slog.Default(), nil, nil, "hi", dir, c.command, "", "", 30000, 60000, agent.PermissionBypass)
+			data, err := os.ReadFile(envFile)
+			require.NoError(t, err, "the CLI ran: %v %s", runErr, res.FailureText)
+			env := map[string]string{}
+			for _, line := range strings.Split(string(data), "\n") {
+				if k, v, ok := strings.Cut(line, "="); ok {
+					env[k] = v
+				}
+			}
+			assert.Equal(t, "http://127.0.0.1:8000", env["ANTHROPIC_BASE_URL"])
+			_, hasToken := env["GH_TOKEN"]
+			assert.False(t, hasToken, "an Unset name reached the CLI")
+			assert.True(t, strings.HasPrefix(env["PATH"], shim+":"), "PATH starts with the shims: %s", env["PATH"])
+		})
+	}
+}
+
+// TestExportStatement: a statement that quotes the value and ends the
+// command line when the variable cannot be set.
+func TestExportStatement(t *testing.T) {
+	assert.Equal(t, `export ANTHROPIC_BASE_URL='http://h:1/a b'\''c' || exit 1; `,
+		agent.ExportStatement("ANTHROPIC_BASE_URL=http://h:1/a b'c"))
+}

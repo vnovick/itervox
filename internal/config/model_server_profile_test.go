@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -175,6 +176,17 @@ func TestModelServerNamePool(t *testing.T) {
 	assert.Equal(t, "own", p["gamma"].Pool)
 	assert.False(t, p["gamma"].PoolAuto)
 
+	// An explicit pool shared by profiles of one server, or by hosted
+	// profiles only, is one quota and loads.
+	cfg, err = loadProfiles(t,
+		"    hosted-a:\n      command: claude\n      pool: team\n"+
+			"    hosted-b:\n      command: codex\n      pool: team\n"+
+			"    box:\n      command: claude\n      model_server: http://127.0.0.1:1234\n      model_server_name: box\n"+
+			"    box-pinned:\n      command: claude\n      model_server: http://localhost:1234\n      pool: box\n")
+	require.NoError(t, err)
+	assert.Equal(t, "box", cfg.Agent.Profiles["box-pinned"].Pool)
+	assert.Equal(t, "team", cfg.Agent.Profiles["hosted-b"].Pool)
+
 	for name, tc := range map[string]struct{ profiles, want string }{
 		"without model_server": {
 			"    alpha:\n      command: claude\n      model_server_name: studio\n",
@@ -198,6 +210,21 @@ func TestModelServerNamePool(t *testing.T) {
 			"    alpha:\n      command: claude\n      model_server: http://127.0.0.1:1234\n" +
 				"    beta:\n      command: claude\n      model_server: http://127.0.0.1:11434\n      model_server_name: model-alpha\n",
 			"names two servers",
+		},
+		"a hosted pool named like a server": {
+			"    hosted:\n      command: claude\n      pool: local\n" +
+				"    box:\n      command: claude\n      model_server: http://127.0.0.1:1234\n      model_server_name: local\n",
+			`the pool "local" names two servers (agent.profiles.hosted, no model server; agent.profiles.box, model server loopback:1234)`,
+		},
+		"a hosted pool named like a derived pool": {
+			"    hosted:\n      command: claude\n      pool: model-box\n" +
+				"    box:\n      command: claude\n      model_server: http://127.0.0.1:1234\n",
+			`the pool "model-box" names two servers (agent.profiles.hosted, no model server; agent.profiles.box, model server loopback:1234)`,
+		},
+		"one explicit pool on two servers": {
+			"    alpha:\n      command: claude\n      model_server: http://127.0.0.1:1234\n      pool: shared\n" +
+				"    beta:\n      command: claude\n      model_server: http://10.0.0.5:1234\n      pool: shared\n",
+			`the pool "shared" names two servers`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -225,31 +252,51 @@ func TestModelServerPoolInFallbackMap(t *testing.T) {
 func TestProfileTimeouts(t *testing.T) {
 	agent := config.RunTimeouts{ReadMs: 30_000, TurnMs: 3_600_000, StallMs: 300_000}
 	plain := config.AgentProfile{Command: "claude"}
-	assert.Equal(t, agent, config.ProfileTimeouts(plain, "claude", agent), "no model server: the agent level")
+	assert.Equal(t, agent, config.ProfileTimeouts(plain, "claude", "claude", agent), "no model server: the agent level")
 
 	local := config.AgentProfile{Command: "claude", ModelServer: "http://127.0.0.1:8000", ModelServerURL: "http://127.0.0.1:8000"}
 	assert.Equal(t, config.RunTimeouts{
 		ReadMs: config.ModelServerReadTimeoutMs, TurnMs: config.ModelServerTurnTimeoutMs, StallMs: config.ModelServerStallTimeoutMs,
-	}, config.ProfileTimeouts(local, "claude", agent))
-
-	viaCommand := config.AgentProfile{Command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"}
-	assert.Equal(t, config.ModelServerStallTimeoutMs, config.ProfileTimeouts(viaCommand, "claude", agent).StallMs,
-		"the command form uses a model server too")
-	assert.Equal(t, config.ModelServerReadTimeoutMs, config.ProfileTimeouts(config.AgentProfile{}, "ANTHROPIC_BASE_URL=http://x claude", agent).ReadMs,
-		"a run without a profile follows agent.command")
+	}, config.ProfileTimeouts(local, "claude", "claude", agent))
+	assert.Equal(t, config.ModelServerStallTimeoutMs, config.ProfileTimeouts(local, "", "claude", agent).StallMs, "an empty run backend is claude")
 
 	larger := config.RunTimeouts{ReadMs: 600_000, TurnMs: 20_000_000, StallMs: 1_800_000}
-	assert.Equal(t, larger, config.ProfileTimeouts(local, "claude", larger), "a larger agent value is kept")
+	assert.Equal(t, larger, config.ProfileTimeouts(local, "claude", "claude", larger), "a larger agent value is kept")
 
 	off := config.RunTimeouts{ReadMs: 30_000, TurnMs: 0, StallMs: 0}
-	got := config.ProfileTimeouts(local, "claude", off)
+	got := config.ProfileTimeouts(local, "claude", "claude", off)
 	assert.Zero(t, got.TurnMs, "a disabled turn timeout stays disabled")
 	assert.Zero(t, got.StallMs, "a disabled stall timeout stays disabled")
 
 	own := local
 	own.ReadTimeoutMs, own.TurnTimeoutMs, own.StallTimeoutMs = 45_000, 60_000, 90_000
-	assert.Equal(t, config.RunTimeouts{ReadMs: 45_000, TurnMs: 60_000, StallMs: 90_000}, config.ProfileTimeouts(own, "claude", agent),
+	assert.Equal(t, config.RunTimeouts{ReadMs: 45_000, TurnMs: 60_000, StallMs: 90_000}, config.ProfileTimeouts(own, "claude", "claude", agent),
 		"the profile's own values win, even below the defaults")
+	assert.Equal(t, config.RunTimeouts{ReadMs: 45_000, TurnMs: 60_000, StallMs: 90_000}, config.ProfileTimeouts(own, "codex", "claude", agent),
+		"the profile's own values hold on any backend")
+}
+
+// TestProfileTimeoutsOnlyForModelServerOnItsOwnBackend: the model-server
+// defaults apply only to a profile with model_server, and only while the
+// run uses that profile's own backend. A command that writes the variable
+// itself (`ANTHROPIC_BASE_URL=… claude`) keeps the agent level, and so does
+// a run a per-issue or recovery switch moved to another backend.
+func TestProfileTimeoutsOnlyForModelServerOnItsOwnBackend(t *testing.T) {
+	agent := config.RunTimeouts{ReadMs: 30_000, TurnMs: 3_600_000, StallMs: 300_000}
+	viaCommand := config.AgentProfile{Command: "ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude"}
+	assert.Equal(t, agent, config.ProfileTimeouts(viaCommand, "claude", "claude", agent), "the command form keeps the agent level")
+	assert.Equal(t, agent, config.ProfileTimeouts(config.AgentProfile{}, "claude", "ANTHROPIC_BASE_URL=http://x:1 claude", agent),
+		"a run without a profile keeps the agent level")
+	assert.False(t, config.ProfileUsesModelServer(viaCommand, "claude", "claude"))
+
+	local := config.AgentProfile{Command: "claude", ModelServer: "http://127.0.0.1:8000", ModelServerURL: "http://127.0.0.1:8000"}
+	assert.True(t, config.ProfileUsesModelServer(local, "claude", "claude"))
+	assert.False(t, config.ProfileUsesModelServer(local, "codex", "claude"), "switched to another backend")
+	assert.Equal(t, agent, config.ProfileTimeouts(local, "codex", "claude", agent), "a switched run gets the agent level")
+
+	codex := config.AgentProfile{Command: "codex", ModelServer: "http://127.0.0.1:8000/v1", ModelServerURL: "http://127.0.0.1:8000/v1"}
+	assert.Equal(t, config.ModelServerReadTimeoutMs, config.ProfileTimeouts(codex, "codex", "claude", agent).ReadMs)
+	assert.Equal(t, agent, config.ProfileTimeouts(codex, "claude", "claude", agent))
 }
 
 // TestProfileTimeoutFieldsParse: the YAML keys, and non-positive values
@@ -271,12 +318,37 @@ func TestProfileTimeoutFieldsParse(t *testing.T) {
 	}
 }
 
+// TestTimeoutsAtMostThirtyDays: a per-profile or agent-level timeout above
+// config.MaxTimeoutMs is refused at load with the key in the message; a
+// larger value would overflow time.Duration (a skipped stall check, a
+// negative read deadline). 30 days itself loads.
+func TestTimeoutsAtMostThirtyDays(t *testing.T) {
+	month := strconv.Itoa(config.MaxTimeoutMs)
+	cfg, err := loadProfiles(t, "    slow:\n      command: claude\n      stall_timeout_ms: "+month+"\n      turn_timeout_ms: "+month+"\n")
+	require.NoError(t, err)
+	assert.Equal(t, config.MaxTimeoutMs, cfg.Agent.Profiles["slow"].StallTimeoutMs)
+	for _, key := range []string{"read_timeout_ms", "turn_timeout_ms", "stall_timeout_ms"} {
+		for _, bad := range []string{strconv.Itoa(config.MaxTimeoutMs + 1), "9300000000000", "1e30"} {
+			_, err := loadProfiles(t, "    slow:\n      command: claude\n      "+key+": "+bad+"\n")
+			require.Error(t, err, key+"="+bad)
+			assert.Contains(t, err.Error(), "agent.profiles.slow."+key+" must be at most 2592000000 milliseconds (30 days)")
+
+			_, err = config.Load(workflowWithContent(t, minimalV2WithProfileFiles(t, "agent:\n  "+key+": "+bad+"\n")))
+			require.Error(t, err, "agent."+key+"="+bad)
+			assert.Contains(t, err.Error(), "agent."+key+" must be at most 2592000000 milliseconds (30 days)")
+		}
+	}
+	_, err = config.Load(workflowWithContent(t, minimalV2WithProfileFiles(t, "agent:\n  turn_timeout_ms: "+month+"\n  stall_timeout_ms: 0\n")))
+	require.NoError(t, err, "30 days, and 0 (off), load at the agent level")
+}
+
 // TestCheckModelServerValue: the shape check the dashboard save uses.
 func TestCheckModelServerValue(t *testing.T) {
-	for _, ok := range []string{"", "http://127.0.0.1:11434", "https://box.lan:443/v1", "http://[::1]:1234", "$LOCAL_MODEL_URL"} {
+	for _, ok := range []string{"", "http://127.0.0.1:11434", "https://box.lan:443/v1", "http://[::1]:1234", "$LOCAL_MODEL_URL", "http://127.0.0.1:1", "http://127.0.0.1:65535"} {
 		assert.NoError(t, config.CheckModelServerValue(ok), ok)
 	}
-	for _, bad := range []string{"127.0.0.1:8000", "http://", "${X}", "http://$X", "http://127.0.0.1", "https://box.lan/v1", "http://[::1]/"} {
+	for _, bad := range []string{"127.0.0.1:8000", "http://", "${X}", "http://$X", "http://127.0.0.1", "https://box.lan/v1", "http://[::1]/",
+		"http://127.0.0.1:0", "http://127.0.0.1:65536", "http://127.0.0.1:99999", "http://127.0.0.1:00"} {
 		assert.Error(t, config.CheckModelServerValue(bad), bad)
 	}
 }

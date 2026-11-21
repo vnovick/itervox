@@ -65,3 +65,32 @@ func TestModelServerRejectsNonHTTPURL(t *testing.T) {
 	require.Len(t, c.Servers, 1)
 	assert.EqualError(t, c.Servers[0].Err, "not an http(s) URL")
 }
+
+// TestDoctorWarnsAboutAClearTextRemoteModelServer: a plain http:// model
+// server off this machine warns that what the agent sends crosses the
+// network in clear text, answering or not; https and loopback do not. The
+// probe is stubbed; nothing is contacted.
+func TestDoctorWarnsAboutAClearTextRemoteModelServer(t *testing.T) {
+	prev := probeModelServer
+	t.Cleanup(func() { probeModelServer = prev })
+	probeModelServer = func(u string) error {
+		if strings.Contains(u, "10.0.0.9") {
+			return errors.New("connection refused")
+		}
+		return nil
+	}
+	cfg := &config.Config{}
+	cfg.Agent.Command = "claude"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"lan":      {Command: "claude", ModelServer: "http://box.lan:8000", ModelServerURL: "http://box.lan:8000"},
+		"lan-down": {Command: "ANTHROPIC_BASE_URL=http://10.0.0.9:8000 claude"},
+		"tls":      {Command: "claude", ModelServer: "https://box.lan:8443", ModelServerURL: "https://box.lan:8443"},
+		"loop":     {Command: "claude", ModelServer: "http://[::1]:8000", ModelServerURL: "http://[::1]:8000"},
+	}
+	var b strings.Builder
+	renderModelServerCheck(&b, checkModelServers(cfg))
+	out := b.String()
+	assert.Contains(t, out, "WARNING: lan reach http://box.lan:8000 over plain http, off this machine")
+	assert.Contains(t, out, "WARNING: lan-down reach http://10.0.0.9:8000 over plain http")
+	assert.Equal(t, 2, strings.Count(out, "over plain http"), out)
+}

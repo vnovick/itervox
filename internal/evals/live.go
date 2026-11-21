@@ -275,7 +275,12 @@ func runLiveScenario(ctx context.Context, cfg *config.Config, sc Scenario, opts 
 	if err != nil {
 		return fail("isolation: %v", err)
 	}
-	turnCtx, cancel := context.WithTimeout(agent.WithIsolation(ctx, iso), opts.Budget.Timeout)
+	// Local models: the profile's model_server reaches the agent as on a
+	// dispatched run (the variable its backend reads, exported after the
+	// login profile), and the run gets the profile's timeouts within the
+	// scenario's wall-clock budget.
+	runCtx := agent.WithSetEnv(agent.WithIsolation(ctx, iso), config.ProfileModelServerEnv(profile, backend, cfg.Agent.Command))
+	turnCtx, cancel := context.WithTimeout(runCtx, opts.Budget.Timeout)
 	defer cancel()
 	var overBudget atomic.Bool
 	onProgress := func(p agent.TurnResult) {
@@ -286,9 +291,11 @@ func runLiveScenario(ctx context.Context, cfg *config.Config, sc Scenario, opts 
 	}
 	timeoutMs := int(opts.Budget.Timeout / time.Millisecond)
 	// The idle read deadline sits past the wall-clock budget so a silent
-	// agent is reported as the budget timeout it is.
+	// agent is reported as the budget timeout it is, unless the profile sets
+	// a read timeout of its own; the budget bounds the turn.
+	timeouts := config.ProfileTimeouts(profile, backend, cfg.Agent.Command, config.RunTimeouts{ReadMs: 2 * timeoutMs, TurnMs: timeoutMs})
 	result, runErr := opts.Runner.RunTurn(turnCtx, slog.New(slog.NewTextHandler(opts.Log, nil)), onProgress, nil,
-		composed.Text, sb.Workspace, runnerCommand, "", "", 2*timeoutMs, timeoutMs,
+		composed.Text, sb.Workspace, runnerCommand, "", "", timeouts.ReadMs, min(timeouts.TurnMs, timeoutMs),
 		agent.ParsePermissionMode(profile.PermissionMode))
 	run.Tokens = usedTokens(result)
 	if result.CostUSD != nil {

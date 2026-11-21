@@ -23,14 +23,14 @@ type RunEnv struct {
 	PathPrepend string
 	// Unset are variable names removed from the agent's environment (push:
 	// daemon strips forge and tracker credentials). Through a login shell
-	// they are removed again after the profile ran (`env -u`), so a profile
+	// they are removed again after the profile ran (`unset`), so a profile
 	// that exports a token does not hand it back. Names must be shell
 	// identifiers; others are ignored.
 	Unset []string
 	// Set are NAME=value entries that must reach the CLI as given, even
 	// through a login shell whose profile exports the same name: directly
 	// they join the environment like Vars, and through a shell they are
-	// asserted again after the profile ran (`env NAME=value`). A profile's
+	// exported again after the profile ran (`export NAME='value'`). A profile's
 	// model_server is set this way. Names must be shell identifiers; others
 	// are ignored.
 	Set []string
@@ -71,33 +71,41 @@ func (e RunEnv) strip(env []string) []string {
 	})
 }
 
-// unsetPrefix is `env -u NAME … NAME=value … ` for the valid names in
-// e.Unset and e.Set ("" when none). env, not the shell's unset builtin: it
-// works the same under every login shell, and fails closed (the command
-// does not start) where a command line is not a single command.
+// unsetPrefix is `unset NAME … || exit 1; export NAME='value' || exit 1; `
+// for the valid names in e.Unset and e.Set ("" when none). Statements of
+// their own, not `env -u NAME NAME=value` in front of the command: a
+// prefix applies to the command line's first command only, so a profile
+// command such as `source ~/.nvm/nvm.sh && claude`, `cd x && claude`,
+// `exec claude` or a shell function would either fail (`env: 'source': No
+// such file or directory`) or start the CLI without the assignment. Each
+// statement ends the turn when it fails (a read-only variable; a login
+// shell without `unset`, such as fish), so a credential that cannot be
+// removed or a model server that cannot be set never reaches a CLI that
+// then runs without it (fail closed).
 func (e RunEnv) unsetPrefix() string {
 	var b strings.Builder
-	start := func() {
-		if b.Len() == 0 {
-			b.WriteString("env")
+	var names []string
+	for _, name := range e.Unset {
+		if isEnvName(name) {
+			names = append(names, name)
 		}
 	}
-	for _, name := range e.Unset {
-		if !isEnvName(name) {
-			continue
-		}
-		start()
-		b.WriteString(" -u " + name)
+	if len(names) > 0 {
+		b.WriteString("unset " + strings.Join(names, " ") + " || exit 1; ")
 	}
 	for _, kv := range e.validSet() {
-		name, value, _ := strings.Cut(kv, "=")
-		start()
-		b.WriteString(" " + name + "=" + ShellQuote(value))
+		b.WriteString(ExportStatement(kv))
 	}
-	if b.Len() == 0 {
-		return ""
-	}
-	return b.String() + " "
+	return b.String()
+}
+
+// ExportStatement is `export NAME='value' || exit 1; ` for a NAME=value
+// assignment: a statement of its own in front of a shell command line, so
+// the variable reaches every command of a compound line (see unsetPrefix),
+// and the line ends when it cannot be set. The value is ShellQuote'd.
+func ExportStatement(assignment string) string {
+	name, value, _ := strings.Cut(assignment, "=")
+	return "export " + name + "=" + ShellQuote(value) + " || exit 1; "
 }
 
 // validSet returns the entries of e.Set whose name is a shell identifier.
@@ -136,13 +144,14 @@ func (e RunEnv) direct() []string {
 	return out
 }
 
-// shellPrefix returns the assignment to put in front of a shell command
-// line: PATH with PathPrepend first, expanded by that shell after its
-// profile ran, then `env -u` for Unset and the Set assignments. Empty
-// without any.
+// shellPrefix returns the statements to put in front of a shell command
+// line: PATH exported with PathPrepend first, expanded by that shell after
+// its profile ran, then unsetPrefix's Unset and Set statements. Statements,
+// not assignments in front of the command, so they hold for every command
+// of a compound line. Empty without any.
 func (e RunEnv) shellPrefix() string {
 	if e.PathPrepend == "" {
 		return e.unsetPrefix()
 	}
-	return "PATH=" + ShellQuote(procgroup.ShellPathList(e.PathPrepend)) + `:"$PATH" ` + e.unsetPrefix()
+	return "export PATH=" + ShellQuote(procgroup.ShellPathList(e.PathPrepend)) + `:"$PATH"; ` + e.unsetPrefix()
 }

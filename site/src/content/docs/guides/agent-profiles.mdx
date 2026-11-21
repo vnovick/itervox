@@ -252,7 +252,8 @@ agent:
 
 Itervox sets `ANTHROPIC_BASE_URL` (Claude Code) or `OPENAI_BASE_URL` (Codex)
 for the profile's runs, gives the profile its own quota pool (`model-local`
-here, or the name in `model_server_name`) so a hosted limit never holds it, and lengthens its timeouts; set
+here, or the name in `model_server_name`) so a hosted limit never holds it, and lengthens its timeouts while
+its runs use the profile's own backend; set
 `read_timeout_ms`, `turn_timeout_ms` or `stall_timeout_ms` on the profile to
 choose them yourself. The Agents page has a **Model server** field for it, and
 `itervox quickstart` can add a `local` profile. See

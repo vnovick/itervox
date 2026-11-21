@@ -147,6 +147,9 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 	if err := config.AssignModelServerPools(finalProfiles); err != nil {
 		return err
 	}
+	if err := a.checkProfileSetLoads(finalProfiles); err != nil {
+		return err
+	}
 	automations := a.orch.AutomationsCfg()
 	automationsChanged := false
 	if renamingProfile {
@@ -203,6 +206,23 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		}
 	}
 	a.notify()
+	return nil
+}
+
+// checkProfileSetLoads refuses a profile save or delete whose profile set
+// the next start or reload would refuse: agent.backend_fallback checked
+// against it as config.ValidateDispatch does (main.go, config_watch.go). A
+// save can rename a pool derived from model_server (model-local becomes
+// model-a when a profile that sorts first joins the server), or delete a
+// profile, that a profile_map entry still names. agent.backend_fallback and
+// agent.command are load-time (not cfgMu fields).
+func (a *orchestratorAdapter) checkProfileSetLoads(profiles map[string]config.AgentProfile) error {
+	if a.cfg == nil {
+		return nil
+	}
+	if err := config.ValidateBackendFallback(a.cfg.Agent.BackendFallback, profiles, a.cfg.Agent.Command); err != nil {
+		return fmt.Errorf("profile save refused: the next start would reject the config: %w; change agent.backend_fallback first", err)
+	}
 	return nil
 }
 
@@ -283,6 +303,9 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	delete(profiles, name)
 	// The deleted profile may have named its server's derived pool.
 	if err := config.AssignModelServerPools(profiles); err != nil {
+		return err
+	}
+	if err := a.checkProfileSetLoads(profiles); err != nil {
 		return err
 	}
 	automations, automationsChanged := removeAutomationsForProfile(a.orch.AutomationsCfg(), name)

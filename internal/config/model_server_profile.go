@@ -1,12 +1,14 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"net"
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -34,6 +36,34 @@ const (
 	// ModelServerTurnTimeoutMs: three hours for a whole run.
 	ModelServerTurnTimeoutMs = 10_800_000
 )
+
+// MaxTimeoutMs is the largest value a read, turn or stall timeout accepts,
+// agent-level or per profile: 30 days. A run is converted to a
+// time.Duration in nanoseconds, which overflows above about 9.2e12 ms
+// (106 days) and then turns negative: a stall check silently skipped, a
+// read deadline already past.
+const MaxTimeoutMs = 30 * 24 * 60 * 60 * 1000
+
+// checkTimeoutMax refuses a numeric raw value above MaxTimeoutMs for the
+// key where (compared as a float, so a huge YAML number is caught before
+// any conversion to int).
+func checkTimeoutMax(where string, raw any) error {
+	if f, ok := toFloat(raw); ok && f > MaxTimeoutMs {
+		return fmt.Errorf("config: %s must be at most %d milliseconds (30 days), got %v", where, MaxTimeoutMs, raw)
+	}
+	return nil
+}
+
+// checkAgentTimeoutsMax applies checkTimeoutMax to the agent-level
+// timeouts in the agent: section.
+func checkAgentTimeoutsMax(agent map[string]any) error {
+	for _, key := range []string{"read_timeout_ms", "turn_timeout_ms", "stall_timeout_ms"} {
+		if err := checkTimeoutMax("agent."+key, agent[key]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ModelServerEnvVar is the variable an agent CLI of backend reads for its
 // model server: ANTHROPIC_BASE_URL for claude, OPENAI_BASE_URL for codex
@@ -72,7 +102,9 @@ func ModelServerKey(rawURL string) string {
 // model_server_name one of them sets, else "model-<profile>" after the first
 // of them by name. The name carries no host or port. An explicit pool wins
 // for its profile. Two profiles on one server with different
-// model_server_name values, or one name on two servers, are an error.
+// model_server_name values, or one pool name (a model_server_name, a
+// derived name or an explicit pool) on two servers or on a server and
+// profiles without one, are an error.
 // config.Load calls it after ApplyProfileModelServer on every profile; the
 // dashboard's profile save and delete call it for the whole set, so a
 // derived name can follow a rename.
@@ -109,17 +141,48 @@ func AssignModelServerPools(profiles map[string]AgentProfile) error {
 			s.named, s.namedBy = given, name
 		}
 	}
-	serverOf := map[string]string{}
+	// A pool is one quota: every profile in it must reach the same model
+	// server, or none. Explicit pools count too: a hosted profile's
+	// `pool: local` and a server named local, or a hosted `pool: model-box`
+	// and the pool derived for profile box, would otherwise share a quota
+	// across unrelated servers.
+	type poolUse struct{ server, by string }
+	serverOf := map[string]poolUse{}
+	clash := func(pool string, a poolUse, b poolUse) error {
+		where := func(u poolUse) string {
+			if u.server == "" {
+				return "agent.profiles." + u.by + ", no model server"
+			}
+			return "agent.profiles." + u.by + ", model server " + u.server
+		}
+		return fmt.Errorf("config: the pool %q names two servers (%s; %s); one quota pool cannot span both: set model_server_name or pool on one of them",
+			pool, where(a), where(b))
+	}
+	for _, name := range slices.Sorted(maps.Keys(profiles)) {
+		p := profiles[name]
+		if p.Pool == "" {
+			continue
+		}
+		use := poolUse{server: ModelServerKey(p.ModelServerURL), by: name}
+		other, taken := serverOf[p.Pool]
+		if taken && other.server != use.server {
+			return clash(p.Pool, other, use)
+		}
+		if !taken {
+			serverOf[p.Pool] = use
+		}
+	}
 	for _, key := range keys {
 		s := servers[key]
 		pool := s.named
 		if pool == "" {
 			pool = poolSlug("model-" + s.profiles[0])
 		}
-		if other, taken := serverOf[pool]; taken {
-			return fmt.Errorf("config: the model server pool %q names two servers (%s and %s); set model_server_name on the profiles of one of them", pool, other, key)
+		use := poolUse{server: key, by: cmp.Or(s.namedBy, s.profiles[0])}
+		if other, taken := serverOf[pool]; taken && other.server != key {
+			return clash(pool, other, use)
 		}
-		serverOf[pool] = key
+		serverOf[pool] = use
 		for _, name := range s.profiles {
 			p := profiles[name]
 			if p.Pool == "" {
@@ -129,6 +192,18 @@ func AssignModelServerPools(profiles map[string]AgentProfile) error {
 		}
 	}
 	return nil
+}
+
+// ModelServerInClearText reports whether rawURL is a plain http:// URL to a
+// host other than this machine's loopback: what the agent sends the server
+// (prompts, code, any API key it adds) crosses the network unencrypted.
+// itervox doctor warns about it.
+func ModelServerInClearText(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || !strings.EqualFold(u.Scheme, "http") || u.Hostname() == "" {
+		return false
+	}
+	return !isLoopbackHost(strings.ToLower(u.Hostname()))
 }
 
 func isLoopbackHost(host string) bool {
@@ -258,6 +333,9 @@ func checkModelServerURL(raw string) error {
 	if u.Port() == "" {
 		return fmt.Errorf("has no port; write the port the server listens on, as in %s://%s:<port>", u.Scheme, u.Host)
 	}
+	if n, err := strconv.Atoi(u.Port()); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("port %s is not between 1 and 65535", u.Port())
+	}
 	return nil
 }
 
@@ -284,18 +362,21 @@ func ProfileModelServerEnv(profile AgentProfile, runBackend, defaultCommand stri
 	return envVar + "=" + profile.ModelServerURL
 }
 
-// ProfileUsesModelServer reports whether runs of profile talk to a model
-// server: a model_server, or a model-server variable assigned in its
-// command (or, without one, in defaultCommand).
-func ProfileUsesModelServer(profile AgentProfile, defaultCommand string) bool {
-	if profile.ModelServerURL != "" || strings.TrimSpace(profile.ModelServer) != "" {
-		return true
+// ProfileUsesModelServer reports whether a run of profile on runBackend
+// talks to the profile's model_server: the profile sets one, and the run
+// is on the profile's own backend (a per-issue or recovery switch to
+// another backend leaves the server behind, as ProfileModelServerEnv
+// does). An empty runBackend is claude, the default runner. A model-server
+// variable written into the command (`ANTHROPIC_BASE_URL=… claude`) does
+// not count: such a profile sets its timeouts itself.
+func ProfileUsesModelServer(profile AgentProfile, runBackend, defaultCommand string) bool {
+	if profile.ModelServerURL == "" && strings.TrimSpace(profile.ModelServer) == "" {
+		return false
 	}
-	command := profile.Command
-	if strings.TrimSpace(command) == "" {
-		command = defaultCommand
+	if runBackend == "" {
+		runBackend = BackendClaude
 	}
-	return len(ModelServerURLs(command)) > 0
+	return ProfileRunsBackend(profile, defaultCommand) == runBackend
 }
 
 // RunTimeouts are a run's three timeouts, in milliseconds (see
@@ -306,14 +387,16 @@ type RunTimeouts struct {
 	StallMs int
 }
 
-// ProfileTimeouts returns the timeouts for a run of profile, given the
-// agent-level ones. A positive value the profile sets wins. Otherwise a
-// profile that uses a model server (ProfileUsesModelServer) gets at least
-// the ModelServer*TimeoutMs defaults, without lowering a larger agent-level
-// value or enabling a turn or stall timeout the agent level turned off (0).
-// Every other profile runs with the agent-level values.
-func ProfileTimeouts(profile AgentProfile, defaultCommand string, agent RunTimeouts) RunTimeouts {
-	slow := ProfileUsesModelServer(profile, defaultCommand)
+// ProfileTimeouts returns the timeouts for a run of profile on runBackend,
+// given the agent-level ones. A positive value the profile sets wins.
+// Otherwise a run that uses the profile's model_server
+// (ProfileUsesModelServer: a profile with model_server, on its own
+// backend) gets at least the ModelServer*TimeoutMs defaults, without
+// lowering a larger agent-level value or enabling a turn or stall timeout
+// the agent level turned off (0). Every other run uses the agent-level
+// values.
+func ProfileTimeouts(profile AgentProfile, runBackend, defaultCommand string, agent RunTimeouts) RunTimeouts {
+	slow := ProfileUsesModelServer(profile, runBackend, defaultCommand)
 	pick := func(own, agentValue, slowDefault int) int {
 		if own > 0 {
 			return own
@@ -331,8 +414,9 @@ func ProfileTimeouts(profile AgentProfile, defaultCommand string, agent RunTimeo
 }
 
 // profileModelServerFields reads model_server, model_server_name and the
-// three per-profile timeouts. A timeout is absent or a positive number of milliseconds: a
-// profile cannot turn one off (the agent-level setting does that).
+// three per-profile timeouts. A timeout is absent or a positive number of
+// milliseconds up to MaxTimeoutMs: a profile cannot turn one off (the
+// agent-level setting does that).
 func profileModelServerFields(m map[string]any, name string) (modelServer, serverName string, t RunTimeouts, err error) {
 	str := func(key string) (string, error) {
 		raw, ok := m[key]
@@ -355,6 +439,9 @@ func profileModelServerFields(m map[string]any, name string) (modelServer, serve
 		raw, ok := m[key]
 		if !ok || raw == nil {
 			return 0, nil
+		}
+		if err := checkTimeoutMax("agent.profiles."+name+"."+key, raw); err != nil {
+			return 0, err
 		}
 		n, isInt := toInt(raw)
 		if !isInt || n <= 0 {

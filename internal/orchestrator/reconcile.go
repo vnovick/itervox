@@ -13,7 +13,7 @@ import (
 )
 
 // ReconcileStalls checks all running sessions for stall timeout violations.
-// If stall_timeout_ms <= 0 and no profile sets its own (byProfile), stall
+// If stall_timeout_ms <= 0 and no run has its own (byRun), stall
 // detection is disabled and this is a no-op.
 // The optional logBuf receives a stall-warning entry before the worker is killed.
 //
@@ -41,19 +41,19 @@ func cancelOrFallback(cleanup CleanupWorker, identifier string, fallback context
 	}
 }
 
-// ReconcileStalls (see the comment above CleanupWorker): its byProfile
-// holds per-profile stall timeouts: a running entry whose
-// ProfileName is in it uses that value (milliseconds; <= 0 skips it) instead
-// of agent.stall_timeout_ms, so a profile's own stall_timeout_ms (or the
+// ReconcileStalls (see the comment above CleanupWorker): its byRun holds
+// per-run stall timeouts, keyed like state.Running: a running entry in it
+// uses that value (milliseconds; <= 0 skips it) instead of
+// agent.stall_timeout_ms, so its profile's own stall_timeout_ms (or the
 // longer model-server default) applies even when the agent level turned
-// stall detection off. The event loop passes
-// Orchestrator.profileStallTimeouts; nil uses the agent level for every run.
-func ReconcileStalls(state State, cfg *config.Config, byProfile map[string]int, now time.Time, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
-	if cfg.Agent.StallTimeoutMs <= 0 && len(byProfile) == 0 {
+// stall detection off. The event loop passes Orchestrator.runStallTimeouts;
+// nil uses the agent level for every run.
+func ReconcileStalls(state State, cfg *config.Config, byRun map[string]int, now time.Time, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
+	if cfg.Agent.StallTimeoutMs <= 0 && len(byRun) == 0 {
 		return state
 	}
-	stallFor := func(profile string) time.Duration {
-		ms, ok := byProfile[profile]
+	stallFor := func(id string) time.Duration {
+		ms, ok := byRun[id]
 		if !ok {
 			ms = cfg.Agent.StallTimeoutMs
 		}
@@ -78,7 +78,7 @@ func ReconcileStalls(state State, cfg *config.Config, byProfile map[string]int, 
 		if awaitingGuardrailApproval(state, entry) {
 			continue
 		}
-		stallDur := stallFor(entry.ProfileName)
+		stallDur := stallFor(id)
 		if stallDur <= 0 {
 			continue
 		}

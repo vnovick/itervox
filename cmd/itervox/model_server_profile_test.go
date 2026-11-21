@@ -110,6 +110,76 @@ func TestUpsertProfileModelServer(t *testing.T) {
 	assert.Contains(t, err.Error(), "model_server works with claude and codex profiles")
 }
 
+// TestProfileSaveRefusedWhenBackendFallbackWouldNotLoad: a dashboard save
+// that renames a pool derived from model_server (a profile that sorts
+// first joins the server: model-local becomes model-another), or a delete
+// of a profile, that agent.backend_fallback.profile_map still names is
+// refused with the reference in the message, and changes neither
+// WORKFLOW.md nor the live profiles; the next start would have refused the
+// config (config.ValidateDispatch).
+func TestProfileSaveRefusedWhenBackendFallbackWouldNotLoad(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+itervox_schema_version: 2
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  profiles:
+    coder:
+      command: claude
+` + testProfileFileFields(t, dir, "coder") + `    local:
+      command: claude
+      model_server: "http://127.0.0.1:9000"
+` + testProfileFileFields(t, dir, "local") + `  backend_fallback:
+    chain: [claude, claude/model-local]
+    profile_map:
+      coder:
+        "claude/model-local": local
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	require.NoError(t, config.ValidateDispatch(cfg), "the starting config loads")
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{orch: orch, cfg: cfg, tr: mt, workflowPath: workflowPath, notify: func() {}}
+	before, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+
+	err = adapter.UpsertProfile("another", server.ProfileDef{
+		Command: "claude", Enabled: true, ModelServer: "http://localhost:9000", ModelServerSet: true,
+	}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.backend_fallback.profile_map.coder.claude/model-local")
+	assert.Contains(t, err.Error(), "profile save refused")
+
+	err = adapter.DeleteProfile("local")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `agent.backend_fallback.profile_map.coder.claude/model-local: unknown profile "local"`)
+
+	after, err := os.ReadFile(workflowPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "WORKFLOW.md is unchanged")
+	live := adapter.orch.ProfilesCfg()
+	assert.NotContains(t, live, "another")
+	assert.Equal(t, "model-local", live["local"].Pool)
+
+	// A save that keeps the pool's name still goes through.
+	require.NoError(t, adapter.UpsertProfile("zeta", server.ProfileDef{
+		Command: "claude", Enabled: true, ModelServer: "http://localhost:9000", ModelServerSet: true,
+	}, ""))
+	reloaded, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	require.NoError(t, config.ValidateDispatch(reloaded))
+}
+
 // TestUpsertProfileKeepsModelServerName: model_server_name is load-time
 // (the dashboard does not edit it): a save carries it over, writes it back
 // and keeps naming the pool.

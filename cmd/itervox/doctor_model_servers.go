@@ -93,12 +93,20 @@ func renderModelServerCheck(b *strings.Builder, c ModelServerCheck) {
 			fmt.Fprintf(b, "  %s=%s%s, used by %s: set from a variable, not checked\n", s.Var, s.URL, source, who)
 			continue
 		}
+		clearText := func() {
+			if config.ModelServerInClearText(s.URL) {
+				fmt.Fprintf(b, "WARNING: %s reach %s over plain http, off this machine: prompts, code and any credentials the agent sends cross the network in clear text; use https or an SSH tunnel to a loopback port\n",
+					who, s.URL)
+			}
+		}
 		if s.Err == nil {
 			fmt.Fprintf(b, "  %s=%s%s, used by %s: answering\n", s.Var, s.URL, source, who)
+			clearText()
 			continue
 		}
 		fmt.Fprintf(b, "  %s=%s%s, used by %s: not answering\n", s.Var, s.URL, source, who)
 		fmt.Fprintf(b, "WARNING: %s point their agent at %s, which did not answer (%v); their runs will fail until it does — start the model server (for colibri: `coli serve`) or fix %s\n",
 			who, s.URL, s.Err, fix)
+		clearText()
 	}
 }

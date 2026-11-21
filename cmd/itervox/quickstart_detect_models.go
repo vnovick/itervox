@@ -68,8 +68,9 @@ func (d detectedModelServer) describe() string {
 	return d.URL + " — " + what
 }
 
-// detectModelServers probes every candidate on 127.0.0.1 and returns the
-// ones that answered, in candidate order.
+// detectModelServers probes every candidate on 127.0.0.1, then [::1] (a
+// server listening on IPv6 loopback only), and returns the ones that
+// answered, in candidate order.
 func detectModelServers(candidates []modelServerCandidate) []detectedModelServer {
 	found := make([]*detectedModelServer, len(candidates))
 	var wg sync.WaitGroup
@@ -99,9 +100,19 @@ const maxModelsListed = 3
 // which server it is, its root, where Ollama answers "Ollama is running".
 // nil when nothing answers HTTP on the port.
 func probeModelServerCandidate(c modelServerCandidate) *detectedModelServer {
-	base := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(c.Port))
-	status, body, err := detectGet(base + "/v1/models")
-	if err != nil {
+	var base string
+	var status int
+	var body []byte
+	answered := false
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		base = "http://" + net.JoinHostPort(host, strconv.Itoa(c.Port))
+		var err error
+		if status, body, err = detectGet(base + "/v1/models"); err == nil {
+			answered = true
+			break
+		}
+	}
+	if !answered {
 		return nil
 	}
 	d := &detectedModelServer{Port: c.Port, URL: base, Usual: c.Server}
@@ -116,6 +127,16 @@ func probeModelServerCandidate(c modelServerCandidate) *detectedModelServer {
 	return d
 }
 
+// detectClient is detection's HTTP client: it does not follow redirects
+// (a 3xx is an answer, and a redirect could send the probe off the
+// machine), and it never uses a proxy.
+var detectClient = &http.Client{
+	Transport: &http.Transport{Proxy: nil},
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 // detectGet is one bounded GET; the body is read up to 64 KiB.
 func detectGet(rawURL string) (int, []byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelServerDetectTimeout)
@@ -124,7 +145,7 @@ func detectGet(rawURL string) (int, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := detectClient.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}

@@ -327,7 +327,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// defaults, and the model_server variable for its backend. Both come
 	// from the profile snapshot above; agent.command and
 	// agent.stall_timeout_ms are read-only after startup.
-	runTimeouts := config.ProfileTimeouts(profilesSnap[profileName], o.cfg.Agent.Command,
+	runTimeouts := config.ProfileTimeouts(profilesSnap[profileName], backend, o.cfg.Agent.Command,
 		config.RunTimeouts{ReadMs: readTimeoutMs, TurnMs: turnTimeoutMs, StallMs: o.cfg.Agent.StallTimeoutMs})
 	readTimeoutMs, turnTimeoutMs = runTimeouts.ReadMs, runTimeouts.TurnMs
 	modelServerEnv := config.ProfileModelServerEnv(profilesSnap[profileName], backend, o.cfg.Agent.Command)

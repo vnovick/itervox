@@ -36,7 +36,7 @@ func (r *modelServerRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(
 	env := agent.RunEnvFrom(ctx)
 	r.mu.Lock()
 	id := ""
-	for _, candidate := range []string{"M-1", "M-2", "M-3"} {
+	for _, candidate := range []string{"M-1", "M-2", "M-3", "M-4"} {
 		if strings.Contains(prompt, candidate) {
 			id = candidate
 		}
@@ -63,6 +63,7 @@ func (r *modelServerRunner) get(id string) (modelServerTurn, bool) {
 // longer timeouts while the plain run keeps the agent-level ones.
 func TestModelServerReachesTheAgentForItsBackendOnly(t *testing.T) {
 	cfg := baseConfig()
+	cfg.Agent.MaxConcurrentAgents = 4
 	cfg.Polling.IntervalMs = 20
 	cfg.Agent.MaxTurns = 1
 	cfg.Agent.Command = "claude"
@@ -71,8 +72,9 @@ func TestModelServerReachesTheAgentForItsBackendOnly(t *testing.T) {
 	cfg.Agent.StallTimeoutMs = 300_000
 	cfg.PromptTemplate = "{{ issue.identifier }}"
 	profiles := map[string]config.AgentProfile{
-		"local":       {Command: "claude", ModelServer: "http://127.0.0.1:8000"},
-		"codex-local": {Command: "codex", ModelServer: "http://127.0.0.1:8000/v1"},
+		"local":         {Command: "claude", ModelServer: "http://127.0.0.1:8000"},
+		"codex-local":   {Command: "codex", ModelServer: "http://127.0.0.1:8000/v1"},
+		"wrapped-local": {Command: "/opt/agent-wrapper.sh", Backend: "claude", ModelServer: "http://127.0.0.1:8000"},
 	}
 	for name, p := range profiles {
 		require.NoError(t, config.ApplyProfileModelServer(name, &p, cfg.Agent.Command))
@@ -83,11 +85,17 @@ func TestModelServerReachesTheAgentForItsBackendOnly(t *testing.T) {
 		makeIssue("i1", "M-1", "Todo", nil, nil),
 		makeIssue("i2", "M-2", "Todo", nil, nil),
 		makeIssue("i3", "M-3", "Todo", nil, nil),
+		makeIssue("i4", "M-4", "Todo", nil, nil),
 	}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 	runner := &modelServerRunner{turns: map[string]modelServerTurn{}}
 	orch := orchestrator.New(cfg, mt, runner, nil)
 	orch.SetIssueProfile("M-1", "local")
 	orch.SetIssueProfile("M-2", "codex-local")
+	// A per-issue switch moves M-4's model-server profile (a wrapper,
+	// so the switch is honoured) to codex: the
+	// server and its longer timeouts stay with the profile's own backend.
+	orch.SetIssueProfile("M-4", "wrapped-local")
+	orch.SetIssueBackend("M-4", "codex")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	go orch.Run(ctx) //nolint:errcheck
@@ -96,7 +104,8 @@ func TestModelServerReachesTheAgentForItsBackendOnly(t *testing.T) {
 		_, a := runner.get("M-1")
 		_, b := runner.get("M-2")
 		_, c := runner.get("M-3")
-		return a && b && c
+		_, d := runner.get("M-4")
+		return a && b && c && d
 	}, 8*time.Second, 20*time.Millisecond)
 
 	claudeRun, _ := runner.get("M-1")
@@ -112,6 +121,12 @@ func TestModelServerReachesTheAgentForItsBackendOnly(t *testing.T) {
 	assert.Empty(t, plainRun.set, "a run without a model server gets no variable")
 	assert.Equal(t, 30_000, plainRun.readTimeoutMs)
 	assert.Equal(t, 3_600_000, plainRun.turnTimeoutMs)
+
+	switched, _ := runner.get("M-4")
+	require.True(t, strings.HasPrefix(switched.command, "@@itervox-backend=codex "), "the switch took effect: %q", switched.command)
+	assert.Empty(t, switched.set, "a run switched to another backend gets no model server")
+	assert.Equal(t, 30_000, switched.readTimeoutMs, "nor the model-server timeouts")
+	assert.Equal(t, 3_600_000, switched.turnTimeoutMs)
 
 	for _, run := range []modelServerTurn{claudeRun, codexRun, plainRun} {
 		for _, kv := range slices.Concat(run.vars, run.set) {

@@ -108,8 +108,9 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 	// Local models: the profile's model_server for its backend, and its
 	// timeouts (its own, or the longer model-server defaults). The command
 	// is never empty here, so no agent.command is needed.
-	ctx = agent.WithSetEnv(ctx, config.ProfileModelServerEnv(input.Profile, config.ProfileRunsBackend(input.Profile, ""), ""))
-	timeouts := config.ProfileTimeouts(input.Profile, "", config.RunTimeouts{ReadMs: input.ReadTimeoutMs, TurnMs: input.TurnTimeoutMs})
+	backend := config.ProfileRunsBackend(input.Profile, "")
+	ctx = agent.WithSetEnv(ctx, config.ProfileModelServerEnv(input.Profile, backend, ""))
+	timeouts := config.ProfileTimeouts(input.Profile, backend, "", config.RunTimeouts{ReadMs: input.ReadTimeoutMs, TurnMs: input.TurnTimeoutMs})
 
 	prompt := buildAnalyzerPrompt(input.Profile, input.RulesBlock, input.Issues, input.TrackerEdges)
 	var sessionID string

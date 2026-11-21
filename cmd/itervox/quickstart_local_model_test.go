@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -108,6 +109,44 @@ func TestDetectModelServers(t *testing.T) {
 	assert.Equal(t, "http://127.0.0.1:"+strconv.Itoa(vllm)+" — vLLM (models: org/coder)", got[3].describe())
 	assert.Empty(t, got[4].Kind)
 	assert.Equal(t, "http://127.0.0.1:"+strconv.Itoa(unknown)+" — answers HTTP; the usual port of Something", got[4].describe())
+}
+
+// TestDetectModelServersDoesNotFollowRedirects: a candidate answering
+// with a redirect counts as an answer, and the probe never requests the
+// redirect's target (it could be off the machine).
+func TestDetectModelServersDoesNotFollowRedirects(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+	}))
+	t.Cleanup(target.Close)
+	redirecting := fakeServerAt(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/models", http.StatusFound)
+	})
+	got := detectModelServers([]modelServerCandidate{{Port: redirecting, Server: "Something"}})
+	require.Len(t, got, 1, "a redirect is an answer")
+	assert.Equal(t, "http://127.0.0.1:"+strconv.Itoa(redirecting), got[0].URL)
+	assert.Zero(t, targetHits.Load(), "the redirect was followed")
+}
+
+// TestDetectModelServersOnIPv6Loopback: a server listening on [::1] only
+// is found, with its [::1] URL. Skipped where the machine has no IPv6
+// loopback.
+func TestDetectModelServersOnIPv6Loopback(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(modelList("llamacpp", "model.gguf"))
+	_ = srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+	port := ln.Addr().(*net.TCPAddr).Port
+	got := detectModelServers([]modelServerCandidate{{Port: port, Server: "llama.cpp server"}})
+	require.Len(t, got, 1)
+	assert.Equal(t, "http://[::1]:"+strconv.Itoa(port), got[0].URL)
+	assert.Equal(t, "llama.cpp server", got[0].Kind)
 }
 
 // TestModelServerFromAnswer: a list number, a port, host:port and a URL;

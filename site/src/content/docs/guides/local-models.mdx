@@ -42,8 +42,8 @@ The quickest way is `itervox quickstart`. Once its checks pass, it looks for
 model servers on this machine: it asks each port that a common local server
 listens on unless told otherwise (`11434` Ollama, `1234` LM Studio, `8080`
 llama.cpp's `llama-server`, `8000` vLLM) for its model list, on `127.0.0.1`
-only, and lists the ones that answer with what they look like and the first
-models they serve:
+and then `[::1]` only, without following redirects, and lists the ones that
+answer with what they look like and the first models they serve:
 
 ```text
 Model servers answering on this machine:
@@ -76,7 +76,13 @@ agent:
 
 Itervox sets the variable the profile's backend reads when it runs the agent,
 after your login shell's profile, so a value exported there does not replace
-it. Nothing else changes: the profile is still the `claude` backend, with the
+it. It is exported as a statement of its own ahead of the command
+(`export ANTHROPIC_BASE_URL='…'; <command>`), so a command that is not a
+single program, such as `source ~/.nvm/nvm.sh && claude`, `cd sub && claude`
+or `exec claude`, gets it too, on this machine and on an SSH worker. If the
+variable cannot be set (a read-only variable, or a login shell without
+POSIX `export`), the turn fails instead of reaching the hosted API. Nothing
+else changes: the profile is still the `claude` backend, with the
 same flags, resume and parsing. The **Model server** field on the Agents page
 edits the same key.
 
@@ -96,8 +102,8 @@ The URL can be a variable, `model_server: $LOCAL_MODEL_URL`, read from the
 environment or `.itervox/.env` when the config loads; an unset variable stops
 the load. So do a malformed URL, a URL without an explicit port
 (`http://host:<port>`; a scheme's default port is not assumed, so a server on
-443 is written `https://host:443`) and a command that assigns the same
-variable to another URL. The older form,
+443 is written `https://host:443`), a port outside 1–65535 and a command that
+assigns the same variable to another URL. The older form,
 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude` in the command, keeps
 working, and doctor checks both.
 
@@ -112,8 +118,8 @@ host.
 
 A local model reads a long prompt before it prints anything and then writes
 a few tokens a second, so the hosted-API timeouts would kill a healthy run. A
-profile that uses a model server (`model_server`, or a base-URL assignment in
-its command) gets longer ones unless it sets its own:
+profile with a `model_server` gets longer ones unless it sets its own, while
+its run uses the profile's own backend:
 
 | Timeout | Agent-level default | Model-server profile gets at least |
 |---|---|---|
@@ -122,8 +128,13 @@ its command) gets longer ones unless it sets its own:
 | `turn_timeout_ms` | `3600000` (1 h) | `10800000` (3 h) for the whole run |
 
 A larger agent-level value is kept, and a turn or stall timeout you turned off
-at the agent level (`0`) stays off. To choose your own, set them on the
-profile; a profile can lengthen or shorten a timeout but not turn one off:
+at the agent level (`0`) stays off. A run that a per-issue or `rate_limited`
+switch moves to another backend gets the agent-level values, like a profile
+that writes the base URL into its command (`ANTHROPIC_BASE_URL=… claude`):
+set the timeouts on such a profile yourself. To choose your own, set them on
+the profile; they apply on any backend. A profile can lengthen or shorten a
+timeout but not turn one off, and no timeout, per profile or agent-level, can
+exceed `2592000000` (30 days):
 
 ```yaml
     deps-analyzer-local:
@@ -146,7 +157,10 @@ WARNING: deps-analyzer-local point their agent at http://127.0.0.1:<port>, which
 ```
 
 The warning does not change doctor's exit code, because the server may just
-not be started yet. A `model_server` variable is resolved at load and
+not be started yet. Doctor also warns about a plain `http://` server that is
+not on this machine's loopback: prompts, code and any key the agent sends
+cross the network in clear text, so use `https://` or an SSH tunnel to a
+loopback port. A `model_server` variable is resolved at load and
 checked; a variable in a command (`ANTHROPIC_BASE_URL=$LOCAL_MODEL_URL
 claude`) is listed but not checked, since the agent's shell expands it.
 Doctor does not read a CLI's own config file.
@@ -170,7 +184,10 @@ share it. The pool's name has no host or port in it:
   profiles by name (`coder-local` gives `model-coder-local`). Adding or
   renaming a profile that sorts earlier on the same server renames the pool,
   so set `model_server_name` when the chain or a `profile_map` refers to it.
-- `pool:` on a profile still wins, for that profile.
+- `pool:` on a profile still wins, for that profile. A pool is one quota, so
+  the config load stops when one pool name, explicit or derived, would cover
+  profiles on two different servers, or a server and hosted profiles (say a
+  hosted profile's `pool: local` and a server named `local`).
 
 The derived pool is computed each time the config loads and is not written
 to `WORKFLOW.md`. Add it as a step in the chain:
