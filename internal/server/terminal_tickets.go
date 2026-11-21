@@ -23,7 +23,8 @@ import (
 //   - single-use: the first redemption removes it, whatever its outcome;
 //   - bound to the session id and the mode (read or write) it was minted
 //     for, and to the principal that minted it, whose token must still be
-//     valid (and still hold the scope the mode needs) when it is redeemed.
+//     valid (and still hold the scope the mode needs) when it is redeemed
+//     and for as long as the socket stays open (terminal_recheck.go).
 //
 // Only its SHA-256 is kept, in memory, per Server (a reload or restart
 // drops every unredeemed ticket). The store is bounded: a full store
@@ -48,6 +49,10 @@ type terminalTicket struct {
 	sessionID string
 	write     bool
 	principal Principal
+	// tokenHash is the stored token's hash when the ticket was minted
+	// ("" for the bootstrap and unauthenticated principals), so a rotation
+	// — the secret that minted it is dead — ends the terminal too.
+	tokenHash string
 	expires   time.Time
 }
 
@@ -71,8 +76,9 @@ func newTerminalTickets() *terminalTickets {
 	return &terminalTickets{byHash: map[[32]byte]terminalTicket{}, now: time.Now}
 }
 
-// mint stores a new ticket and returns its secret and expiry.
-func (s *terminalTickets) mint(sessionID string, write bool, p Principal) (string, time.Time, error) {
+// mint stores a new ticket and returns its secret and expiry. tokenHash is
+// the minting stored token's hash ("" otherwise).
+func (s *terminalTickets) mint(sessionID string, write bool, p Principal, tokenHash string) (string, time.Time, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", time.Time{}, err
@@ -90,7 +96,7 @@ func (s *terminalTickets) mint(sessionID string, write bool, p Principal) (strin
 		return "", time.Time{}, errTicketStoreFull
 	}
 	expires := now.Add(terminalTicketTTL)
-	s.byHash[sha256.Sum256([]byte(secret))] = terminalTicket{sessionID: sessionID, write: write, principal: p, expires: expires}
+	s.byHash[sha256.Sum256([]byte(secret))] = terminalTicket{sessionID: sessionID, write: write, principal: p, tokenHash: tokenHash, expires: expires}
 	return secret, expires, nil
 }
 
@@ -122,29 +128,56 @@ func samePrincipal(a, b Principal) bool {
 	return a.Source == b.Source && a.TokenID == b.TokenID
 }
 
-// principalStillAllows re-checks a ticket's principal when it is redeemed:
-// a stored token must still exist, be unexpired and hold need; the
-// bootstrap and unauthenticated principals hold for the server's life.
-func (s *Server) principalStillAllows(p Principal, need apitokens.Scope) bool {
+// Why a terminal's principal no longer holds it: the socket's close reason
+// (terminal_recheck.go) and the detach's feed outcome.
+const (
+	terminalLostTokenRevoked = "token_revoked"
+	terminalLostTokenExpired = "token_expired"
+	terminalLostTokenRotated = "token_rotated"
+	terminalLostTokenStore   = "token_store_invalid"
+	terminalLostScope        = "scope_insufficient"
+)
+
+// terminalAccessLost re-checks a ticket's principal — when it is redeemed
+// and, for as long as its terminal is open, again and again — and returns
+// why it no longer holds the ticket's mode, or "" while it does. A stored
+// token must still exist, be unexpired, have the secret that minted the
+// ticket (not rotated) and hold the mode's scope; the bootstrap and
+// unauthenticated principals hold for the server's life.
+func (s *Server) terminalAccessLost(t terminalTicket) string {
+	p, need := t.principal, t.requiredScope()
 	switch p.Source {
 	case principalBootstrap:
-		return s.apiToken != "" && p.Scope.Allows(need)
+		if s.apiToken != "" && p.Scope.Allows(need) {
+			return ""
+		}
 	case principalUnauthenticated:
-		return s.apiToken == "" && p.Scope.Allows(need)
+		if s.apiToken == "" && p.Scope.Allows(need) {
+			return ""
+		}
 	case principalToken:
 		if s.tokens == nil || p.TokenID == "" {
-			return false
+			return terminalLostTokenRevoked
 		}
 		list, err := s.tokens.List()
 		if err != nil {
-			return false
+			return terminalLostTokenStore
 		}
 		now := time.Now()
-		for _, t := range list {
-			if t.ID == p.TokenID {
-				return !t.Expired(now) && t.Scope.Allows(need)
+		for _, tok := range list {
+			if tok.ID != p.TokenID {
+				continue
 			}
+			switch {
+			case tok.Expired(now):
+				return terminalLostTokenExpired
+			case t.tokenHash != "" && tok.Hash != t.tokenHash:
+				return terminalLostTokenRotated
+			case !tok.Scope.Allows(need):
+				return terminalLostScope
+			}
+			return ""
 		}
 	}
-	return false
+	return terminalLostTokenRevoked
 }

@@ -39,11 +39,12 @@ type Attachment struct {
 	err    error
 }
 
-// Attach starts `tmux attach-session [-r] -t target` (see AttachArgs) in a
-// new PTY of cols x rows (clamped). ctx bounds only the start, not the
-// attachment's life: Close ends it.
-func (c Client) Attach(ctx context.Context, target string, readOnly bool, cols, rows int) (*Attachment, error) {
-	args, err := c.AttachArgs(target, readOnly)
+// Attach starts `tmux attach-session [-r [-f ignore-size]] -t target` (see
+// AttachArgs) in a new PTY of cols x rows (clamped). ctx bounds only the
+// start, not the attachment's life: Close ends it.
+func (c Client) Attach(ctx context.Context, target string, mode AttachMode, cols, rows int) (*Attachment, error) {
+	readOnly := mode.ReadOnly
+	args, err := c.AttachArgs(target, mode)
 	if err != nil {
 		return nil, err
 	}

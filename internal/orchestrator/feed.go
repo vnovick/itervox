@@ -89,8 +89,10 @@ type FeedPayload struct {
 	Profile string `json:"profile,omitempty"`
 	Backend string `json:"backend,omitempty"`
 	// Outcome is the run's terminal reason (run_finished, run_failed), the
-	// lesson outcome (lesson_proposed) or the quorum outcome
-	// (review_verdict).
+	// lesson outcome (lesson_proposed), the quorum outcome
+	// (review_verdict) or why the daemon ended a live terminal
+	// (terminal_detached: token_revoked, scope_insufficient, …; empty for
+	// an ordinary detach).
 	Outcome string `json:"outcome,omitempty"`
 	// Verdict is a reviewer's normalized verdict (review_verdict).
 	Verdict string `json:"verdict,omitempty"`

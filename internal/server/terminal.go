@@ -73,11 +73,15 @@ type TerminalAttachRequest struct {
 
 // TerminalConn is a live attachment: Read what tmux draws, Write keys
 // (read-write only), Resize the PTY. Close detaches (the tmux session keeps
-// running); it is idempotent and records the detach.
+// running); it is idempotent and records the detach. CloseWithReason is
+// Close when the daemon ends the terminal because its caller lost access
+// (the reason is one of the terminalLost* codes, recorded with the
+// detach); whichever of the two runs first records it.
 type TerminalConn interface {
 	io.ReadWriter
 	Resize(cols, rows int) error
 	Close() error
+	CloseWithReason(reason string) error
 }
 
 // terminalTicketResponse is the POST …/terminal/ticket body.
@@ -164,7 +168,7 @@ func (s *Server) handleTerminalTicket(w http.ResponseWriter, r *http.Request) {
 	if writeTerminalError(w, s.sessions.CheckTerminal(id), id) {
 		return
 	}
-	secret, expires, err := s.terminalTickets.mint(id, write, p)
+	secret, expires, err := s.terminalTickets.mint(id, write, p, mintingTokenHash(r, p))
 	if err != nil {
 		writeError(w, http.StatusTooManyRequests, "too_many_terminals", "too many terminal tickets are pending; try again shortly")
 		return
@@ -234,7 +238,7 @@ func (s *Server) handleSessionTerminal(w http.ResponseWriter, r *http.Request) {
 		Handshake: func(*websocket.Config, *http.Request) error { return nil },
 		Handler: func(ws *websocket.Conn) {
 			ws.MaxPayloadBytes = maxTerminalFrame
-			s.pumpTerminal(ws, conn, ticket.write)
+			s.pumpTerminal(ws, conn, ticket)
 		},
 	}
 	ws.ServeHTTP(w, r)
@@ -250,12 +254,27 @@ func (s *Server) ticketPrincipalMatches(r *http.Request, t terminalTicket) bool 
 			return false
 		}
 	}
-	return s.principalStillAllows(t.principal, t.requiredScope())
+	return s.terminalAccessLost(t) == ""
+}
+
+// mintingTokenHash is the hash of the stored token that authenticated r
+// ("" for any other principal).
+func mintingTokenHash(r *http.Request, p Principal) string {
+	if p.Source != principalToken {
+		return ""
+	}
+	secret, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || secret == "" {
+		return ""
+	}
+	return apitokens.HashSecret(secret)
 }
 
 // pumpTerminal copies the PTY to the socket and the socket to the PTY
-// until either side ends or the server shuts down.
-func (s *Server) pumpTerminal(ws *websocket.Conn, conn TerminalConn, write bool) {
+// until either side ends, the server shuts down, or the ticket's principal
+// loses access (watchTerminalAccess).
+func (s *Server) pumpTerminal(ws *websocket.Conn, conn TerminalConn, ticket terminalTicket) {
+	write := ticket.write
 	done := make(chan struct{})
 	var stop sync.Once
 	end := func() {
@@ -266,6 +285,17 @@ func (s *Server) pumpTerminal(ws *websocket.Conn, conn TerminalConn, write bool)
 		})
 	}
 	defer end()
+	revoke := func(reason string) {
+		stop.Do(func() {
+			close(done)
+			closeTerminalSocket(ws, reason)
+			_ = conn.CloseWithReason(reason)
+		})
+	}
+	go func() {
+		defer recoverServerGoroutine("terminal-access", func(any) { end() })
+		s.watchTerminalAccess(ticket, done, revoke)
+	}()
 	go func() {
 		defer recoverServerGoroutine("terminal-output", func(any) { end() })
 		defer end()

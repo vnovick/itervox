@@ -85,6 +85,9 @@ func (w *watcher) eventText(ev server.FeedEvent) (line, command string) {
 		if pl.Reason != "" {
 			what += " (" + strings.ReplaceAll(pl.Reason, "_", "-") + ")"
 		}
+		if pl.Outcome != "" {
+			what += ": " + strings.ReplaceAll(pl.Outcome, "_", " ")
+		}
 	}
 	what = redactLine(what)
 	if who != "" && ev.Kind != "dispatch_paused" && ev.Kind != "dispatch_resumed" {

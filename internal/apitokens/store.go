@@ -132,6 +132,24 @@ type Store struct {
 	loadErr   error
 	// used holds lastUsed times not yet written to the file, by token id.
 	used map[string]time.Time
+	// changed is closed (and dropped) when the index is replaced; nil
+	// until someone asks for it with Changed.
+	changed chan struct{}
+}
+
+// Changed returns a channel that is closed the next time the in-memory
+// index is replaced: a mutation through this Store at once, a write by
+// another process once a read (Authenticate, List) notices it. Ask again
+// after it fires. It is a hint to re-read (List), never the change itself;
+// a write that changed nothing a caller cares about (lastUsed) fires it
+// too.
+func (s *Store) Changed() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.changed == nil {
+		s.changed = make(chan struct{})
+	}
+	return s.changed
 }
 
 // Open returns the store backed by path. Nothing is read until first use; a
@@ -210,6 +228,10 @@ func (s *Store) setIndexLocked(tokens []Token, id fileIdentity, loadErr error) {
 	s.identity = id
 	s.loaded = true
 	s.loadErr = loadErr
+	if s.changed != nil {
+		close(s.changed)
+		s.changed = nil
+	}
 	// Forget pending lastUsed marks of tokens that no longer exist.
 	for tid := range s.used {
 		if !slices.ContainsFunc(tokens, func(t Token) bool { return t.ID == tid }) {

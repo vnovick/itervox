@@ -74,20 +74,35 @@ func (t *tmuxSessions) attachTerminal(req server.TerminalAttachRequest) (server.
 	if err != nil {
 		return nil, err
 	}
-	a, err := t.tmux().Attach(ctx, target, !req.Write, req.Cols, req.Rows)
+	// A read-only client must not size the window for everyone else: it
+	// attaches with ignore-size where this tmux takes client flags (3.2+).
+	mode := tmuxctl.AttachMode{ReadOnly: !req.Write}
+	if mode.ReadOnly {
+		version := t.detect.refresh().Version
+		if mode.IgnoreSize = tmuxctl.ClientFlagsSupported(version); !mode.IgnoreSize {
+			oldTmuxSizeOnce.Do(func() {
+				slog.Warn("sessions: this tmux has no client flags (tmux 3.2+); a read-only live terminal may resize the session's window to the browser panel",
+					"version", version)
+			})
+		}
+	}
+	a, err := t.tmux().Attach(ctx, target, mode, req.Cols, req.Rows)
 	if err != nil {
 		return nil, tmuxWriteError(err)
 	}
-	mode := terminalModeRead
+	fedMode := terminalModeRead
 	if req.Write {
-		mode = terminalModeWrite
+		fedMode = terminalModeWrite
 	}
-	c := &terminalConn{Attachment: a, t: t, id: req.ID, backend: backend, mode: mode, actor: req.Actor, start: time.Now()}
-	slog.Info("sessions: terminal attached", "session_id", req.ID, "mode", mode, "actor", req.Actor)
+	c := &terminalConn{Attachment: a, t: t, id: req.ID, backend: backend, mode: fedMode, actor: req.Actor, start: time.Now()}
+	slog.Info("sessions: terminal attached", "session_id", req.ID, "mode", fedMode, "actor", req.Actor)
 	t.orch.RecordFeedEvent(orchestrator.FeedEvent{Kind: orchestrator.FeedTerminalAttached, Identifier: req.ID,
-		Payload: orchestrator.FeedPayload{Backend: backend, Reason: mode, Via: req.Actor}})
+		Payload: orchestrator.FeedPayload{Backend: backend, Reason: fedMode, Via: req.Actor}})
 	return c, nil
 }
+
+// oldTmuxSizeOnce logs the "no client flags" warning once per process.
+var oldTmuxSizeOnce sync.Once
 
 // terminalConn is one attachment; Close detaches once and records it.
 type terminalConn struct {
@@ -99,13 +114,18 @@ type terminalConn struct {
 }
 
 // Close detaches (the session keeps running) and records the detach.
-func (c *terminalConn) Close() error {
+func (c *terminalConn) Close() error { return c.CloseWithReason("") }
+
+// CloseWithReason detaches and records the detach with reason as its
+// outcome: why the daemon ended the terminal (its token lost access), ""
+// for an ordinary detach.
+func (c *terminalConn) CloseWithReason(reason string) error {
 	err := c.Attachment.Close()
 	c.once.Do(func() {
 		slog.Info("sessions: terminal detached", "session_id", c.id, "mode", c.mode, "actor", c.actor,
-			"seconds", int(time.Since(c.start).Seconds()))
+			"seconds", int(time.Since(c.start).Seconds()), "reason", reason)
 		c.t.orch.RecordFeedEvent(orchestrator.FeedEvent{Kind: orchestrator.FeedTerminalDetached, Identifier: c.id,
-			Payload: orchestrator.FeedPayload{Backend: c.backend, Reason: c.mode, Via: c.actor}})
+			Payload: orchestrator.FeedPayload{Backend: c.backend, Reason: c.mode, Via: c.actor, Outcome: reason}})
 	})
 	if err != nil {
 		return fmt.Errorf("cmd/itervox: detach terminal: %w", err)

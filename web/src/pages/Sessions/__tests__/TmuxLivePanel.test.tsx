@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { configureApiContext } from '../../../auth/apiBase';
 import type { Scope } from '../../../auth/scope';
+import { useToastStore } from '../../../store/toastStore';
 import { useUIStore } from '../../../store/uiStore';
 import type { TmuxStatus } from '../../../types/schemas';
 import { TmuxLivePanel } from '../TmuxLivePanel';
@@ -13,16 +14,39 @@ import { terminalModeFor } from '../terminalMode';
 // polled snapshot (viewers, older or Windows daemons, no tmux, the hub,
 // and on request).
 
-const m = vi.hoisted(() => ({ scope: 'operator' as Scope }));
+const m = vi.hoisted(() => ({
+  scope: 'operator' as Scope,
+  fetchCallerScope: vi.fn<() => Promise<Scope>>(),
+}));
+
+vi.mock('../../../queries/sessionsTerminal', () => ({ fetchCallerScope: m.fetchCallerScope }));
 
 vi.mock('../../../hooks/useCallerScope', () => ({ useCallerScope: () => m.scope }));
 
 vi.mock('../TmuxTerminal', () => ({
-  default: ({ mode, onSnapshot }: { mode: string; onSnapshot: () => void }) => (
+  default: ({
+    mode,
+    onSnapshot,
+    onWriteLost,
+    onRetryWrite,
+  }: {
+    mode: string;
+    onSnapshot: () => void;
+    onWriteLost?: () => void;
+    onRetryWrite?: () => void;
+  }) => (
     <div data-testid="live-terminal" data-mode={mode}>
       <button type="button" onClick={onSnapshot}>
         Snapshot view
       </button>
+      <button type="button" onClick={onWriteLost}>
+        Lose write
+      </button>
+      {onRetryWrite && (
+        <button type="button" onClick={onRetryWrite}>
+          Check read-write access
+        </button>
+      )}
     </div>
   ),
 }));
@@ -42,6 +66,8 @@ const tmux = (over: Partial<TmuxStatus> = {}): TmuxStatus => ({
 
 beforeEach(() => {
   m.scope = 'operator';
+  m.fetchCallerScope.mockReset();
+  useToastStore.setState({ toasts: [] });
   useUIStore.setState({ sessionsLiveTerminal: true });
 });
 afterEach(() => {
@@ -89,5 +115,47 @@ describe('TmuxLivePanel', () => {
     render(<TmuxLivePanel id="itervox-a" tmux={tmux({ terminal: false })} />);
     expect(screen.getByTestId('tmux-screen')).toBeInTheDocument();
     expect(screen.queryByTestId('live-terminal')).toBeNull();
+  });
+
+  it('holds a scope-lost write terminal read-only until a fresh scope read says admin', async () => {
+    m.scope = 'admin'; // the snapshot stream's scope, fixed when it connected
+    render(<TmuxLivePanel id="itervox-a" tmux={tmux({ terminalWrite: true })} />);
+    expect(await screen.findByTestId('live-terminal')).toHaveAttribute('data-mode', 'write');
+    expect(screen.queryByRole('button', { name: 'Check read-write access' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Lose write' }));
+    expect(screen.getByTestId('live-terminal')).toHaveAttribute('data-mode', 'read');
+
+    // Still operator: stays read-only and says so.
+    m.fetchCallerScope.mockResolvedValueOnce('operator');
+    await userEvent.click(screen.getByRole('button', { name: 'Check read-write access' }));
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.map((t) => t.message)).toContain(
+        'Your access token still does not allow a read-write terminal.',
+      );
+    });
+    expect(screen.getByTestId('live-terminal')).toHaveAttribute('data-mode', 'read');
+
+    // Admin again: read-write is offered again.
+    m.fetchCallerScope.mockResolvedValueOnce('admin');
+    await userEvent.click(screen.getByRole('button', { name: 'Check read-write access' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('live-terminal')).toHaveAttribute('data-mode', 'write');
+    });
+    expect(m.fetchCallerScope).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failed scope check', async () => {
+    m.scope = 'admin';
+    render(<TmuxLivePanel id="itervox-a" tmux={tmux({ terminalWrite: true })} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Lose write' }));
+    m.fetchCallerScope.mockRejectedValueOnce(new Error('callerScope failed: 500'));
+    await userEvent.click(screen.getByRole('button', { name: 'Check read-write access' }));
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.map((t) => t.message)).toContain(
+        'callerScope failed: 500',
+      );
+    });
+    expect(screen.getByTestId('live-terminal')).toHaveAttribute('data-mode', 'read');
   });
 });

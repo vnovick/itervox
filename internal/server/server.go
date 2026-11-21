@@ -1692,6 +1692,11 @@ type Server struct {
 	// now, and server.allowed_origins for the socket's Origin check.
 	terminalTickets *terminalTickets
 	terminalsOpen   atomic.Int32
+	// terminalRecheck is terminalRecheckInterval when the server was made.
+	terminalRecheck time.Duration
+	// terminalChecked, when set (tests only), runs after each passing
+	// access check of an open terminal, before its watcher waits again.
+	terminalChecked func()
 	allowedOrigins  []string
 	// repoReadiness mirrors Config.RepoReadiness (#200).
 	repoReadiness RepoReadinessFunc
@@ -1766,6 +1771,7 @@ func New(cfg Config) *Server {
 		clientErrors:        cfg.ClientErrorLimiter,
 		sessions:            cfg.Sessions,
 		terminalTickets:     newTerminalTickets(),
+		terminalRecheck:     terminalRecheckInterval,
 		allowedOrigins:      cfg.AllowedOrigins,
 		repoReadiness:       cfg.RepoReadiness,
 		repoEvals:           cfg.RepoEvals,
