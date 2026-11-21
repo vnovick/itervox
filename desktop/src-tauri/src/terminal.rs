@@ -28,6 +28,7 @@ use std::process::{Command, Stdio};
 use crate::platform::Os;
 use crate::remote::{shell_quote, IapMode, Transport};
 use crate::shellpath::Tools;
+use crate::terminal_command::{Placeholder, TerminalCommand};
 
 /// Why a local daemon's sessions cannot be opened on Windows.
 pub const WINDOWS_LOCAL_NOTE: &str =
@@ -319,14 +320,17 @@ pub fn launch(
     }
 }
 
-/// A fresh path for the macOS `.command` file, in the per-user temp dir.
-fn script_path() -> PathBuf {
+/// A fresh path for the one-shot script, in the per-user temp dir: a
+/// `.command` file on macOS (what Terminal and similar apps open), `.sh`
+/// elsewhere.
+fn script_path(os: Os) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    let ext = if os == Os::Mac { "command" } else { "sh" };
     std::env::temp_dir().join(format!(
-        "itervox-attach-{}-{nanos}.command",
+        "itervox-attach-{}-{nanos}.{ext}",
         std::process::id()
     ))
 }
@@ -348,9 +352,19 @@ fn write_script(path: &Path, body: &str) -> Result<(), String> {
         .map_err(|e| format!("Could not write the terminal command file: {e}"))
 }
 
-/// Opens the system terminal attached to tmux session `name` on `host`,
-/// without waiting for it. Runs ssh/gcloud from `tools`, with its PATH.
-pub fn open(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> {
+/// Opens a terminal attached to tmux session `name` on `host`, without
+/// waiting for it: the configured `custom` command when there is one
+/// (already validated, [`crate::terminal_command`]), else the system
+/// terminal. Runs the program, and ssh/gcloud, with the PATH of `tools`.
+pub fn open(
+    host: &AttachHost,
+    name: &str,
+    tools: &Tools,
+    custom: Option<&TerminalCommand>,
+) -> Result<(), String> {
+    let Some(custom) = custom else {
+        return open_default(host, name, tools);
+    };
     let os = Os::current();
     let lossy = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
     let argv = attach_argv(
@@ -359,14 +373,29 @@ pub fn open(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> 
         lossy(&tools.ssh).as_deref(),
         lossy(&tools.gcloud).as_deref(),
     )?;
-    let configured = match os {
-        Os::Linux => std::env::var("TERMINAL").ok(),
-        _ => None,
-    };
-    let script = (os == Os::Mac).then(script_path);
-    let l = launch(os, &argv, script.as_deref(), configured.as_deref())?;
+    let script = (custom.uses() == Placeholder::Script).then(|| script_path(os));
+    let l = custom.launch(os, &argv, script.as_deref())?;
+    spawn(&l, tools).map_err(|e| match e {
+        SpawnError::Write(e) => e,
+        SpawnError::Start => format!(
+            "Could not start {} — check the terminal command in the Sessions window.",
+            l.program
+        ),
+    })
+}
+
+enum SpawnError {
+    /// The script could not be written (the message says why).
+    Write(String),
+    /// The program did not start.
+    Start,
+}
+
+/// Writes the launch's script, if any, and starts its program; when it
+/// does not start, removes the script again.
+fn spawn(l: &Launch, tools: &Tools) -> Result<(), SpawnError> {
     if let Some((path, body)) = &l.script {
-        write_script(path, body)?;
+        write_script(path, body).map_err(SpawnError::Write)?;
     }
     let mut c = Command::new(&l.program);
     c.args(&l.args)
@@ -386,6 +415,31 @@ pub fn open(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> 
             if let Some((path, _)) = &l.script {
                 let _ = std::fs::remove_file(path);
             }
+            Err(SpawnError::Start)
+        }
+    }
+}
+
+/// The system terminal: [`launch`] for this platform.
+fn open_default(host: &AttachHost, name: &str, tools: &Tools) -> Result<(), String> {
+    let os = Os::current();
+    let lossy = |p: &Option<PathBuf>| p.as_ref().map(|p| p.to_string_lossy().into_owned());
+    let argv = attach_argv(
+        host,
+        name,
+        lossy(&tools.ssh).as_deref(),
+        lossy(&tools.gcloud).as_deref(),
+    )?;
+    let configured = match os {
+        Os::Linux => std::env::var("TERMINAL").ok(),
+        _ => None,
+    };
+    let script = (os == Os::Mac).then(|| script_path(os));
+    let l = launch(os, &argv, script.as_deref(), configured.as_deref())?;
+    match spawn(&l, tools) {
+        Ok(()) => Ok(()),
+        Err(SpawnError::Write(e)) => Err(e),
+        Err(SpawnError::Start) => {
             Err(match os {
                 Os::Linux => format!(
                     "Could not start {} — set $TERMINAL to your terminal program (run as <terminal> -e <command>).",

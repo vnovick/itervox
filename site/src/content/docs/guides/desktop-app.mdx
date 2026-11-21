@@ -256,6 +256,34 @@ A tmux session the app may attach to — one the daemon started with **New sessi
 
 The action is absent for a session the app may not attach to: a dispatched run (it has no tmux session), a hand-started session without `sessions.tmux_control`, and a session whose tmux name is not a plain one (letters, digits, `-`, `_`). A daemon reached through a plain IAP port tunnel has no SSH to attach over, and a local daemon on Windows has no tmux; the window says so under the daemon instead. On Windows, run itervox in WSL and add it as an SSH remote. The command is passed to the terminal as separate arguments, built only from the checked session name and host; on the Mac the app writes a one-time `.command` file (readable only by you, deleted when it runs) because Terminal opens files, not argument lists.
 
+#### Choosing the terminal
+
+The app does not look for installed terminals and has no list of them: without a setting it uses the system terminal as described above, and with one it runs exactly what you set. Set it in the Sessions window under **Terminal command** — a JSON list of arguments, never a shell line — and choose **Save**; **Reset to default** goes back to the system terminal. It is saved as `terminal_command` in the app's `projects.json` (see [Files](#files)), which you can also edit by hand while the app is closed.
+
+The first element is the program: an absolute path, or a name looked up on the same `PATH` the app uses for `ssh` and `gcloud` (your login shell's). One other element must be a placeholder, on its own:
+
+- `{command}` becomes the attach command as separate arguments: `tmux attach -t itervox-<id>`, or the `ssh -t …` or `gcloud compute ssh …` form for a remote daemon.
+- `{script}` becomes the path of a one-time script that runs the attach command and deletes itself (the same `.command` file Terminal opens on the Mac; a `.sh` file on Linux), for apps that only open files. It is not available on Windows.
+
+Exactly one of the two must appear, as a whole element (`"exec {command}"` is refused). The first element may not start with `-`, and no element may be empty or hold a control character (on Windows, nor a `;`, which Windows Terminal reads as a command separator). A value that breaks a rule is refused when you save it; one that does not validate when the app reads `projects.json` is never run — the Sessions window shows why, and **Open in Terminal** uses the system terminal until you fix it. The button reads **Open in** followed by a name: the program's file name without its extension (**Open in ghostty**), or the app's name for the Mac's `open -a <App>` (**Open in iTerm**).
+
+Examples — written from each terminal's documented command line, so check them against your version:
+
+| Terminal | `terminal_command` |
+|---|---|
+| Ghostty (Linux) | `["ghostty", "-e", "{command}"]` |
+| WezTerm | `["wezterm", "start", "--", "{command}"]` |
+| kitty (Linux) | `["kitty", "{command}"]` |
+| kitty (Mac) | `["/Applications/kitty.app/Contents/MacOS/kitty", "-o", "macos_quit_when_last_window_closed=yes", "{command}"]` |
+| iTerm (Mac) | `["open", "-a", "iTerm", "{script}"]` |
+| Alacritty | `["alacritty", "-e", "{command}"]` |
+| GNOME Ptyxis | `["ptyxis", "--", "{command}"]` |
+| GNOME Console | `["kgx", "--", "{command}"]` |
+| Konsole | `["konsole", "-e", "{command}"]` |
+| Windows Terminal | `["wt.exe", "new-tab", "{command}"]` |
+
+On Windows only Windows Terminal is listed: other shells inside it (for example PowerShell's `-Command`, which reads the rest as a script line rather than as arguments) are not covered here.
+
 ### Live terminal
 
 A session the daemon offers a [live terminal](/guides/sessions/#live-terminal) for — a tmux session it may control, on a daemon whose host runs the live terminal (Linux or macOS) — has **Live terminal** beside it. It opens the session in its own app window, titled with the session and the project (and the remote connection), showing the same live terminal as the dashboard's Sessions page and nothing else. The window follows the session, not the daemon: choosing **Live terminal** again for the same session brings its window to the front rather than opening a second one, and each session gets its own window. If the daemon's address or token changed since the window opened — the local daemon restarted with a new token or port, or a remote daemon's tunnel came back on another local port — the old window can no longer connect, so the app closes it and opens a fresh one instead.
@@ -352,7 +380,7 @@ A Mac app started from Finder or at login gets launchd's minimal `PATH`, which d
 
 | Path | What |
 |---|---|
-| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added, and the project tabs' order, pins and compact setting |
+| `~/Library/Application Support/dev.itervox.desktop/projects.json` | The projects you added, and the project tabs' order, pins and compact setting, and the [terminal command](#choosing-the-terminal) |
 | `~/Library/Logs/dev.itervox.desktop/daemons/` | Output of daemons the app started (the daemons' own logs stay under `~/.itervox/logs/`) |
 | Login Keychain, `dev.itervox.desktop.supervisor-token` | One supervisor token per project |
 | `~/Library/Application Support/dev.itervox.desktop/remotes.json` | The remotes you added: transport, host, their daemons and the local port each last used (no tokens) |
@@ -398,7 +426,7 @@ The app needs WebKitGTK 4.1 and an AppIndicator library (`libayatana-appindicato
 
 | Path (Linux) | What |
 |---|---|
-| `~/.config/dev.itervox.desktop/projects.json`, `remotes.json` | The projects and remotes you added |
+| `~/.config/dev.itervox.desktop/projects.json`, `remotes.json` | The projects and remotes you added (and the [terminal command](#choosing-the-terminal), in `projects.json`) |
 | `~/.local/share/dev.itervox.desktop/logs/daemons/`, `…/tunnels/` | Output of daemons the app started, and of each tunnel |
 | `~/.local/bin/itervox` | The command-line tool, when installed from the tray |
 | `~/.config/autostart/itervox-desktop.desktop` | Start at Login, when on |
@@ -431,7 +459,7 @@ When a release bundles a native `itervox.exe`, the installers carry it as the ap
 
 | Path (Windows) | What |
 |---|---|
-| `%APPDATA%\dev.itervox.desktop\projects.json`, `remotes.json` | The projects and remotes you added |
+| `%APPDATA%\dev.itervox.desktop\projects.json`, `remotes.json` | The projects and remotes you added (and the [terminal command](#choosing-the-terminal), in `projects.json`) |
 | `%LOCALAPPDATA%\dev.itervox.desktop\logs\` | Output of daemons the app started (`daemons\`) and of each tunnel (`tunnels\`) |
 
 ## Platform differences
@@ -455,6 +483,7 @@ Each macOS-only part of the app, and what Linux and Windows do instead:
 | Wake detected from the clocks, network change from `getifaddrs` | Same | Network change from the default routes' source addresses; a wake that keeps the address is caught by the tunnel health checks |
 | `open` for logs and links | `xdg-open` | `explorer` |
 | [Open in Terminal](#open-in-terminal): Terminal, through a one-time `.command` file | `$TERMINAL`, else `x-terminal-emulator`, with `-e` | Windows Terminal (`wt new-tab`); remote daemons only |
+| [Terminal command](#choosing-the-terminal): `{command}` or `{script}` | `{command}` or `{script}` (a `.sh` file) | `{command}` only |
 | Liquid Glass (macOS 26) or vibrancy behind the Sessions window ([System material](#system-material)) | Not on this platform: the drawn panels | Mica on Windows 11; the drawn panels on Windows 10 |
 | Tray **Quit Itervox** with <kbd>⌘Q</kbd> | <kbd>Ctrl</kbd>+<kbd>Q</kbd>, shown and bound only where the panel's menu supports shortcuts (AppIndicator menus often do not) | <kbd>Ctrl</kbd>+<kbd>Q</kbd> |
 
