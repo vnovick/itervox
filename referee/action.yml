@@ -3,7 +3,8 @@ description: >-
   Keep coding agents from changing how CI checks their work: classify a pull
   request's files into human / second_opinion / auto lanes (policy read from
   the base branch), audit it for weakened checks, check that installed deploy
-  tools read no unclassified deploy-target variable, pin a policy hash, or
+  tools read no unclassified deploy-target variable, compare how those tools
+  behave between the base and head installs, pin a policy hash, or
   verify signed check records.
 author: vnovick
 branding:
@@ -12,21 +13,21 @@ branding:
 
 inputs:
   mode:
-    description: lanes, audit, envcheck, pin or verify.
+    description: lanes, audit, envcheck, diff, pin or verify.
     required: true
   base:
     description: >-
-      The ref the pull request merges into (lanes, audit, envcheck). Default:
+      The ref the pull request merges into (lanes, audit, envcheck, diff). Default:
       origin/<the pull request's base branch>. Needs the base in the
       checkout (actions/checkout with fetch-depth 0).
     required: false
     default: ''
   head:
-    description: The ref under review (lanes, audit, envcheck).
+    description: The ref under review (lanes, audit, envcheck, diff).
     required: false
     default: HEAD
   policy:
-    description: The policy file, read from the base ref (lanes, envcheck), or the file to hash (pin).
+    description: The policy file, read from the base ref (lanes, envcheck, diff), or the file to hash (pin).
     required: false
     default: .referee.yml
   policy-sha256:
@@ -38,7 +39,9 @@ inputs:
       lanes: fail the step on human (default), second_opinion (also fails a
       second_opinion lane) or never (report only; read the lane output).
       audit, envcheck: never reports findings without failing (read
-      exit-code); any other value fails on findings. An error always fails.
+      exit-code); any other value fails on findings. diff: a behaviour change
+      (exit 10) fails the step only with second_opinion, like the lanes mode;
+      it is always in exit-code and the step summary. An error always fails.
     required: false
     default: human
   records:
@@ -51,6 +54,21 @@ inputs:
     default: ''
   tree:
     description: Also require each record's tree to be this directory's tree now (verify).
+    required: false
+    default: ''
+  base-dir:
+    description: >-
+      diff: a second checkout of the merge base with its dependencies
+      installed (e.g. git worktree add --detach ../base <merge base>, then
+      install there). The head install is the working tree.
+    required: false
+    default: ''
+  idle:
+    description: >-
+      diff: how long a probe that has printed something may then print
+      nothing before it is taken to be waiting for input (a Go duration such
+      as 3s or 10s). Empty: referee's default, 3s. The window starts at the
+      probe's first byte of output, so a slow start is not a wait.
     required: false
     default: ''
 
@@ -88,4 +106,6 @@ runs:
         RECORDS: ${{ inputs.records }}
         PUBKEY: ${{ inputs.pubkey }}
         TREE: ${{ inputs.tree }}
+        BASE_DIR: ${{ inputs.base-dir }}
+        IDLE: ${{ inputs.idle }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"

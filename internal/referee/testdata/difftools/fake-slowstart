@@ -1,0 +1,16 @@
+#!/bin/sh
+# The same behaviour as fake-1.0.0, but deploy takes 4s before it prints
+# anything (a slow start: loading, a cold cache). The idle window starts
+# only at the first byte, so it is not taken to be waiting for input.
+case "$1" in
+--version) echo "fake 1.0.0" ;;
+deploy)
+	sleep 4
+	echo "Usage: fake deploy [--prod]"
+	echo "Deploys the current directory."
+	echo "Built 2026-01-02T03:04:05Z in 12ms"
+	echo "config: $HOME/.config/fake.json, cwd: $PWD" >&2
+	;;
+env) env | sort ;;
+*) echo "fake: unknown command $1" >&2; exit 2 ;;
+esac

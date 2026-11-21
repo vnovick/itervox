@@ -3,7 +3,8 @@
 # (never interpolated into the script). Exit codes follow referee's: 0 auto
 # or ok, 10 second_opinion, 20 human / findings / mismatch, 1 a record that
 # did not verify, 2 an error. fail-on decides which lanes fail the step
-# (and, for audit and envcheck, never reports findings without failing); an error always
+# (and, for audit and envcheck, never reports findings without failing; for
+# diff, second_opinion fails on a behaviour change, exit 10); an error always
 # does.
 set -uo pipefail
 
@@ -29,6 +30,12 @@ case "${MODE:-}" in
     args=(envcheck --head "${HEAD_REF:-HEAD}" --policy "${POLICY:-.referee.yml}")
     [ -n "${BASE:-}" ] && args+=(--base "$BASE")
     ;;
+  diff)
+    args=(diff --head "${HEAD_REF:-HEAD}" --policy "${POLICY:-.referee.yml}")
+    [ -n "${BASE:-}" ] && args+=(--base "$BASE")
+    [ -n "${BASE_DIR:-}" ] && args+=(--base-dir "$BASE_DIR")
+    [ -n "${IDLE:-}" ] && args+=(--idle "$IDLE")
+    ;;
   pin)
     args=(pin --file "${POLICY:-.referee.yml}" --policy-sha256 "${POLICY_SHA256:-}")
     ;;
@@ -37,7 +44,7 @@ case "${MODE:-}" in
     [ -n "${TREE:-}" ] && args+=(--tree "$TREE")
     ;;
   *)
-    echo "::error::referee: mode must be lanes, audit, envcheck, pin or verify (got '${MODE:-}')"
+    echo "::error::referee: mode must be lanes, audit, envcheck, diff, pin or verify (got '${MODE:-}')"
     exit 2
     ;;
 esac
@@ -60,6 +67,14 @@ if [ "$MODE" = lanes ]; then
     20) [ "${FAIL_ON:-human}" = never ] && exit 0; echo "::error::referee: human lane: a maintainer must approve this pipeline change"; exit 20 ;;
     *) echo "::error::referee: error (exit $code)"; exit "$code" ;;
   esac
+fi
+if [ "$MODE" = diff ] && [ "$code" = 10 ]; then
+  if [ "${FAIL_ON:-human}" = second_opinion ]; then
+    echo "::error::referee: a configured tool's behaviour changed between the base and head installs"
+    exit 10
+  fi
+  echo "::warning::referee: a configured tool's behaviour changed between the base and head installs; a person should look"
+  exit 0
 fi
 if { [ "$MODE" = audit ] || [ "$MODE" = envcheck ]; } && [ "$code" = 20 ] && [ "${FAIL_ON:-human}" = never ]; then
   exit 0 # findings reported (step summary, exit-code output), not enforced here

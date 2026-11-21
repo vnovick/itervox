@@ -10,6 +10,7 @@ trap 'rm -r "$tmp"' EXIT
 # The fake prints a lanes-shaped JSON report and exits with $FAKE_CODE.
 cat >"$tmp/referee" <<'FAKE'
 #!/usr/bin/env bash
+[ -n "${FAKE_ARGS:-}" ] && printf '%s\n' "$*" >"$FAKE_ARGS"
 printf '{\n  "version": 1,\n  "lane": "%s",\n  "exit_code": %s\n}\n' "${FAKE_LANE:-auto}" "${FAKE_CODE:-0}"
 exit "${FAKE_CODE:-0}"
 FAKE
@@ -49,6 +50,14 @@ check "envcheck findings fail" 20 MODE=envcheck FAKE_CODE=20
 check "envcheck findings reported with fail-on never" 0 MODE=envcheck FAKE_CODE=20 FAIL_ON=never
 check "envcheck error fails with fail-on never" 2 MODE=envcheck FAKE_CODE=2 FAIL_ON=never
 check "envcheck clean passes" 0 MODE=envcheck FAKE_CODE=0
+check "diff unchanged passes" 0 MODE=diff FAKE_CODE=0 BASE_DIR=../base BASE=origin/main FAKE_ARGS="$tmp/args"
+grep -qx -- "diff --head HEAD --policy .referee.yml --base origin/main --base-dir ../base" "$tmp/args" || { echo "FAIL diff args: $(cat "$tmp/args")"; fail=1; }
+check "diff idle is passed" 0 MODE=diff FAKE_CODE=0 BASE_DIR=../base IDLE=10s FAKE_ARGS="$tmp/args"
+grep -qx -- "diff --head HEAD --policy .referee.yml --base-dir ../base --idle 10s" "$tmp/args" || { echo "FAIL diff idle args: $(cat "$tmp/args")"; fail=1; }
+check "diff change passes by default" 0 MODE=diff FAKE_CODE=10 BASE_DIR=../base
+grep -qx 'exit-code=10' "$tmp/out" || { echo "FAIL diff exit-code output: $(cat "$tmp/out")"; fail=1; }
+check "diff change fails with fail-on second_opinion" 10 MODE=diff FAKE_CODE=10 FAIL_ON=second_opinion
+check "diff error fails with fail-on never" 2 MODE=diff FAKE_CODE=2 FAIL_ON=never
 check "pin mismatch fails" 20 MODE=pin FAKE_CODE=20 POLICY_SHA256=x
 check "verify failure fails" 1 MODE=verify FAKE_CODE=1 RECORDS=r PUBKEY=p
 
