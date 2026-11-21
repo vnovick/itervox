@@ -323,6 +323,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// configuration (reviewer_profile and reviewer_profiles).
 	readOnlyReviewer := isReviewerProfile(o.cfg, profileName)
 	o.cfgMu.RUnlock()
+	// Local models: a profile's own timeouts, or the longer model-server
+	// defaults, and the model_server variable for its backend. Both come
+	// from the profile snapshot above; agent.command and
+	// agent.stall_timeout_ms are read-only after startup.
+	runTimeouts := config.ProfileTimeouts(profilesSnap[profileName], backend, o.cfg.Agent.Command,
+		config.RunTimeouts{ReadMs: readTimeoutMs, TurnMs: turnTimeoutMs, StallMs: o.cfg.Agent.StallTimeoutMs})
+	readTimeoutMs, turnTimeoutMs = runTimeouts.ReadMs, runTimeouts.TurnMs
+	modelServerEnv := config.ProfileModelServerEnv(profilesSnap[profileName], backend, o.cfg.Agent.Command)
 	// A reviewer rerouted by backend_fallback runs under another profile
 	// name; its run still identifies it as a reviewer (#127).
 	readOnlyReviewer = readOnlyReviewer || runIsReviewer(ctx)
@@ -372,6 +380,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		ctx = agent.WithIdleHold(ctx, func() bool { return approvals.Waiting(identifier, runID) })
 	}
 	ctx = withLocalWorkspacePort(ctx, wsPort, workerHost) // #250
+	ctx = withLocalModelServer(ctx, modelServerEnv, workerHost)
 	defer func() {
 		o.agentActionTokens.Revoke(guardToken)
 		guard.Remove()
@@ -841,7 +850,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
 		}
 		result, runErr := o.runner.RunTurn(steerCtx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
-			withRemoteWorkspacePort(agentCommand, wsPort, workerHost), workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
+			withRemoteModelServer(withRemoteWorkspacePort(agentCommand, wsPort, workerHost), modelServerEnv, workerHost),
+			workerHost, logDir, readTimeoutMs, turnTimeoutMs, permissionMode)
 		rcReport.endTurn(result) // #215
 		// #136: the turn's usage counts whatever its outcome; every exit
 		// below carries it (deliverExit) so the event loop settles it.

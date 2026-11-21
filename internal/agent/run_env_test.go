@@ -79,7 +79,7 @@ func TestPatchOutAgentEnvHasNoForgeTokens(t *testing.T) {
 	t.Setenv("ITERVOX_API_TOKEN", "operator-token")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// A login profile that hands a token back: `env -u` runs after it.
+	// A login profile that hands a token back: `unset` runs after it.
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".profile"), []byte("export GH_TOKEN=from-profile\n"), 0o644))
 	exe, err := os.Executable()
 	require.NoError(t, err)

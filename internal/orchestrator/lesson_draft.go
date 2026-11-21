@@ -32,9 +32,12 @@ type lessonDraftPlan struct {
 	// Profile is the drafting profile's name; "" drafts from the template.
 	Profile string
 	// Command is the runner command for the profile's backend.
-	Command     string
-	TokenBudget int
-	TimeoutMs   int
+	Command string
+	// ModelServerEnv is the profile's model_server assignment for that
+	// backend (config.ProfileModelServerEnv), "" for none.
+	ModelServerEnv string
+	TokenBudget    int
+	TimeoutMs      int
 	// EnforceThreshold is memory.lessons.enforce_threshold (#217).
 	EnforceThreshold int
 }
@@ -68,6 +71,7 @@ func (o *Orchestrator) lessonDraftPlan() lessonDraftPlan {
 		return plan
 	}
 	plan.Profile, plan.Command = name, target.RunnerCommand
+	plan.ModelServerEnv = config.ProfileModelServerEnv(profile, target.Backend, o.cfg.Agent.Command)
 	return plan
 }
 
@@ -122,6 +126,7 @@ func (o *Orchestrator) runDraftTurn(ctx context.Context, identifier, prompt stri
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	var sessionID string
+	dctx = withLocalModelServer(dctx, plan.ModelServerEnv, "")
 	res, err := o.runner.RunTurn(dctx, o.logger().With("issue_identifier", identifier, "lesson_draft", true),
 		onProgress, &sessionID, prompt, dir, plan.Command, "", "",
 		plan.TimeoutMs, plan.TimeoutMs, agent.PermissionSandbox)

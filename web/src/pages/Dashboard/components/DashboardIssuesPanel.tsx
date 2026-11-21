@@ -147,6 +147,7 @@ export function DashboardIssuesPanel({
         def.allowedActions,
         def.createIssueState,
         def.originalName,
+        def.modelServer,
       );
     },
     [upsertProfile],

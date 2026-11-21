@@ -92,8 +92,16 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		// Not edited by the dashboard: carried over from the saved profile
 		// so a dashboard save does not strip them from WORKFLOW.md.
 		PermissionMode: existingProfile.PermissionMode,
-		// The quota pool (backend_fallback lanes) is load-time only.
+		// The quota pool (backend_fallback lanes) is load-time only; one
+		// derived from model_server is derived again below, over the whole
+		// set (AssignModelServerPools).
 		Pool:              existingProfile.Pool,
+		PoolAuto:          existingProfile.PoolAuto,
+		ModelServer:       existingProfile.ModelServer,
+		ModelServerName:   existingProfile.ModelServerName, // load-time, carried over
+		ReadTimeoutMs:     existingProfile.ReadTimeoutMs,   // per-profile timeouts: load-time, carried over
+		TurnTimeoutMs:     existingProfile.TurnTimeoutMs,
+		StallTimeoutMs:    existingProfile.StallTimeoutMs,
 		RequireEvidence:   existingProfile.RequireEvidence,
 		Verify:            existingProfile.Verify, // signed checks: load-time, carried over
 		CreateIssueLabels: existingProfile.CreateIssueLabels,
@@ -103,6 +111,18 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
 		// Patches only (push: daemon): load-time, carried over.
 		Push: existingProfile.Push,
+	}
+	if def.ModelServerSet {
+		nextProfile.ModelServer = def.ModelServer
+	}
+	// Resolves the model server ($VAR), checks it against the profile's
+	// backend and command, and derives its pool, exactly as config.Load.
+	defaultCommand := ""
+	if a.cfg != nil {
+		defaultCommand = a.cfg.Agent.Command // read-only after startup
+	}
+	if err := config.ApplyProfileModelServer(name, &nextProfile, defaultCommand); err != nil {
+		return err
 	}
 	if a.cfg != nil && a.cfg.SchemaVersion >= config.LatestWorkflowSchemaVersion {
 		if strings.TrimSpace(nextProfile.Instructions) == "" && strings.TrimSpace(def.Prompt) != "" {
@@ -122,6 +142,14 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		}
 	}
 	finalProfiles[name] = nextProfile
+	// A derived pool is named after the first profile on its server, so
+	// a save (new URL, rename) can change other profiles' pools too.
+	if err := config.AssignModelServerPools(finalProfiles); err != nil {
+		return err
+	}
+	if err := a.checkProfileSetLoads(finalProfiles); err != nil {
+		return err
+	}
 	automations := a.orch.AutomationsCfg()
 	automationsChanged := false
 	if renamingProfile {
@@ -178,6 +206,23 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		}
 	}
 	a.notify()
+	return nil
+}
+
+// checkProfileSetLoads refuses a profile save or delete whose profile set
+// the next start or reload would refuse: agent.backend_fallback checked
+// against it as config.ValidateDispatch does (main.go, config_watch.go). A
+// save can rename a pool derived from model_server (model-local becomes
+// model-a when a profile that sorts first joins the server), or delete a
+// profile, that a profile_map entry still names. agent.backend_fallback and
+// agent.command are load-time (not cfgMu fields).
+func (a *orchestratorAdapter) checkProfileSetLoads(profiles map[string]config.AgentProfile) error {
+	if a.cfg == nil {
+		return nil
+	}
+	if err := config.ValidateBackendFallback(a.cfg.Agent.BackendFallback, profiles, a.cfg.Agent.Command); err != nil {
+		return fmt.Errorf("profile save refused: the next start would reject the config: %w; change agent.backend_fallback first", err)
+	}
 	return nil
 }
 
@@ -244,6 +289,7 @@ func profileDefFromConfig(p config.AgentProfile) server.ProfileDef {
 		Enabled:          config.ProfileEnabled(p),
 		AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
 		CreateIssueState: p.CreateIssueState,
+		ModelServer:      p.ModelServer,
 	}
 }
 
@@ -255,6 +301,13 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	defer unlock()
 	profiles := a.orch.ProfilesCfg()
 	delete(profiles, name)
+	// The deleted profile may have named its server's derived pool.
+	if err := config.AssignModelServerPools(profiles); err != nil {
+		return err
+	}
+	if err := a.checkProfileSetLoads(profiles); err != nil {
+		return err
+	}
 	automations, automationsChanged := removeAutomationsForProfile(a.orch.AutomationsCfg(), name)
 	reviewerProfile, autoReview := a.orch.ReviewerCfg()
 	reviewerChanged := false

@@ -26,6 +26,9 @@ type ModelServer struct {
 	// Unchecked is set when the URL comes from a shell variable ($VAR),
 	// which the agent's shell expands at run time.
 	Unchecked bool
+	// FromModelServer is set when a profile names the server in
+	// model_server (Itervox sets Var), not in its command.
+	FromModelServer bool
 }
 
 // ModelServerCheck is doctor's "Model servers" section.
@@ -58,7 +61,7 @@ func checkModelServers(cfg *config.Config) ModelServerCheck {
 	}
 	var c ModelServerCheck
 	for _, use := range config.ModelServerUses(defaultProfileLabel, cfg.Agent.Command, cfg.Agent.Profiles) {
-		s := ModelServer{Profiles: use.Profiles, Var: use.Var, URL: use.URL, Unchecked: use.Unchecked}
+		s := ModelServer{Profiles: use.Profiles, Var: use.Var, URL: use.URL, Unchecked: use.Unchecked, FromModelServer: use.ModelServer}
 		if !s.Unchecked {
 			if u, err := url.Parse(use.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 				s.Err = errors.New("not an http(s) URL")
@@ -82,16 +85,28 @@ func renderModelServerCheck(b *strings.Builder, c ModelServerCheck) {
 	b.WriteString("\nModel servers\n")
 	for _, s := range c.Servers {
 		who := strings.Join(s.Profiles, ", ")
+		source, fix := "", s.Var
+		if s.FromModelServer {
+			source, fix = " (model_server)", "their model_server"
+		}
 		if s.Unchecked {
-			fmt.Fprintf(b, "  %s=%s, used by %s: set from a variable, not checked\n", s.Var, s.URL, who)
+			fmt.Fprintf(b, "  %s=%s%s, used by %s: set from a variable, not checked\n", s.Var, s.URL, source, who)
 			continue
+		}
+		clearText := func() {
+			if config.ModelServerInClearText(s.URL) {
+				fmt.Fprintf(b, "WARNING: %s reach %s over plain http, off this machine: prompts, code and any credentials the agent sends cross the network in clear text; use https or an SSH tunnel to a loopback port\n",
+					who, s.URL)
+			}
 		}
 		if s.Err == nil {
-			fmt.Fprintf(b, "  %s=%s, used by %s: answering\n", s.Var, s.URL, who)
+			fmt.Fprintf(b, "  %s=%s%s, used by %s: answering\n", s.Var, s.URL, source, who)
+			clearText()
 			continue
 		}
-		fmt.Fprintf(b, "  %s=%s, used by %s: not answering\n", s.Var, s.URL, who)
+		fmt.Fprintf(b, "  %s=%s%s, used by %s: not answering\n", s.Var, s.URL, source, who)
 		fmt.Fprintf(b, "WARNING: %s point their agent at %s, which did not answer (%v); their runs will fail until it does — start the model server (for colibri: `coli serve`) or fix %s\n",
-			who, s.URL, s.Err, s.Var)
+			who, s.URL, s.Err, fix)
+		clearText()
 	}
 }

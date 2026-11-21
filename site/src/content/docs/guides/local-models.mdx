@@ -30,33 +30,85 @@ Follow colibri's own setup. It checks your hardware and recommends a model.
 Then start its API server:
 
 ```sh
-coli serve        # OpenAI-compatible /v1 and Anthropic-compatible /v1/messages on 127.0.0.1:8000
+coli serve        # OpenAI-compatible /v1 and Anthropic-compatible /v1/messages
 ```
+
+Note the address and port it prints: Itervox never assumes a port, and every
+example below writes it as `<port>`.
 
 ## 2. Point a profile at it
 
-Set the agent CLI's base-URL variable at the start of the profile's command.
-Itervox skips `NAME=value` assignments when it works out the backend, so this
-profile is still the `claude` backend, with the same flags, resume and
-parsing.
+The quickest way is `itervox quickstart`. Once its checks pass, it looks for
+model servers on this machine: it asks each port that a common local server
+listens on unless told otherwise (`11434` Ollama, `1234` LM Studio, `8080`
+llama.cpp's `llama-server`, `8000` vLLM) for its model list, on `127.0.0.1`
+and then `[::1]` only, without following redirects, and lists the ones that
+answer with what they look like and the first models they serve:
+
+```text
+Model servers answering on this machine:
+  1) http://127.0.0.1:<port> — Ollama (models: <model>)
+Add a `local` profile on one? Enter its number, or another port, host:port or URL (empty skips):
+```
+
+Pick a number, or type the port (on `127.0.0.1`), `host:port` or a URL of a
+server it did not find; an empty answer skips the step. When nothing answers,
+it asks whether to use a model server and then for its port, with no default.
+It probes what you typed and writes a `local` profile. For a Codex profile, a
+number or port gets `/v1` appended.
+
+`itervox quickstart --model-server http://127.0.0.1:<port>` does the same
+without asking or looking (for scripts and CI); the URL must include its
+port. `--no-local-model` skips the step, and `--yes` alone never adds the
+profile.
+
+By hand, give the profile a `model_server`:
 
 ```yaml
 agent:
   profiles:
     deps-analyzer-local:
-      command: ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude --model <model name colibri serves>
+      command: claude --model <model name colibri serves>
+      model_server: http://127.0.0.1:<port>
       soul_file: .itervox/agents/deps-analyzer/SOUL.md
       instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md
 ```
 
-- **Claude Code** reads `ANTHROPIC_BASE_URL`, without `/v1`. If the server
-  wants a key, put `ANTHROPIC_AUTH_TOKEN` in `.itervox/.env`, not in the
-  command.
-- **OpenCode** talks to any OpenAI-compatible provider you define in
-  `opencode.json` (base URL `http://127.0.0.1:8000/v1`). Choose it with
-  `--model <provider>/<model>`. See [Agent backends](/guides/backends/#opencode).
-- **Codex** reads custom providers from `~/.codex/config.toml`, not from
-  the command.
+Itervox sets the variable the profile's backend reads when it runs the agent,
+after your login shell's profile, so a value exported there does not replace
+it. It is exported as a statement of its own ahead of the command
+(`export ANTHROPIC_BASE_URL='…'; <command>`), so a command that is not a
+single program, such as `source ~/.nvm/nvm.sh && claude`, `cd sub && claude`
+or `exec claude`, gets it too, on this machine and on an SSH worker. If the
+variable cannot be set (a read-only variable, or a login shell without
+POSIX `export`), the turn fails instead of reaching the hosted API. Nothing
+else changes: the profile is still the `claude` backend, with the
+same flags, resume and parsing. The **Model server** field on the Agents page
+edits the same key.
+
+- **Claude Code** gets `ANTHROPIC_BASE_URL`; give the URL without `/v1`. If
+  the server wants a key, put `ANTHROPIC_AUTH_TOKEN` in `.itervox/.env`, not
+  in the command.
+- **Codex** gets `OPENAI_BASE_URL`, which its built-in provider reads; give
+  the URL with `/v1`. The server must serve the API Codex speaks. Custom
+  providers in `~/.codex/config.toml` are not touched.
+- **OpenCode** and **Cursor** read their server from their own config, so
+  `model_server` is refused for them. OpenCode talks to any OpenAI-compatible
+  provider you define in `opencode.json` (base URL
+  `http://127.0.0.1:<port>/v1`); choose it with `--model <provider>/<model>`.
+  See [Agent backends](/guides/backends/#opencode).
+
+The URL can be a variable, `model_server: $LOCAL_MODEL_URL`, read from the
+environment or `.itervox/.env` when the config loads; an unset variable stops
+the load. So do a malformed URL, a URL without an explicit port
+(`http://host:<port>`; a scheme's default port is not assumed, so a server on
+443 is written `https://host:443`), a port outside 1–65535 and a command that
+assigns the same variable to another URL. The older form,
+`ANTHROPIC_BASE_URL=http://127.0.0.1:<port> claude` in the command, keeps
+working, and doctor checks both.
+
+A run that a per-issue or `rate_limited` switch moves to another backend does
+not get the variable: the URL serves the profile's own backend.
 
 To keep a local profile on this machine, don't combine it with
 `agent.ssh_hosts`. A run on a worker host would look for the server on that
@@ -64,39 +116,81 @@ host.
 
 ## 3. Give slow runs time
 
-A local model is slower than a vendor's, so raise the timeouts that would
-otherwise kill a healthy run:
+A local model reads a long prompt before it prints anything and then writes
+a few tokens a second, so the hosted-API timeouts would kill a healthy run. A
+profile with a `model_server` gets longer ones unless it sets its own, while
+its run uses the profile's own backend:
 
-| Setting | Default | What to set |
+| Timeout | Agent-level default | Model-server profile gets at least |
 |---|---|---|
-| `agent.turn_timeout_ms` | `3600000` (1 h) | the longest a whole run may take |
-| `agent.stall_timeout_ms` | `300000` (5 min) | longer than the slowest gap between two events |
-| `agent.read_timeout_ms` | `30000` | longer than the slowest single response chunk |
+| `read_timeout_ms` | `30000` (30 s) | `300000` (5 min) for the first output after the prompt |
+| `stall_timeout_ms` | `300000` (5 min) | `900000` (15 min) without an event |
+| `turn_timeout_ms` | `3600000` (1 h) | `10800000` (3 h) for the whole run |
+
+A larger agent-level value is kept, and a turn or stall timeout you turned off
+at the agent level (`0`) stays off. A run that a per-issue or `rate_limited`
+switch moves to another backend gets the agent-level values, like a profile
+that writes the base URL into its command (`ANTHROPIC_BASE_URL=… claude`):
+set the timeouts on such a profile yourself. To choose your own, set them on
+the profile; they apply on any backend. A profile can lengthen or shorten a
+timeout but not turn one off, and no timeout, per profile or agent-level, can
+exceed `2592000000` (30 days):
+
+```yaml
+    deps-analyzer-local:
+      command: claude
+      model_server: http://127.0.0.1:<port>
+      read_timeout_ms: 600000
+      stall_timeout_ms: 1800000
+```
 
 ## 4. Check it
 
-`itervox doctor` probes every model server that a profile's command points
-at. It lists which profiles use each one, and warns when one does not
-answer:
+`itervox doctor` probes every model server a profile points at, through
+`model_server` or an assignment in its command. It lists which profiles use
+each one, and warns when one does not answer:
 
 ```text
 Model servers
-  ANTHROPIC_BASE_URL=http://127.0.0.1:8000, used by deps-analyzer-local: not answering
-WARNING: deps-analyzer-local point their agent at http://127.0.0.1:8000, which did not answer (…); their runs will fail until it does — start the model server (for colibri: `coli serve`) or fix ANTHROPIC_BASE_URL
+  ANTHROPIC_BASE_URL=http://127.0.0.1:<port> (model_server), used by deps-analyzer-local: not answering
+WARNING: deps-analyzer-local point their agent at http://127.0.0.1:<port>, which did not answer (…); their runs will fail until it does — start the model server (for colibri: `coli serve`) or fix their model_server
 ```
 
 The warning does not change doctor's exit code, because the server may just
-not be started yet. A URL taken from a variable (`$LOCAL_MODEL_URL`) is
-listed but not checked. Doctor sees only assignments in the command itself,
-not a CLI's own config file.
+not be started yet. Doctor also warns about a plain `http://` server that is
+not on this machine's loopback: prompts, code and any key the agent sends
+cross the network in clear text, so use `https://` or an SSH tunnel to a
+loopback port. A `model_server` variable is resolved at load and
+checked; a variable in a command (`ANTHROPIC_BASE_URL=$LOCAL_MODEL_URL
+claude`) is listed but not checked, since the agent's shell expands it.
+Doctor does not read a CLI's own config file.
 
 ## 5. Fall back to it when a vendor's limit is hit
 
 Itervox pauses dispatch to a backend whose usage limit was hit, and can
 reroute work through
 [`agent.backend_fallback`](/configuration/#backend-health-and-fallback-agentbackend_fallback).
-Give the local profile its own `pool`, so a limit on Anthropic doesn't hold
-it, and add the pool as a step in the chain:
+A profile with a `model_server` already has its own quota pool, so a limit on
+Anthropic doesn't hold it. Profiles on the same server share one pool: the
+server is its host and port (the path does not count, and `127.0.0.1`,
+`localhost` and `::1` are one machine), so a Claude profile on
+`http://127.0.0.1:<port>` and a Codex profile on `http://localhost:<port>/v1`
+share it. The pool's name has no host or port in it:
+
+- `model_server_name: <name>` on any of the server's profiles names it
+  (lower-case letters, digits and `-`). Two profiles on one server with
+  different names, or one name on two servers, stop the config load.
+- Without one, it is `model-<profile>`, after the first of the server's
+  profiles by name (`coder-local` gives `model-coder-local`). Adding or
+  renaming a profile that sorts earlier on the same server renames the pool,
+  so set `model_server_name` when the chain or a `profile_map` refers to it.
+- `pool:` on a profile still wins, for that profile. A pool is one quota, so
+  the config load stops when one pool name, explicit or derived, would cover
+  profiles on two different servers, or a server and hosted profiles (say a
+  hosted profile's `pool: local` and a server named `local`).
+
+The derived pool is computed each time the config loads and is not written
+to `WORKFLOW.md`. Add it as a step in the chain:
 
 ```yaml
 agent:
@@ -104,13 +198,17 @@ agent:
     coder:
       command: claude
     coder-local:
-      command: ANTHROPIC_BASE_URL=http://127.0.0.1:8000 claude --model <model>
-      pool: local
+      command: claude --model <model>
+      model_server: http://127.0.0.1:<port>
+      model_server_name: workstation   # the pool: lane claude/workstation
   backend_fallback:
-    chain: [claude, codex, claude/local]
+    chain: [claude, codex, claude/workstation]
     profile_map:
-      coder: { "claude/local": coder-local }
+      coder: { "claude/workstation": coder-local }
 ```
+
+A profile that puts the URL in its command gets no pool of its own; give it
+`pool: local` (and use `claude/local` in the chain).
 
 When `claude` is limited and nothing else in the chain is healthy, `coder`
 issues run on `coder-local`. They switch back once the limit resets, using
@@ -125,12 +223,12 @@ them across projects. The tray menu gets a **Model servers** section:
 
 ```text
 Model servers
-local 127.0.0.1:8000 — answering · used by 2 projects
+workstation 127.0.0.1:<port> — answering · used by 2 projects
 GPU: NVIDIA GeForce RTX 4090 · 37% · 10.2/24.0 GB
 ```
 
-A server is named after its profiles' `pool`, or "model server" when they
-set none. The end of the project tabs shows the same list (hover it). The app
+A server is named after its profiles' pool (`model_server_name`, the derived
+`model-<profile>`, or `pool:`), or "model server" when they have none. The end of the project tabs shows the same list (hover it). The app
 probes each server at most every 30 seconds, with a 3-second timeout, and
 any HTTP answer counts, as in doctor. It notifies you when a server that was
 answering misses two probes in a row, and again when it answers.

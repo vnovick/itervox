@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/profiles"
 )
@@ -20,6 +21,7 @@ import (
 // let budget tests push it over a cap.
 const fakeClaude = `#!/bin/sh
 printf '%s\n' "$*" > "$FAKE_OUT/args-$ITERVOX_ISSUE_IDENTIFIER"
+printf '%s' "$ANTHROPIC_BASE_URL" > "$FAKE_OUT/base-url-$ITERVOX_ISSUE_IDENTIFIER"
 cat > "$FAKE_OUT/prompt-$ITERVOX_ISSUE_IDENTIFIER"
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
 echo '{"type":"system","subtype":"init","session_id":"fake-session"}'
@@ -151,6 +153,53 @@ func TestLiveModeRecordsAndJudgesWithFakeBackend(t *testing.T) {
 	}
 	if args := readFile(t, filepath.Join(f.FakeOut, "args-ENG-51")); !strings.Contains(args, "--max-turns 3") || !strings.Contains(args, "--output-format stream-json") {
 		t.Errorf("fake CLI must be invoked through the claude runner with the turn cap; args: %s", args)
+	}
+}
+
+// timeoutRunner records the read and turn timeouts of each turn and runs
+// it with the daemon's runners (the fake CLI).
+type timeoutRunner struct {
+	agent.Runner
+	read, turn int
+}
+
+func (r *timeoutRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string,
+	prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int, mode agent.PermissionMode,
+) (agent.TurnResult, error) {
+	r.read, r.turn = readTimeoutMs, turnTimeoutMs
+	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs, mode)
+}
+
+// TestLiveModeUsesTheProfileModelServer: a live scenario of a profile with
+// a model_server runs its agent with the profile's ANTHROPIC_BASE_URL
+// (over the daemon's own value) and the profile's timeouts, as a
+// dispatched run would; the wall-clock budget still bounds the turn. The
+// CLI is the fake; no model server is contacted.
+func TestLiveModeUsesTheProfileModelServer(t *testing.T) {
+	f := newLiveFixture(t, "merge-bot/red-ci-approval")
+	t.Setenv("ANTHROPIC_BASE_URL", "http://daemon-value")
+	t.Setenv("SHELL", "/bin/sh")
+	workflow := readFile(t, f.Workflow)
+	withServer := strings.Replace(workflow, "    merge-bot: {}\n",
+		"    merge-bot:\n      model_server: http://127.0.0.1:8000\n      read_timeout_ms: 400000\n", 1)
+	if withServer == workflow {
+		t.Fatal("the eval workflow no longer has the merge-bot profile line this test edits")
+	}
+	mustWrite(t, f.Workflow, withServer, 0o644)
+	runner := &timeoutRunner{Runner: agent.NewBackendMultiRunner()}
+	opts := f.options(t.TempDir())
+	opts.Runner = runner
+	if _, err := RunLive(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, filepath.Join(f.FakeOut, "base-url-ENG-51")); got != "http://127.0.0.1:8000" {
+		t.Errorf("the agent's ANTHROPIC_BASE_URL = %q, want the profile's model_server", got)
+	}
+	if runner.read != 400_000 {
+		t.Errorf("read timeout = %d, want the profile's 400000", runner.read)
+	}
+	if budget := int(opts.Budget.Timeout / time.Millisecond); runner.turn != budget {
+		t.Errorf("turn timeout = %d, want the %d ms budget", runner.turn, budget)
 	}
 }
 

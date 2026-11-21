@@ -35,6 +35,10 @@ func TestMain(m *testing.M) {
 	// (TestQuickstartIgnoresBusyPort8090). TestDoctorWarnsWhenAnotherProcessHoldsThePort
 	// covers the check itself.
 	doctorPortHolder = func(int) (string, int) { return "", 0 }
+	// Quickstart's local-model detection probes no real port: a developer's
+	// own model server must not change a quickstart test. The detection
+	// tests set the list to their httptest servers' ports.
+	quickstartModelServerCandidates = nil
 	os.Exit(m.Run())
 }
 

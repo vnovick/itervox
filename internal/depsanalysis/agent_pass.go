@@ -105,6 +105,12 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 		return nil, fmt.Errorf("%w: %v", ErrAnalyzerFailed, err)
 	}
 	ctx = agent.WithIsolation(ctx, iso)
+	// Local models: the profile's model_server for its backend, and its
+	// timeouts (its own, or the longer model-server defaults). The command
+	// is never empty here, so no agent.command is needed.
+	backend := config.ProfileRunsBackend(input.Profile, "")
+	ctx = agent.WithSetEnv(ctx, config.ProfileModelServerEnv(input.Profile, backend, ""))
+	timeouts := config.ProfileTimeouts(input.Profile, backend, "", config.RunTimeouts{ReadMs: input.ReadTimeoutMs, TurnMs: input.TurnTimeoutMs})
 
 	prompt := buildAnalyzerPrompt(input.Profile, input.RulesBlock, input.Issues, input.TrackerEdges)
 	var sessionID string
@@ -118,8 +124,8 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 		input.Profile.Command,
 		"", // workerHost — analyzer runs locally
 		input.LogDir,
-		input.ReadTimeoutMs,
-		input.TurnTimeoutMs,
+		timeouts.ReadMs,
+		timeouts.TurnMs,
 		agent.ParsePermissionMode(input.Profile.PermissionMode),
 	)
 	if err != nil {

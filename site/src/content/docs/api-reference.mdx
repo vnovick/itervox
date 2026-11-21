@@ -1591,19 +1591,23 @@ a limited backend chip.
 Lists the model servers that profile commands point their agent at, for the
 desktop app's "Model servers" section (see
 [Local models](/guides/local-models/#in-the-desktop-app)). The daemon reads
-the same command assignments as `itervox doctor` (`ANTHROPIC_BASE_URL`,
-`OPENAI_BASE_URL`, `OPENAI_API_BASE`) from the live profile configuration,
-and never probes them:
+the same servers as `itervox doctor` — command assignments
+(`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`) and each
+profile's `model_server`, under the variable its backend reads — from the
+live profile configuration, and never probes them:
 
 ```json
-{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:8000","profiles":["(default)","coder-local"],"pools":["local"],"remote":false}]}
+{"servers":[{"var":"ANTHROPIC_BASE_URL","url":"http://127.0.0.1:<port>","profiles":["(default)","coder-local"],"pools":["local"],"remote":false}]}
 ```
 
 One row per variable and URL. `profiles` are the enabled profiles using it
 (`(default)` is `agent.command`), `pools` their quota pools
 (`agent.profiles.<name>.pool`, `[]` when none). `remote` is `true` when
 `agent.ssh_hosts` is set, since those runs go to worker hosts. A URL taken
-from a variable (`$LOCAL_MODEL_URL`) has `"unchecked": true`. Viewer scope;
+from a variable in a command (`$LOCAL_MODEL_URL`) has `"unchecked": true`;
+a `model_server` variable is resolved at load and listed by its value. A row
+that a profile's `model_server` names has `"modelServer": true`, and its pool
+is the server's derived pool (its `model_server_name`, else `model-<profile>` after its first profile by name) unless the profile sets one. Viewer scope;
 below admin, credentials in a URL are redacted. With no model server
 configured the list is empty.
 
@@ -2334,9 +2338,17 @@ Profile update body:
   "enabled": true,
   "allowedActions": ["comment", "provide_input"],
   "createIssueState": "Todo",
+  "modelServer": "http://127.0.0.1:<port>",
   "originalName": "old-name"
 }
 ```
+
+`modelServer` is the profile's `model_server` (an `http(s)` URL or a whole
+`$VAR`): absent keeps the saved value, `""` clears it. A value of another shape
+is `400 invalid_model_server`; a backend that cannot use one (OpenCode, Cursor,
+custom), an unset variable or a conflict with the command's own assignment
+fails the save. Below admin, `GET /settings/profiles` redacts credentials in
+it like the command.
 
 For schema `2` profiles, `soul` and `instructions` are written to the referenced
 `SOUL.md` and `INSTRUCTIONS.md` files. `prompt` is retained as a compatibility

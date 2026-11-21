@@ -13,7 +13,8 @@ import (
 )
 
 // ReconcileStalls checks all running sessions for stall timeout violations.
-// If stall_timeout_ms <= 0, stall detection is disabled and this is a no-op.
+// If stall_timeout_ms <= 0 and no run has its own (byRun), stall
+// detection is disabled and this is a no-op.
 // The optional logBuf receives a stall-warning entry before the worker is killed.
 //
 // cfg.Agent.StallTimeoutMs is read without cfgMu because it is set only once at
@@ -40,11 +41,24 @@ func cancelOrFallback(cleanup CleanupWorker, identifier string, fallback context
 	}
 }
 
-func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
-	if cfg.Agent.StallTimeoutMs <= 0 {
+// ReconcileStalls (see the comment above CleanupWorker): its byRun holds
+// per-run stall timeouts, keyed like state.Running: a running entry in it
+// uses that value (milliseconds; <= 0 skips it) instead of
+// agent.stall_timeout_ms, so its profile's own stall_timeout_ms (or the
+// longer model-server default) applies even when the agent level turned
+// stall detection off. The event loop passes Orchestrator.runStallTimeouts;
+// nil uses the agent level for every run.
+func ReconcileStalls(state State, cfg *config.Config, byRun map[string]int, now time.Time, events chan OrchestratorEvent, cleanup CleanupWorker, logBuf ...*logbuffer.Buffer) State {
+	if cfg.Agent.StallTimeoutMs <= 0 && len(byRun) == 0 {
 		return state
 	}
-	stallDur := time.Duration(cfg.Agent.StallTimeoutMs) * time.Millisecond
+	stallFor := func(id string) time.Duration {
+		ms, ok := byRun[id]
+		if !ok {
+			ms = cfg.Agent.StallTimeoutMs
+		}
+		return time.Duration(ms) * time.Millisecond
+	}
 
 	var buf *logbuffer.Buffer
 	if len(logBuf) > 0 {
@@ -62,6 +76,10 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 		// is not a stall; resolveGuardrailApproval restarts the clock once
 		// the answer arrives. agent.turn_timeout_ms still bounds the wait.
 		if awaitingGuardrailApproval(state, entry) {
+			continue
+		}
+		stallDur := stallFor(id)
+		if stallDur <= 0 {
 			continue
 		}
 		var elapsed time.Duration
