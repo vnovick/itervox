@@ -21,7 +21,8 @@ import (
 // stack_splits.json (ledger writer) and prunes them when the issue turns
 // terminal. merge_pr reads them through MergeLaneRefusalForPR: the lower,
 // code-only pull request of a code-first split is judged by its own lane,
-// not by the issue's (which the pipeline push above it raised to human).
+// not by the issue's (which the pipeline push above it raised to human),
+// while its head is still the commit the split pushed (LowerSHA).
 
 // EventStackSplit records a stack split decision (guardrails.lanes.split).
 const EventStackSplit EventType = "StackSplit"
@@ -51,6 +52,12 @@ type StackSplitRecord struct {
 	// base); UpperBranch the issue branch stacked on it.
 	LowerBranch string `json:"lowerBranch,omitempty"`
 	UpperBranch string `json:"upperBranch,omitempty"`
+	// LowerSHA is the commit the daemon last pushed to LowerBranch ("" until
+	// that push succeeded). merge_pr grants the lower pull request its own
+	// lane only while its head is this commit, and a later run of the issue
+	// updates the lower branch only from it (a fast-forward), never over a
+	// branch it did not push.
+	LowerSHA string `json:"lowerSha,omitempty"`
 	// LowerPR / LowerPRURL and UpperPRURL are the pull requests, once open.
 	LowerPR    int    `json:"lowerPr,omitempty"`
 	LowerPRURL string `json:"lowerPrUrl,omitempty"`
@@ -109,24 +116,26 @@ func (o *Orchestrator) handleStackSplit(state *State, ev OrchestratorEvent, now 
 	o.saveStackSplitsToDisk(cloneStackSplits(state.StackSplits))
 }
 
-// stackSplitLaneRecord is the lane record merge_pr judges pull request pr
-// of identifier by, when it is the lower, code-only pull request of a
-// code-first split: the code side's own lane (nil and true when that lane
-// is auto). ok false: pr is not such a pull request; the issue's record
-// applies. Pure over State.
-func stackSplitLaneRecord(state State, identifier string, pr int) (rec *PushLaneRecord, ok bool) {
+// stackSplitLaneRecord is the lane record merge_pr may judge pull request
+// pr of identifier by, when it is the lower, code-only pull request of a
+// code-first split: the code side's own lane (nil when that lane is auto),
+// granted only while the pull request's head is sha, the commit the split
+// pushed to the lower branch. ok false: pr is not such a pull request (or
+// the split recorded no pushed commit); the issue's record applies. Pure
+// over State.
+func stackSplitLaneRecord(state State, identifier string, pr int) (rec *PushLaneRecord, sha string, ok bool) {
 	s, found := state.StackSplits[identifier]
-	if !found || pr <= 0 || s.LowerPR != pr || s.Order != StackSplitCodeFirst {
-		return nil, false
+	if !found || pr <= 0 || s.LowerPR != pr || s.Order != StackSplitCodeFirst || s.LowerSHA == "" {
+		return nil, "", false
 	}
 	if !guardrails.IsLane(s.CodeLane) {
-		return nil, true
+		return nil, s.LowerSHA, true
 	}
 	r := PushLaneRecord{Lane: s.CodeLane, Paths: s.CodeFiles, PathsTotal: s.CodeFilesTotal, RunID: s.RunID, UpdatedAt: s.DecidedAt}
 	if issue, has := state.PushLanes[identifier]; has {
 		r.WriterBackends = issue.WriterBackends
 	}
-	return &r, true
+	return &r, s.LowerSHA, true
 }
 
 // pruneStackSplits drops the records of issues keep rejects (terminal

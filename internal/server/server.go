@@ -512,10 +512,15 @@ type MergeLaneChecker interface {
 
 // MergePRLaneChecker is MergeLaneChecker for one pull request number: a
 // stack split (guardrails.lanes.split) opens two pull requests for an
-// issue, and its lower, code-only one is judged by its own lane. merge_pr
-// prefers it when the client implements it.
+// issue, and its lower, code-only one is judged by its own lane while its
+// head is the commit the split pushed. headSHA reads the pull request's
+// current head (asked only when the answer depends on it); matchHead is
+// that commit when it did, and merge_pr then merges only that commit
+// (gh pr merge --match-head-commit). merge_pr prefers it when the client
+// implements it.
 type MergePRLaneChecker interface {
-	MergeLaneRefusalForPR(ctx context.Context, identifier string, pr int) string
+	MergeLaneRefusalForPR(ctx context.Context, identifier string, pr int,
+		headSHA func(context.Context) (string, error)) (reason, matchHead string)
 }
 
 type PRMergedEmitter interface {

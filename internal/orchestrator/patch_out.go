@@ -83,6 +83,21 @@ func (o *Orchestrator) SetPRCreator(fn func(ctx context.Context, dir, head, base
 	o.createPR = fn
 }
 
+// SetPRFinder replaces how the daemon finds the open pull request of a
+// branch before it opens one for a stack split (guardrails.lanes.split);
+// workspace.FindOpenPRURLForBranch (gh) by default. Must be called before
+// Run.
+func (o *Orchestrator) SetPRFinder(fn func(ctx context.Context, dir, branch string) string) {
+	o.findBranchPR = fn
+}
+
+func (o *Orchestrator) prFinder() func(ctx context.Context, dir, branch string) string {
+	if o.findBranchPR != nil {
+		return o.findBranchPR
+	}
+	return workspace.FindOpenPRURLForBranch
+}
+
 func (o *Orchestrator) prCreator() func(ctx context.Context, dir, head, base, title, body string) (string, error) {
 	if o.createPR != nil {
 		return o.createPR

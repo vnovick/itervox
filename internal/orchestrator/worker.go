@@ -140,7 +140,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	var openedPRURL string   // PR URL first discovered during this run.
 	var openedPRBranch string
 	if !skipPRCheck {
-		prCtx, _ = prdetector.Detect(ctx, issue)
+		// guardrails.lanes.split: the lower branch of a stack split is never
+		// the issue's working pull request, even when its top is gone.
+		issueBranch := branchName
+		prCtx, _ = prdetector.Detect(ctx, issue, func(b string) bool { return isStackSplitLowerBranch(b, issueBranch) })
 		if prCtx != nil && prCtx.Branch == "" {
 			// Treat a PR with no head branch as "not found" — an empty branch name
 			// passed to EnsureWorkspace produces an unnamed worktree.

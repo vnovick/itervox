@@ -2,6 +2,8 @@ package orchestrator_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +62,12 @@ func (r *patchOutRig) split() orchestrator.StackSplitRecord {
 		return ok
 	}, 30*time.Second, 20*time.Millisecond, "no stack split decision recorded")
 	return rec
+}
+
+// headOf reads a pull request's head as merge_pr does, here from the
+// remote branch the PR is for.
+func (r *patchOutRig) headOf(branch string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) { return r.remoteRef("refs/heads/" + branch), nil }
 }
 
 func (r *patchOutRig) feedKinds(kind string) []orchestrator.FeedEvent {
@@ -123,9 +131,21 @@ func TestStackSplitCodePassesAloneGoesFirst(t *testing.T) {
 	assert.Len(t, r.feedKinds(orchestrator.FeedStackSplit), 1, "one feed event per decision")
 
 	ctx := context.Background()
-	assert.Empty(t, r.orch.MergeLaneRefusalForPR(ctx, "ENG-1", 1), "the code PR merges by its own lane")
-	assert.Contains(t, r.orch.MergeLaneRefusalForPR(ctx, "ENG-1", 2), orchestrator.MergeRefusalLaneHuman)
+	assert.Equal(t, code, r.split().LowerSHA, "the record names the commit the split pushed")
+	reason, match := r.orch.MergeLaneRefusalForPR(ctx, "ENG-1", 1, r.headOf("eng-1-fix-code"))
+	assert.Empty(t, reason, "the code PR merges by its own lane")
+	assert.Equal(t, code, match, "and only at the split's commit")
+	reason, _ = r.orch.MergeLaneRefusalForPR(ctx, "ENG-1", 2, r.headOf("eng-1-fix"))
+	assert.Contains(t, reason, orchestrator.MergeRefusalLaneHuman)
 	assert.Contains(t, r.orch.MergeLaneRefusal(ctx, "ENG-1"), orchestrator.MergeRefusalLaneHuman, "without a PR number: the issue's lane")
+
+	// The guard bypass: the pipeline PR is merged into the code branch
+	// first (GitHub fast-forwards it to the top commit). The code PR now
+	// carries the pipeline change and is a human's to merge.
+	laneGit(t, r.remote, "update-ref", "refs/heads/eng-1-fix-code", top)
+	reason, match = r.orch.MergeLaneRefusalForPR(ctx, "ENG-1", 1, r.headOf("eng-1-fix-code"))
+	assert.Contains(t, reason, orchestrator.MergeRefusalLaneHuman, "a pipeline change that reached the code branch is never auto")
+	assert.Empty(t, match)
 }
 
 // The checks fail on the code alone and pass on the pipeline change alone:
@@ -151,8 +171,8 @@ func TestStackSplitCodeFailsAlonePipelineFirst(t *testing.T) {
 	rec := r.split()
 	assert.Equal(t, orchestrator.StackSplitPipelineFirst, rec.Order)
 	assert.Contains(t, rec.Reason, "fail on the code change alone")
-	assert.Contains(t, r.orch.MergeLaneRefusalForPR(context.Background(), "ENG-1", 1), orchestrator.MergeRefusalLaneHuman,
-		"the pipeline PR is a human's to merge")
+	reason, _ := r.orch.MergeLaneRefusalForPR(context.Background(), "ENG-1", 1, r.headOf("eng-1-fix-pipeline"))
+	assert.Contains(t, reason, orchestrator.MergeRefusalLaneHuman, "the pipeline PR is a human's to merge")
 }
 
 // The checks fail on either side alone: no broken middle is offered — one
@@ -172,7 +192,103 @@ func TestStackSplitBothOrdersFailFallsBackToOnePR(t *testing.T) {
 	assert.Equal(t, orchestrator.StackSplitCombined, rec.Order)
 	assert.Contains(t, rec.Reason, "fail on the code change alone")
 	assert.Contains(t, rec.Reason, "on the pipeline change alone")
+	assert.Contains(t, rec.Reason, "hooks.after_create", "without a hook the reason says the checks may lack dependencies")
 	feed := r.feedKinds(orchestrator.FeedStackSplit)
 	require.Len(t, feed, 1)
 	assert.Equal(t, orchestrator.StackSplitCombined, feed[0].Payload.Outcome)
+}
+
+// A lower branch that already exists on the remote at another commit is
+// not Itervox's to push over: one combined PR, the reason recorded, and
+// the existing branch left as it was.
+func TestStackSplitExistingRemoteLowerBranchFallsBackToCombined(t *testing.T) {
+	var existing string
+	r := newPatchOutRig(t, patchOutOpts{
+		file: "pkg/fix.go", extra: []string{ciFile}, split: true, human: []string{".github/**"}, completion: "In Review",
+		verify: []config.VerifyCheck{{Name: "test", Run: "test -f pkg/fix.go", TimeoutMs: 60_000}},
+		setup: func(ws, _ string) {
+			laneGit(t, ws, "commit", "-q", "--allow-empty", "-m", "someone else's work")
+			laneGit(t, ws, "push", "-q", "origin", "HEAD:refs/heads/eng-1-fix-code")
+			existing = laneGit(t, ws, "rev-parse", "HEAD")
+			laneGit(t, ws, "reset", "-q", "--hard", "HEAD^")
+		},
+	})
+	entry := r.waitApproval()
+	assert.ElementsMatch(t, []string{ciFile}, entry.GuardrailLanePaths, "the combined push waits for its approval")
+	rec := r.split()
+	assert.Equal(t, orchestrator.StackSplitCombined, rec.Order)
+	assert.Contains(t, rec.Reason, "eng-1-fix-code already exists on the remote")
+	r.approveAndSettle()
+	assert.Equal(t, existing, r.remoteRef("refs/heads/eng-1-fix-code"), "the existing branch is untouched")
+	assert.NotEmpty(t, r.remoteRef("refs/heads/eng-1-fix"))
+	assert.Equal(t, []string{"eng-1-fix->"}, r.openedPRs())
+}
+
+// The checks in the split's temporary worktrees see what the workspace's
+// hooks.after_create installs (an ignored file standing in for
+// node_modules): without it the code alone would fail and the run would
+// fall back to one PR.
+func TestStackSplitRunsAfterCreateHookInTempWorktrees(t *testing.T) {
+	r := newPatchOutRig(t, patchOutOpts{
+		file: "pkg/fix.go", extra: []string{ciFile}, split: true, human: []string{".github/**"}, completion: "In Review",
+		verify:      []config.VerifyCheck{{Name: "test", Run: "test -f .deps/installed && test -f pkg/fix.go", TimeoutMs: 60_000}},
+		afterCreate: "mkdir -p .deps && touch .deps/installed",
+		setup: func(ws, _ string) {
+			require.NoError(t, os.WriteFile(filepath.Join(ws, ".gitignore"), []byte(".deps/\n"), 0o644))
+			laneGit(t, ws, "add", ".gitignore")
+			laneGit(t, ws, "commit", "-q", "-m", "ignore deps")
+			laneGit(t, ws, "push", "-q", "origin", "HEAD:main")
+			require.NoError(t, os.MkdirAll(filepath.Join(ws, ".deps"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(ws, ".deps", "installed"), nil, 0o644))
+		},
+	})
+	r.waitApproval()
+	rec := r.split()
+	assert.Equal(t, orchestrator.StackSplitCodeFirst, rec.Order, "reason: %s", rec.Reason)
+	assert.NotEmpty(t, r.remoteRef("refs/heads/eng-1-fix-code"))
+}
+
+// The top push is refused, and the agent changes the code again when the
+// run resumes: the lower branch is fast-forwarded from the commit Itervox
+// pushed (never pushed non-fast-forward, never split from scratch), the top
+// is stacked on it, and both pull requests are the ones already open.
+func TestStackSplitResumeFastForwardsLowerBranch(t *testing.T) {
+	r := newPatchOutRig(t, patchOutOpts{
+		file: "pkg/fix.go", extra: []string{ciFile}, split: true, human: []string{".github/**"}, completion: "In Review", rerun: true,
+		verify: []config.VerifyCheck{{Name: "test", Run: "test -f pkg/fix.go", TimeoutMs: 60_000}},
+	})
+	first := r.waitApproval()
+	code1 := r.remoteRef("refs/heads/eng-1-fix-code")
+	require.NotEmpty(t, code1)
+	assert.Equal(t, code1, r.split().LowerSHA)
+	require.NoError(t, r.orch.ProvideInput("ENG-1", "no"))
+
+	var held *orchestrator.InputRequiredEntry
+	require.Eventually(t, func() bool {
+		held = r.orch.Snapshot().InputRequiredIssues["ENG-1"]
+		return held != nil && held.GuardrailApprovalID == ""
+	}, 30*time.Second, 20*time.Millisecond, "the refused top push never held the run")
+	require.NoError(t, r.orch.ProvideInput("ENG-1", "try again"))
+
+	var second *orchestrator.InputRequiredEntry
+	require.Eventually(t, func() bool {
+		second = r.orch.Snapshot().InputRequiredIssues["ENG-1"]
+		return second != nil && second.GuardrailApprovalID != "" && second.GuardrailApprovalID != first.GuardrailApprovalID
+	}, 60*time.Second, 20*time.Millisecond, "the resumed run never reached the top push (the lower branch was not updated)")
+	code2 := r.remoteRef("refs/heads/eng-1-fix-code")
+	require.NotEqual(t, code1, code2, "the new code change reached the lower branch")
+	assert.Equal(t, code1, laneGit(t, r.remote, "rev-parse", code2+"^"), "a fast-forward from the commit Itervox pushed")
+	assert.Equal(t, "change 2", strings.TrimSpace(laneGit(t, r.remote, "show", code2+":pkg/fix.go")))
+	assert.NotContains(t, r.remoteFiles(code2), ciFile)
+	rec := r.split()
+	assert.Equal(t, orchestrator.StackSplitCodeFirst, rec.Order)
+	assert.Equal(t, code2, rec.LowerSHA)
+	assert.Equal(t, 1, rec.LowerPR)
+	assert.Contains(t, rec.Reason, "fast-forwarded")
+
+	r.approveAndSettle()
+	top := r.remoteRef("refs/heads/eng-1-fix")
+	require.NotEmpty(t, top)
+	assert.Equal(t, code2, laneGit(t, r.remote, "rev-parse", top+"^"))
+	assert.Equal(t, []string{"eng-1-fix-code->", "eng-1-fix->eng-1-fix-code"}, r.openedPRs(), "no pull request is opened twice")
 }

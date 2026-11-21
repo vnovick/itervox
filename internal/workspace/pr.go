@@ -84,10 +84,24 @@ func FindOpenPRURL(ctx context.Context, wsPath string) string {
 	if wsPath == "" {
 		return ""
 	}
-	args := []string{"pr", "view"}
 	// Without a branch (not a git checkout, or a detached HEAD) there is no
 	// upstream for gh to follow; its own resolution is used as before.
-	if branch := GetCurrentBranch(ctx, wsPath); branch != "" {
+	return findOpenPRURL(ctx, wsPath, GetCurrentBranch(ctx, wsPath))
+}
+
+// FindOpenPRURLForBranch is the URL of the open pull request whose head is
+// branch, asked from wsPath's repository, or "" (none, no branch, or any
+// error).
+func FindOpenPRURLForBranch(ctx context.Context, wsPath, branch string) string {
+	if wsPath == "" || branch == "" {
+		return ""
+	}
+	return findOpenPRURL(ctx, wsPath, branch)
+}
+
+func findOpenPRURL(ctx context.Context, wsPath, branch string) string {
+	args := []string{"pr", "view"}
+	if branch != "" {
 		args = append(args, branch)
 	}
 	args = append(args, "--json", "url,state", "--jq", `select(.state=="OPEN").url`)

@@ -287,7 +287,20 @@ func sortEntriesByPos(entries []*prEntry) {
 //
 // FetchPRContext is NOT called here — the caller is responsible for enriching
 // the PRContext with diffs after setting up the workspace.
-func Detect(ctx context.Context, issue domain.Issue) (*PRContext, error) {
+//
+// skip, when given, passes over every open pull request whose head branch
+// it reports, as if it were not linked: a stack split's lower pull request
+// (guardrails.lanes.split) names the issue too, yet is never the branch the
+// issue's next run continues.
+func Detect(ctx context.Context, issue domain.Issue, skip ...func(branch string) bool) (*PRContext, error) {
+	skipped := func(branch string) bool {
+		for _, fn := range skip {
+			if fn != nil && fn(branch) {
+				return true
+			}
+		}
+		return false
+	}
 	urls := collectPRURLs(issue)
 	// Iterate in reverse so the most-recently-sourced URL is checked first.
 	for i := len(urls) - 1; i >= 0; i-- {
@@ -297,6 +310,11 @@ func Detect(ctx context.Context, issue domain.Issue) (*PRContext, error) {
 			return nil, nil //nolint:nilerr // best-effort
 		}
 		if pr == nil {
+			continue
+		}
+		if skipped(pr.Branch) {
+			slog.Info("prdetector: passing over a pull request that is not the issue's working branch",
+				"issue_identifier", issue.Identifier, "pr_url", pr.URL, "pr_branch", pr.Branch)
 			continue
 		}
 		if !OwnedByIssue(pr, issue) {
