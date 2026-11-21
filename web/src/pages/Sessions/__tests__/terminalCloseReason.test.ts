@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { TERMINAL_CLOSE_ACCESS_LOST, terminalCloseMessage } from '../terminalCloseReason';
+import {
+  isScopeLossClose,
+  TERMINAL_CLOSE_ACCESS_LOST,
+  terminalCloseMessage,
+} from '../terminalCloseReason';
 
 describe('terminalCloseMessage', () => {
   it('explains each access-lost reason the daemon sends', () => {
@@ -37,5 +41,13 @@ describe('terminalCloseMessage', () => {
   it('is empty for an ordinary close', () => {
     expect(terminalCloseMessage(1000, '')).toBe('');
     expect(terminalCloseMessage(1006, 'token_revoked')).toBe('');
+  });
+});
+
+describe('isScopeLossClose', () => {
+  it('is true only for the access-lost code with the scope reason', () => {
+    expect(isScopeLossClose(TERMINAL_CLOSE_ACCESS_LOST, 'scope_insufficient')).toBe(true);
+    expect(isScopeLossClose(TERMINAL_CLOSE_ACCESS_LOST, 'token_revoked')).toBe(false);
+    expect(isScopeLossClose(1000, 'scope_insufficient')).toBe(false);
   });
 });

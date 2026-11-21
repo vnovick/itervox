@@ -50,3 +50,21 @@ export function terminalCloseMessage(code: number, reason: string): string {
     `The daemon closed this terminal because your access changed${reason ? ` (${reason})` : ''}.`
   );
 }
+
+/** The close reason of a terminal whose token fell below its mode's scope. */
+export const TERMINAL_LOST_SCOPE = 'scope_insufficient';
+
+/**
+ * Whether the daemon closed the terminal because the caller's token no
+ * longer holds the scope the terminal's mode needs. A read-write terminal
+ * closed that way reconnects read-only: the caller scope the dashboard
+ * holds comes from the snapshot stream, fixed when it connected, so it can
+ * still say admin.
+ */
+export function isScopeLossClose(code: number, reason: string): boolean {
+  return code === TERMINAL_CLOSE_ACCESS_LOST && reason === TERMINAL_LOST_SCOPE;
+}
+
+/** The text shown when the daemon refuses a read-write ticket for scope. */
+export const WRITE_TICKET_SCOPE_TEXT =
+  'Your access token no longer allows a read-write terminal. Reconnect for a read-only one.';
