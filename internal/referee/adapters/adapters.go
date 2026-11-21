@@ -32,6 +32,10 @@ type Adapter interface {
 	// Probes are safe commands whose output a behaviour diff compares
 	// between two installed versions. Parsed and validated, not run here.
 	Probes() []Probe
+	// ProbeSetup says what the probes need installed beyond the package's
+	// own files (a native binary an install script downloads), or "" when
+	// an install without scripts is enough.
+	ProbeSetup() string
 	// InstallRoot is the repository-relative directory the tool is
 	// installed in (e.g. node_modules/convex).
 	InstallRoot() string
@@ -128,6 +132,8 @@ type adapter struct {
 	// include reports whether a file (slash path relative to the install
 	// root) is scanned.
 	include func(rel string) bool
+	// probeSetup is ProbeSetup (built-ins that run a native binary).
+	probeSetup string
 	// pattern is nil in word mode; else group 1 is a variable name.
 	pattern *regexp.Regexp
 	detect  func(repo string) bool
@@ -137,6 +143,7 @@ func (a *adapter) Name() string            { return a.name }
 func (a *adapter) Detect(repo string) bool { return a.detect(repo) }
 func (a *adapter) Probes() []Probe         { return slices.Clone(a.probes) }
 func (a *adapter) InstallRoot() string     { return a.install }
+func (a *adapter) ProbeSetup() string      { return a.probeSetup }
 
 func (a *adapter) DeployVar(name string) bool {
 	for _, g := range a.deployVars {

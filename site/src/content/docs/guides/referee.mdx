@@ -200,9 +200,51 @@ The built-in adapters are deliberately small:
 | Adapter | Install root | Deploy-target variables | Probes | Detected by |
 |---|---|---|---|---|
 | `convex` | `node_modules/convex` | `CONVEX_*` | `convex --version`, `convex deploy --help` | a `convex` dependency in `package.json`, or `convex.json` |
+| `inngest` | `node_modules/inngest` | `INNGEST_*` | `inngest-cli --help`, `inngest-cli dev --help` | an `inngest` or `inngest-cli` dependency in `package.json` |
+| `supabase` | `node_modules/supabase` | `SUPABASE_*` | `supabase --version`, `supabase db push --help`, `supabase functions deploy --help` | a `supabase` dependency in `package.json`, or `supabase/config.toml` |
 | `vercel` | `node_modules/vercel` | `VERCEL_*` | `vercel --version`, `vercel deploy --help` | a `vercel` dependency in `package.json`, `vercel.json` or `.vercel/project.json` |
 
 A built-in scans the `.js`, `.cjs` and `.mjs` files under its install root.
+The default probes only print a version or help text: none deploys, pushes a
+migration or sends an event.
+
+Two of them need a note:
+
+- **`inngest`** scans the SDK (`inngest`), not the CLI. The SDK is what
+  reads the event key, the signing keys and the environment and URL
+  variables (`INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`, `INNGEST_ENV`,
+  `INNGEST_BASE_URL` and others) that choose which Inngest environment the
+  app syncs to and sends events to. The probes run the CLI (`inngest-cli`),
+  so they need it installed.
+- **`supabase`** scans the CLI's npm package, but that package installs a
+  native binary, and the binary is what reads `SUPABASE_ACCESS_TOKEN`,
+  `SUPABASE_DB_PASSWORD` and the project settings. A scan of the package
+  sees only its JS files, so a new variable the binary starts to read is not
+  found (see **Limits** below). Detection by `supabase/config.toml` still
+  notes a project that uses the CLI without listing it under `tools:`.
+- **Their probes need install scripts.** Both CLIs are npm wrappers around
+  a native binary that an install script provides. `inngest-cli` downloads
+  it in a `postinstall` script; until then its `bin/inngest` is a
+  placeholder that prints `Inngest CLI binary not found` and exits `1` for
+  every command, on the base install and the head install alike, so the
+  probes would compare two placeholders. `supabase` 2.x downloads its
+  binary in a `postinstall` script too (without it
+  `node_modules/.bin/supabase` names a file that is not there), and 3.x
+  installs it as a per-platform optional dependency, which `--omit=optional`
+  drops. The scan does not need the binary, so `envcheck` can still run
+  after `npm ci --ignore-scripts`, but the job that runs these probes must
+  not skip install scripts: run `npm ci` (with optional dependencies), or
+  after an `--ignore-scripts` install run
+  `npm rebuild --ignore-scripts=false inngest-cli supabase` (or warm up with
+  `npx supabase --version`), in **both** checkouts. `envcheck` prints this
+  under each such tool (`probes: …`, and `probe_setup` in `--json`).
+
+The globs are prefixes on purpose. These tools read their target, keys and
+URLs from variables that share the prefix, and a new version can add one; an
+explicit list would miss exactly the variable this check exists to catch. A
+prefix variable that does not choose a target (a log level, say) is
+classified by mentioning it in the guard, in a comment if need be. To narrow
+a built-in, set `deploy_vars` in its `tools:` entry.
 Any other name under `tools:` is a generic adapter. A tool the repository
 looks like it uses but `tools:` leaves out is printed as a note and does not
 change the exit code.
@@ -238,7 +280,8 @@ outside the install root, or a target chosen in a config file instead of a
 variable. Symlinks below the install root are not followed (a symlinked
 root, as pnpm installs, is). Install scripts run by
 your package manager can change the installed files, so install with
-`--ignore-scripts` before `envcheck` if you can. Treat `envcheck` as a
+`--ignore-scripts` before `envcheck` if you can (the probes of `inngest`
+and `supabase` need those scripts; see above). Treat `envcheck` as a
 tripwire for the common case, not as proof.
 
 Exit `0` when every deploy-target variable is classified (or there is no
@@ -255,8 +298,9 @@ envcheck: 1 unclassified deploy-target variable(s) (policy: .referee.yml@1a2b3c4
   convex: 3 deploy-target variable(s) in node_modules/convex, guard scripts/lib/deploy-target.mjs
 ```
 
-`--json` prints `version` 1 with `tools` (each with its `variables` and
-parsed `probes`), `findings` (`tool`, `variable`, `path`, `line`, `guard`,
+`--json` prints `version` 1 with `tools` (each with its `variables`,
+parsed `probes` and `probe_setup`, empty unless the probes need more than an
+install without scripts), `findings` (`tool`, `variable`, `path`, `line`, `guard`,
 `message`) and `notes`. `GITHUB_STEP_SUMMARY` gets a summary here too.
 
 ### `referee pin`
