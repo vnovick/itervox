@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -113,7 +114,7 @@ func audit(ctx context.Context, dir, base, head string) (auditReport, error) {
 		return auditReport{}, err
 	}
 	rep.Findings = append(rep.Findings, deletedTests(status)...)
-	patch, err := git(ctx, dir, "-c", "core.quotePath=false", "diff", "-U0", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+	patch, err := git(ctx, dir, "-c", "core.quotePath=false", "diff", "-U"+strconv.Itoa(auditContext), "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
 		"--src-prefix=a/", "--dst-prefix=b/", r.MergeBase, r.Head, "--")
 	if err != nil {
 		return auditReport{}, err
@@ -143,19 +144,34 @@ func deletedTests(status []byte) []finding {
 	return out
 }
 
-// hunk is one -U0 hunk's removed and added lines.
+// auditContext is the number of context lines the audit diff carries
+// around each change, so a rule can see what a change sits inside (an
+// array opened a few lines above, an ESLint rules block).
+const auditContext = 20
+
+// hunk is one change: a run of removed and added lines with no unchanged
+// line between them (what a -U0 hunk holds), plus the head-side lines of
+// the diff hunk ahead of it.
 type hunk struct {
 	firstNew       int
 	removed, added []string
+	// before is the head version's lines (context and added) of the same
+	// diff hunk ahead of this change, oldest first: at most auditContext
+	// unchanged lines, plus any earlier changes between them.
+	before []string
 }
 
 var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
 
-// auditPatch applies the line rules and the threshold rule to a -U0 patch.
+// auditPatch applies the line rules and the hunk rules to a patch, with
+// or without context lines.
 func auditPatch(patch []byte) ([]finding, error) {
 	var out []finding
 	var file string
-	var cur *hunk
+	inHunk := false
+	newLine := 0      // the head line number of the next context or added line
+	var head []string // the current diff hunk's head-side lines so far
+	var cur *hunk     // the change being read (nil between changes)
 	flush := func() {
 		if cur != nil && file != "" {
 			for _, rule := range hunkRules {
@@ -164,6 +180,11 @@ func auditPatch(patch []byte) ([]finding, error) {
 		}
 		cur = nil
 	}
+	change := func() {
+		if cur == nil {
+			cur = &hunk{firstNew: newLine, before: slices.Clone(head)}
+		}
+	}
 	sc := bufio.NewScanner(bytes.NewReader(patch))
 	sc.Buffer(make([]byte, 64*1024), 16<<20)
 	for sc.Scan() {
@@ -171,8 +192,8 @@ func auditPatch(patch []byte) ([]finding, error) {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
-			file = ""
-		case cur == nil && strings.HasPrefix(line, "+++ "):
+			file, inHunk = "", false
+		case !inHunk && strings.HasPrefix(line, "+++ "):
 			file = patchPath(strings.TrimPrefix(line, "+++ "))
 		case strings.HasPrefix(line, "@@ "):
 			flush()
@@ -180,14 +201,22 @@ func auditPatch(patch []byte) ([]finding, error) {
 			if m == nil {
 				return nil, fmt.Errorf("unexpected hunk header %q", line)
 			}
-			n, _ := strconv.Atoi(m[1])
-			cur = &hunk{firstNew: n}
-		case cur != nil && strings.HasPrefix(line, "-"):
+			newLine, _ = strconv.Atoi(m[1])
+			head, inHunk = nil, true
+		case inHunk && strings.HasPrefix(line, " "):
+			flush()
+			head = append(head, line[1:])
+			newLine++
+		case inHunk && strings.HasPrefix(line, "-"):
+			change()
 			cur.removed = append(cur.removed, line[1:])
-		case cur != nil && strings.HasPrefix(line, "+"):
+		case inHunk && strings.HasPrefix(line, "+"):
+			change()
 			text := line[1:]
-			lineNo := cur.firstNew + len(cur.added)
+			lineNo := newLine
+			newLine++
 			cur.added = append(cur.added, text)
+			head = append(head, text)
 			if file == "" {
 				continue
 			}

@@ -124,8 +124,10 @@ func stripCommitMessages(line string) string {
 // lint and JS test runner rules (rules_web.go).
 var lineRules = slices.Concat(coreLineRules, webLineRules)
 
-// hunkRules compare one hunk's removed lines with its added lines.
-var hunkRules = []func(p string, h hunk) []finding{lowered, maxWarningsRaised}
+// hunkRules compare one change's removed lines with its added lines, or
+// read its added lines with the lines above them: these, then the web
+// hunk rules (rules_web.go).
+var hunkRules = slices.Concat([]func(p string, h hunk) []finding{lowered}, webHunkRules)
 
 var coreLineRules = []lineRule{
 	{

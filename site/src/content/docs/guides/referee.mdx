@@ -156,17 +156,19 @@ For TypeScript, React, React Native and other JS projects:
 | `ts_strict_off` | `strict`, `noImplicitAny`, `strictNullChecks`, `noEmitOnError`, `checkJs` or another strict-family check set to `false`, or `noCheck` / `allowUnreachableCode` set to `true`, in `tsconfig*.json` / `jsconfig*.json` |
 | `eslint_disable` | `eslint-disable-line` or `eslint-disable-next-line` added |
 | `eslint_disable_file` | `/* eslint-disable */` (with or without rule names) added |
-| `eslint_rule_off` | a rule set to `"off"` or `0` in `.eslintrc*` or `eslint.config.*`: `react-hooks/rules-of-hooks`, `react-hooks/exhaustive-deps`, `@typescript-eslint/no-explicit-any`, `tailwindcss/*` and any other |
-| `eslint_max_warnings` | `eslint --max-warnings` raised, set to `-1`, or dropped from the eslint command, in the same hunk of a script, `package.json` or workflow |
+| `eslint_rule_off` | a rule set to `"off"`, `0` or `[0]` in `.eslintrc*` or `eslint.config.*` (a `0` for any rule inside a `rules` block, core rules such as `semi`, `eqeqeq`, `curly` included, but not an option such as `{ "max": 0 }`): `react-hooks/rules-of-hooks`, `react-hooks/exhaustive-deps`, `@typescript-eslint/no-explicit-any`, `tailwindcss/*` and any other |
+| `eslint_max_warnings` | `eslint --max-warnings` raised, set to `-1`, or dropped from the eslint command, compared with the same `package.json` script (or the same command of the matching script or workflow line); an eslint script or dependency added next to it is not compared |
 | `flow_suppress` | `$FlowFixMe`, `$FlowIgnore`, `$FlowExpectedError`, `$FlowIssue` or `@noflow` added |
 | `check_or_true` | `\|\| true` (or `\|\| exit 0`, `\|\| :`) after eslint, tsc, jest, vitest, `prettier --check`, `npm run lint` and the like in `package.json`, a script, Makefile or hook config |
 | `script_stubbed` | a `package.json` `test`, `lint`, `typecheck` or `check` script set to `true`, `exit 0` or a bare `echo` |
 | `test_pass_with_no_tests` | `--passWithNoTests` or `passWithNoTests: true` added in a script, workflow or Jest/Vitest config |
 | `snapshot_update` | `jest -u`, `--updateSnapshot`, `vitest --update`, `playwright test --update-snapshots` or `--ci=false` added in a workflow, or in `package.json`'s `test` / `test:ci` script |
-| `test_path_ignored` | a test file (`*.test.*`, `*.spec.*`, `__tests__/`) added to `testPathIgnorePatterns`, Vitest's `exclude` or `vitest --exclude` |
+| `test_path_ignored` | a test file (`*.test.*`, `*.spec.*`, `__tests__/`) added to `testPathIgnorePatterns`, Vitest's test `exclude` (not `coverage.exclude`) or `vitest --exclude`, also in a multi-line array and when one entry is added to an existing array |
 
 The suppression rules (`ts_*`, `eslint_disable*`, `flow_suppress`) match
-comments on purpose, so the directive has to open the comment: a mention in
+comments on purpose, so the directive has to open the line's first comment
+(after `//`, `/*` or `{/*`, or start the last line of a block comment, as
+in `   @ts-ignore */`), outside a string literal: a mention in
 prose ("we removed the @ts-ignore") is not flagged. `as any` is not flagged
 (too common to be worth a look one by one); `eslint_rule_off` covers turning
 off `@typescript-eslint/no-explicit-any` instead. Coverage thresholds in

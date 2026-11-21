@@ -2,6 +2,7 @@ package referee
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,13 @@ var webLineCases = []webCase{
 	{"ts_ignore", "docs/typescript.md", `// @ts-ignore`, false},
 	{"ts_ignore", "web/src/a.ts", `// we dropped the @ts-ignore here`, false},
 	{"ts_ignore", "web/src/a.ts", ` * @ts-ignore is banned`, false},
+	{"ts_ignore", "web/src/a.ts", `const s = "// @ts-ignore"`, false},
+	{"ts_ignore", "web/src/a.ts", "const s = `/* @ts-ignore */`", false},
+	{"ts_ignore", "web/src/a.ts", `// see the // @ts-ignore below`, false},
+	{"ts_ignore", "web/src/a.ts", `   @ts-ignore */`, true},
+	{"ts_ignore", "web/src/a.ts", ` * @ts-ignore */`, true},
+	{"ts_ignore", "web/src/a.ts", `const s = 'x'; // @ts-ignore`, true},
+	{"ts_ignore", "web/src/App.tsx", `      <p>Don't</p> {/* @ts-ignore */}`, true},
 	// ts_expect_error
 	{"ts_expect_error", "web/src/a.ts", `  // @ts-expect-error library types are wrong`, true},
 	{"ts_expect_error", "web/src/a.jsx", `{/* @ts-expect-error */}`, true},
@@ -32,11 +40,14 @@ var webLineCases = []webCase{
 	{"ts_expect_error", "web/src/__tests__/a.ts", `  // @ts-expect-error on purpose`, false},
 	{"ts_expect_error", "docs/a.md", `// @ts-expect-error`, false},
 	{"ts_expect_error", "web/src/a.ts", `// prefer @ts-expect-error over ignore`, false},
+	{"ts_expect_error", "web/src/a.ts", `throw new Error('// @ts-expect-error')`, false},
+	{"ts_expect_error", "web/src/a.ts", `     @ts-expect-error wrong upstream types */`, true},
 	// ts_nocheck
 	{"ts_nocheck", "web/src/a.ts", `// @ts-nocheck`, true},
 	{"ts_nocheck", "web/src/a.js", ` * @ts-nocheck`, true},
 	{"ts_nocheck", "README.md", `// @ts-nocheck`, false},
 	{"ts_nocheck", "web/src/a.ts", `// never add @ts-nocheck`, false},
+	{"ts_nocheck", "web/src/a.ts", `log("// @ts-nocheck")`, false},
 	// ts_strict_off
 	{"ts_strict_off", "tsconfig.json", `    "strict": false,`, true},
 	{"ts_strict_off", "web/tsconfig.app.json", `    "noImplicitAny": false`, true},
@@ -56,6 +67,8 @@ var webLineCases = []webCase{
 	{"eslint_disable", "docs/lint.md", `// eslint-disable-next-line`, false},
 	{"eslint_disable", "web/src/a.ts", `// do not add eslint-disable-next-line here`, false},
 	{"eslint_disable", "web/src/a.ts", `/* eslint-disable */`, false},
+	{"eslint_disable", "web/src/a.ts", `// we removed the // eslint-disable-line here`, false},
+	{"eslint_disable", "web/src/a.ts", `const s = "// eslint-disable-next-line"`, false},
 	// eslint_disable_file
 	{"eslint_disable_file", "web/src/a.ts", `/* eslint-disable */`, true},
 	{"eslint_disable_file", "web/src/a.js", `/* eslint-disable react-hooks/rules-of-hooks */`, true},
@@ -64,6 +77,7 @@ var webLineCases = []webCase{
 	{"eslint_disable_file", "web/src/a.ts", `// no /* eslint-disable */ blocks, see CONTRIBUTING`, false},
 	{"eslint_disable_file", "web/src/a.css", `/* eslint-disable */`, false},
 	{"eslint_disable_file", "web/src/a.ts", ` * eslint-disable is banned`, false},
+	{"eslint_disable_file", "web/src/a.ts", `const banner = "/* eslint-disable */"`, false},
 	// eslint_rule_off
 	{"eslint_rule_off", "web/eslint.config.js", `      'react-hooks/rules-of-hooks': 'off',`, true},
 	{"eslint_rule_off", ".eslintrc.json", `    "react-hooks/exhaustive-deps": 0,`, true},
@@ -77,6 +91,9 @@ var webLineCases = []webCase{
 	{"eslint_rule_off", ".eslintrc.yml", `  # tailwindcss/no-custom-classname: off`, false},
 	{"eslint_rule_off", "src/flags.ts", `  'react-hooks/rules-of-hooks': 'off',`, false},
 	{"eslint_rule_off", "eslint.config.js", `      offset: 3,`, false},
+	{"eslint_rule_off", "eslint.config.js", `    rules: { semi: 0, curly: [0] },`, true},
+	{"eslint_rule_off", ".eslintrc.json", `    "max": 0,`, false},
+	{"eslint_rule_off", "eslint.config.js", `    rules: { 'max-len': ['error', { max: 0 }] },`, false},
 	// flow_suppress
 	{"flow_suppress", "app/Screen.js", `  // $FlowFixMe[incompatible-type]`, true},
 	{"flow_suppress", "app/Screen.js", `      {/* $FlowIgnore */}`, true},
@@ -85,6 +102,7 @@ var webLineCases = []webCase{
 	{"flow_suppress", "docs/flow.md", `// $FlowFixMe`, false},
 	{"flow_suppress", "app/Screen.js", `// fixed the old $FlowFixMe`, false},
 	{"flow_suppress", "app/Screen.js", `// @flow`, false},
+	{"flow_suppress", "app/Screen.js", `const s = "// $FlowFixMe"`, false},
 	// check_or_true
 	{"check_or_true", "package.json", `    "lint": "eslint . || true",`, true},
 	{"check_or_true", "package.json", `    "typecheck": "tsc --noEmit || exit 0",`, true},
@@ -138,6 +156,8 @@ var webLineCases = []webCase{
 	{"test_path_ignored", "jest.config.js", `  // testPathIgnorePatterns: ['a\\.test\\.ts'],`, false},
 	{"test_path_ignored", "tsconfig.json", `  "exclude": ["src/flaky.test.ts"],`, false},
 	{"test_path_ignored", "src/config.ts", `  testPathIgnorePatterns: ['a.test.ts'],`, false},
+	{"test_path_ignored", "web/vitest.config.ts", `    coverage: { exclude: ['src/flaky.test.ts'] },`, false},
+	{"test_path_ignored", "web/vitest.config.ts", `    coverage: { provider: 'v8', exclude: ['src/main.test.tsx'] }, exclude: ['src/b.test.ts'],`, true},
 }
 
 // TestAuditWebLineRules: each case is an added line.
@@ -313,4 +333,293 @@ func TestAuditWebRulesOnRepo(t *testing.T) {
 	assert.Equal(t, 1, got["ts_ignore"].Line)
 	assert.Equal(t, "tsconfig.json", got["ts_strict_off"].Path)
 	assert.Equal(t, 3, got["ts_strict_off"].Line)
+}
+
+// ctxPatch is a patch of one hunk whose lines carry their own diff
+// prefix: ' ' context, '-' removed, '+' added (as `git diff -U<n>`
+// writes them).
+func ctxPatch(path string, lines ...string) []byte {
+	s := fmt.Sprintf("diff --git a/%s b/%s\nindex 1111111..2222222 100644\n--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n", path, path, path, path)
+	for _, l := range lines {
+		s += l + "\n"
+	}
+	return []byte(s)
+}
+
+type ruleHit struct {
+	line int
+	msg  string
+}
+
+func hitsOf(t *testing.T, patch []byte, rule string) []ruleHit {
+	t.Helper()
+	found, err := auditPatch(patch)
+	require.NoError(t, err)
+	var out []ruleHit
+	for _, f := range found {
+		if f.Rule == rule {
+			out = append(out, ruleHit{f.Line, f.Message})
+		}
+	}
+	return out
+}
+
+// TestAuditMaxWarningsPairsByCommand: each removed --max-warnings is
+// compared with the same package.json script (or the same command of the
+// matching script line), so an unrelated eslint line added in the same
+// hunk (a new script, a dependency) is not "--max-warnings removed", and
+// every removed value is compared, not only the first.
+func TestAuditMaxWarningsPairsByCommand(t *testing.T) {
+	cases := []struct {
+		name, path     string
+		removed, added []string
+		want           []ruleHit
+	}{
+		{"new script after a comma-only change", "package.json",
+			[]string{`    "lint": "eslint . --max-warnings 0"`},
+			[]string{`    "lint": "eslint . --max-warnings 0",`, `    "lint:fix": "eslint . --fix"`}, nil},
+		{"dependency line", "package.json",
+			[]string{`    "lint": "eslint . --max-warnings 0"`},
+			[]string{`    "lint": "eslint . --max-warnings 0",`, `    "eslint-plugin-react": "^7.37.0"`}, nil},
+		{"second removed value", "package.json",
+			[]string{`    "lint": "eslint src --max-warnings 0",`, `    "lint:ci": "eslint . --max-warnings 0"`},
+			[]string{`    "lint": "eslint src --max-warnings 0",`, `    "lint:ci": "eslint . --max-warnings 30"`},
+			[]ruleHit{{2, "eslint --max-warnings raised from 0 to 30"}}},
+		{"removed from its own script", "package.json",
+			[]string{`    "lint": "eslint . --max-warnings 0",`, `    "test": "vitest run"`},
+			[]string{`    "test": "vitest run",`, `    "lint": "eslint ."`},
+			[]ruleHit{{2, "eslint --max-warnings 0 removed: warnings no longer fail the run"}}},
+		{"second command of a line", "scripts/lint.sh",
+			[]string{`eslint web --max-warnings 0 && eslint docs --max-warnings 5`},
+			[]string{`eslint web --max-warnings 0 && eslint docs --max-warnings 50`},
+			[]ruleHit{{1, "eslint --max-warnings raised from 5 to 50"}}},
+		{"another eslint line added before", ".github/workflows/ci.yml",
+			[]string{`      - run: npx eslint . --max-warnings 0`},
+			[]string{`      - run: npx eslint --fix scripts/`, `      - run: npx eslint . --max-warnings 0 --cache`}, nil},
+		{"dropped on the matching line", ".github/workflows/ci.yml",
+			[]string{`      - run: npx eslint . --max-warnings 0`},
+			[]string{`      - run: npx prettier --check .`, `      - run: npx eslint .`},
+			[]ruleHit{{2, "eslint --max-warnings 0 removed: warnings no longer fail the run"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, hitsOf(t, onePatch(c.path, c.removed, c.added), "eslint_max_warnings"))
+		})
+	}
+}
+
+// TestAuditMaxWarningsCommaChangeOnRepo: on a real repository, adding a
+// "lint:fix" script after the lint script (only a comma added to the lint
+// line) and an eslint plugin dependency has no finding and exits 0;
+// raising the flag exits 20 at the lint line.
+func TestAuditMaxWarningsCommaChangeOnRepo(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit("base", map[string]string{
+		"package.json": "{\n  \"scripts\": {\n    \"lint\": \"eslint . --max-warnings 0\"\n  },\n  \"devDependencies\": {\n    \"eslint\": \"^9.0.0\"\n  }\n}\n",
+	})
+	r.git("checkout", "-q", "-b", "fix-script")
+	r.commit("lint:fix", map[string]string{
+		"package.json": "{\n  \"scripts\": {\n    \"lint\": \"eslint . --max-warnings 0\",\n    \"lint:fix\": \"eslint . --fix\"\n  },\n  \"devDependencies\": {\n    \"eslint\": \"^9.0.0\",\n    \"eslint-plugin-react\": \"^7.37.0\"\n  }\n}\n",
+	})
+	code, out, errOut := referee(t, nil, "audit", "--dir", r.dir, "--base", "main")
+	assert.Equal(t, 0, code, out+errOut)
+
+	r.git("checkout", "-q", "-b", "raise", "main")
+	r.commit("raise", map[string]string{
+		"package.json": "{\n  \"scripts\": {\n    \"lint\": \"eslint . --max-warnings 40\",\n    \"lint:fix\": \"eslint . --fix\"\n  },\n  \"devDependencies\": {\n    \"eslint\": \"^9.0.0\"\n  }\n}\n",
+	})
+	code, out, errOut = referee(t, nil, "audit", "--dir", r.dir, "--base", "main", "--json")
+	require.Equal(t, 20, code, out+errOut)
+	var rep auditReport
+	require.NoError(t, json.Unmarshal([]byte(out), &rep))
+	require.Len(t, rep.Findings, 1, "%+v", rep.Findings)
+	assert.Equal(t, "eslint_max_warnings", rep.Findings[0].Rule)
+	assert.Equal(t, 3, rep.Findings[0].Line)
+}
+
+// TestAuditTestPathIgnoredMultiLine: the multi-line array form (as
+// Prettier writes it) of testPathIgnorePatterns and of Vitest's test
+// exclude, including one entry added to an existing array (its opener is
+// a context line), and never coverage.exclude.
+func TestAuditTestPathIgnoredMultiLine(t *testing.T) {
+	cases := []struct {
+		name, path string
+		lines      []string
+		want       []int
+	}{
+		{"new jest array", "jest.config.js", []string{
+			"+  testPathIgnorePatterns: [",
+			"+    '/node_modules/',",
+			`+    'src/flaky\\.test\\.ts',`,
+			"+  ],",
+		}, []int{3}},
+		{"entry added to a jest array", "jest.config.js", []string{
+			" module.exports = {",
+			"   testPathIgnorePatterns: [",
+			"     '/node_modules/',",
+			"+    '<rootDir>/src/__tests__/slow',",
+			"   ],",
+		}, []int{4}},
+		{"package.json jest key", "package.json", []string{
+			`   "jest": {`,
+			`     "testPathIgnorePatterns": [`,
+			`-      "/node_modules/"`,
+			`+      "/node_modules/",`,
+			`+      "checkout\\.spec\\.ts"`,
+			`     ]`,
+		}, []int{4}},
+		{"directory entry", "jest.config.js", []string{
+			"   testPathIgnorePatterns: [",
+			"+    '/e2e/',",
+			"   ],",
+		}, nil},
+		{"after the array closes", "jest.config.js", []string{
+			"   testPathIgnorePatterns: ['/node_modules/'],",
+			"+  testMatch: ['**/*.test.ts'],",
+		}, nil},
+		{"vitest test exclude", "web/vitest.config.ts", []string{
+			" export default defineConfig({",
+			"   test: {",
+			"     exclude: [",
+			"       ...configDefaults.exclude,",
+			"+      'src/flaky.test.ts',",
+			"     ],",
+		}, []int{5}},
+		{"vitest coverage exclude", "web/vitest.config.ts", []string{
+			"   test: {",
+			"     coverage: {",
+			"       provider: 'v8',",
+			"       exclude: [",
+			"+        'src/main.test.tsx',",
+			"+        'src/__tests__/fixtures/data.ts',",
+			"       ],",
+			"     },",
+		}, nil},
+		{"test exclude after the coverage block", "web/vitest.config.ts", []string{
+			"   test: {",
+			"     coverage: {",
+			"       exclude: ['src/main.tsx'],",
+			"     },",
+			"+    exclude: [",
+			"+      'src/flaky.test.ts',",
+			"+    ],",
+		}, []int{6}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var lines []int
+			for _, h := range hitsOf(t, ctxPatch(c.path, c.lines...), "test_path_ignored") {
+				lines = append(lines, h.line)
+			}
+			assert.Equal(t, c.want, lines)
+		})
+	}
+}
+
+// TestAuditTestPathIgnoredOnRepo: one test file added to Vitest's
+// multi-line test exclude on a real repository (git's context lines carry
+// the opener) exits 20 at that line; one added to coverage.exclude exits 0.
+func TestAuditTestPathIgnoredOnRepo(t *testing.T) {
+	r := newTestRepo(t)
+	base := "import { defineConfig } from 'vitest/config';\n\nexport default defineConfig({\n  test: {\n    exclude: [\n      'node_modules',\n%s    ],\n    coverage: {\n      exclude: [\n        'src/main.tsx',\n%s      ],\n    },\n  },\n});\n"
+	r.commit("base", map[string]string{"vitest.config.ts": fmt.Sprintf(base, "", "")})
+	r.git("checkout", "-q", "-b", "coverage-only")
+	r.commit("coverage", map[string]string{"vitest.config.ts": fmt.Sprintf(base, "", "        'src/main.test.tsx',\n")})
+	code, out, errOut := referee(t, nil, "audit", "--dir", r.dir, "--base", "main")
+	assert.Equal(t, 0, code, out+errOut)
+
+	r.git("checkout", "-q", "-b", "exclude", "main")
+	r.commit("exclude", map[string]string{"vitest.config.ts": fmt.Sprintf(base, "      'src/flaky.test.ts',\n", "")})
+	code, out, errOut = referee(t, nil, "audit", "--dir", r.dir, "--base", "main", "--json")
+	require.Equal(t, 20, code, out+errOut)
+	var rep auditReport
+	require.NoError(t, json.Unmarshal([]byte(out), &rep))
+	require.Len(t, rep.Findings, 1, "%+v", rep.Findings)
+	assert.Equal(t, finding{Rule: "test_path_ignored", Path: "vitest.config.ts", Line: 7, Message: rep.Findings[0].Message, Text: "      'src/flaky.test.ts',"}, rep.Findings[0])
+}
+
+// TestAuditESLintRuleZeroInRulesBlock: 0 / [0] turns any rule off inside a
+// rules block (core rules such as semi, eqeqeq, curly included), tracked
+// across the hunk's lines; an option such as { max: 0 } and a 0 outside
+// a rules block are not rules.
+func TestAuditESLintRuleZeroInRulesBlock(t *testing.T) {
+	cases := []struct {
+		name, path string
+		lines      []string
+		want       []int
+	}{
+		{"new rules block", "eslint.config.js", []string{
+			"+  {",
+			"+    rules: {",
+			"+      semi: 0,",
+			"+      eqeqeq: 0,",
+			"+      curly: [0],",
+			"+      'no-multiple-empty-lines': ['error', { max: 0 }],",
+			"+      'max-len': ['error', {",
+			"+        code: 0,",
+			"+      }],",
+			"+      quotes: [",
+			"+        0,",
+			"+      ],",
+			"+    },",
+			"+  },",
+		}, []int{3, 4, 5, 11}},
+		{"json rule in an existing block", ".eslintrc.json", []string{
+			` {`,
+			`   "rules": {`,
+			`-    "semi": 2,`,
+			`+    "semi": 0,`,
+			`     "eqeqeq": "error"`,
+		}, []int{3}},
+		{"plugin rule reported once", ".eslintrc.json", []string{
+			`   "rules": {`,
+			`+    "react-hooks/exhaustive-deps": 0,`,
+		}, []int{2}},
+		{"yaml", ".eslintrc.yml", []string{
+			" rules:",
+			"+  semi: 0",
+			"+  curly: [0]",
+			"+  max-len: [error, {code: 0}]",
+		}, []int{2, 3}},
+		{"yaml overrides item", ".eslintrc.yaml", []string{
+			" overrides:",
+			"   - files: ['*.ts']",
+			"     rules:",
+			"+      eqeqeq: 0",
+			"+  - files: ['*.js']",
+			"+    retries: 0",
+		}, []int{4}},
+		{"outside a rules block", "eslint.config.js", []string{
+			"   settings: {",
+			"+    retries: 0,",
+			"   },",
+			"+  languageOptions: { ecmaVersion: 0 },",
+		}, nil},
+		{"commented out", "eslint.config.js", []string{
+			"   rules: {",
+			"+    // semi: 0,",
+			"+    /* eqeqeq: 0, */",
+		}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var lines []int
+			for _, h := range hitsOf(t, ctxPatch(c.path, c.lines...), "eslint_rule_off") {
+				lines = append(lines, h.line)
+			}
+			assert.Equal(t, c.want, lines)
+		})
+	}
+}
+
+// TestAuditContextLinesKeepLineNumbers: context lines count in the head
+// version's line numbers and are never findings themselves, and a "+++"
+// line inside a hunk is an added line, not a file header.
+func TestAuditContextLinesKeepLineNumbers(t *testing.T) {
+	patch := []byte("diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -10,4 +10,6 @@\n // @ts-ignore\n-const a = 1;\n+// @ts-ignore\n+const a = 1;\n const b = 2;\n+++ x // @ts-nocheck\n")
+	found, err := auditPatch(patch)
+	require.NoError(t, err)
+	require.Len(t, found, 2, "%+v", found)
+	assert.Equal(t, finding{Rule: "ts_ignore", Path: "src/a.ts", Line: 11, Message: found[0].Message, Text: "// @ts-ignore"}, found[0])
+	assert.Equal(t, finding{Rule: "ts_nocheck", Path: "src/a.ts", Line: 14, Message: found[1].Message, Text: "++ x // @ts-nocheck"}, found[1])
 }
