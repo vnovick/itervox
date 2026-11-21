@@ -67,7 +67,8 @@ type storedTokenSpec struct {
 	actor string // the audit actor of create / revoke
 	label string // the client, in log lines
 	// kind is the token's apitokens Kind ("" or apitokens.KindHub); a
-	// remembered token of another kind is replaced.
+	// remembered token of another kind is replaced, one with no kind is
+	// re-stamped.
 	kind string
 }
 
@@ -75,7 +76,9 @@ type storedTokenSpec struct {
 // scope, creating one through the project's token store and remembering it
 // in .itervox/<spec.file> (mode 0600) when there is no usable one. A
 // remembered token that was revoked, expired, rotated or has another scope
-// or kind is replaced, the old one revoked when it is still stored. The
+// or kind is replaced, the old one revoked when it is still stored; one
+// whose kind is only missing (dropped by an older member's rewrite) gets
+// its kind back (apitokens.Store.SetKind) and keeps its secret. The
 // secret is never printed or logged.
 func ensureStoredToken(workflowPath string, spec storedTokenSpec, scope apitokens.Scope) (secret string, created bool, err error) {
 	store := apitokens.Open(apitokens.Path(workflowPath))
@@ -97,9 +100,31 @@ func ensureStoredToken(workflowPath string, spec storedTokenSpec, scope apitoken
 	stored := slices.IndexFunc(tokens, func(t apitokens.Token) bool { return old.ID != "" && t.ID == old.ID })
 	if stored >= 0 {
 		t := tokens[stored]
-		if old.Scope == scope && t.Scope == scope && t.Kind == spec.kind && !t.Expired(time.Now()) &&
-			t.Hash == apitokens.HashSecret(old.Secret) {
+		usable := old.Scope == scope && t.Scope == scope && !t.Expired(time.Now()) &&
+			t.Hash == apitokens.HashSecret(old.Secret)
+		if usable && t.Kind == spec.kind {
 			return old.Secret, false, nil
+		}
+		// Our own token (its secret is the one remembered) with its kind
+		// missing: a member on an older binary rewrote tokens.json (every
+		// lastUsed flush, create or revoke) and dropped the field it does
+		// not know. Re-stamp the kind and keep the secret: replacing the
+		// token would revoke the old one and close every open terminal it
+		// carries, again after every such rewrite. Hub attribution (the
+		// caller header a member trusts only on a KindHub token) needs the
+		// member on a binary that keeps the field.
+		if usable && t.Kind == "" && spec.kind != "" {
+			_, err := store.SetKind(t.ID, spec.kind, spec.actor)
+			switch {
+			case err == nil:
+				return old.Secret, false, nil
+			case !errors.Is(err, apitokens.ErrNotFound):
+				// The secret still works; only attribution waits for the
+				// next attempt.
+				slog.Warn(spec.label+": could not restore the stored token's kind", "id", t.ID, "error", err)
+				return old.Secret, false, nil
+			}
+			stored = -1 // revoked meanwhile: create a new one, nothing to revoke
 		}
 	}
 	var t apitokens.Token

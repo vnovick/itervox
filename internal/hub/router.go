@@ -54,6 +54,9 @@ type Hub struct {
 	terminals       *hubTerminalTickets
 	terminalsOpen   atomic.Int32
 	terminalRecheck time.Duration
+	// terminalChecked, when set (tests only), runs after each passing
+	// access check of an open pass-through, before its watcher waits again.
+	terminalChecked func()
 	life            context.Context
 	endLife         context.CancelFunc
 }

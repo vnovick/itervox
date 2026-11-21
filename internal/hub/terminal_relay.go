@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // The pass-through's frame relay (terminal.go). The hub parses every frame
@@ -67,6 +68,9 @@ func readWSFrame(r *bufio.Reader, masked bool, limit int) (wsFrame, error) {
 	if hdr[0]&0x70 != 0 || (hdr[1]&0x80 != 0) != masked {
 		return wsFrame{}, errBadFrame // reserved bits, or the wrong masking
 	}
+	if f.opcode >= wsOpClose && !f.fin {
+		return wsFrame{}, errBadFrame // a fragmented control frame (RFC 6455 5.5)
+	}
 	raw := append(make([]byte, 0, 14), hdr[:]...)
 	n := uint64(hdr[1] & 0x7f)
 	switch n {
@@ -110,11 +114,26 @@ func readWSFrame(r *bufio.Reader, masked bool, limit int) (wsFrame, error) {
 	return f, nil
 }
 
+// maxCloseReason is the longest close reason a close frame carries: a
+// control frame's payload is at most 125 bytes, two of them the code.
+const maxCloseReason = 123
+
+// truncateCloseReason cuts reason to at most maxCloseReason bytes at a
+// UTF-8 boundary (a close reason must be valid UTF-8, RFC 6455 5.5.1).
+func truncateCloseReason(reason string) string {
+	if len(reason) <= maxCloseReason {
+		return reason
+	}
+	n := maxCloseReason
+	for n > 0 && !utf8.RuneStart(reason[n]) {
+		n--
+	}
+	return reason[:n]
+}
+
 // closeFrame is an unmasked (server → browser) close frame.
 func closeFrame(code uint16, reason string) []byte {
-	if len(reason) > 123 {
-		reason = reason[:123]
-	}
+	reason = truncateCloseReason(reason)
 	b := []byte{0x80 | wsOpClose, byte(2 + len(reason)), 0, 0}
 	binary.BigEndian.PutUint16(b[2:], code)
 	return append(b, reason...)
@@ -127,9 +146,12 @@ type terminalRelay struct {
 	member   net.Conn
 	memberR  *bufio.Reader
 
-	wmu  sync.Mutex // browser writes: whole frames only
-	done chan struct{}
-	once sync.Once
+	wmu sync.Mutex // browser writes: whole frames only
+	// closed is set, under wmu, once a close frame went to the browser:
+	// nothing is written after it (RFC 6455 5.5.1).
+	closed bool
+	done   chan struct{}
+	once   sync.Once
 }
 
 func newTerminalRelay(browser net.Conn, br *bufio.Reader, member net.Conn, mr *bufio.Reader) *terminalRelay {
@@ -147,12 +169,28 @@ func (rl *terminalRelay) end() {
 
 // toBrowser writes one whole frame to the browser.
 func (rl *terminalRelay) toBrowser(frame []byte) error {
+	return rl.writeBrowser(frame, false)
+}
+
+// closeBrowser writes the browser's close frame: the last frame it gets,
+// so a member frame read meanwhile is never written after it.
+func (rl *terminalRelay) closeBrowser(frame []byte) error {
+	return rl.writeBrowser(frame, true)
+}
+
+func (rl *terminalRelay) writeBrowser(frame []byte, last bool) error {
 	rl.wmu.Lock()
 	defer rl.wmu.Unlock()
+	if rl.closed {
+		return net.ErrClosed
+	}
 	select {
 	case <-rl.done:
 		return net.ErrClosed
 	default:
+	}
+	if last {
+		rl.closed = true
 	}
 	_ = rl.browser.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_, err := rl.browser.Write(frame)
@@ -161,7 +199,7 @@ func (rl *terminalRelay) toBrowser(frame []byte) error {
 
 // revoke closes the browser's socket with 4403 and reason, then ends.
 func (rl *terminalRelay) revoke(reason string) {
-	_ = rl.toBrowser(closeFrame(terminalCloseAccessLost, reason))
+	_ = rl.closeBrowser(closeFrame(terminalCloseAccessLost, reason))
 	rl.end()
 }
 
@@ -195,7 +233,7 @@ func (rl *terminalRelay) memberToBrowser() {
 			if len(f.payload) >= 2 && binary.BigEndian.Uint16(f.payload) == terminalCloseAccessLost {
 				out = closeFrame(terminalCloseAccessLost, "member_"+string(f.payload[2:]))
 			}
-			_ = rl.toBrowser(out)
+			_ = rl.closeBrowser(out)
 			return
 		}
 		if rl.toBrowser(f.raw) != nil {
@@ -222,6 +260,9 @@ func (rl *terminalRelay) browserToMember() {
 		forward := false
 		switch {
 		case f.opcode == wsOpClose:
+			// A fresh, short deadline: the last resize's may have passed,
+			// and a member that stopped reading must not hold the close.
+			_ = rl.member.SetWriteDeadline(time.Now().Add(time.Second))
 			_, _ = rl.member.Write(f.raw)
 			return
 		case f.opcode == wsOpPing || f.opcode == wsOpPong:
@@ -256,6 +297,21 @@ func (h *Hub) watchTerminalAccess(ctx context.Context, t hubTerminalTicket, rl *
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
+		// The next change signal is taken BEFORE the check: a revoke that
+		// lands while the check reads the store fires this channel, where
+		// taking it after the check would miss that revoke until the next
+		// tick. The first pass also covers a change between the socket's
+		// redeem and this watcher starting.
+		changed := h.tokens.Changed()
+		if reason := h.terminalAccessLost(t); reason != "" {
+			slog.Info("hub: live terminal closed: the hub token lost access", "project", t.project,
+				"session_id", t.sessionID, "caller", t.caller.Name, "reason", reason)
+			rl.revoke(reason)
+			return
+		}
+		if h.terminalChecked != nil {
+			h.terminalChecked()
+		}
 		select {
 		case <-rl.done:
 			return
@@ -264,13 +320,7 @@ func (h *Hub) watchTerminalAccess(ctx context.Context, t hubTerminalTicket, rl *
 		case <-h.life.Done():
 			return
 		case <-tick.C:
-		case <-h.tokens.Changed():
-		}
-		if reason := h.terminalAccessLost(t); reason != "" {
-			slog.Info("hub: live terminal closed: the hub token lost access", "project", t.project,
-				"session_id", t.sessionID, "caller", t.caller.Name, "reason", reason)
-			rl.revoke(reason)
-			return
+		case <-changed:
 		}
 	}
 }

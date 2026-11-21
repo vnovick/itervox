@@ -214,3 +214,41 @@ func TestCreateKindMarksTheHubToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, KindHub, rotated.Kind, "rotation keeps the kind")
 }
+
+// TestSetKindRestampsAKindlessTokenAndKeepsItsSecret: SetKind restores
+// KindHub on a token whose kind a rewrite dropped, keeping its id, secret
+// and scope; it leaves a token already of that kind alone, and refuses
+// another kind already set, an unknown kind and an unknown id.
+func TestSetKindRestampsAKindlessTokenAndKeepsItsSecret(t *testing.T) {
+	s := tempStore(t)
+	tok, secret, err := s.Create("hub-operator", ScopeOperator, nil, "test")
+	require.NoError(t, err)
+	require.Empty(t, tok.Kind)
+
+	got, err := s.SetKind(tok.ID, KindHub, "test")
+	require.NoError(t, err)
+	assert.Equal(t, KindHub, got.Kind)
+	assert.Equal(t, tok.Hash, got.Hash)
+	assert.Equal(t, tok.Scope, got.Scope)
+	read, ok := Open(s.FilePath()).Authenticate(secret)
+	require.True(t, ok, "the same secret still authenticates")
+	assert.Equal(t, tok.ID, read.ID)
+	assert.Equal(t, KindHub, read.Kind, "read back from the file")
+
+	again, err := s.SetKind(tok.ID, KindHub, "test")
+	require.NoError(t, err)
+	assert.Equal(t, KindHub, again.Kind)
+
+	_, err = s.SetKind(tok.ID, "other", "test")
+	require.Error(t, err)
+	_, err = s.SetKind("nope", KindHub, "test")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// A kind other than the one asked for is never overwritten.
+	require.NoError(t, s.mutate(func(tokens []Token) ([]Token, error) {
+		tokens[0].Kind = "future"
+		return tokens, nil
+	}))
+	_, err = s.SetKind(tok.ID, KindHub, "test")
+	assert.ErrorIs(t, err, ErrKindConflict)
+}

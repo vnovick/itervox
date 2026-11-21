@@ -312,7 +312,9 @@ only the event loop mutates them.
   daemon writes nothing to it. Through the hub the terminal is READ-ONLY and
   brokered (`internal/hub/terminal*.go`, `internal/server/terminal_hub.go`):
   the hub mints a read ticket with its operator member token, which is
-  marked `apitokens.KindHub` (set only at hub enrolment); the member trusts
+  marked `apitokens.KindHub` (set only at hub enrolment: `CreateKind`, and
+  `SetKind` to re-stamp a mark an older member's rewrite dropped, keeping
+  the secret — never replace the token for a missing kind); the member trusts
   the caller header (`X-Itervox-Hub-Caller`) only on a KindHub token, never
   issues one a write ticket, and names the person (`hub:<name>`). The hub
   checks the socket's Origin itself, dials the member with no browser

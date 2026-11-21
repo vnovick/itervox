@@ -192,6 +192,14 @@ The project's event feed records the attach as `terminal_attached` with
 `via: hub:<your hub token's name>`, and its log line names the hub's
 member token too.
 
+That attribution needs the project's daemon on this version or later. A
+project still on an older itervox does not know the mark: it drops it each
+time it rewrites `tokens.json` (every lastUsed update, token create or
+revoke), and records hub attaches under the `hub-operator` token's name
+instead. The hub puts the mark back on its own token the next time it looks
+the token up (it keeps the same secret, so no open terminal closes), and
+once the project is upgraded the mark stays.
+
 An open terminal ends (WebSocket close code `4403`, and the panel says why)
 when:
 

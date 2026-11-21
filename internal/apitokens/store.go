@@ -405,6 +405,48 @@ func (s *Store) CreateKind(name string, scope Scope, kind, actor string) (Token,
 	return s.create(name, scope, nil, kind, actor)
 }
 
+// ErrKindConflict is SetKind on a token that already carries another kind.
+var ErrKindConflict = errors.New("apitokens: the token already has another kind")
+
+// SetKind stamps kind (KindHub) on the token with id, keeping its secret,
+// scope, expiry and lastUsed. It restores the kind a member on an older
+// binary dropped when it rewrote tokens.json (lastUsed flushes, creates,
+// revokes): that binary does not know the field. Only itervox's own
+// enrolment path calls it (cmd/itervox ensureStoredToken, for a token whose
+// secret it remembers); no API or CLI path does. A token that already has
+// kind is left as it is; one of another kind is ErrKindConflict.
+func (s *Store) SetKind(id, kind, actor string) (Token, error) {
+	if kind != KindHub {
+		return Token{}, fmt.Errorf("apitokens: unknown token kind %q", kind)
+	}
+	var stamped Token
+	changed := false
+	err := s.mutate(func(tokens []Token) ([]Token, error) {
+		i := slices.IndexFunc(tokens, func(t Token) bool { return t.ID == id })
+		if i < 0 {
+			return nil, ErrNotFound
+		}
+		switch tokens[i].Kind {
+		case kind:
+		case "":
+			tokens[i].Kind = kind
+			changed = true
+		default:
+			return nil, ErrKindConflict
+		}
+		stamped = tokens[i]
+		return tokens, nil
+	})
+	if err != nil {
+		return Token{}, err
+	}
+	if changed {
+		slog.Info("apitokens: token kind restored", "id", stamped.ID, "name", stamped.Name,
+			"kind", stamped.Kind, "actor", actor)
+	}
+	return stamped, nil
+}
+
 func (s *Store) create(name string, scope Scope, expires *time.Time, kind, actor string) (Token, string, error) {
 	name = strings.TrimSpace(name)
 	if err := validateName(name); err != nil {
