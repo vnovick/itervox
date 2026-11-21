@@ -25,12 +25,23 @@ const (
 	probeWaitDelay = 2 * time.Second
 )
 
-// probeIdleWindow is how long a running probe may print nothing before it
-// is taken to be waiting for input: its stdin is an open pipe nobody ever
-// writes to, so a tool that asks a question blocks reading it. The probe's
-// process group is then killed and the run recorded as waiting_for_input,
-// well before the per-probe timeout. A variable so tests can shorten it.
-var probeIdleWindow = 3 * time.Second
+// defaultProbeIdle is how long a running probe that has printed something
+// may then print nothing before it is taken to be waiting for input (the
+// --idle flag): its stdin is an open pipe nobody ever writes to, so a tool
+// that asks a question blocks reading it. The probe's process group is then
+// killed and the run recorded as waiting_for_input, well before the
+// per-probe timeout. The window starts only at the first byte of output: a
+// tool that is slow to start (loading, compiling, a cold cache) is not
+// waiting for anything yet. One that never prints runs to the timeout.
+const defaultProbeIdle = 3 * time.Second
+
+// Exit codes a shell or exec wrapper (env, a #! line through env) uses for
+// a program it could not run: 126 found but not executable, 127 not found
+// (a missing interpreter such as node, or a missing native binary).
+const (
+	exitCannotExecute = 126
+	exitNotFound      = 127
+)
 
 // noOutputPrompt stands for the prompt of a probe that waited for input
 // without printing anything.
@@ -41,10 +52,12 @@ type probeRun struct {
 	Executable string `json:"executable"` // checkout-relative
 	ExitCode   int    `json:"exit_code"`  // -1 when killed (a timeout, or waiting for input)
 	TimedOut   bool   `json:"timed_out"`
-	// WaitingForInput: the probe was still running and had printed nothing
-	// for the idle window, blocked on its stdin (a pipe never written to),
-	// so its process group was killed. Prompt is its last non-empty output
-	// line (normalised and redacted), the question it was waiting on.
+	// WaitingForInput: the probe was still running and, after printing
+	// something, had printed nothing for the idle window, blocked on its
+	// stdin (a pipe never written to), so its process group was killed; or
+	// it printed nothing at all until the timeout killed it (then TimedOut
+	// is set too). Prompt is its last non-empty output line (normalised and
+	// redacted), the question it was waiting on, or noOutputPrompt.
 	WaitingForInput bool   `json:"waiting_for_input"`
 	Prompt          string `json:"prompt"`
 	LeftRunning     bool   `json:"left_running"` // it exited but left a process holding its output
@@ -147,14 +160,17 @@ func envNames(env []string) []string {
 // to and closes only after the probe exited or was killed: a prompt is
 // neither answered nor given end of input, so a tool that asks a question
 // is seen waiting for the answer. A probe that is still running and has
-// printed nothing for probeIdleWindow is taken to be waiting for input: its
-// process group is killed and the run marked WaitingForInput. The timeout
-// still bounds a probe that keeps printing. An error is a run that could
-// not happen at all (it never started, or ctx ended).
+// printed something and then nothing for idle is taken to be waiting for
+// input: its process group is killed and the run marked WaitingForInput.
+// The timeout bounds a probe that keeps printing, and one that never
+// prints (then marked both TimedOut and WaitingForInput). An error is a run
+// that could not happen at all: it never started, ctx ended, or the
+// program could not be executed (exit 126 or 127, so a missing interpreter
+// or native binary is never compared as if it were the tool's behaviour).
 //
 // The output is normalised with paths (the checkout's) plus the run's own
 // HOME as placeholders.
-func runProbe(ctx context.Context, checkout, exe string, argv []string, timeout time.Duration, deployVar func(string) bool, paths []pathPlaceholder) (probeRun, error) {
+func runProbe(ctx context.Context, checkout, exe string, argv []string, timeout, idle time.Duration, deployVar func(string) bool, paths []pathPlaceholder) (probeRun, error) {
 	home, err := os.MkdirTemp("", "referee-diff-home-")
 	if err != nil {
 		return probeRun{}, err
@@ -176,8 +192,8 @@ func runProbe(ctx context.Context, checkout, exe string, argv []string, timeout 
 		return probeRun{}, fmt.Errorf("stdin pipe for %s: %w", strings.Join(argv, " "), err)
 	}
 	defer func() { _ = stdin.Close() }()
-	idle := &idleKill{}
-	out := &cappedOutput{max: maxProbeOutput, onWrite: idle.reset}
+	watch := &idleKill{kill: procgroup.Kill}
+	out := &cappedOutput{max: maxProbeOutput, onWrite: watch.reset}
 	// One writer for both streams: os/exec then gives the child a single
 	// pipe, so their interleaving is the order the tool wrote them in.
 	cmd.Stdout = out
@@ -189,9 +205,9 @@ func runProbe(ctx context.Context, checkout, exe string, argv []string, timeout 
 	if err := procgroup.Start(cmd); err != nil {
 		return probeRun{}, fmt.Errorf("start %s: %w", strings.Join(argv, " "), err)
 	}
-	idle.start(cmd.Process.Pid, probeIdleWindow)
+	watch.arm(cmd.Process.Pid, idle)
 	waitErr := cmd.Wait()
-	waited := idle.stop()
+	waited := watch.stop()
 	_ = stdin.Close()
 	// A process the tool started and left behind is still in its group:
 	// kill it too (a no-op when the group is already empty).
@@ -204,17 +220,33 @@ func runProbe(ctx context.Context, checkout, exe string, argv []string, timeout 
 	if ctx.Err() != nil {
 		return probeRun{}, fmt.Errorf("%s: %w", strings.Join(argv, " "), ctx.Err())
 	}
+	var raw []byte
+	raw, run.OutputBytes, run.Truncated = out.result()
 	switch {
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		run.TimedOut, run.LeftRunning = true, false
+		// Silent until the timeout: it never printed the first byte that
+		// starts the idle window, so the timeout is where it is seen
+		// waiting.
+		run.WaitingForInput = run.OutputBytes == 0
 	case waited && run.ExitCode == -1:
 		// Killed by the idle window (not a tool that happened to exit
 		// on its own just as the window ran out).
 		run.WaitingForInput, run.LeftRunning = true, false
 	}
-	var raw []byte
-	raw, run.OutputBytes, run.Truncated = out.result()
 	run.lines = normalizeOutput(raw, paths)
+	if !run.TimedOut && !run.WaitingForInput && (run.ExitCode == exitCannotExecute || run.ExitCode == exitNotFound) {
+		what := "not found"
+		if run.ExitCode == exitCannotExecute {
+			what = "not executable"
+		}
+		msg := fmt.Sprintf("%s could not run (exit %d: a program it needs is %s, such as its interpreter or a native binary its install should have downloaded)",
+			strings.Join(argv, " "), run.ExitCode, what)
+		if l := lastPromptLine(run.lines); l != noOutputPrompt {
+			msg += ": " + l
+		}
+		return probeRun{}, errors.New(msg)
+	}
 	if run.WaitingForInput {
 		run.Prompt = lastPromptLine(run.lines)
 	}
@@ -232,39 +264,72 @@ func lastPromptLine(lines []string) string {
 	return noOutputPrompt
 }
 
-// idleKill kills a probe's process group once it has printed nothing for
-// the idle window. The timer is reset by every write of output; it fires
-// on the runtime's timer goroutine and does nothing but the kill.
+// idleKill kills a probe's process group once, after printing something, it
+// has printed nothing for the idle window. The window starts at the first
+// write and restarts at every later one; the timer fires on the runtime's
+// timer goroutine and does nothing but the kill.
+//
+// Every (re)start bumps gen and the callback it schedules carries that gen.
+// A callback that has already started cannot be stopped by the next write
+// (timer.Stop / Reset report false and the callback goes on to take the
+// lock), so it checks its gen under the lock: a write that landed between
+// the timer firing and the callback taking the lock has bumped gen, and the
+// stale callback does nothing.
 type idleKill struct {
 	mu      sync.Mutex
+	kill    func(pgid int) error
 	timer   *time.Timer
+	pgid    int
 	window  time.Duration
+	gen     uint64
+	armed   bool // the probe started: pgid and window are set
+	wrote   bool // the probe has printed at least one byte
 	fired   bool // the window ran out while the probe was running
 	stopped bool
 }
 
-func (k *idleKill) start(pgid int, window time.Duration) {
+// arm records the started probe. The window starts now if the probe has
+// already printed (a write can come before arm), else at its first write.
+func (k *idleKill) arm(pgid int, window time.Duration) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.window = window
-	k.timer = time.AfterFunc(window, func() {
-		k.mu.Lock()
-		defer k.mu.Unlock()
-		if k.stopped || k.fired {
-			return
-		}
-		k.fired = true
-		_ = procgroup.Kill(pgid)
-	})
+	k.pgid, k.window, k.armed = pgid, window, true
+	if k.wrote {
+		k.restartLocked()
+	}
 }
 
-// reset restarts the window: the probe printed something.
+// reset (re)starts the window: the probe printed something.
 func (k *idleKill) reset() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if k.timer != nil && !k.stopped && !k.fired {
-		k.timer.Reset(k.window)
+	k.wrote = true
+	if k.armed {
+		k.restartLocked()
 	}
+}
+
+func (k *idleKill) restartLocked() {
+	if k.stopped || k.fired {
+		return
+	}
+	k.gen++
+	gen := k.gen
+	if k.timer != nil {
+		k.timer.Stop()
+	}
+	k.timer = time.AfterFunc(k.window, func() { k.fire(gen) })
+}
+
+// fire is the timer's callback for the window started at gen.
+func (k *idleKill) fire(gen uint64) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.stopped || k.fired || gen != k.gen {
+		return
+	}
+	k.fired = true
+	_ = k.kill(k.pgid)
 }
 
 // stop ends the watch once the probe is gone and reports whether the idle

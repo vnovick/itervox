@@ -14,7 +14,7 @@ never the judge.
 | `referee lanes --base <ref>` | classifies the diff into human / second_opinion / auto by `.referee.yml` on the base ref | 0 auto, 10 second_opinion, 20 human |
 | `referee audit --base <ref>` | lists changes that weaken checks (deleted tests, `t.Skip`, `.only(`, lowered coverage, `continue-on-error: true`, `\|\| true`, `--no-verify`) | 0 none, 20 findings |
 | `referee envcheck --base <ref>` | fails when an installed tool (`tools:` in `.referee.yml` on the base ref) mentions a deploy-target environment variable its guard file does not classify | 0 none, 20 findings |
-| `referee diff --base <ref> --base-dir <dir>` | runs each tool's probes (`tools:` on the base ref) on the base install (`--base-dir`, a checkout of the merge base with its dependencies installed) and the head install, and reports changed exit codes, output and new confirmation prompts; no network sandbox | 0 none, 10 a change |
+| `referee diff --base <ref> --base-dir <dir>` | runs each tool's probes (`tools:` on the base ref) on the base install (`--base-dir`, a checkout of the merge base with its dependencies installed) and the head install, and reports changed exit codes, output, new confirmation prompts and processes left running (`--idle`, default 3s, from the first byte of output, decides when a quiet probe is waiting for input); a probe that cannot run (exit 126/127) is an error; no network sandbox | 0 none, 10 a change, 2 error |
 | `referee pin --policy-sha256 <hex>` | fails when the policy file's sha256 changed (`--print` prints it) | 0 match, 20 mismatch |
 | `referee run --name N --key K --out F -- cmd` | runs a check and appends a signed record (real exit code, pipefail, tree hash) | the check's exit code |
 | `referee keygen --out DIR` | writes the ed25519 key pair (`attest.key` 0600, `attest.pub`) | 0 |
@@ -30,7 +30,7 @@ second_opinion: ["src/auth/**"]
 ```
 
 The Action (`uses: vnovick/itervox/referee@<sha>`, inputs `mode`
-lanes|audit|envcheck|diff|pin|verify, `base`, `base-dir`, `policy-sha256`, `fail-on`
+lanes|audit|envcheck|diff|pin|verify, `base`, `base-dir`, `idle`, `policy-sha256`, `fail-on`
 human|second_opinion|never) builds referee with `actions/setup-go` and runs one
 mode. [`examples/referee-pr.yml`](examples/referee-pr.yml) is a `pull_request`
 workflow that fails human-lane pull requests without a `pipeline-approved`

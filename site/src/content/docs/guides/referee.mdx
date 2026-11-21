@@ -263,7 +263,7 @@ parsed `probes`), `findings` (`tool`, `variable`, `path`, `line`, `guard`,
 ### `referee diff`
 
 ```bash
-referee diff --base origin/main --base-dir ../base [--head HEAD] [--policy .referee.yml] [--timeout 30s] [--json]
+referee diff --base origin/main --base-dir ../base [--head HEAD] [--policy .referee.yml] [--timeout 30s] [--idle 3s] [--json]
 ```
 
 `envcheck` reads a tool's files; `diff` runs it. A dependency bump can make a
@@ -313,6 +313,7 @@ jobs:
           mode: diff
           base-dir: ${{ runner.temp }}/base
           fail-on: second_opinion # fail the step on a behaviour change
+          # idle: 10s # optional: a longer quiet spell before "waiting for input"
 ```
 
 Any CI works the same way: `git worktree add --detach <dir> <merge base>`,
@@ -343,17 +344,31 @@ missing from either install is an error (exit `2`) before anything runs.
   killed. A prompt is never answered and never reads end of input either,
   so a tool that asks a question does what it would do in front of a
   person: it waits.
-- **Waiting for input is detected.** A probe that is still running and has
-  printed nothing for **3 seconds** (the idle window; any output, even past
-  the 64 KiB cap, restarts it) is taken to be waiting for input. Its whole
-  process group is killed, the run is recorded with `waiting_for_input`,
-  and its last non-empty output line is reported as the prompt it was
-  waiting on (with or without a trailing newline). A tool that is silent for
-  3 seconds for another reason (a slow start, a network call) looks the same;
-  that is only a change when the other side did not wait.
+- **Waiting for input is detected.** A probe that is still running and,
+  after printing something, has printed nothing for **3 seconds** (the idle
+  window, `--idle`; any output, even past the 64 KiB cap, restarts it) is
+  taken to be waiting for input. Its whole process group is killed, the run
+  is recorded with `waiting_for_input`, and its last non-empty output line
+  is reported as the prompt it was waiting on (with or without a trailing
+  newline). The window starts at the probe's **first byte** of output, so a
+  slow start (loading, compiling, a cold cache) is not a wait. A probe that
+  prints nothing at all runs to the timeout and is then recorded as both
+  `timed_out` and `waiting_for_input`, with the prompt `(waiting for input;
+  nothing was printed)`. A tool that goes quiet mid-output for longer than
+  the window for another reason (a network call) looks like a wait; that is
+  only a change when the other side did not wait. Raise `--idle` for a tool
+  that pauses like that.
 - **A timeout** (`--timeout`, default 30 s), after which its whole process
-  group is killed, children included. It bounds a probe that keeps printing.
-  A process the tool leaves running after it exits is killed too.
+  group is killed, children included. It bounds a probe that keeps printing
+  and one that never prints. A process the tool leaves running after it
+  exits is killed too, and recorded as `left_running`.
+- **A probe must run.** A probe that exits `126` or `127` (what a shell or
+  `env` returns when it cannot find or execute a program: a missing
+  interpreter such as `node`, or a native binary an install script never
+  downloaded) or whose executable cannot be started is an error (exit `2`)
+  on either side, never compared. When it is the base install that cannot
+  run the tool, the message says so: there is nothing to compare the head
+  with.
 - **An output cap.** stdout and stderr are read as one stream, and the first
   64 KiB are compared.
 
@@ -362,8 +377,8 @@ ANSI colour is removed, a line redrawn with `\r` keeps what was left on
 screen, the checkout path becomes `<checkout>` and the fresh home
 `<home>`, and versions (`1.2.3`), timestamps, durations (`12ms`, `1.5s`),
 UUIDs, long hex ids and temp paths become placeholders. A probe changed when
-its exit code changed, when it timed out or waited for input on one side
-only, when its normalised output differs, or when the head prints a new
+its exit code changed, when it timed out, waited for input or left a
+process running on one side only, when its normalised output differs, or when the head prints a new
 **prompt**. A prompt is found two ways:
 
 - **A head run waiting for input** where the base run did not wait: its last
@@ -391,13 +406,15 @@ diff: 1 of 3 probe(s) changed behaviour (policy: .referee.yml@1a2b3c4d5e6f, base
 
 Exit `0` when no probe changed (or there is no `tools:`), `10` when one did,
 and `2` on an error: a missing install on either side, a `--base-dir` that is
-not a checkout of the base, or a probe that cannot start. The exit for a
+not a checkout of the base, or a probe that cannot start or exits `126` /
+`127` on either side. The exit for a
 change is `10`, the second-opinion code: a different help text is not
 necessarily wrong, but a person should read it before the change deploys
 anything.
 
 `--json` prints `version` 1 with `base_commit`, `merge_base`,
-`base_dir_commit`, `env` (the variable names a probe gets) and, per tool,
+`base_dir_commit`, `timeout_ms`, `idle_ms`, `env` (the variable names a
+probe gets) and, per tool,
 each probe's `base` and `head` runs (`executable`, `exit_code` (`-1` when
 killed), `timed_out`, `waiting_for_input`, `prompt` (the last line of a run
 waiting for input, else empty), `left_running`, `duration_ms`,

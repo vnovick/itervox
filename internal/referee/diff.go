@@ -18,7 +18,7 @@ import (
 )
 
 const diffUsage = `usage: referee diff --base <ref> --base-dir <path> [--head HEAD] [--policy .referee.yml]
-                    [--dir .] [--timeout 30s] [--json]
+                    [--dir .] [--timeout 30s] [--idle 3s] [--json]
 
 Runs each configured tool's probes (tools: in .referee.yml, read from the
 BASE ref) against two installs and reports how the tool's behaviour
@@ -38,9 +38,12 @@ Each probe runs without a shell, in its checkout, with stdin an open pipe
 nothing is ever written to (a prompt is never answered and never sees end
 of input), a fresh empty HOME, only PATH kept from the environment (no
 credentials, no deploy-target variable), and its first 64 KiB of output
-compared. A probe still running that has printed nothing for 3s is waiting
-for input: its whole process group is killed and its last line reported as
-the prompt. A per-probe timeout kills the group of one that keeps printing.
+compared. A probe still running that printed something and then nothing
+for --idle (3s) is waiting for input: its whole process group is killed and
+its last line reported as the prompt. The idle window starts at the first
+byte of output, so a slow start is not a wait; a probe that prints nothing
+at all is seen waiting only at the per-probe --timeout, which also kills
+the group of one that keeps printing.
 Versions, timestamps, durations, temp paths, the checkout path and ANSI
 colour are normalised away first.
 
@@ -52,7 +55,9 @@ Without tools: on the base ref there is nothing to compare (exit 0).
 
 Exit codes: 0 no behaviour change (or no tools:), 10 a change a person
 should look at, 2 usage or error (a missing install on either side, a
---base-dir that is not a checkout of the base, a probe that cannot start).`
+--base-dir that is not a checkout of the base, a probe that cannot start or
+cannot run on either side: exit 126 or 127, e.g. a missing interpreter or a
+native binary an install script did not download).`
 
 type diffReport struct {
 	Version       int        `json:"version"`
@@ -66,6 +71,7 @@ type diffReport struct {
 	BaseDir       string     `json:"base_dir"`
 	BaseDirCommit string     `json:"base_dir_commit"`
 	TimeoutMs     int64      `json:"timeout_ms"`
+	IdleMs        int64      `json:"idle_ms"`
 	Env           []string   `json:"env"` // the variable names a probe gets
 	Tools         []diffTool `json:"tools"`
 	Notes         []string   `json:"notes"`
@@ -84,7 +90,7 @@ type diffProbe struct {
 	Base         probeRun `json:"base"`
 	Head         probeRun `json:"head"`
 	Changed      bool     `json:"changed"`
-	Changes      []string `json:"changes"` // exit_code, timed_out, waiting_for_input, output, prompt
+	Changes      []string `json:"changes"` // exit_code, timed_out, waiting_for_input, left_running, output, prompt
 	Added        []string `json:"added"`   // normalised lines only head printed (bounded)
 	AddedCount   int      `json:"added_count"`
 	Removed      []string `json:"removed"` // normalised lines only base printed (bounded)
@@ -95,7 +101,7 @@ type diffProbe struct {
 // diffOptions is what diffCmd parsed.
 type diffOptions struct {
 	dir, baseDir, base, head, policy string
-	timeout                          time.Duration
+	timeout, idle                    time.Duration
 }
 
 func diffCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io.Writer) int {
@@ -109,6 +115,7 @@ func diffCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io.
 	asJSON := fs.Bool("json", false, "print a JSON report")
 	dir := fs.String("dir", ".", "repository root, with the head's dependencies installed")
 	timeout := fs.Duration("timeout", defaultProbeTimeout, "kill a probe's process group after this long")
+	idle := fs.Duration("idle", defaultProbeIdle, "a probe that printed something and then nothing for this long is waiting for input")
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
@@ -118,12 +125,15 @@ func diffCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io.
 	if *timeout <= 0 {
 		return usageError(stderr, diffUsage, "--timeout must be positive")
 	}
+	if *idle <= 0 {
+		return usageError(stderr, diffUsage, "--idle must be positive")
+	}
 	baseRef, err := resolveBaseFlag(*base, env)
 	if err != nil {
 		return usageError(stderr, diffUsage, "%v", err)
 	}
 	rep, err := behaviourDiff(ctx, diffOptions{
-		dir: *dir, baseDir: *baseDir, base: baseRef, head: *head, policy: *policyPath, timeout: *timeout,
+		dir: *dir, baseDir: *baseDir, base: baseRef, head: *head, policy: *policyPath, timeout: *timeout, idle: *idle,
 	})
 	if err != nil {
 		return failf(stderr, "diff", "%v", err)
@@ -166,7 +176,7 @@ func behaviourDiff(ctx context.Context, o diffOptions) (diffReport, error) {
 	}
 	rep := diffReport{
 		Version: 1, Base: o.base, BaseCommit: r.Base, MergeBase: r.MergeBase, Head: o.head, HeadCommit: r.Head,
-		TimeoutMs: o.timeout.Milliseconds(), Env: []string{}, Tools: []diffTool{}, Notes: []string{},
+		TimeoutMs: o.timeout.Milliseconds(), IdleMs: o.idle.Milliseconds(), Env: []string{}, Tools: []diffTool{}, Notes: []string{},
 	}
 	tools, source, err := loadTools(ctx, o.dir, r.Base, o.policy)
 	if err != nil {
@@ -235,11 +245,13 @@ func behaviourDiff(ctx context.Context, o diffOptions) (diffReport, error) {
 		dt := diffTool{Name: p.tool.Name(), Install: p.tool.InstallRoot(), Probes: []diffProbe{}}
 		for _, pr := range p.tool.Probes() {
 			cmd := pr.Argv[0]
-			baseRun, err := runProbe(ctx, baseInst.dir, p.baseExe[cmd][0], pr.Argv, o.timeout, p.tool.DeployVar, baseInst.paths)
+			baseRun, err := runProbe(ctx, baseInst.dir, p.baseExe[cmd][0], pr.Argv, o.timeout, o.idle, p.tool.DeployVar, baseInst.paths)
 			if err != nil {
-				return diffReport{}, fmt.Errorf("tools.%s: base install: %w", p.tool.Name(), err)
+				// The base is the reference: a base that cannot run the
+				// tool leaves nothing to compare the head with.
+				return diffReport{}, fmt.Errorf("tools.%s: the base install cannot run the tool, so there is nothing to compare: %w", p.tool.Name(), err)
 			}
-			headRun, err := runProbe(ctx, head.dir, p.headExe[cmd][0], pr.Argv, o.timeout, p.tool.DeployVar, head.paths)
+			headRun, err := runProbe(ctx, head.dir, p.headExe[cmd][0], pr.Argv, o.timeout, o.idle, p.tool.DeployVar, head.paths)
 			if err != nil {
 				return diffReport{}, fmt.Errorf("tools.%s: head install: %w", p.tool.Name(), err)
 			}
@@ -340,6 +352,12 @@ func compareRuns(p adapters.Probe, base, head probeRun) diffProbe {
 	}
 	if base.WaitingForInput != head.WaitingForInput {
 		d.Changes = append(d.Changes, "waiting_for_input")
+	}
+	// A run that exited but left a process holding its output (a daemon,
+	// a watcher, a background upload) on one side only behaves differently
+	// even when the output and exit code match.
+	if base.LeftRunning != head.LeftRunning {
+		d.Changes = append(d.Changes, "left_running")
 	}
 	if !slices.Equal(base.lines, head.lines) {
 		d.Changes = append(d.Changes, "output")

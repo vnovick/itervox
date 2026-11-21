@@ -1,0 +1,3 @@
+#!/usr/bin/env referee-test-no-such-interpreter
+// A tool whose #! interpreter is not installed (node missing, say): env
+// exits 127 and the tool never runs.

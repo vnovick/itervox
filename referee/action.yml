@@ -63,6 +63,14 @@ inputs:
       install there). The head install is the working tree.
     required: false
     default: ''
+  idle:
+    description: >-
+      diff: how long a probe that has printed something may then print
+      nothing before it is taken to be waiting for input (a Go duration such
+      as 3s or 10s). Empty: referee's default, 3s. The window starts at the
+      probe's first byte of output, so a slow start is not a wait.
+    required: false
+    default: ''
 
 outputs:
   lane:
@@ -99,4 +107,5 @@ runs:
         PUBKEY: ${{ inputs.pubkey }}
         TREE: ${{ inputs.tree }}
         BASE_DIR: ${{ inputs.base-dir }}
+        IDLE: ${{ inputs.idle }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"

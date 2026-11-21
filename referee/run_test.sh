@@ -52,6 +52,8 @@ check "envcheck error fails with fail-on never" 2 MODE=envcheck FAKE_CODE=2 FAIL
 check "envcheck clean passes" 0 MODE=envcheck FAKE_CODE=0
 check "diff unchanged passes" 0 MODE=diff FAKE_CODE=0 BASE_DIR=../base BASE=origin/main FAKE_ARGS="$tmp/args"
 grep -qx -- "diff --head HEAD --policy .referee.yml --base origin/main --base-dir ../base" "$tmp/args" || { echo "FAIL diff args: $(cat "$tmp/args")"; fail=1; }
+check "diff idle is passed" 0 MODE=diff FAKE_CODE=0 BASE_DIR=../base IDLE=10s FAKE_ARGS="$tmp/args"
+grep -qx -- "diff --head HEAD --policy .referee.yml --base-dir ../base --idle 10s" "$tmp/args" || { echo "FAIL diff idle args: $(cat "$tmp/args")"; fail=1; }
 check "diff change passes by default" 0 MODE=diff FAKE_CODE=10 BASE_DIR=../base
 grep -qx 'exit-code=10' "$tmp/out" || { echo "FAIL diff exit-code output: $(cat "$tmp/out")"; fail=1; }
 check "diff change fails with fail-on second_opinion" 10 MODE=diff FAKE_CODE=10 FAIL_ON=second_opinion

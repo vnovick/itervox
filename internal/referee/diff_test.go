@@ -134,25 +134,15 @@ func TestDiffChangedOutputExitsSecondOpinion(t *testing.T) {
 	assert.False(t, findProbe(t, rep, "fake --version").Changed, "a version-only change is normalised away")
 }
 
-// shortIdle shortens the idle window that takes a silent probe to be
-// waiting for input, for one test.
-func shortIdle(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := probeIdleWindow
-	probeIdleWindow = d
-	t.Cleanup(func() { probeIdleWindow = old })
-}
-
 // TestDiffNewPromptIsFlagged: the head's deploy now asks "[y/N]". Its stdin
 // is an open pipe nothing writes to, so it waits for an answer that never
 // comes (it never sees end of input): the idle window kills it, and the
 // question is reported as a new prompt.
 func TestDiffNewPromptIsFlagged(t *testing.T) {
-	shortIdle(t, 500*time.Millisecond)
 	r, base := diffRepo(t, diffPolicy)
 	installFake(t, base, "fake-1.0.0")
 	installFake(t, r.dir, "fake-prompt")
-	code, out, errOut := referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--json")
+	code, out, errOut := referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--idle", "500ms", "--json")
 	require.Equal(t, exitSecondOpinion, code, "stdout=%s stderr=%s", out, errOut)
 	p := findProbe(t, diffJSON(t, out), "fake deploy --help")
 	assert.Equal(t, []string{"exit_code", "waiting_for_input", "output", "prompt"}, p.Changes)
@@ -164,7 +154,7 @@ func TestDiffNewPromptIsFlagged(t *testing.T) {
 	assert.NotContains(t, p.Added, "Aborted: no answer.", "stdin never reached end of input")
 	assert.NotContains(t, strings.Join(p.Added, "\n"), "answer: ", "the prompt was never answered")
 
-	code, out, _ = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base)
+	code, out, _ = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--idle", "500ms")
 	require.Equal(t, exitSecondOpinion, code)
 	assert.Contains(t, out, "new prompt: Deploy to production? [y/N]")
 	assert.Contains(t, out, "base exit 0, head waiting for input")
@@ -180,14 +170,13 @@ func TestDiffWaitingForInputIsAPrompt(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("reads /proc")
 	}
-	shortIdle(t, 500*time.Millisecond)
 	r, base := diffRepo(t, diffPolicy)
 	installFake(t, base, "fake-1.0.0")
 	installFake(t, r.dir, "fake-wait")
 	summary := filepath.Join(t.TempDir(), "summary.md")
 	start := time.Now()
 	code, out, errOut := referee(t, map[string]string{"GITHUB_STEP_SUMMARY": summary},
-		"diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--timeout", "20s", "--json")
+		"diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--timeout", "20s", "--idle", "500ms", "--json")
 	require.Equal(t, exitSecondOpinion, code, "stdout=%s stderr=%s", out, errOut)
 	assert.Less(t, time.Since(start), 10*time.Second, "the waiting probe must be seen at the idle window, not the timeout")
 	rep := diffJSON(t, out)
@@ -219,7 +208,7 @@ func TestDiffWaitingForInputIsAPrompt(t *testing.T) {
 
 	// Both sides waiting on the same question is not a change.
 	installFake(t, base, "fake-wait")
-	code, out, errOut = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--json")
+	code, out, errOut = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--idle", "500ms", "--json")
 	require.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
 	p = findProbe(t, diffJSON(t, out), "fake deploy --help")
 	assert.False(t, p.Changed)
@@ -234,11 +223,10 @@ func TestProbeSteadyOutputIsNotWaiting(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("referee diff runs on Linux and macOS")
 	}
-	shortIdle(t, 600*time.Millisecond)
 	dir := t.TempDir()
 	installFake(t, dir, "fake-slow")
 	exe := filepath.Join(dir, "tools", "fake", "bin", "fake")
-	run, err := runProbe(context.Background(), dir, exe, []string{"fake", "deploy"}, 20*time.Second,
+	run, err := runProbe(context.Background(), dir, exe, []string{"fake", "deploy"}, 20*time.Second, 600*time.Millisecond,
 		func(string) bool { return false }, withRealPath(dir, "<checkout>"))
 	require.NoError(t, err)
 	assert.False(t, run.WaitingForInput, "steady output must reset the idle window")
@@ -350,7 +338,7 @@ func TestDiffProbeEnvironmentIsScrubbed(t *testing.T) {
 	installFake(t, dir, "fake-1.0.0")
 	exe := filepath.Join(dir, "tools", "fake", "bin", "fake")
 	deployVar := func(name string) bool { return strings.HasPrefix(name, "FAKE_") }
-	run, err := runProbe(context.Background(), dir, exe, []string{"fake", "env"}, 10*time.Second, deployVar, withRealPath(dir, "<checkout>"))
+	run, err := runProbe(context.Background(), dir, exe, []string{"fake", "env"}, 10*time.Second, defaultProbeIdle, deployVar, withRealPath(dir, "<checkout>"))
 	require.NoError(t, err)
 	require.Equal(t, 0, run.ExitCode)
 	got := strings.Join(run.lines, "\n")
@@ -474,4 +462,181 @@ func TestLineDiffAndPrompts(t *testing.T) {
 
 func adaptersProbe(text string) adapters.Probe {
 	return adapters.Probe{Text: text, Argv: strings.Fields(text)}
+}
+
+// TestDiffProbeThatCannotRunIsAnError: a tool whose interpreter is missing
+// exits 127 on both sides (env cannot find it). Both sides "exit 127 with
+// the same output" must not read as unchanged: it is an error (exit 2)
+// that says the base install cannot run the tool. A head-only 127 (a
+// native binary an install script did not download) and a #! that cannot
+// be executed at all are errors too.
+func TestDiffProbeThatCannotRunIsAnError(t *testing.T) {
+	r, base := diffRepo(t, diffPolicy)
+	installFake(t, base, "fake-nointerp")
+	installFake(t, r.dir, "fake-nointerp")
+	code, out, errOut := referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base)
+	require.Equal(t, exitError, code, "stdout=%s stderr=%s", out, errOut)
+	assert.Contains(t, errOut, "tools.fake: the base install cannot run the tool, so there is nothing to compare")
+	assert.Contains(t, errOut, "fake --version could not run (exit 127: a program it needs is not found")
+	assert.NotContains(t, out, "unchanged")
+
+	installFake(t, base, "fake-1.0.0")
+	installFake(t, r.dir, "fake-127")
+	code, out, errOut = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base)
+	require.Equal(t, exitError, code, "stdout=%s stderr=%s", out, errOut)
+	assert.Contains(t, errOut, "tools.fake: head install: fake --version could not run (exit 127")
+	assert.Contains(t, errOut, "fake: native binary not found at <checkout>/tools/fake/native/fake")
+
+	// A #! naming an interpreter path that does not exist: the exec fails.
+	bin := filepath.Join(r.dir, "tools", "fake", "bin", "fake")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/nonexistent/referee-test-interp\n"), 0o755))
+	code, _, errOut = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base)
+	require.Equal(t, exitError, code)
+	assert.Contains(t, errOut, "tools.fake: head install: start fake --version")
+
+	// 126: found but not executable (a #! naming a directory).
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nexec \"$PWD\"\n"), 0o755))
+	code, _, errOut = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base)
+	require.Equal(t, exitError, code)
+	assert.Contains(t, errOut, "could not run (exit 126: a program it needs is not executable")
+}
+
+// TestDiffSlowStartIsNotWaiting: the head's deploy prints nothing for 4s
+// (longer than the default 3s idle window) and then the same output as the
+// base. The window starts only at the first byte, so it is not waiting for
+// input, and the diff is unchanged (exit 0).
+func TestDiffSlowStartIsNotWaiting(t *testing.T) {
+	r, base := diffRepo(t, diffPolicy)
+	installFake(t, base, "fake-1.0.0")
+	installFake(t, r.dir, "fake-slowstart")
+	code, out, errOut := referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--json")
+	require.Equal(t, exitOK, code, "stdout=%s stderr=%s", out, errOut)
+	rep := diffJSON(t, out)
+	assert.Equal(t, int64(3000), rep.IdleMs, "the default idle window")
+	p := findProbe(t, rep, "fake deploy --help")
+	assert.False(t, p.Head.WaitingForInput)
+	assert.False(t, p.Head.TimedOut)
+	assert.Equal(t, 0, p.Head.ExitCode)
+	assert.GreaterOrEqual(t, p.Head.DurationMs, int64(4000))
+	assert.False(t, p.Changed)
+}
+
+// TestProbeSilentUntilTimeoutIsWaiting: a probe that reads stdin without
+// printing anything is not killed at the idle window (it never printed a
+// first byte), but at the timeout it counts as waiting for input, with
+// the placeholder prompt.
+func TestProbeSilentUntilTimeoutIsWaiting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("referee diff runs on Linux and macOS")
+	}
+	dir := t.TempDir()
+	installFake(t, dir, "fake-silent")
+	exe := filepath.Join(dir, "tools", "fake", "bin", "fake")
+	run, err := runProbe(context.Background(), dir, exe, []string{"fake", "deploy"}, 1500*time.Millisecond, 200*time.Millisecond,
+		func(string) bool { return false }, withRealPath(dir, "<checkout>"))
+	require.NoError(t, err)
+	assert.True(t, run.TimedOut)
+	assert.True(t, run.WaitingForInput)
+	assert.Equal(t, noOutputPrompt, run.Prompt)
+	assert.GreaterOrEqual(t, run.DurationMs, int64(1500), "not killed at the idle window")
+}
+
+// TestDiffLeftRunningIsAChange: the head prints the same and exits 0 but
+// leaves (sleep 20) running, holding its output: that is a change
+// (left_running), and the process is killed.
+func TestDiffLeftRunningIsAChange(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc")
+	}
+	r, base := diffRepo(t, diffPolicy)
+	installFake(t, base, "fake-1.0.0")
+	installFake(t, r.dir, "fake-leftrunning")
+	code, out, errOut := referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base, "--json")
+	require.Equal(t, exitSecondOpinion, code, "stdout=%s stderr=%s", out, errOut)
+	p := findProbe(t, diffJSON(t, out), "fake deploy --help")
+	assert.Equal(t, []string{"left_running"}, p.Changes)
+	assert.True(t, p.Head.LeftRunning)
+	assert.False(t, p.Base.LeftRunning)
+	assert.Equal(t, 0, p.Head.ExitCode)
+
+	raw, err := os.ReadFile(filepath.Join(r.dir, "hang.pid"))
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	require.NoError(t, err)
+	assert.Eventually(t, func() bool { return !processAlive(pid) }, 3*time.Second, 20*time.Millisecond,
+		"the process the probe left running (%d) survived", pid)
+
+	code, out, _ = referee(t, nil, "diff", "--dir", r.dir, "--base", "main", "--base-dir", base)
+	require.Equal(t, exitSecondOpinion, code)
+	assert.Contains(t, out, "[fake] fake deploy --help: changed (left_running)")
+	assert.Contains(t, out, "base exit 0, head exit 0, left a process running")
+}
+
+// TestDiffIdleFlagMustBePositive: --idle 0 is a usage error.
+func TestDiffIdleFlagMustBePositive(t *testing.T) {
+	code, _, errOut := referee(t, nil, "diff", "--base", "main", "--idle", "0s")
+	require.Equal(t, exitError, code)
+	assert.Contains(t, errOut, "--idle must be positive")
+}
+
+// TestIdleKillStaleCallbackDoesNotKill: the race a timer Reset cannot
+// close. The window ran out and its callback started, but before it took
+// the lock the probe wrote again. The callback carries the generation it
+// was scheduled for; the write bumped the generation, so the stale
+// callback does nothing. A callback for the current generation kills.
+func TestIdleKillStaleCallbackDoesNotKill(t *testing.T) {
+	var kills []int
+	k := &idleKill{kill: func(pgid int) error { kills = append(kills, pgid); return nil }}
+	k.reset() // a write before arm: the window starts at arm
+	k.arm(42, time.Hour)
+	k.mu.Lock()
+	scheduled := k.gen
+	k.mu.Unlock()
+	require.Equal(t, uint64(1), scheduled)
+
+	k.reset() // the write that lands between the fire and the callback's lock
+	k.fire(scheduled)
+	assert.Empty(t, kills, "a stale callback must not kill")
+	k.mu.Lock()
+	fired, current := k.fired, k.gen
+	k.mu.Unlock()
+	assert.False(t, fired)
+
+	k.fire(current)
+	assert.Equal(t, []int{42}, kills)
+	assert.True(t, k.stop(), "stop reports the idle kill")
+	k.fire(current)
+	assert.Equal(t, []int{42}, kills, "it kills once")
+}
+
+// TestIdleKillWindowStartsAtFirstWrite: without a write the timer never
+// runs; after one it fires once the window passes; after stop it never
+// does.
+func TestIdleKillWindowStartsAtFirstWrite(t *testing.T) {
+	killed := make(chan int, 4)
+	newKill := func() *idleKill {
+		return &idleKill{kill: func(pgid int) error { killed <- pgid; return nil }}
+	}
+	silent := newKill()
+	silent.arm(1, 20*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	assert.False(t, silent.stop(), "no write, no idle kill")
+
+	wrote := newKill()
+	wrote.arm(2, 20*time.Millisecond)
+	wrote.reset()
+	select {
+	case pgid := <-killed:
+		assert.Equal(t, 2, pgid)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle window did not fire after a write")
+	}
+	assert.True(t, wrote.stop())
+
+	stopped := newKill()
+	stopped.arm(3, 20*time.Millisecond)
+	stopped.reset()
+	assert.False(t, stopped.stop())
+	time.Sleep(100 * time.Millisecond)
+	assert.Empty(t, killed)
 }

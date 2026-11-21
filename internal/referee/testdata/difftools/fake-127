@@ -1,0 +1,6 @@
+#!/bin/sh
+# A new version whose native binary was never downloaded (an install with
+# --ignore-scripts skips the postinstall that fetches it): its launcher
+# exits 127, as a shell does for a command it cannot find.
+echo "fake: native binary not found at $PWD/tools/fake/native/fake" >&2
+exit 127

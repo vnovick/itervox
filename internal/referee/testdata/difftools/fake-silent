@@ -1,0 +1,7 @@
+#!/bin/sh
+# A deploy that reads stdin without printing anything first: never seen
+# by the idle window (no first byte), only at the timeout.
+case "$1" in
+deploy) read -r answer; echo "answer: $answer" ;;
+*) exit 0 ;;
+esac

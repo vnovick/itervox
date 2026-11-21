@@ -21,13 +21,16 @@ func changedProbes(rep diffReport) (changed, total int) {
 }
 
 // runSummary is "exit 0", "exit 3", "timed out" or "waiting for input",
-// for one side.
+// for one side, with ", left a process running" when it did.
 func runSummary(r probeRun) string {
 	if r.TimedOut {
 		return "timed out"
 	}
 	if r.WaitingForInput {
 		return "waiting for input"
+	}
+	if r.LeftRunning {
+		return fmt.Sprintf("exit %d, left a process running", r.ExitCode)
 	}
 	return fmt.Sprintf("exit %d", r.ExitCode)
 }

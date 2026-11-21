@@ -34,6 +34,7 @@ case "${MODE:-}" in
     args=(diff --head "${HEAD_REF:-HEAD}" --policy "${POLICY:-.referee.yml}")
     [ -n "${BASE:-}" ] && args+=(--base "$BASE")
     [ -n "${BASE_DIR:-}" ] && args+=(--base-dir "$BASE_DIR")
+    [ -n "${IDLE:-}" ] && args+=(--idle "$IDLE")
     ;;
   pin)
     args=(pin --file "${POLICY:-.referee.yml}" --policy-sha256 "${POLICY_SHA256:-}")
