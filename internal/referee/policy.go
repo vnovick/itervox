@@ -95,7 +95,7 @@ func validatePattern(p string) error {
 // The policy file itself is always in the human lane, so a change to it is
 // seen by a human before it takes effect.
 func loadPolicy(ctx context.Context, dir, baseCommit, policyPath string) (policy, error) {
-	policyPath = strings.TrimPrefix(path.Clean("/"+strings.ReplaceAll(policyPath, `\`, "/")), "/")
+	policyPath = normalizePolicyPath(policyPath)
 	if policyPath == "" {
 		return policy{}, errors.New("--policy names no file")
 	}

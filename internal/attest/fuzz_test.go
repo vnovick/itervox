@@ -49,6 +49,13 @@ func fuzzRecords(t testing.TB) []Record {
 		{Version: RecordVersion, Kind: KindSeal, Issue: "ENG-1", RunID: "20261114T100000Z-abc",
 			StartedAt: start.Add(2 * time.Minute), TreeHash: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
 			TreeExcludes: []string{".itervox/attestations"}},
+		// The referee's record of its own run (appended last, so the
+		// corpus seeds' record indexes are unchanged).
+		{Version: RecordVersion, Kind: KindReferee, ExitCode: 20, StartedAt: start.Add(3 * time.Minute), DurationMs: 42,
+			Referee: &Referee{Version: "0.3.4", Commit: "89abcdef0123456789abcdef0123456789abcdef", Ruleset: "1-0123456789abcdef",
+				Command: "lanes", Base: "origin/main", BaseCommit: "fedcba9876543210fedcba9876543210fedcba98",
+				HeadCommit: "0123456789abcdef0123456789abcdef01234567", Lane: "human", Findings: 2, Check: "test", CheckSig: "c2ln",
+				Policy: RefereePolicy{Path: ".referee.yml", State: PolicyPresent, SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}}},
 	}
 	for i := range recs {
 		if err := s.Sign(&recs[i]); err != nil {
@@ -112,6 +119,11 @@ func FuzzRecordVerify(f *testing.F) {
 		f.Add(append(append([]byte(nil), l...), '\n'))
 		f.Add(bytes.Replace(l, []byte(`"exit_code":0`), []byte(`"exit_code":1`), 1))
 		f.Add(bytes.Replace(l, []byte(`"kind":"check"`), []byte(`"kind":"seal"`), 1))
+		// The referee record: its exit code, its verdict, its policy hash.
+		f.Add(bytes.Replace(l, []byte(`"exit_code":20`), []byte(`"exit_code":0`), 1))
+		f.Add(bytes.Replace(l, []byte(`"lane":"human"`), []byte(`"lane":"auto"`), 1))
+		f.Add(bytes.Replace(l, []byte(`"sha256":"9f`), []byte(`"sha256":"0f`), 1))
+		f.Add(bytes.Replace(l, []byte(`"kind":"referee"`), []byte(`"kind":"check"`), 1))
 	}
 	f.Add(bytes.Join(lines, []byte("\n")))
 	f.Add([]byte(`{"v":1,"kind":"check","exit_code":0,"started_at":"2026-11-14T10:00:00Z","duration_ms":0,"key_id":"0000000000000000","sig":""}`))
@@ -154,6 +166,9 @@ func FuzzRecordByteFlip(f *testing.F) {
 		for _, r := range readVerified(t, path, line, pub) {
 			if !sameContent(t, r, signed[i]) {
 				t.Fatalf("flipping byte %d of record %d by %#x forged a verifying record: %+v", int(pos)%len(line), i, mask, r)
+			}
+			if signed[i].TreeHash == "" { // the referee record: no tree to check
+				continue
 			}
 			if err := Verify(r, pub, signed[i].TreeHash); err != nil {
 				t.Fatalf("a content-identical record fails Verify: %v", err)

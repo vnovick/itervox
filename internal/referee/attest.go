@@ -14,14 +14,18 @@ import (
 	"github.com/vnovick/itervox/internal/attest"
 )
 
-const runUsage = `usage: referee run --name <check> --key <private key> --out <records.jsonl> [--dir .] [--timeout 10m] -- <cmd...>
+const runUsage = `usage: referee run --name <check> --key <private key> --out <records.jsonl> [--dir .] [--timeout 10m]
+                  [--base <ref> [--policy .referee.yml]] -- <cmd...>
 
-Runs one check and appends two signed records to --out: the check (its real
+Runs one check and appends three signed records to --out: the check (its real
 exit code, duration, output hash and tail, and the git tree it ran on) and a
 seal (the tree after it). One argument after -- is a shell command line, run
 by bash with pipefail ("make test | tail -n 50" fails when make fails); more
 arguments are run directly with no shell. The key must not be inside --dir:
-whoever can read it can forge records.
+whoever can read it can forge records. A third signed record, the referee
+record, names this referee (version, commit, ruleset), the check record,
+HEAD and the exit code; with --base also the base commit and the policy
+file's sha256 there.
 
 Exit codes: the check's own exit code (1 if it was killed, timed out or did
 not start), 2 when referee cannot record the run.`
@@ -33,10 +37,21 @@ Writes an ed25519 key pair: <dir>/attest.key (private, mode 0600) and
 secret); share the public key. Never overwrites an existing key.`
 
 const verifyUsage = `usage: referee verify <records.jsonl> --pubkey <file> [--tree DIR]
+       [--require-referee] [--base REF] [--head REF] [--dir .]
+       [--expect-referee-commit SHA] [--expect-ruleset V] [--expect-exit N]
 
 Checks every record's ed25519 signature and that each check ran on the final
 tree (the last seal). --tree DIR also requires each check's tree to be the
 working tree in DIR now (tracked plus untracked, non-ignored files).
+
+A referee record (written by lanes, audit and run with a key) is also
+checked for consistency: its exit code must be the one its lane, finding
+count or check record gives. --base REF requires each referee record to be
+for REF's commit (resolved in --dir) and its policy sha256 to be the policy
+file's at that commit; --head REF the same for the head. --expect-referee-commit
+and --expect-ruleset require that referee build and ruleset; --expect-exit
+requires the last referee record's exit code. Any of these, or
+--require-referee, fails a file with no referee record.
 
 Exit codes: 0 every record verifies, 1 one does not, 2 usage or error.`
 
@@ -49,6 +64,8 @@ func runCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	outPath := fs.String("out", "", "JSONL file the records are appended to")
 	dir := fs.String("dir", ".", "working tree the check runs in")
 	timeout := fs.Duration("timeout", attest.DefaultTimeout, "kill the check's process group after this long")
+	base := fs.String("base", "", "base ref: record its commit and the policy file's sha256 there in the referee record")
+	policyPath := fs.String("policy", defaultPolicyPath, "policy file path, hashed at --base")
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
@@ -80,6 +97,15 @@ func runCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failf(stderr, "run", "%v", err)
 	}
+	self := &selfRecorder{signer: signer, dir: absDir, started: time.Now().UTC(), info: attest.Referee{Command: "run"}}
+	if *base != "" {
+		baseCommit, err := resolveCommit(ctx, absDir, *base)
+		if err != nil {
+			return failf(stderr, "run", "--base: %v", err)
+		}
+		self.setRefs(*base, "", *policyPath)
+		self.info.BaseCommit = baseCommit
+	}
 	spec := attest.Spec{Name: *name, Timeout: *timeout}
 	if len(cmdArgs) == 1 {
 		spec.Shell = cmdArgs[0]
@@ -99,7 +125,14 @@ func runCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return failf(stderr, "run", "%v", err)
 		}
 	}
-	if err := attest.AppendFile(*outPath, rec, seal); err != nil {
+	code := runExitCode(rec)
+	self.setCommits(self.info.BaseCommit, rec.Head)
+	self.info.Check, self.info.CheckSig = rec.Name, rec.Sig
+	selfRec, err := self.build(ctx, code)
+	if err != nil {
+		return failf(stderr, "run", "referee record: %v", err)
+	}
+	if err := attest.AppendFile(*outPath, rec, seal, selfRec); err != nil {
 		return failf(stderr, "run", "%v", err)
 	}
 	if rec.TreeError != "" {
@@ -110,6 +143,12 @@ func runCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if rec.Error != "" {
 		_, _ = fmt.Fprintf(stderr, "referee run: %s\n", rec.Error)
 	}
+	return code
+}
+
+// runExitCode is the exit code run returns for a check record: the
+// check's own, or 1 when it was killed, timed out or did not start.
+func runExitCode(rec attest.Record) int {
 	switch {
 	case rec.Passed():
 		return exitOK
@@ -171,6 +210,7 @@ func verifyCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fs.Usage = func() { _, _ = fmt.Fprintln(stderr, verifyUsage) }
 	pubPath := fs.String("pubkey", "", "public key file (referee keygen's attest.pub)")
 	treeDir := fs.String("tree", "", "also require each check's tree to be the working tree in this directory now")
+	want := addSelfVerifyFlags(fs)
 	// Flags may come before or after the record file.
 	var positional []string
 	for rest := args; ; {
@@ -197,5 +237,5 @@ func verifyCmd(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if len(recs) == 0 {
 		return failf(stderr, "verify", "%s has no records", positional[0])
 	}
-	return attest.PrintVerification(ctx, stdout, stderr, "referee verify", attest.RunFile{Path: positional[0], Records: recs}, pub, *treeDir)
+	return verifyRecords(ctx, stdout, stderr, attest.RunFile{Path: positional[0], Records: recs}, pub, *treeDir, want)
 }

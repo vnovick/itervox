@@ -14,6 +14,7 @@ import (
 )
 
 const lanesUsage = `usage: referee lanes --base <ref> [--head HEAD] [--policy .referee.yml] [--json] [--dir .]
+                    [--key <private key> --record <referee.jsonl>]
 
 Classifies every path the diff from the merge base of <base> and <head> to
 <head> changes (git diff --name-only --no-renames) into a lane:
@@ -28,6 +29,9 @@ from the working tree or the head, so the branch under review cannot change
 the rules it is judged by. Without a policy file on the base ref the
 default human lane applies. The policy file itself is always human lane.
 --base defaults to origin/$GITHUB_BASE_REF in a pull_request workflow.
+--key and --record append a signed referee record (this referee's version,
+commit and ruleset, the policy file's sha256 at the base, base and head,
+the lane and the exit code) for referee verify.
 
 Exit codes: 0 auto, 10 second_opinion, 20 human, 2 usage or error.`
 
@@ -48,7 +52,7 @@ type lanesReport struct {
 	Auto          []string `json:"auto"`
 }
 
-func lanesCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io.Writer) int {
+func lanesCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io.Writer) (code int) {
 	fs := flag.NewFlagSet("referee lanes", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = fmt.Fprintln(stderr, lanesUsage) }
@@ -57,6 +61,7 @@ func lanesCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io
 	policyPath := fs.String("policy", defaultPolicyPath, "policy file path, read from the base ref")
 	asJSON := fs.Bool("json", false, "print a JSON report")
 	dir := fs.String("dir", ".", "repository directory")
+	self := addSelfRecordFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
@@ -67,10 +72,18 @@ func lanesCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io
 	if err != nil {
 		return usageError(stderr, lanesUsage, "%v", err)
 	}
+	sr, err := openSelfRecord(ctx, "lanes", *dir, *self.key, *self.record)
+	if err != nil {
+		return usageError(stderr, lanesUsage, "%v", err)
+	}
+	sr.setRefs(baseRef, *head, *policyPath)
+	defer func() { code = sr.finish(ctx, code, stderr) }()
 	rep, err := classifyLanes(ctx, *dir, baseRef, *head, *policyPath)
 	if err != nil {
 		return failf(stderr, "lanes", "%v", err)
 	}
+	sr.setCommits(rep.BaseCommit, rep.HeadCommit)
+	sr.setLane(rep.Lane)
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")

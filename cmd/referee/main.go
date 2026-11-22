@@ -37,9 +37,10 @@ func run(ctx context.Context, args []string, env func(string) string, stdout, st
 	if len(args) > 0 {
 		switch args[0] {
 		case "--version", "-version", "version":
-			_, _ = fmt.Fprintf(stdout, "referee %s (commit: %s, built: %s)\n", version, commit, date)
+			_, _ = fmt.Fprintf(stdout, "referee %s (commit: %s, built: %s, ruleset: %s)\n", version, commit, date, referee.RulesetVersion())
 			return 0
 		}
 	}
+	referee.SetBuild(version, commit) // named in the signed referee record
 	return referee.Run(ctx, "referee", args, env, stdout, stderr)
 }

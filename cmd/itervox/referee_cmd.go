@@ -22,5 +22,6 @@ func runRefereeEntrypoint(args []string) {
 }
 
 func refereeCmd(ctx context.Context, args []string, env func(string) string, stdout, stderr io.Writer) int {
+	referee.SetBuild(version, commit) // named in the signed referee record
 	return referee.Run(ctx, "itervox referee", args, env, stdout, stderr)
 }
