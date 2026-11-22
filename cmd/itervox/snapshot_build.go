@@ -141,45 +141,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			}
 		}
 
-		completedRuns := orch.RunHistory()
-		history := make([]server.HistoryRow, 0, len(completedRuns))
-		for _, r := range completedRuns {
-			history = append(history, server.HistoryRow{
-				Identifier:   r.Identifier,
-				Title:        r.Title,
-				StartedAt:    r.StartedAt,
-				FinishedAt:   r.FinishedAt,
-				ElapsedMs:    r.ElapsedMs,
-				TurnCount:    r.TurnCount,
-				TotalTokens:  r.TotalTokens,
-				InputTokens:  r.InputTokens,
-				OutputTokens: r.OutputTokens,
-				Status:       r.Status,
-				WorkerHost:   r.WorkerHost,
-				Backend:      r.Backend,
-				Kind:         r.Kind,
-				SessionID:    r.SessionID,
-				AppSessionID: r.AppSessionID,
-				AutomationID: r.AutomationID,
-				TriggerType:  r.TriggerType,
-				CommentCount: r.CommentCount,
-				RulesHash:    r.RulesHash,
-				RuleIDs:      r.RuleIDs,
-				MemoryIDs:    r.MemoryIDs, // #202
-				ProfileName:  r.ProfileName,
-				// #186: prompt version, run ID and steering history.
-				RunID:         r.RunID,
-				PromptDigest:  r.PromptDigest,
-				PromptParts:   historyPromptParts(r.PromptParts),
-				Playbook:      r.Playbook, // #218
-				Steers:        historySteers(r.Steers),
-				SteersDropped: r.SteersDropped,
-				// Review and continue: the run took an operator review.
-				ContinuedFromReview: r.ContinuedFromReview,
-				ReviewComments:      r.ReviewComments,
-				Resources:           r.Resources, // system visibility
-			})
-		}
+		history := historyRows(orch.RunHistory(), orch.PROutcomes())
 
 		sshHostAddrs, sshHostDescs := orch.SSHHostsCfg()
 		sshHostInfos := make([]server.SSHHostInfo, 0, len(sshHostAddrs))
@@ -349,4 +311,58 @@ func historySteers(steers []orchestrator.RunSteer) []server.HistorySteer {
 		out[i] = server.HistorySteer{Text: s.Text, At: s.At, Delivery: s.Delivery}
 	}
 	return out
+}
+
+// historyRows maps the run history to its API rows, with each run's PR
+// outcome from the outcome ledger (cost and outcome visibility).
+func historyRows(completedRuns []orchestrator.CompletedRun, prs []orchestrator.PROutcome) []server.HistoryRow {
+	outcomes := make(map[string]string, len(prs))
+	for _, pr := range prs {
+		outcomes[pr.PRURL] = pr.State
+	}
+	history := make([]server.HistoryRow, 0, len(completedRuns))
+	for _, r := range completedRuns {
+		history = append(history, server.HistoryRow{
+			Identifier:   r.Identifier,
+			Title:        r.Title,
+			StartedAt:    r.StartedAt,
+			FinishedAt:   r.FinishedAt,
+			ElapsedMs:    r.ElapsedMs,
+			TurnCount:    r.TurnCount,
+			TotalTokens:  r.TotalTokens,
+			InputTokens:  r.InputTokens,
+			OutputTokens: r.OutputTokens,
+			Status:       r.Status,
+			WorkerHost:   r.WorkerHost,
+			Backend:      r.Backend,
+			Kind:         r.Kind,
+			SessionID:    r.SessionID,
+			AppSessionID: r.AppSessionID,
+			AutomationID: r.AutomationID,
+			TriggerType:  r.TriggerType,
+			CommentCount: r.CommentCount,
+			RulesHash:    r.RulesHash,
+			RuleIDs:      r.RuleIDs,
+			MemoryIDs:    r.MemoryIDs, // #202
+			ProfileName:  r.ProfileName,
+			// #186: prompt version, run ID and steering history.
+			RunID:         r.RunID,
+			PromptDigest:  r.PromptDigest,
+			PromptParts:   historyPromptParts(r.PromptParts),
+			Playbook:      r.Playbook, // #218
+			Steers:        historySteers(r.Steers),
+			SteersDropped: r.SteersDropped,
+			// Review and continue: the run took an operator review.
+			ContinuedFromReview: r.ContinuedFromReview,
+			ReviewComments:      r.ReviewComments,
+			Resources:           r.Resources, // system visibility
+			// Cost and outcome visibility.
+			CacheReadTokens:  r.CacheReadTokens,
+			CacheWriteTokens: r.CacheWriteTokens,
+			Attempt:          r.Attempt,
+			PRURL:            r.PRURL,
+			PROutcome:        outcomes[r.PRURL],
+		})
+	}
+	return history
 }

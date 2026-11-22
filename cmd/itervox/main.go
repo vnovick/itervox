@@ -923,6 +923,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		orch.SetBackendHealthFile(filepath.Join(logDir, "backend_health.json"))
 		orch.SetPendingReviewsFile(pendingReviewsPath)                                      // M4-close BH-M4-2
 		orch.SetSpendFile(filepath.Join(logDir, "issue_spend.json"))                        // #136
+		orch.SetPROutcomesFile(filepath.Join(logDir, "pr_outcomes.json"))                   // outcome visibility
 		orch.SetPREventsFile(filepath.Join(logDir, "pr_events.json"))                       // #173
 		orch.SetDeferredStateMovesFile(filepath.Join(logDir, "deferred_state_moves.json"))  // #177
 		orch.SetReviewContinuationsFile(filepath.Join(logDir, "review_continuations.json")) // review and continue
@@ -1129,6 +1130,8 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			ti.Review = reviewRow(snap, issue.Identifier)                // #135
 			app.ApplyPlaybook(&ti, *issue, snap, orch.PlaybookChooser()) // #218
 			ti.Task = issueTaskRow(orch, issue.Identifier)               // #251
+			// Cost and outcome visibility: the issue's runs and PR outcome.
+			ti.Outcome = server.IssueOutcome(historyRows(orch.RunHistory(), orch.PROutcomes()), issue.Identifier)
 			return &ti, nil
 		}
 
