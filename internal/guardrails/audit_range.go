@@ -68,8 +68,7 @@ func AuditRange(ctx context.Context, dir, from, to string) (AuditResult, error) 
 	if statusTruncated { // whole records only: cut after the last NUL
 		status = status[:bytes.LastIndexByte(status, 0)+1]
 	}
-	res := AuditResult{Findings: AuditDeletedTests(status), Paths: nameStatusPaths(status),
-		Truncated: statusTruncated, PathsTruncated: statusTruncated}
+	res := AuditResult{Paths: nameStatusPaths(status), Truncated: statusTruncated, PathsTruncated: statusTruncated}
 	patch, truncated, err := boundedGit(ctx, dir, maxAuditPatchBytes,
 		append(append([]string{"-c", "core.quotePath=false", "diff", "-U" + strconv.Itoa(AuditContext), "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
 			"--src-prefix=a/", "--dst-prefix=b/"}, rangeArgs...), "--")...)
@@ -81,11 +80,11 @@ func AuditRange(ctx context.Context, dir, from, to string) (AuditResult, error) 
 			patch = patch[:i+1]
 		}
 	}
-	found, err := AuditPatch(patch)
+	found, err := AuditDiff(ctx, dir, from, to, status, patch)
 	if err != nil {
 		return AuditResult{}, fmt.Errorf("guardrails: audit: %w", err)
 	}
-	res.Findings = append(res.Findings, found...)
+	res.Findings = found
 	res.Truncated = res.Truncated || truncated
 	if to == "" {
 		if err := auditUntracked(ctx, dir, maxAuditPatchBytes-len(patch), &res); err != nil {
@@ -181,8 +180,15 @@ func readUntracked(root *os.Root, p string, budget int) ([]byte, bool) {
 
 // auditAddedFile audits a new file as the patch reader reads an added
 // file: the line rules on every line (numbered from 1), then the hunk
-// rules on the file as one all-added change.
+// rules on the file as one all-added change — except that a test runner
+// config or package.json has its test-path arrays read whole
+// (testConfigFindings, with no base), the heuristic only when that fails.
 func auditAddedFile(p string, data []byte) []AuditFinding {
+	var exact []AuditFinding
+	exactOK := false
+	if isTestPathConfig(p) {
+		exact, exactOK = testConfigFindings(p, nil, data)
+	}
 	var out []AuditFinding
 	h := hunk{firstNew: 1}
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -191,7 +197,7 @@ func auditAddedFile(p string, data []byte) []AuditFinding {
 		h.added = append(h.added, sc.Text())
 		out = appendLineFindings(out, p, n, sc.Text())
 	}
-	return appendHunkFindings(out, p, h)
+	return append(appendHunkFindings(out, p, h, exactOK), exact...)
 }
 
 // boundedGit runs git and reads at most limit bytes of its output; a
