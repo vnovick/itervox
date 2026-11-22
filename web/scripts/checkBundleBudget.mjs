@@ -50,6 +50,14 @@ export const BUDGET = {
       forbid: [],
     },
     {
+      // #278 phase 2: the desktop app's terminal window page is a thin
+      // shell; the renderer stays in the TmuxTerminal chunk it loads.
+      name: 'TerminalWindow',
+      pattern: /^TerminalWindow-[\w-]+\.js$/,
+      maxBytes: 12 * KB,
+      forbid: ['xterm-helper-textarea'],
+    },
+    {
       // #298: the entry and page chunks never carry the terminal renderer.
       name: 'index',
       pattern: /^index-[\w-]+\.js$/,
