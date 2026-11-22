@@ -154,6 +154,18 @@ type HistoryRow struct {
 	// Resources is the run's resource summary (peak memory, CPU time,
 	// processes, disk I/O, activity counts); absent without the monitor.
 	Resources *sysmon.RunSummary `json:"resources,omitempty"`
+	// CacheReadTokens / CacheWriteTokens are the run's prompt-cache tokens
+	// where the backend reports them (cost and outcome visibility); not
+	// part of TotalTokens.
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+	// Attempt is the run's retry attempt (0, omitted, for a first run).
+	Attempt int `json:"attempt,omitempty"`
+	// PRURL is the PR the run created or continued; PROutcome what became
+	// of it: "open", "merged", "closed" (unmerged) or "reverted". Absent
+	// without a PR, or when the outcome ledger no longer holds it.
+	PRURL     string `json:"prUrl,omitempty"`
+	PROutcome string `json:"prOutcome,omitempty"`
 }
 
 // QueuedReviewRow is an operator review waiting for its issue's next
@@ -1430,6 +1442,10 @@ type TrackerIssue struct {
 	// and base branch, and whether it has started (the instructions are
 	// editable until then). Only on the single-issue read.
 	Task *IssueTaskRow `json:"task,omitempty"`
+	// Outcome sums the issue's recorded runs (tokens, turns, wall time,
+	// retries, last status) and its latest PR's outcome. Only on the
+	// single-issue read; absent when history has no run of the issue.
+	Outcome *IssueOutcomeRow `json:"outcome,omitempty"`
 }
 
 // IssueTaskRow is an issue's New task record (#251).
@@ -1917,6 +1933,7 @@ func (s *Server) routes() {
 			r.Post("/dispatch/resume", s.handleResumeDispatch)                     // #213
 			r.Get("/history", s.handleHistory)                                     // #186
 			r.Get("/history/prompt-versions", s.handleHistoryPromptVersions)       // #186
+			r.Get("/outcomes", s.handleOutcomes)                                   // cost and outcome visibility
 			r.Get("/repo/readiness", s.handleRepoReadiness)                        // #200
 			r.Get("/repo/evals", s.handleRepoEvals)                                // #201
 			r.Get("/repo/hotspots", s.handleRepoHotspots)                          // #201

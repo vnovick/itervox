@@ -57,6 +57,21 @@ export const BUDGET = {
       forbid: ['xterm-helper-textarea'],
     },
     {
+      // Repo Analysis → Outcomes (cost and outcome visibility): its own lazy
+      // chunk, ~3.6 KiB at introduction; it must stay small and lazy.
+      name: 'OutcomesSection',
+      pattern: /^OutcomesSection-[\w-]+\.js$/,
+      maxBytes: 8 * KB,
+      forbid: [],
+    },
+    {
+      // The entry chunk never carries the outcomes tables.
+      name: 'index (outcomes)',
+      pattern: /^index-[\w-]+\.js$/,
+      maxBytes: 410 * KB,
+      forbid: ['Outcomes by '],
+    },
+    {
       // Before #211: 295,055 bytes of antd + react-js-cron. The light cron
       // input lives in the Automations chunk now; a CronWidget chunk, if one
       // ever comes back, must stay small.

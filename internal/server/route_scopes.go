@@ -69,6 +69,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/events":                            accessViewer,
 	"GET /api/v1/history":                           accessViewer,
 	"GET /api/v1/history/prompt-versions":           accessViewer,
+	"GET /api/v1/outcomes":                          accessViewer, // run and PR outcomes per profile / playbook
 	"GET /api/v1/repo/readiness":                    accessViewer,
 	"GET /api/v1/repo/evals":                        accessViewer,
 	"GET /api/v1/repo/hotspots":                     accessViewer,

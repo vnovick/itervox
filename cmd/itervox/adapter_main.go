@@ -288,6 +288,8 @@ func (a *orchestratorAdapter) EmitPRMerged(ctx context.Context, identifier, prUR
 	if a.orch != nil { // #213: the merge happened, whatever the automations do
 		a.orch.RecordFeedEvent(orchestrator.FeedEvent{Kind: orchestrator.FeedPRMerged, Identifier: identifier,
 			Payload: orchestrator.FeedPayload{PRURL: prURL}})
+		a.orch.RecordPROutcome(ctx, orchestrator.PROutcomeReport{PRURL: prURL, State: orchestrator.PROutcomeMerged,
+			At: time.Now(), Source: "merge_pr"}) // outcome visibility
 	}
 	err := a.emitPRMerged(ctx, identifier, prURL, prNumber, mergedSHA, baseRef, headRef)
 	if err != nil && a.orch != nil {

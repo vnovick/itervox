@@ -4,6 +4,7 @@ import MarkdownPanel from './MarkdownPanel';
 import IssueDetailHeader, { IssueDetailBadges } from './IssueDetailHeader';
 import { IssueBlockerDetails } from './IssueBlockerDetails';
 import { IssueReviewThread } from './IssueReviewThread';
+import { IssueOutcomeLine } from './IssueOutcomeLine';
 import { IssueStatusChanges } from './IssueStatusChanges';
 import { IssueReviews } from './IssueReviews';
 import { InputRequiredPanel } from './InputRequiredPanel';
@@ -200,6 +201,7 @@ export default function IssueDetailSlide() {
               </button>
             )}
           </div>
+          <IssueOutcomeLine outcome={issue.outcome} />
           {/* Status changes beside decisions; either takes the full width
               when the other has nothing to show. */}
           <div className="flex flex-col gap-3 empty:hidden sm:flex-row sm:items-start [&>*]:min-w-0 [&>*]:flex-1">

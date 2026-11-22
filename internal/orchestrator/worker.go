@@ -519,6 +519,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	var allTextBlocks []string                                  // accumulate all Claude text blocks for the final tracker comment
 	var cumulativeInput, cumulativeCached, cumulativeOutput int // accumulate tokens across turns for dashboard display
 	var prevResultText string                                   // detect repeated identical responses (Codex resume loop)
+	var cumulativeCacheRead, cumulativeCacheWrite int           // prompt-cache tokens across turns (run history)
 	// Input-required resume: single turn with the user's reply as the prompt.
 	// Automation run (any trigger): single turn too. Its task is the
 	// automation's (answer a question, triage a failure, review a PR), not
@@ -845,8 +846,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		rcReport.endTurn(result) // #215
 		// #136: the turn's usage counts whatever its outcome; every exit
 		// below carries it (deliverExit) so the event loop settles it.
+		cumulativeCacheRead += result.CachedInputTokens + result.CacheReadTokens
+		cumulativeCacheWrite += result.CacheCreationTokens
 		recordRunUsage(ctx, cumulativeInput+result.InputTokens, cumulativeCached+result.CachedInputTokens,
-			cumulativeOutput+result.OutputTokens, result.CostUSD, result.SessionID)
+			cumulativeOutput+result.OutputTokens, cumulativeCacheRead, cumulativeCacheWrite, result.CostUSD, result.SessionID)
 
 		if result.SessionID != "" {
 			s := result.SessionID

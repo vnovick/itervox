@@ -14,6 +14,9 @@ vi.mock('../capabilities/SkillsCard', () => ({
 vi.mock('../usage/UsageSection', () => ({
   UsageSection: () => <div data-testid="usage-body" />,
 }));
+vi.mock('../outcomes/OutcomesSection', () => ({
+  default: () => <div data-testid="outcomes-body" />,
+}));
 vi.mock('../prompts/PromptVersionsSection', () => ({
   PromptVersionsSection: () => <div data-testid="prompts-body" />,
 }));
@@ -30,6 +33,7 @@ vi.mock('../hotspots/HotspotsSection', () => ({
 const SECTIONS = [
   ['capabilities', 'Capabilities'],
   ['usage', 'Runtime usage and cost'],
+  ['outcomes', 'Outcomes'],
   ['prompts', 'Prompt versions'],
   ['readiness', 'Agent readiness'],
   ['evals', 'Evals'],
@@ -41,13 +45,14 @@ function activeSection(): string | undefined {
 }
 
 describe('Repo Analysis page (#200)', () => {
-  it('renders every section, each with its heading and body', () => {
+  it('renders every section, each with its heading and body', async () => {
     render(<RepoAnalysis />, { route: '/repo' });
     expect(screen.getByRole('heading', { level: 1, name: 'Repo Analysis' })).toBeInTheDocument();
     for (const [key, label] of SECTIONS) {
       const region = screen.getByRole('region', { name: label });
       expect(region).toHaveAttribute('id', key);
-      expect(screen.getByTestId(`${key}-body`)).toBeInTheDocument();
+      // Outcomes is a lazy chunk: its body arrives after the import resolves.
+      expect(await screen.findByTestId(`${key}-body`)).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: label })).toHaveAttribute('aria-controls', key);
     }
   });

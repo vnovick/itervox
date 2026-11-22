@@ -130,15 +130,46 @@ func managedPRsFor(orch prEventOrchestrator) func() []prwatch.Managed {
 	}
 }
 
-// newPREventWatcher builds the PR-event watcher (#173) over client.
+// prOutcomeOrchestrator is what PR outcome tracking needs from the
+// orchestrator (*orchestrator.Orchestrator; optional on test fakes).
+type prOutcomeOrchestrator interface {
+	TrackedPROutcomes() []orchestrator.PROutcome
+	RecordPROutcome(ctx context.Context, rep orchestrator.PROutcomeReport) bool
+}
+
+// trackedPROutcomesFor lists the ledger's PRs whose outcome can still change.
+func trackedPROutcomesFor(orch prOutcomeOrchestrator) func() []prwatch.Tracked {
+	return func() []prwatch.Tracked {
+		prs := orch.TrackedPROutcomes()
+		out := make([]prwatch.Tracked, 0, len(prs))
+		for _, pr := range prs {
+			out = append(out, prwatch.Tracked{Managed: prwatch.Managed{URL: pr.PRURL, Identifier: pr.Identifier}, State: pr.State})
+		}
+		return out
+	}
+}
+
+// prOutcomeSink hands an observed PR outcome to the orchestrator's loop.
+func prOutcomeSink(orch prOutcomeOrchestrator) func(context.Context, prwatch.Outcome) {
+	return func(ctx context.Context, o prwatch.Outcome) {
+		orch.RecordPROutcome(ctx, orchestrator.PROutcomeReport{PRURL: o.PRURL, State: o.State, At: o.At, Source: o.Source})
+	}
+}
+
+// newPREventWatcher builds the PR-event watcher (#173) over client. With an
+// orchestrator that keeps the PR outcome ledger it also tracks outcomes.
 func newPREventWatcher(cfg *config.Config, tr tracker.Tracker, orch prEventOrchestrator, client *prwatch.Client) *prwatch.Watcher {
-	return prwatch.New(prwatch.Config{
+	wc := prwatch.Config{
 		Client:   client,
 		Managed:  managedPRsFor(orch),
 		Kinds:    orch.PREventTriggerTypes,
 		Emit:     prEventSink(tr, orch),
 		Webhooks: cfg.PREvents.WebhookSecret != "",
-	})
+	}
+	if oo, ok := orch.(prOutcomeOrchestrator); ok {
+		wc.TrackedOutcomes, wc.Outcome = trackedPROutcomesFor(oo), prOutcomeSink(oo)
+	}
+	return prwatch.New(wc)
 }
 
 // startPREvents starts the PR-event watcher (#173): a poll of the open
@@ -163,6 +194,7 @@ func startPREvents(ctx context.Context, cfg *config.Config, tr tracker.Tracker, 
 				return
 			case <-timer.C:
 				w.Poll(ctx)
+				w.PollOutcomes(ctx) // outcome visibility: merged / closed
 				timer.Reset(cadence.nextDelay(client))
 			}
 		}

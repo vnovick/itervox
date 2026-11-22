@@ -157,6 +157,8 @@ type OrchestratorEvent struct { //nolint:revive
 	Lesson *LessonReport
 	// Reverts reports a reverted-PR scan (EventRevertsScanned, #217).
 	Reverts *RevertScanReport
+	// PROutcome is an observed PR state (EventPROutcome).
+	PROutcome *PROutcomeReport
 	// ExternalScan is a discovery pass (EventExternalSessionsDiscovered).
 	ExternalScan *ExternalScan
 	// Tmux is the payload of the tmux session events (#178).
@@ -425,10 +427,15 @@ type RunEntry struct {
 	InputTokens    int
 	OutputTokens   int
 	TotalTokens    int
-	TurnCount      int
-	RetryAttempt   *int
-	StartedAt      time.Time
-	WorkerCancel   context.CancelFunc
+	// CacheReadTokens / CacheWriteTokens are the run's prompt-cache tokens
+	// (cached input read, Claude cache creation), settled on the exit entry
+	// by settleRunUsage and kept on the history entry. Not in TotalTokens.
+	CacheReadTokens  int
+	CacheWriteTokens int
+	TurnCount        int
+	RetryAttempt     *int
+	StartedAt        time.Time
+	WorkerCancel     context.CancelFunc
 	// CostUSD is the latest session-cumulative estimated cost reported by the
 	// run's result events (Claude total_cost_usd, CORE-091); nil when unknown.
 	CostUSD *float64
@@ -553,6 +560,15 @@ type CompletedRun struct {
 	// process count, disk I/O. Nil when no monitor was installed or the
 	// run started no local process.
 	Resources *sysmon.RunSummary `json:"resources,omitempty"`
+	// CacheReadTokens / CacheWriteTokens are the run's prompt-cache tokens
+	// where the backend reports them: cached input read (Codex
+	// cached_input_tokens, Claude cache_read_input_tokens) and Claude's
+	// cache_creation_input_tokens. Zero when the backend reports none.
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+	// Attempt is the run's retry attempt (0 for a first run); a run with
+	// Attempt > 0 is a retry of an earlier one.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -900,6 +916,13 @@ type State struct {
 	// (pr_mergeable_changed) the rule was evaluated against, so only a
 	// change dispatches.
 	PREventBaselines map[string]string
+	// PROutcomes is the PR outcome ledger (cost and outcome visibility):
+	// per PR URL an itervox run recorded, whether it is open, merged,
+	// closed unmerged or reverted. Set open by a run's exit, moved by
+	// EventPROutcome (prwatch poll/webhook, merge_pr) and the revert scan.
+	// Not pruned on terminal: pruned by age and bounded (pr_outcomes.go).
+	// Persisted to pr_outcomes.json via the ledger writer.
+	PROutcomes map[string]PROutcome
 	// AutomationDispatchesPREventTotal / AutomationDroppedPREventDedupTotal /
 	// AutomationDroppedPREventUnmanagedTotal count PR-event (#173)
 	// dispatches, dedup drops and drops for PRs no itervox run recorded.
@@ -1162,6 +1185,7 @@ func NewState(cfg *config.Config) State {
 		ManagedPRs:          make(map[string]ManagedPR),
 		PREventDispatched:   make(map[string]time.Time),
 		PREventBaselines:    make(map[string]string),
+		PROutcomes:          make(map[string]PROutcome),
 		CronCursors:         make(map[string]string),
 		InferredDeps:        make(map[string][]InferredDepEntry),
 		DepsOverrides:       make(map[string]time.Time),

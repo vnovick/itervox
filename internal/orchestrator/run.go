@@ -83,6 +83,11 @@ type runHandle struct {
 // runUsage is a run's cumulative usage at the end of its latest turn (#136).
 type runUsage struct {
 	input, cached, output int
+	// cacheRead / cacheWrite are the run's prompt-cache tokens: cached input
+	// (Codex and the other backends' cached_input_tokens plus Claude's
+	// cache_read_input_tokens) and Claude's cache_creation_input_tokens.
+	// Recorded on the run's history entry; not part of the token totals.
+	cacheRead, cacheWrite int
 	// cost is the latest session-cumulative cost a turn reported, and
 	// session the agent session it belongs to; nil when no turn reported one.
 	cost    *float64
@@ -92,12 +97,12 @@ type runUsage struct {
 // recordRunUsage records a run's usage after a turn: the tokens of the turns
 // before it plus the turn's own, and the turn's cost when it reported one
 // (otherwise the last reported cost stands). Worker only.
-func recordRunUsage(ctx context.Context, input, cached, output int, cost *float64, session string) {
+func recordRunUsage(ctx context.Context, input, cached, output, cacheRead, cacheWrite int, cost *float64, session string) {
 	h := runFrom(ctx)
 	if h == nil {
 		return
 	}
-	u := &runUsage{input: input, cached: cached, output: output}
+	u := &runUsage{input: input, cached: cached, output: output, cacheRead: cacheRead, cacheWrite: cacheWrite}
 	if cost != nil {
 		c := *cost
 		u.cost, u.session = &c, session
@@ -122,6 +127,7 @@ func settleRunUsage(ctx context.Context, exit *RunEntry) {
 	exit.InputTokens, exit.OutputTokens = u.input, u.output
 	exit.TotalTokens = u.input + u.cached + u.output
 	exit.CostUSD, exit.AgentSessionID = u.cost, u.session
+	exit.CacheReadTokens, exit.CacheWriteTokens = u.cacheRead, u.cacheWrite
 }
 
 type runHandleKey struct{}

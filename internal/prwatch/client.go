@@ -87,9 +87,12 @@ type PullRequest struct {
 	State          string `json:"state"` // open | closed
 	Merged         bool   `json:"merged"`
 	MergeableState string `json:"mergeable_state"`
-	HTMLURL        string `json:"html_url"`
-	Number         int    `json:"number"`
-	Head           struct {
+	// MergedAt / ClosedAt are read by the outcome poll (outcomes.go).
+	MergedAt *time.Time `json:"merged_at"`
+	ClosedAt *time.Time `json:"closed_at"`
+	HTMLURL  string     `json:"html_url"`
+	Number   int        `json:"number"`
+	Head     struct {
 		SHA string `json:"sha"`
 		Ref string `json:"ref"`
 	} `json:"head"`

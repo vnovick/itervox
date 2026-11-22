@@ -185,6 +185,8 @@ func WriteText(out io.Writer, v View) error {
 	x.counterVec("itervox_tracker_store_pulls_total", "List pulls of the local tracker store, by trigger: cold, interval (the safety net when webhooks are on), webhook, or view (a state set read for the first time).", storePulls)
 	x.counterVec("itervox_guardrail_blocks_total", "Agent operations a guardrail refused (#204), by kind.", guardrailBlocks)
 	x.counterVec("itervox_tmux_sends_total", "Writes the Sessions panel made into tmux panes (#178), by kind: text or key.", tmuxSends)
+	x.counterVec("itervox_agent_tokens_total", "Tokens of finished agent runs as their backends reported them, by kind: input, output, cache_read, cache_write.", runTokens)
+	x.counterVec("itervox_pr_outcomes_total", "Outcome transitions of pull requests itervox runs opened, by outcome reached: merged, closed (unmerged), reverted, open (reopened).", prOutcomes)
 	x.counterVec("itervox_client_errors_total", "Web dashboard error reports received on POST /api/v1/client-errors, by kind and outcome.", clientErrors)
 	x.counter("itervox_persist_write_errors_total", "Failed runtime ledger writes (resets on WORKFLOW.md reload).", float64(v.PersistWriteErrors))
 	x.counter("itervox_transport_failures_total", "Retry-exhausted agent runs classified as transport failures (resets on reload).", float64(v.TransportFailures))
