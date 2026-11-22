@@ -11,7 +11,7 @@ import (
 // so a shim adds no daemon start-up work (dotenv, environment scrubbing)
 // to the agent's command and forwards the environment as the agent had it.
 func IsEntrypoint(arg string) bool {
-	return arg == shimEntrypoint || arg == hookEntrypoint
+	return arg == shimEntrypoint || arg == hookEntrypoint || arg == remoteEntrypoint
 }
 
 // Main runs a shim or hook entrypoint and returns the exit status. args
@@ -22,6 +22,9 @@ func IsEntrypoint(arg string) bool {
 // The policy is required: if it cannot be read (the run ended and its
 // directory was removed) the command is refused, never run unguarded.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == remoteEntrypoint {
+		return runRemote(args, stdin, stdout, stderr) // the worker side of InstallRemote
+	}
 	if len(args) < 3 || !IsEntrypoint(args[0]) {
 		_, _ = fmt.Fprintln(stderr, "guardrails: usage: itervox guardrail-shim|guardrail-hook <policy> <name> [args…]")
 		return 2

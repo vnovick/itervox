@@ -360,8 +360,19 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// Patches only (push: daemon): the guardrails strip the agent's forge
 	// credentials and refuse its pushes; the daemon pushes after the run.
 	patchOut := o.runPatchOut(profilesSnap[profileName])
-	guardEnv, guard, guardToken := o.prepareRunGuardrails(ctx, issue.Identifier, runLogID, wsPath, workerHost,
+	guardEnv, guard, guardToken, guardErr := o.prepareRunGuardrails(ctx, issue.Identifier, runLogID, wsPath, workerHost,
 		activeBranchName, o.prBaseBranch(cmp.Or(stackedOn, taskBase)), turnTimeoutMs, maxTurns, patchOut)
+	if guardErr != nil {
+		// Fail closed: guardrails are on and could not be installed on the
+		// SSH worker (guardrails.allow_unguarded_ssh is off).
+		slog.Warn("worker: guardrails unavailable on the SSH worker; run not started",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "worker_host", workerHost, "error", guardErr)
+		if o.logBuf != nil {
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("ERROR", fmt.Sprintf("worker: run not started: %v", guardErr), runLogID))
+		}
+		o.sendExit(ctx, issue, attempt, TerminalFailed, guardErr)
+		return
+	}
 	if guard != nil {
 		ctx = agent.WithRunEnv(ctx, guardEnv)
 		// While this run's agent is blocked in a shim waiting for an
@@ -374,7 +385,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	ctx = withLocalWorkspacePort(ctx, wsPort, workerHost) // #250
 	defer func() {
 		o.agentActionTokens.Revoke(guardToken)
-		guard.Remove()
+		if guard != nil {
+			guard.Remove()
+		}
 	}()
 	if patchOut && guard == nil {
 		// Fail closed: without its guardrails the agent would keep the
@@ -887,8 +900,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 						issue.BranchName = &b
 						activeBranchName = currentBranch
 						workerLog.Info("worker: branch tracked on issue", "branch", currentBranch)
-						if err := guard.SetIssueBranch(currentBranch); err != nil { // #204
-							workerLog.Warn("guardrails: issue branch not updated", "branch", currentBranch, "error", err)
+						if guard != nil {
+							if err := guard.SetIssueBranch(currentBranch); err != nil { // #204
+								workerLog.Warn("guardrails: issue branch not updated", "branch", currentBranch, "error", err)
+							}
 						}
 					}
 				}

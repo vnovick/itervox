@@ -8,6 +8,7 @@ import (
 
 	"github.com/vnovick/itervox/internal/gitexec"
 	"github.com/vnovick/itervox/internal/guardrails"
+	"github.com/vnovick/itervox/internal/guardrails/sshtest"
 )
 
 // TestMain fails the package's test run when a goroutine is still running
@@ -22,6 +23,7 @@ import (
 // The test binary also stands in for the itervox binary in guardrail shims
 // (#204): a shim execs it with a guardrail entrypoint.
 func TestMain(m *testing.M) {
+	sshtest.Main() // started as "ssh": the fake SSH client of the SSH-worker guardrail tests
 	if len(os.Args) > 1 && guardrails.IsEntrypoint(os.Args[1]) {
 		os.Exit(guardrails.Main(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}

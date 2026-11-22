@@ -67,8 +67,9 @@ type GuardrailLanesConfig struct {
 
 // GuardrailsConfig is the guardrails: block (#204): limits on what an agent
 // started by Itervox may do with git, the GitHub/GitLab CLIs and deploy
-// commands. Applied to dispatched local runs and to tmux sessions started
-// with "New session"; never to hand-started sessions. Guidance, not a
+// commands. Applied to dispatched runs (on the daemon's host and, since
+// 0.3.4, on SSH worker hosts) and to tmux sessions started with "New
+// session"; never to hand-started sessions. Guidance, not a
 // sandbox: an agent that calls git by another path bypasses it. Read-only
 // after startup.
 type GuardrailsConfig struct {
@@ -78,6 +79,11 @@ type GuardrailsConfig struct {
 	// branch. Pushes to other branches and tag pushes stay refused.
 	// Default false.
 	AllowForcePush bool
+	// AllowUnguardedSSH lets a run on an SSH worker host start unguarded
+	// (with a warning) when its guardrails cannot be installed there (the
+	// worker is another platform than this itervox binary, or the install
+	// failed). Default false: such a run does not start.
+	AllowUnguardedSSH bool
 	// ApprovalCommands are the command patterns that need a human approval
 	// before they run, whatever the environment: the plain-string entries
 	// of guardrails.approval_commands (and object entries without when_env).
@@ -119,8 +125,9 @@ type GuardrailEnvApproval struct {
 // still match a shimmed program's arguments) but warned about.
 func parseGuardrailsConfig(m map[string]any) GuardrailsConfig {
 	c := GuardrailsConfig{
-		Enabled:        boolField(m, "enabled", true),
-		AllowForcePush: boolField(m, "allow_force_push", false),
+		Enabled:           boolField(m, "enabled", true),
+		AllowForcePush:    boolField(m, "allow_force_push", false),
+		AllowUnguardedSSH: boolField(m, "allow_unguarded_ssh", false),
 	}
 	raw := strSliceField(m, "approval_commands", nil)
 	if v, set := m["approval_commands"]; !set || v == nil {

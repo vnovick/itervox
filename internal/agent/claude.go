@@ -211,7 +211,8 @@ func (c *ClaudeRunner) RunTurn(
 		// stdin open until ssh exits — so the CORE-001 group kill of the local
 		// ssh client on cancel/shutdown is what stops the remote agent.
 		shellCmd := remotePromptAssignment(prompt) + buildShellCmd(command, sessionID, prompt, remotePromptRedirect, permissionMode)
-		shellCmd = itervoxAgentExportPrefix() + shellCmd
+		remoteArgs, remotePrefix := RunEnvFrom(ctx).remoteTurn() // #204 on SSH hosts
+		shellCmd = itervoxAgentExportPrefix() + remotePrefix + shellCmd
 		if logDir != "" {
 			shellCmd = "export CLAUDE_CODE_LOG_DIR=" + ShellQuote(logDir) + "; mkdir -p " + ShellQuote(logDir) + " || true; " + shellCmd
 		}
@@ -224,7 +225,7 @@ func (c *ClaudeRunner) RunTurn(
 		sshArgs := []string{"-T"}
 		sshArgs = append(sshArgs, sshStrictHostOption(workerHost)...)
 		remoteArg, payload := remoteBashInvocation("-lc", shellCmd)
-		sshArgs = append(sshArgs, "-o", "BatchMode=yes", workerHost, remoteArg)
+		sshArgs = append(append(sshArgs, remoteArgs...), "-o", "BatchMode=yes", workerHost, remoteArg)
 		cmd = exec.CommandContext(turnCtx, "ssh", sshArgs...)
 		var err error
 		if stdinFeed, err = attachRemoteStdin(cmd, payload); err != nil {

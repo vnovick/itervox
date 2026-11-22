@@ -798,7 +798,8 @@ sessions:
 
 Limits on what agents Itervox starts may do with git, the GitHub and GitLab
 CLIs and deploy commands (#204). They apply to dispatched runs on the
-daemon's host and to tmux sessions started with **New session**; never to
+daemon's host and on SSH worker hosts (installed on the worker per run,
+0.3.4), and to tmux sessions started with **New session**; never to
 sessions started by hand. Read at startup. See the
 [Guardrails guide](https://itervox.dev/guides/guardrails/).
 
@@ -806,11 +807,15 @@ sessions started by hand. Read at startup. See the
 |---|---|---|---|
 | `enabled` | bool | `true` | Pushes only to the issue branch (no tags, no protected branches), no `gh pr merge` / `glab mr merge` / merge API calls / merges into the default branch, and a human approval before an `approval_commands` command runs. |
 | `allow_force_push` | bool | `false` | Let an agent force-push and delete its own issue branch. Other branches and tags stay refused. |
+| `allow_unguarded_ssh` | bool | `false` | A run on an SSH worker whose guardrails cannot be installed there (another OS/architecture than the daemon's binary, a failed upload or install) does not start; `true` runs it unguarded with a warning. |
 | `approval_commands` | []string | `vercel --prod`, `fly deploy`, `kubectl apply`, `terraform apply`, `gcloud deploy`, `npm publish`, `cargo publish` | Glob-token patterns: the first token matches the program, the rest must match arguments in order (others may sit between). A list replaces the defaults; `[]` turns approvals off. |
 
 Guidance, not a sandbox: an agent that runs git by an absolute path or
-rewrites its own `PATH` / environment is not stopped. Runs on SSH worker
-hosts are not guarded in v1.
+rewrites its own `PATH` / environment is not stopped. On an SSH worker the
+daemon uploads its own binary (same OS and architecture required) to
+`~/.cache/itervox/guardrails/`, prepares the run's shims and hooks there and
+reverse-forwards a Unix socket per turn for approvals and reports; see the
+[Guardrails guide](https://itervox.dev/guides/guardrails/#on-ssh-worker-hosts).
 
 ---
 

@@ -27,6 +27,10 @@ type RunEnv struct {
 	// that exports a token does not hand it back. Names must be shell
 	// identifiers; others are ignored.
 	Unset []string
+	// Remote is the environment of an SSH worker's turns (#204 on SSH
+	// hosts; ssh_remote_env.go). The fields above apply to local turns
+	// only: a local cmd.Env never reaches the remote shell.
+	Remote *RemoteEnv
 }
 
 type runEnvKey struct{}
