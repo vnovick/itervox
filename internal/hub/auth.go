@@ -31,6 +31,9 @@ const (
 	hubPublic = "public"
 	// hubMemberRoute: the proxy; the hub checks the member's own table.
 	hubMemberRoute = "member"
+	// hubTicket: the live terminal's socket (terminal.go), outside the
+	// bearer group: a ticket the hub brokered is its credential.
+	hubTicket = "ticket"
 )
 
 // hubRouteScopes is the scope declaration of every hub route, keyed by
@@ -52,6 +55,9 @@ var hubRouteScopes = map[string]string{
 	"PUT /hub/api/v1/notifications":       string(apitokens.ScopeAdmin),
 	"POST /hub/api/v1/notifications/test": string(apitokens.ScopeOperator),
 	"* /hub/p/{project}/api/*":            hubMemberRoute,
+	// #298 follow-up: the read-only live terminal's socket; its ticket is
+	// brokered through the proxy route above (operator).
+	"GET /hub/p/{project}/api/v1/sessions/{id}/terminal": hubTicket,
 	// #231 phones: the VAPID public key is viewer; subscribing and managing
 	// push devices is operator (a paired phone's token); pairing codes and
 	// paired devices are admin. The exchange is the one public write: the

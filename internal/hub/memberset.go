@@ -85,6 +85,7 @@ func (s *memberSet) refresh(ctx context.Context, records []MemberRecord) {
 			logMemberProblem(st)
 		}
 		s.loadSummary(ctx, &st)
+		s.client.checkCached(rec)
 		next[st.name] = &st
 	}
 

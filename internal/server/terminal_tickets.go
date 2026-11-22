@@ -53,7 +53,19 @@ type terminalTicket struct {
 	// ("" for the bootstrap and unauthenticated principals), so a rotation
 	// — the secret that minted it is dead — ends the terminal too.
 	tokenHash string
+	// hubCaller is the person a ticket minted by the hub's member token is
+	// for (terminal_hub.go); "" for every other ticket.
+	hubCaller string
 	expires   time.Time
+}
+
+// actor names the ticket's caller in the audit log and the feed: the hub
+// caller ("hub:<name>") for a ticket the hub minted, else its principal.
+func (t terminalTicket) actor() string {
+	if t.hubCaller != "" {
+		return "hub:" + t.hubCaller
+	}
+	return t.principal.actor()
 }
 
 // requiredScope is the scope the ticket's mode needs: admin to type into
@@ -77,8 +89,9 @@ func newTerminalTickets() *terminalTickets {
 }
 
 // mint stores a new ticket and returns its secret and expiry. tokenHash is
-// the minting stored token's hash ("" otherwise).
-func (s *terminalTickets) mint(sessionID string, write bool, p Principal, tokenHash string) (string, time.Time, error) {
+// the minting stored token's hash ("" otherwise); hubCaller the person a
+// hub-minted ticket is for ("" otherwise).
+func (s *terminalTickets) mint(sessionID string, write bool, p Principal, tokenHash, hubCaller string) (string, time.Time, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", time.Time{}, err
@@ -96,7 +109,8 @@ func (s *terminalTickets) mint(sessionID string, write bool, p Principal, tokenH
 		return "", time.Time{}, errTicketStoreFull
 	}
 	expires := now.Add(terminalTicketTTL)
-	s.byHash[sha256.Sum256([]byte(secret))] = terminalTicket{sessionID: sessionID, write: write, principal: p, tokenHash: tokenHash, expires: expires}
+	s.byHash[sha256.Sum256([]byte(secret))] = terminalTicket{sessionID: sessionID, write: write, principal: p,
+		tokenHash: tokenHash, hubCaller: hubCaller, expires: expires}
 	return secret, expires, nil
 }
 

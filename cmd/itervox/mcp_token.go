@@ -66,26 +66,26 @@ type storedTokenSpec struct {
 	name  string // the token's name in the store
 	actor string // the audit actor of create / revoke
 	label string // the client, in log lines
+	// kind is the token's apitokens Kind ("" or apitokens.KindHub); a
+	// remembered token of another kind is replaced, one with no kind is
+	// re-stamped.
+	kind string
 }
 
 // ensureStoredToken returns the secret of the token spec describes, of
 // scope, creating one through the project's token store and remembering it
 // in .itervox/<spec.file> (mode 0600) when there is no usable one. A
 // remembered token that was revoked, expired, rotated or has another scope
-// is replaced, the old one revoked when it is still stored. The secret is
-// never printed or logged.
+// or kind is replaced, the old one revoked when it is still stored; one
+// whose kind is only missing (dropped by an older member's rewrite) gets
+// its kind back (apitokens.Store.SetKind) and keeps its secret. The
+// secret is never printed or logged.
 func ensureStoredToken(workflowPath string, spec storedTokenSpec, scope apitokens.Scope) (secret string, created bool, err error) {
 	store := apitokens.Open(apitokens.Path(workflowPath))
 	path := storedTokenPath(workflowPath, spec.file)
-	var old mcpTokenFile
-	raw, rerr := os.ReadFile(path)
-	switch {
-	case rerr == nil:
-		if json.Unmarshal(raw, &old) != nil {
-			old = mcpTokenFile{}
-		}
-	case !errors.Is(rerr, fs.ErrNotExist):
-		return "", false, fmt.Errorf("read %s: %w", path, rerr)
+	old, err := readRememberedToken(path)
+	if err != nil {
+		return "", false, err
 	}
 	tokens, err := store.List()
 	if err != nil {
@@ -94,11 +94,38 @@ func ensureStoredToken(workflowPath string, spec storedTokenSpec, scope apitoken
 	stored := slices.IndexFunc(tokens, func(t apitokens.Token) bool { return old.ID != "" && t.ID == old.ID })
 	if stored >= 0 {
 		t := tokens[stored]
-		if old.Scope == scope && t.Scope == scope && !t.Expired(time.Now()) && t.Hash == apitokens.HashSecret(old.Secret) {
+		usable := rememberedTokenUsable(old, t, scope)
+		if usable && t.Kind == spec.kind {
 			return old.Secret, false, nil
 		}
+		// Our own token (its secret is the one remembered) with its kind
+		// missing: a member on an older binary rewrote tokens.json (every
+		// lastUsed flush, create or revoke) and dropped the field it does
+		// not know. Re-stamp the kind and keep the secret: replacing the
+		// token would revoke the old one and close every open terminal it
+		// carries, again after every such rewrite. Hub attribution (the
+		// caller header a member trusts only on a KindHub token) needs the
+		// member on a binary that keeps the field.
+		if usable && t.Kind == "" && spec.kind != "" {
+			_, err := store.SetKind(t.ID, spec.kind, spec.actor)
+			switch {
+			case err == nil:
+				return old.Secret, false, nil
+			case !errors.Is(err, apitokens.ErrNotFound):
+				// The secret still works; only attribution waits for the
+				// next attempt.
+				slog.Warn(spec.label+": could not restore the stored token's kind", "id", t.ID, "error", err)
+				return old.Secret, false, nil
+			}
+			stored = -1 // revoked meanwhile: create a new one, nothing to revoke
+		}
 	}
-	t, secret, err := store.Create(spec.name, scope, nil, spec.actor)
+	var t apitokens.Token
+	if spec.kind != "" {
+		t, secret, err = store.CreateKind(spec.name, scope, spec.kind, spec.actor)
+	} else {
+		t, secret, err = store.Create(spec.name, scope, nil, spec.actor)
+	}
 	if err != nil {
 		return "", false, fmt.Errorf("create the %s token: %w", spec.label, err)
 	}
@@ -118,6 +145,66 @@ func ensureStoredToken(workflowPath string, spec storedTokenSpec, scope apitoken
 	slog.Info(spec.label+": created a stored token (itervox token list shows it)",
 		"id", t.ID, "name", t.Name, "scope", string(t.Scope), "file", path)
 	return secret, true, nil
+}
+
+// readRememberedToken reads a storedTokenSpec file; a missing or
+// unparsable file is the zero value (no remembered token).
+func readRememberedToken(path string) (mcpTokenFile, error) {
+	var old mcpTokenFile
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if json.Unmarshal(raw, &old) != nil {
+			return mcpTokenFile{}, nil
+		}
+		return old, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return mcpTokenFile{}, nil
+	default:
+		return mcpTokenFile{}, fmt.Errorf("read %s: %w", path, err)
+	}
+}
+
+// rememberedTokenUsable reports whether the stored token t is still the
+// remembered one (its secret hashes to t's hash) and is of scope, unexpired.
+func rememberedTokenUsable(old mcpTokenFile, t apitokens.Token, scope apitokens.Scope) bool {
+	return old.Scope == scope && t.Scope == scope && !t.Expired(time.Now()) &&
+		t.Hash == apitokens.HashSecret(old.Secret)
+}
+
+// restampStoredToken re-stamps spec.kind on the remembered token of scope
+// when a member on an older binary dropped it (an old-format rewrite of
+// tokens.json), without waiting for a look-up: the hub calls it for every
+// member token it holds cached, on each member refresh. It only ever calls
+// apitokens.Store.SetKind: it never creates, replaces or revokes a token
+// and keeps the secret, so the cached secret stays valid and no open
+// terminal closes. A token that is gone, rotated, expired, of another
+// scope or kind is left alone (the next look-up after the member's 401
+// replaces it). restamped reports a re-stamp.
+func restampStoredToken(workflowPath string, spec storedTokenSpec, scope apitokens.Scope) (restamped bool, err error) {
+	if spec.kind == "" {
+		return false, nil
+	}
+	old, err := readRememberedToken(storedTokenPath(workflowPath, spec.file))
+	if err != nil || old.ID == "" {
+		return false, err
+	}
+	store := apitokens.Open(apitokens.Path(workflowPath))
+	tokens, err := store.List()
+	if err != nil {
+		return false, fmt.Errorf("read the token store: %w", err)
+	}
+	i := slices.IndexFunc(tokens, func(t apitokens.Token) bool { return t.ID == old.ID })
+	if i < 0 || tokens[i].Kind != "" || !rememberedTokenUsable(old, tokens[i], scope) {
+		return false, nil
+	}
+	if _, err := store.SetKind(old.ID, spec.kind, spec.actor); err != nil {
+		if errors.Is(err, apitokens.ErrNotFound) {
+			return false, nil // revoked meanwhile: the next look-up replaces it
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // mcpTokenPropagation bounds how long `itervox mcp` waits for a running

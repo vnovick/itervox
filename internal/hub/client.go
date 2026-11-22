@@ -20,6 +20,13 @@ import (
 // mcp` keeps its token (#216). The secret is never printed or logged.
 type TokenFunc func(m MemberRecord, scope apitokens.Scope) (string, error)
 
+// TokenCheckFunc checks the hub's cached member token of scope for member m
+// in the member's own token store and repairs what it can without changing
+// the secret: cmd/itervox re-stamps the token's hub kind when a member on an
+// older binary rewrote tokens.json and dropped it (#334). It never creates,
+// replaces or revokes a token, so the cached secret stays valid.
+type TokenCheckFunc func(m MemberRecord, scope apitokens.Scope)
+
 // memberResponseLimit bounds a member response the hub reads itself (feed
 // pages, summaries, route tables). Proxied responses stream unbounded.
 const memberResponseLimit = 8 << 20
@@ -33,16 +40,35 @@ const tokenRetryDelay = 300 * time.Millisecond
 type memberClient struct {
 	http    *http.Client
 	tokenFn TokenFunc
+	checkFn TokenCheckFunc // nil: cached tokens are not re-checked
 
 	mu    sync.Mutex
 	cache map[string]string // workflow + "\x00" + scope → secret
 }
 
-func newMemberClient(fn TokenFunc) *memberClient {
+func newMemberClient(fn TokenFunc, check TokenCheckFunc) *memberClient {
 	return &memberClient{
 		http:    &http.Client{Timeout: 10 * time.Second},
 		tokenFn: fn,
+		checkFn: check,
 		cache:   map[string]string{},
+	}
+}
+
+// checkCached runs the TokenCheckFunc for every token of m the hub holds
+// cached (on each member refresh, the discovery goroutine). A token not
+// cached is checked by its next look-up anyway.
+func (c *memberClient) checkCached(m MemberRecord) {
+	if c.checkFn == nil || !m.TokenRequired {
+		return
+	}
+	for _, scope := range []apitokens.Scope{apitokens.ScopeViewer, apitokens.ScopeOperator} {
+		c.mu.Lock()
+		_, ok := c.cache[tokenKey(m, scope)]
+		c.mu.Unlock()
+		if ok {
+			c.checkFn(m, scope)
+		}
 	}
 }
 
@@ -150,9 +176,18 @@ func (c *memberClient) getOnce(ctx context.Context, m MemberRecord, scope apitok
 // do calls method path on m with the token of scope and a JSON body (nil:
 // none). A 401 drops the cached token and retries once with a fresh one.
 func (c *memberClient) do(ctx context.Context, m MemberRecord, scope apitokens.Scope, method, path string, body []byte) (memberReply, error) {
-	var hdr http.Header
+	return c.doHeaders(ctx, m, scope, method, path, body, nil)
+}
+
+// doHeaders is do with extra request headers (the terminal ticket's hub
+// caller, terminal.go).
+func (c *memberClient) doHeaders(ctx context.Context, m MemberRecord, scope apitokens.Scope, method, path string, body []byte, extra http.Header) (memberReply, error) {
+	hdr := extra.Clone()
 	if body != nil {
-		hdr = http.Header{"Content-Type": {"application/json"}}
+		if hdr == nil {
+			hdr = http.Header{}
+		}
+		hdr.Set("Content-Type", "application/json")
 	}
 	rep, err := c.doOnce(ctx, m, scope, method, path, body, hdr)
 	if err != nil || rep.status != http.StatusUnauthorized || !m.TokenRequired {
