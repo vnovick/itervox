@@ -66,17 +66,32 @@ func (t cliTurn) shellCmd(promptTail string) string {
 	if command == "" {
 		command = t.fallback
 	}
-	if t.subcommand != "" {
-		command = insertAfterProgram(command, t.subcommand)
-	}
 	var b strings.Builder
-	b.WriteString(command)
 	for _, a := range t.args {
 		b.WriteString(" ")
 		b.WriteString(shellWord(a))
 	}
 	b.WriteString(promptTail)
-	return b.String()
+	return spliceTurnArgs(command, t.subcommand, b.String())
+}
+
+// spliceTurnArgs is the turn's command line: command with subcommand after
+// the program of its final simple command and tail (the turn's arguments,
+// with their leading space) after that command's last word
+// (config.SpliceAgentArgs), so `{ source ~/.nvm/nvm.sh; claude; }` gets
+// its flags inside the group. A command config validation would refuse
+// (config.ValidateAgentCommand; one that reached a runner without it, e.g.
+// from a caller that skipped validation) keeps the plain form: tail
+// appended to the whole command.
+func spliceTurnArgs(command, subcommand, tail string) string {
+	command = strings.TrimSpace(command)
+	if out, err := config.SpliceAgentArgs(command, subcommand, tail); err == nil {
+		return out
+	}
+	if subcommand != "" {
+		command = insertAfterProgram(command, subcommand)
+	}
+	return command + tail
 }
 
 // programOf is the program a command runs (config.FirstCommandToken), or

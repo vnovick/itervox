@@ -424,14 +424,23 @@ func interactiveCommand(backend, configured string, mode agent.PermissionMode, p
 	if _, err := lookPath(first); err != nil {
 		return "", fmt.Errorf("%s was not found on the daemon's PATH", first)
 	}
-	parts := []string{cmd}
+	var parts []string
 	for _, f := range agent.InteractivePermissionFlags(backend, mode) {
 		parts = append(parts, shellQuote(f))
 	}
 	if p := strings.TrimSpace(prompt); p != "" {
 		parts = append(parts, shellQuote(p))
 	}
-	return strings.Join(parts, " "), nil
+	if len(parts) == 0 {
+		return cmd, nil
+	}
+	tail := " " + strings.Join(parts, " ")
+	// A `{ source ~/.nvm/nvm.sh; claude; }` command takes the flags after
+	// its final command, as the runners do (config.SpliceAgentArgs).
+	if spliced, err := config.SpliceAgentArgs(cmd, "", tail); err == nil {
+		return spliced, nil
+	}
+	return cmd + tail, nil
 }
 
 // shellQuote single-quotes s for a POSIX shell.

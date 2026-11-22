@@ -220,6 +220,9 @@ func (a *orchestratorAdapter) checkProfileSetLoads(profiles map[string]config.Ag
 	if a.cfg == nil {
 		return nil
 	}
+	if err := config.ValidateAgentCommands("", profiles); err != nil {
+		return fmt.Errorf("profile save refused: %w", err)
+	}
 	if err := config.ValidateBackendFallback(a.cfg.Agent.BackendFallback, profiles, a.cfg.Agent.Command); err != nil {
 		return fmt.Errorf("profile save refused: the next start would reject the config: %w; change agent.backend_fallback first", err)
 	}

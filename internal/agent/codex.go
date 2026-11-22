@@ -266,7 +266,6 @@ func buildCodexDirectArgs(sessionID *string, workspacePath string, mode Permissi
 // on codex's stdin (localPromptRedirect or remotePromptRedirect).
 func buildCodexShellCmd(command string, sessionID *string, workspacePath, promptRedirect string, mode PermissionMode) string {
 	var b strings.Builder
-	b.WriteString(command)
 	if workspacePath != "" {
 		b.WriteString(" -C ")
 		b.WriteString(ShellQuote(workspacePath))
@@ -281,7 +280,7 @@ func buildCodexShellCmd(command string, sessionID *string, workspacePath, prompt
 		b.WriteString(ShellQuote(*sessionID))
 		b.WriteString(" -")
 		b.WriteString(promptRedirect)
-		return b.String()
+		return spliceTurnArgs(command, "", b.String())
 	}
 	b.WriteString(" --json")
 	for _, f := range codexPermissionFlags(mode) {
@@ -289,5 +288,5 @@ func buildCodexShellCmd(command string, sessionID *string, workspacePath, prompt
 	}
 	b.WriteString(" --skip-git-repo-check -")
 	b.WriteString(promptRedirect)
-	return b.String()
+	return spliceTurnArgs(command, "", b.String())
 }

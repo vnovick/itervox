@@ -235,6 +235,45 @@ agent:
 
 The `backend` field is an optional hint that overrides automatic runner detection. Use it when the command string is a wrapper script that Itervox cannot introspect.
 
+### Commands with setup steps
+
+A command runs through your login shell (or, on an SSH worker, the remote
+`bash`), and Itervox adds the runner's own flags to it: `--output-format
+stream-json …` for Claude Code, `exec --json …` for Codex, `run …` for
+OpenCode. A command can do some setup first:
+
+```yaml
+profiles:
+  nvm:
+    command: "{ source ~/.nvm/nvm.sh; claude --model claude-sonnet-4-6; }"
+  sub:
+    command: cd packages/app && codex
+  scoped:
+    command: (cd services/api && opencode --model local/qwen)
+```
+
+When the command is not a single program, Itervox puts the flags after the
+last word of its final command, inside any `{ …; }` group or `( … )`
+subshell: `{ source ~/.nvm/nvm.sh; claude --model m; }` runs as
+`{ source ~/.nvm/nvm.sh; claude --model m --output-format …; }`. OpenCode's
+`run` goes right after the final command's program. The backend is read from
+that final command too, so the examples above need no `backend:` field.
+
+A command where that place is not clear is refused when the config loads
+(and when the dashboard saves the profile), with the reason:
+
+- the final command is in a pipeline (`claude | tee log`), runs in the
+  background (`claude &`), or runs only when an earlier one fails
+  (`setup || claude`);
+- `claude`, `codex`, `opencode` or `cursor-agent` runs, but not last
+  (`claude; echo done`);
+- `if`, `for`, `while`, `case` and other compound commands, here-documents,
+  a group closed without `;` (`{ claude }`), unbalanced quotes or brackets.
+
+For any of those, put the setup in a wrapper script that ends in
+`exec claude "$@"` (or `exec codex "$@"`, …), use the script as the
+command, and set `backend:` so Itervox knows which runner it is.
+
 ### Profiles on a local model
 
 A profile can talk to a model server on your own machine instead of its
