@@ -19,6 +19,11 @@ import (
 // knows is kept, the kind it does not know is dropped.
 func stripKinds(t *testing.T, path string) {
 	t.Helper()
+	// An older member writes under the store's lock too; without it this
+	// rewrite races the member's own writes (a lastUsed flush read before
+	// the strip writes the kind back after it).
+	unlock := lockTokenStore(t, path)
+	defer unlock()
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var f map[string]any
@@ -98,9 +103,12 @@ func TestHubRestampsACachedMemberTokensKindOnRefresh(t *testing.T) {
 
 		eventually(t, 5*time.Second, func() bool {
 			tok, ok := apitokens.Open(m.store.FilePath()).Authenticate(viewer)
-			return ok && tok.Kind == apitokens.KindHub
+			return ok && tok.Kind == apitokens.KindHub && restamps.Load() >= int32(round+1)
 		}, "the refresh re-stamps the cached token's kind")
-		assert.Equal(t, int32(round+1), restamps.Load())
+		// Two refreshes can overlap (a rescan and a registry change) and
+		// both find the kind empty; SetKind is idempotent, so both succeed.
+		// What matters is that each rewrite was answered with a re-stamp.
+		assert.GreaterOrEqual(t, restamps.Load(), int32(round+1))
 		assert.Equal(t, int32(1), lookups.Load(), "no cache miss: the cached secret is kept")
 		reader := apitokens.Open(m.store.FilePath())
 		tok, ok := reader.Authenticate(viewer)
