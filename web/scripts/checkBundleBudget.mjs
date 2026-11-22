@@ -50,6 +50,14 @@ export const BUDGET = {
       forbid: [],
     },
     {
+      // The issue detail's Evidence tab (~9.3 KiB): lazy, loaded only when
+      // the tab opens, and never a carrier of a heavy dependency.
+      name: 'IssueEvidenceTab',
+      pattern: /^IssueEvidenceTab-[\w-]+\.js$/,
+      maxBytes: 16 * KB,
+      forbid: ['xterm-helper-textarea', 'react-flow__'],
+    },
+    {
       // #298: the entry and page chunks never carry the terminal renderer.
       name: 'index',
       pattern: /^index-[\w-]+\.js$/,

@@ -31,8 +31,10 @@ import {
 } from '../../queries/issues';
 import { EMPTY_DEPENDENCY_ATTENTION, EMPTY_STATES } from '../../utils/constants';
 import { RUN_CONTEXT_CAPABILITY } from '../../queries/changes';
+import { EVIDENCE_CAPABILITY } from '../../queries/evidence';
 import { IssueNowPanel } from './changes/IssueNowPanel';
 import { IssueDetailTabs, type IssueDetailTab } from './changes/IssueDetailTabs';
+import { issueDetailTabList } from './changes/issueDetailTabList';
 import { plainButtonClass } from '../ui/button/buttonRecipe';
 import { focusPathFor } from '../../hooks/useFocusIssue';
 import { Link } from 'react-router';
@@ -41,6 +43,8 @@ import { Link } from 'react-router';
 const IssueChangesTab = lazy(() => import('./changes/IssueChangesTab'));
 // #251: only a New task has instructions; kept out of the initial bundle.
 const IssueTaskInstructions = lazy(() => import('./IssueTaskInstructions'));
+// The evidence report: loaded only when the Evidence tab opens.
+const IssueEvidenceTab = lazy(() => import('./evidence/IssueEvidenceTab'));
 
 // CORE-070 — tracker.working_state default (internal/config/config.go), used
 // only when the snapshot does not publish workingState (older daemons).
@@ -87,6 +91,10 @@ export default function IssueDetailSlide() {
   const runContextSupported = useItervoxStore(
     (s) => s.snapshot?.capabilities?.includes(RUN_CONTEXT_CAPABILITY) ?? false,
   );
+  const evidenceSupported = useItervoxStore(
+    (s) => s.snapshot?.capabilities?.includes(EVIDENCE_CAPABILITY) ?? false,
+  );
+  const tabs = issueDetailTabList(runContextSupported, evidenceSupported);
   // Every issue opens on its details: the chosen tab is remembered per
   // identifier, not carried over to the next issue.
   const [tabFor, setTabFor] = useState<{ id: string | null; tab: IssueDetailTab }>({
@@ -150,20 +158,24 @@ export default function IssueDetailSlide() {
       {/* Title on its own line; the badges sit inline after the identifier. */}
       <IssueDetailHeader {...headerProps} badges={false} />
 
-      {runContextSupported && <IssueDetailTabs tab={tab} onChange={setTab} />}
+      {tabs.length > 0 && <IssueDetailTabs tab={tab} onChange={setTab} tabs={tabs} />}
 
-      {runContextSupported && tab === 'changes' ? (
+      {tab !== 'details' && tabs.includes(tab) ? (
         <div
           className="flex-1 overflow-y-auto px-6 py-4"
           role="tabpanel"
-          aria-labelledby="issue-tab-changes"
+          aria-labelledby={`issue-tab-${tab}`}
         >
-          <Suspense fallback={<p className="text-theme-muted text-sm">Loading changes…</p>}>
-            <IssueChangesTab
-              identifier={issue.identifier}
-              live={isRunning}
-              issueState={issue.state}
-            />
+          <Suspense fallback={<p className="text-theme-muted text-sm">Loading {tab}…</p>}>
+            {tab === 'changes' ? (
+              <IssueChangesTab
+                identifier={issue.identifier}
+                live={isRunning}
+                issueState={issue.state}
+              />
+            ) : (
+              <IssueEvidenceTab identifier={issue.identifier} live={isRunning} />
+            )}
           </Suspense>
         </div>
       ) : (

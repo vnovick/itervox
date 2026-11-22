@@ -89,6 +89,15 @@ describe('checkBundleBudget', () => {
     expect(term?.maxBytes).toBeLessThanOrEqual(300 * KB);
   });
 
+  it('keeps the Evidence tab a small lazy chunk', () => {
+    const big = [...healthy, chunk('IssueEvidenceTab-q.js', 17 * KB)];
+    expect(checkBundleBudget(big, INDEX).violations).toContain(
+      'IssueEvidenceTab chunk IssueEvidenceTab-q.js is 17.0 KiB, over 16.0 KiB',
+    );
+    const ok = [...healthy, chunk('IssueEvidenceTab-q.js', 10 * KB)];
+    expect(checkBundleBudget(ok, INDEX).violations).toEqual([]);
+  });
+
   it('keeps the #211 acceptance caps', () => {
     const dashboard = BUDGET.chunks.find((c) => c.name === 'Dashboard');
     const cron = BUDGET.chunks.find((c) => c.name === 'CronWidget');
