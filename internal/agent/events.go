@@ -8,10 +8,18 @@ import (
 )
 
 // UsageSnapshot holds token counts from a stream-json usage payload.
+//
+// CacheReadTokens / CacheCreationTokens are Claude's prompt-cache counts
+// (`cache_read_input_tokens` / `cache_creation_input_tokens`). They are
+// taken from the turn's result event only (its usage is the turn's total;
+// assistant messages repeat per-message usage), and they are kept out of
+// InputTokens/TotalTokens so the existing token totals do not change.
 type UsageSnapshot struct {
-	InputTokens       int `json:"input_tokens"`
-	CachedInputTokens int `json:"cached_input_tokens"`
-	OutputTokens      int `json:"output_tokens"`
+	InputTokens         int `json:"input_tokens"`
+	CachedInputTokens   int `json:"cached_input_tokens"`
+	OutputTokens        int `json:"output_tokens"`
+	CacheReadTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationTokens int `json:"cache_creation_input_tokens"`
 }
 
 // ToolCall represents a single tool_use content block from an assistant message.
@@ -138,6 +146,12 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		ev.IsError = raw.IsError || raw.Subtype == "error"
 		ev.ResultText = raw.Result
 		ev.CostUSD = raw.TotalCostUSD.ptr()
+		if raw.Usage != nil {
+			// Only the prompt-cache counts: input and output keep coming
+			// from the assistant messages, as before.
+			ev.Usage.CacheReadTokens = raw.Usage.CacheReadTokens
+			ev.Usage.CacheCreationTokens = raw.Usage.CacheCreationTokens
+		}
 		ev.Limit = parseResultLimit(raw, ev.IsError, time.Now())
 		if ev.IsError && !ev.Limit.Terminal() {
 			ev.IsInputRequired = isInputRequiredMsg(raw.Result)

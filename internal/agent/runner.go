@@ -19,12 +19,17 @@ type TurnResult struct {
 	CachedInputTokens int
 	OutputTokens      int
 	TotalTokens       int
-	LastText          string   // most recent assistant text block
-	AllTextBlocks     []string // all assistant text blocks across the turn, for tracker comments
-	Failed            bool
-	InputRequired     bool
-	FailureText       string // result field from the error event, or stderr output
-	ResultText        string // result field from a successful result event
+	// CacheReadTokens / CacheCreationTokens are Claude's prompt-cache
+	// counts from the turn's result event; zero for a backend that reports
+	// none. They are not part of TotalTokens.
+	CacheReadTokens     int
+	CacheCreationTokens int
+	LastText            string   // most recent assistant text block
+	AllTextBlocks       []string // all assistant text blocks across the turn, for tracker comments
+	Failed              bool
+	InputRequired       bool
+	FailureText         string // result field from the error event, or stderr output
+	ResultText          string // result field from a successful result event
 	// OversizeLines counts stdout lines the stream reader skipped without
 	// buffering them (CORE-002): a non-terminal line over
 	// maxNonTerminalLineBytes, or a line whose top-level "type" is not found
@@ -143,6 +148,8 @@ func ApplyEvent(r TurnResult, ev StreamEvent) TurnResult {
 		r.CachedInputTokens += ev.Usage.CachedInputTokens
 		r.OutputTokens += ev.Usage.OutputTokens
 		r.TotalTokens = r.InputTokens + r.OutputTokens
+		r.CacheReadTokens += ev.Usage.CacheReadTokens
+		r.CacheCreationTokens += ev.Usage.CacheCreationTokens
 		if ev.SessionID != "" {
 			r.SessionID = ev.SessionID
 		}
