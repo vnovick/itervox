@@ -123,9 +123,12 @@ func hubConfigFor(cfg *config.Config, workflowPath string) (hub.Config, error) {
 		Workflow:    wf,
 		Members:     func() []hub.MemberRecord { return hubMembersIn(regDir) },
 		MemberToken: hubMemberToken,
-		SPA:         server.DashboardHandler(),
-		Notifiers:   []hub.Notifier{hub.LogNotifier{}},
-		Channels:    hubChannels(cfg, stateDir), // #230: Slack
+		// #334: re-stamp a cached member token's stripped kind on each
+		// member refresh, not only on a cache miss.
+		MemberTokenCheck: hubCheckMemberToken,
+		SPA:              server.DashboardHandler(),
+		Notifiers:        []hub.Notifier{hub.LogNotifier{}},
+		Channels:         hubChannels(cfg, stateDir), // #230: Slack
 		// #231: a dashboard hosted elsewhere may call the hub.
 		AllowedOrigins: cfg.Server.AllowedOrigins,
 	}, nil
@@ -159,7 +162,17 @@ var hubTokenMu sync.Mutex
 func hubMemberToken(m hub.MemberRecord, scope apitokens.Scope) (string, error) {
 	hubTokenMu.Lock()
 	defer hubTokenMu.Unlock()
-	secret, _, err := ensureStoredToken(m.Workflow, storedTokenSpec{
+	secret, _, err := ensureStoredToken(m.Workflow, hubTokenSpec(scope), scope)
+	if err != nil {
+		return "", err
+	}
+	logging.RegisterSecret(secret)
+	return secret, nil
+}
+
+// hubTokenSpec is the stored-token spec of the hub's member token of scope.
+func hubTokenSpec(scope apitokens.Scope) storedTokenSpec {
+	return storedTokenSpec{
 		file:  "hub-" + string(scope) + "-token.json",
 		name:  "hub-" + string(scope),
 		actor: "itervox hub",
@@ -167,10 +180,24 @@ func hubMemberToken(m hub.MemberRecord, scope apitokens.Scope) (string, error) {
 		// The member trusts the hub caller header (who is watching a
 		// terminal through the hub) only on a token of this kind.
 		kind: apitokens.KindHub,
-	}, scope)
-	if err != nil {
-		return "", err
 	}
-	logging.RegisterSecret(secret)
-	return secret, nil
+}
+
+// hubCheckMemberToken re-stamps apitokens.KindHub on the hub's cached member
+// token of scope when an older member's rewrite of tokens.json dropped it
+// (hub.Config.MemberTokenCheck, run on each member refresh), so attribution
+// does not wait for a cache miss. Every member comes from this machine's
+// daemon registry, so its token store is a local file; a store the hub
+// cannot read (another user's, a permission error) is only logged at debug,
+// and the kind then comes back on the next look-up (a 401 or a hub restart).
+func hubCheckMemberToken(m hub.MemberRecord, scope apitokens.Scope) {
+	hubTokenMu.Lock()
+	defer hubTokenMu.Unlock()
+	restamped, err := restampStoredToken(m.Workflow, hubTokenSpec(scope), scope)
+	switch {
+	case err != nil:
+		slog.Debug("hub: could not check the member token's kind", "workflow", m.Workflow, "scope", string(scope), "error", err)
+	case restamped:
+		slog.Info("hub: restored the member token's kind after an older member's rewrite", "workflow", m.Workflow, "scope", string(scope))
+	}
 }

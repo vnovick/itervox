@@ -314,7 +314,10 @@ only the event loop mutates them.
   the hub mints a read ticket with its operator member token, which is
   marked `apitokens.KindHub` (set only at hub enrolment: `CreateKind`, and
   `SetKind` to re-stamp a mark an older member's rewrite dropped, keeping
-  the secret — never replace the token for a missing kind); the member trusts
+  the secret — never replace the token for a missing kind; besides each
+  look-up, `hub.Config.MemberTokenCheck` → `hubCheckMemberToken` re-stamps
+  every cached member token on each member refresh, from the discovery
+  goroutine, and never creates or revokes); the member trusts
   the caller header (`X-Itervox-Hub-Caller`) only on a KindHub token, never
   issues one a write ticket, and names the person (`hub:<name>`). The hub
   checks the socket's Origin itself, dials the member with no browser

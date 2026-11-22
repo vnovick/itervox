@@ -68,7 +68,7 @@ func newHub(cfg Config) (*Hub, error) {
 	if err := ensurePrivateDir(cfg.StateDir); err != nil {
 		return nil, err
 	}
-	client := newMemberClient(cfg.MemberToken)
+	client := newMemberClient(cfg.MemberToken, cfg.MemberTokenCheck)
 	h := &Hub{
 		cfg:     cfg,
 		tokens:  apitokens.Open(filepath.Join(cfg.StateDir, TokenStoreFileName)),

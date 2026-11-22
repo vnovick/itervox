@@ -120,6 +120,11 @@ type Config struct {
 	Members func() []MemberRecord
 	// MemberToken returns the hub's stored token of scope for a member.
 	MemberToken TokenFunc
+	// MemberTokenCheck, when set, checks each cached member token on every
+	// member refresh (Rescan, or a registry change): cmd/itervox re-stamps
+	// a hub kind an older member's rewrite dropped, keeping the secret, so
+	// attribution does not wait for a cache miss (#334).
+	MemberTokenCheck TokenCheckFunc
 	// SPA serves the embedded dashboard (index.html fallback included).
 	SPA http.Handler
 	// Notifiers receive the merged feed.

@@ -231,3 +231,56 @@ func TestHubMemberTokenKindRestampedAfterAnOldFormatRewrite(t *testing.T) {
 		assert.Len(t, list, 1, "nothing created, nothing revoked")
 	}
 }
+
+// TestHubCheckMemberTokenRestampsWhileCached (#334): the hub keeps its
+// member token cached, so after an older member's rewrite drops the kind
+// there is no look-up to re-stamp it. hubCheckMemberToken (the hub's
+// MemberTokenCheck, run on each member refresh) re-stamps it without a
+// look-up: the cached secret, the token id and the token count stay the
+// same. It never creates a token (no remembered one: nothing happens) and
+// never touches a token it no longer finds usable (a rotated one stays as
+// it is, for the next look-up to replace).
+func TestHubCheckMemberTokenRestampsWhileCached(t *testing.T) {
+	dir := t.TempDir()
+	wf := filepath.Join(dir, "WORKFLOW.md")
+	m := hub.MemberRecord{Workflow: wf, ProjectDir: dir, TokenRequired: true}
+
+	hubCheckMemberToken(m, apitokens.ScopeOperator)
+	store := apitokens.Open(apitokens.Path(wf))
+	list, err := store.List()
+	require.NoError(t, err)
+	assert.Empty(t, list, "no remembered token: the check creates none")
+
+	cached, err := hubMemberToken(m, apitokens.ScopeOperator) // the hub caches this secret
+	require.NoError(t, err)
+	before, ok := apitokens.Open(store.FilePath()).Authenticate(cached)
+	require.True(t, ok)
+
+	for range 2 { // and again after another old-format rewrite
+		stripTokenKinds(t, store.FilePath())
+		stripped, ok := apitokens.Open(store.FilePath()).Authenticate(cached)
+		require.True(t, ok)
+		require.Empty(t, stripped.Kind)
+
+		hubCheckMemberToken(m, apitokens.ScopeOperator)
+		reader := apitokens.Open(store.FilePath())
+		tok, ok := reader.Authenticate(cached)
+		require.True(t, ok, "the cached secret still authenticates")
+		assert.Equal(t, before.ID, tok.ID, "the same token")
+		assert.Equal(t, apitokens.KindHub, tok.Kind, "the kind is back without a look-up")
+		list, err := reader.List()
+		require.NoError(t, err)
+		assert.Len(t, list, 1, "nothing created, nothing revoked")
+	}
+
+	// A rotated token (the remembered secret no longer matches) is left
+	// alone: the check never revokes or replaces.
+	_, _, err = store.Rotate(before.ID, "test")
+	require.NoError(t, err)
+	stripTokenKinds(t, store.FilePath())
+	hubCheckMemberToken(m, apitokens.ScopeOperator)
+	list, err = apitokens.Open(store.FilePath()).List()
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Empty(t, list[0].Kind, "a token the hub no longer holds is not re-stamped")
+}
