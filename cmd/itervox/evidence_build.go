@@ -26,7 +26,7 @@ type evidenceAdapter struct {
 }
 
 func (a evidenceAdapter) IssueEvidence(identifier string) (server.EvidenceReport, error) {
-	signed, err := attestationsAdapter{orch: a.orch}.Attestations(identifier)
+	signed, err := attestationsAdapter(a).Attestations(identifier)
 	if err != nil {
 		return server.EvidenceReport{}, err
 	}
