@@ -49,7 +49,10 @@ func quickstartLocalModel(workflowPath string, opts quickstartOptions, in *bufio
 		if opts.Yes {
 			return 0 // --yes answers confirmations; a local model is opt-in
 		}
-		detected = detectModelServers(quickstartModelServerCandidates)
+		detected = opts.detectedModelServers
+		if !opts.modelServersProbed {
+			detected = detectModelServers(quickstartModelServerCandidates)
+		}
 		if url = askModelServer(in, out, detected, backend); url == "" {
 			return 0
 		}

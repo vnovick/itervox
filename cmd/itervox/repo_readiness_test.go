@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +40,9 @@ func TestMain(m *testing.M) {
 	// own model server must not change a quickstart test. The detection
 	// tests set the list to their httptest servers' ports.
 	quickstartModelServerCandidates = nil
+	// Quickstart's GitHub detection never runs a real gh: "not logged in"
+	// unless a test says otherwise.
+	quickstartGHAuthStatus = func(context.Context) error { return errors.New("gh auth status: stubbed in tests") }
 	os.Exit(m.Run())
 }
 

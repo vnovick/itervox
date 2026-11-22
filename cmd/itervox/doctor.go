@@ -250,6 +250,13 @@ func runDoctorChecks(workflowPath string, _ io.Writer) (string, int) {
 // is on the repository afterwards. A repair that failed, or whose re-check
 // failed, keeps the exit code non-zero and the labels still known missing.
 func runDoctorFix(workflowPath string, assumeYes bool, in io.Reader, out io.Writer) (string, int) {
+	report := doctorFixReport(workflowPath, assumeYes, in, out)
+	return renderDoctorReport(report), doctorExitCode(report)
+}
+
+// doctorFixReport is runDoctorFix's report, before rendering: quickstart
+// reads it to print only the failures (quickstart_doctor.go).
+func doctorFixReport(workflowPath string, assumeYes bool, in io.Reader, out io.Writer) DoctorReport {
 	report, cfg := collectDoctorReport(workflowPath)
 	if len(report.Labels.Missing) > 0 {
 		created, err := fixMissingLabels(cfg, report.Labels, assumeYes, in, out)
@@ -272,7 +279,7 @@ func runDoctorFix(workflowPath string, assumeYes bool, in io.Reader, out io.Writ
 			}
 		}
 	}
-	return renderDoctorReport(report), doctorExitCode(report)
+	return report
 }
 
 // doctorPortHolder names the process listening on a port and its pid ("", 0

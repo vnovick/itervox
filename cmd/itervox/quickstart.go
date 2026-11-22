@@ -20,11 +20,15 @@ import (
 	"github.com/vnovick/itervox/internal/orchestrator"
 )
 
-// `itervox quickstart` (#74): one command from a repository to a running
-// board. It detects the tracker and agent CLI, writes (or migrates) the
-// workflow, gets the tracker credential in place, creates missing GitHub
-// labels, runs doctor, then starts the daemon in the background and waits for
-// it to report ready.
+// `itervox quickstart` (#74): one command from a repository to a first run.
+// For a new workflow it detects the tracker, agent CLIs, local model
+// servers, CI, deploy tools and test commands, shows the plan and asks
+// before writing anything (quickstart_plan.go; --yes answers, no terminal
+// prints the plan and stops). Then it writes the workflow, gets the tracker
+// credential in place, creates missing GitHub labels and runs doctor,
+// printing only its failures. A new local workflow gets a demo issue and
+// the command that runs it (quickstart_demo.go); otherwise quickstart starts
+// the daemon in the background and waits for it to report ready.
 //
 // Re-running is safe: an existing schema-2 workflow is kept as is, an older
 // one is migrated only after confirmation, nothing is overwritten without
@@ -45,6 +49,18 @@ type quickstartOptions struct {
 	// asking (quickstart_local_model.go); NoLocalModel skips the step.
 	ModelServer  string
 	NoLocalModel bool
+	// NoDemo skips the demo issue a new local workflow gets
+	// (quickstart_demo.go); quickstart then starts the daemon as before.
+	NoDemo bool
+	// NonInteractive: nobody can answer the plan's confirmation (stdin is
+	// not a terminal and --yes is not set). The plan is printed and nothing
+	// is written.
+	NonInteractive bool
+
+	// The plan's model-server probe, reused by the local-model step so
+	// the ports are probed once.
+	detectedModelServers []detectedModelServer
+	modelServersProbed   bool
 }
 
 // Seams tests replace: PATH lookup, `gh auth token`, and the daemon command.
@@ -77,6 +93,7 @@ func runQuickstart(args []string) {
 		_, _ = fmt.Fprintf(os.Stderr, "itervox quickstart: %v\n", err)
 		fatalExit(2)
 	}
+	opts.NonInteractive = !opts.Yes && !stdinIsTerminal()
 	if code := quickstart(opts, os.Stdin, os.Stdout); code != 0 {
 		fatalExit(code)
 	}
@@ -95,6 +112,7 @@ func parseQuickstartFlags(args []string) (quickstartOptions, error) {
 	fs.DurationVar(&opts.ReadyTimeout, "ready-timeout", quickstartDefaultReadyTimeout, "how long to wait for the daemon to report ready")
 	fs.StringVar(&opts.ModelServer, "model-server", "", "add a profile named local whose agent uses the model server at `URL`, without asking; the URL includes its port, http://127.0.0.1:<port> (no port is assumed)")
 	fs.BoolVar(&opts.NoLocalModel, "no-local-model", false, "do not look for or ask about a local model server")
+	fs.BoolVar(&opts.NoDemo, "no-demo", false, "with the local tracker, do not write the demo issue DEMO-1 (and start the daemon instead of printing the demo command)")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -146,7 +164,9 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 	// already saved there is not seen. Variables already set win.
 	loadDotEnvFrom(filepath.Dir(workflowPath))
 
-	// 1. Workflow: keep, migrate (asked) or create.
+	// 1. Workflow: keep, migrate (asked) or create (after the plan is
+	// confirmed).
+	demo := false
 	if _, statErr := os.Stat(workflowPath); statErr == nil {
 		if code := quickstartExistingWorkflow(workflowPath, opts.Yes, reader, out); code != 0 {
 			return code
@@ -160,7 +180,14 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 			return 1
 		}
-		_, _ = fmt.Fprintf(out, "itervox quickstart: tracker %s (%s), agent %s (%s)\n", det.Tracker, det.TrackerReason, det.Runner, det.RunnerReason)
+		findings := detectQuickstartFindings(dir, det, opts)
+		if opts.ModelServer == "" && !opts.NoLocalModel {
+			opts.detectedModelServers, opts.modelServersProbed = findings.ModelServers, true
+		}
+		renderQuickstartPlan(out, findings, workflowPath)
+		if code, proceed := quickstartConfirmPlan(opts, reader, out); !proceed {
+			return code
+		}
 		if err := scaffoldWorkflow(workflowPath, dir, det.Tracker, det.Runner, initOptions{}, out); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
 			return 1
@@ -168,6 +195,9 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		ensureEnvStub(itervoxDir, det.Tracker)
 		if det.Tracker == "local" {
 			seedLocalIssues(filepath.Join(itervoxDir, "issues"), out)
+			if findings.Demo {
+				demo = writeDemoIssue(filepath.Join(itervoxDir, "issues"), firstTestCommand(findings.Checks), out)
+			}
 		}
 		if err := finalizeItervoxGitignore(itervoxDir); err != nil {
 			_, _ = fmt.Fprintf(out, "itervox quickstart: %v\n", err)
@@ -193,18 +223,10 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		return code
 	}
 
-	// 4. Missing GitHub labels (asked) and the doctor checks.
-	report, code := runDoctorFix(workflowPath, opts.Yes, reader, out)
-	if code != 0 {
-		_, _ = fmt.Fprint(out, report)
-		_, _ = fmt.Fprintf(out, "\nitervox quickstart: doctor found the problems above; fix them and run `itervox quickstart` again.\n")
+	// 4. Missing GitHub labels (asked) and the doctor checks, in-process;
+	// only failures are printed, with their fixes.
+	if code := quickstartDoctor(workflowPath, opts.Yes, reader, out); code != 0 {
 		return code
-	}
-	_, _ = fmt.Fprintf(out, "itervox quickstart: doctor checks passed\n")
-	for _, line := range strings.Split(report, "\n") {
-		if strings.HasPrefix(line, "WARNING:") {
-			_, _ = fmt.Fprintln(out, "  "+line)
-		}
 	}
 
 	// 5. Optional: a `local` profile on a model server (asked).
@@ -212,8 +234,17 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 		return code
 	}
 
+	// 6a. A new local workflow with its demo issue: the first run is one
+	// command away. The daemon is not started here, or it would pick up
+	// DEMO-1 itself while `itervox run` runs it.
+	if demo {
+		printDemoNextSteps(out, workflowPath)
+		return 0
+	}
+
 	if opts.NoStart {
 		_, _ = fmt.Fprintf(out, "itervox quickstart: not starting the daemon (--no-start); run `itervox -workflow %s`\n", workflowPath)
+		printTrackerNextSteps(out, workflowPath, false)
 		return 0
 	}
 
@@ -225,7 +256,31 @@ func quickstart(opts quickstartOptions, in io.Reader, out io.Writer) int {
 	}
 	quickstartPrintAccess(out, workflowPath, url)
 	_, _ = fmt.Fprintf(out, "Stop it with: itervox stop -workflow %s\n", workflowPath)
+	printTrackerNextSteps(out, workflowPath, true)
 	return 0
+}
+
+// quickstartConfirmPlan asks whether to write the plan's setup. It returns
+// proceed, or the exit code to stop with: without a terminal (and without
+// --yes) nothing is written and the way to go on is printed.
+func quickstartConfirmPlan(opts quickstartOptions, in *bufio.Reader, out io.Writer) (int, bool) {
+	switch {
+	case opts.Yes:
+		_, _ = fmt.Fprintln(out, "Write this setup? [Y/n] y (preset)")
+		return 0, true
+	case opts.NonInteractive:
+		_, _ = fmt.Fprintln(out, "itervox quickstart: nothing was written: there is no terminal to confirm the plan on.")
+		_, _ = fmt.Fprintln(out, "  Re-run in a terminal to confirm it, or with --yes to write it as shown (add --tracker/--runner to change a choice).")
+		return 1, false
+	}
+	_, _ = fmt.Fprint(out, "Write this setup? [Y/n] ")
+	line, err := in.ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	if (answer == "" && err == nil) || answer == "y" || answer == "yes" {
+		return 0, true
+	}
+	_, _ = fmt.Fprintln(out, "\nitervox quickstart: nothing was written. Change a choice with --tracker or --runner and run it again.")
+	return 1, false
 }
 
 // quickstartExistingWorkflow keeps a schema-2 workflow and migrates an older

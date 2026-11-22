@@ -127,34 +127,35 @@ Everything the daemon writes stays in the scratch directory: `WORKFLOW.md`, `log
 
 ---
 
-## `itervox quickstart` — From a repository to a running board
+## `itervox quickstart` — From a repository to a first run
 
 ```bash
-itervox quickstart [--tracker github|linear|local] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start] [--model-server URL | --no-local-model]
+itervox quickstart [--tracker github|linear|local] [--runner claude|codex] [--dir .] [--workflow path] [--yes] [--no-start] [--no-demo] [--model-server URL | --no-local-model]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com, else `local` ([issue files](/guides/local-issues/), no account needed). |
+| `--tracker` | detected | Tracker for a **new** workflow. Detected as Linear when `LINEAR_API_KEY` is set, else GitHub when `origin` is on github.com and `GITHUB_TOKEN` is set or `gh auth status` exits 0, else `local` ([issue files](/guides/local-issues/), no account needed). |
 | `--runner` | detected | Agent CLI for a new workflow: `claude` if on `PATH`, else `codex`. |
 | `--dir` | `.` | Repository directory (the workflow's directory when only `--workflow` is given). |
 | `--workflow` | `<dir>/WORKFLOW.md` | Workflow path. The `.itervox/.env` next to it is loaded even when you run quickstart from another directory. |
-| `--yes`, `-y` | `false` | Answer yes to every confirmation (migration, saving the `gh` token, creating labels, adding the issue template). |
+| `--yes`, `-y` | `false` | Answer yes to every confirmation (the plan, migration, saving the `gh` token, creating labels, adding the issue template). |
 | `--no-start` | `false` | Stop after the checks; do not start the daemon. |
+| `--no-demo` | `false` | With the local tracker, do not write the demo issue `DEMO-1`; start the daemon instead of printing the demo command. |
 | `--ready-timeout` | `90s` | How long to wait for the daemon to report ready. |
 | `--model-server` | — | Add a `local` profile whose agent uses this model server (`model_server`), without asking: a URL with its port, `http://127.0.0.1:<port>`; a URL without an explicit port is refused. The server is probed; one that does not answer is reported and the profile is still written. |
 | `--no-local-model` | `false` | Do not look for or ask about a local model server. Without either flag, an interactive run, once the doctor checks pass, lists the model servers answering on `127.0.0.1` at the usual ports of common local servers (`11434` Ollama, `1234` LM Studio, `8080` llama.cpp server, `8000` vLLM) and lets you pick one or type a port, `host:port` or URL; with none found it asks whether to use one and for its port, with no default. An empty answer skips. `--yes` alone never adds the profile. |
 
 Steps, in order:
 
-1. With no workflow, write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. It also offers the [agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
+1. With no workflow, show the plan — what it found (tracker, the `claude`, `codex`, `opencode` and `cursor-agent` CLIs on `PATH` by name only, local model servers, CI, the deploy tools `itervox referee envcheck` knows, test and lint commands from `Makefile`, `package.json` and `go.mod`, with suggested `verify` checks) and the files it will write — and ask `Write this setup? [Y/n]`. Without a terminal and without `--yes`, print the plan, write nothing and exit 1. Then write a schema-2 `WORKFLOW.md` and the `.itervox/agents/` profiles exactly as `itervox init` does. With the local tracker it also writes the demo issue `.itervox/issues/DEMO-1.md` (Todo: one README section on how to run the tests, nothing else). It also offers the [agent-ready issue template](/guides/github-issues/#agent-ready-issue-template). With a schema-2 workflow, use it unchanged; with an older one, ask before migrating it with `itervox init --update` (which keeps `WORKFLOW.md.bak`).
 2. If a daemon is already running for this workflow, print its dashboard URL and stop. Otherwise remove a `HEARTBEAT.md` and `dashboard_url` left behind by a daemon that died (the next daemon rewrites both).
 3. Make sure the tracker credential is set: for GitHub, offer `gh auth token` and save it as `GITHUB_TOKEN` in `.itervox/.env` (0600, gitignored) after confirmation; a real value already in that file is never replaced. For Linear, `LINEAR_API_KEY` must be set. The local tracker needs none.
-4. Run `itervox doctor --fix`: missing GitHub state labels are created after confirmation. Any doctor error stops quickstart with the report.
+4. Run the `itervox doctor --fix` checks in-process: missing GitHub state labels are created after confirmation. Any doctor error stops quickstart, which prints only the failing lines with their fixes (`itervox doctor` prints the full report).
 5. Optionally add a `local` profile on a model server: asked, or set by `--model-server`. The server is probed and the profile is written with `model_server` (and its starter `SOUL.md` / `INSTRUCTIONS.md`); a `local` profile that already exists is left alone. Pass the model your server serves with `--model <name>` in the profile's command afterwards. See [Local models](/guides/local-models/).
-6. Start the daemon in its own session (output in `.itervox/logs/quickstart-daemon.log`), wait until it publishes `.itervox/dashboard_url` and `GET /api/v1/ready` returns 200, then print the URL and where the API token is: `<logs-dir>/api-token` for a generated token, or your `ITERVOX_API_TOKEN`.
+6. With the demo issue, print `itervox run --issue DEMO-1 --worktree` and how to open the dashboard, and stop: a daemon started now would pick up `DEMO-1` itself. Otherwise start the daemon in its own session (output in `.itervox/logs/quickstart-daemon.log`), wait until it publishes `.itervox/dashboard_url` and `GET /api/v1/ready` returns 200, then print the URL and where the API token is: `<logs-dir>/api-token` for a generated token, or your `ITERVOX_API_TOKEN`; for Linear or GitHub, then print how to hand an issue to the agent (nothing is created on the service).
 
-Exit code `0` when the board is running (or already was, or `--no-start` passed the checks); `1` when a step stopped it.
+Exit code `0` when the board is running (or already was, or `--no-start` passed the checks, or the demo command was printed); `1` when a step stopped it or the plan was not confirmed.
 
 ---
 

@@ -26,7 +26,7 @@ func scaffoldWorkflow(output, dir, trackerKind, runner string, opts initOptions,
 	info := scanRepo(dir)
 
 	if info.RemoteURL != "" {
-		_, _ = fmt.Fprintf(out, "  git remote : %s\n", info.RemoteURL)
+		_, _ = fmt.Fprintf(out, "  git remote : %s\n", displayRemote(info.RemoteURL))
 	}
 	_, _ = fmt.Fprintf(out, "  branch     : %s\n", info.DefaultBranch)
 	_, _ = fmt.Fprintf(out, "  runner     : %s\n", runner)

@@ -41,6 +41,19 @@ func stubLookPath(t *testing.T, installed ...string) {
 	t.Cleanup(func() { quickstartLookPath = orig })
 }
 
+// stubGHAuth makes `gh auth status` exit 0 (authed) or 1; gh never runs.
+func stubGHAuth(t *testing.T, authed bool) {
+	t.Helper()
+	orig := quickstartGHAuthStatus
+	quickstartGHAuthStatus = func(context.Context) error {
+		if authed {
+			return nil
+		}
+		return errors.New("exit status 1")
+	}
+	t.Cleanup(func() { quickstartGHAuthStatus = orig })
+}
+
 func repoWithRemote(t *testing.T, remote string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -63,26 +76,33 @@ func TestDetectQuickstartTrackerAndRunner(t *testing.T) {
 	noRemote := repoWithRemote(t, "")
 
 	cases := []struct {
-		name, dir, trackerFlag, runnerFlag, linearKey string
-		installed                                     []string
-		wantTracker, wantRunner, wantErr, wantReason  string
+		name, dir, trackerFlag, runnerFlag, linearKey, githubToken string
+		ghAuthed                                                   bool
+		installed                                                  []string
+		wantTracker, wantRunner, wantErr, wantReason               string
 	}{
-		{name: "github ssh remote, claude", dir: ghSSH, installed: []string{"claude", "codex"}, wantTracker: "github", wantRunner: "claude"},
-		{name: "github https remote, only codex", dir: ghHTTPS, installed: []string{"codex"}, wantTracker: "github", wantRunner: "codex"},
-		{name: "linear key wins over a github remote", dir: ghSSH, linearKey: "lin_api_realkey123", installed: []string{"claude"}, wantTracker: "linear", wantRunner: "claude"},
-		{name: "placeholder linear key is ignored", dir: ghSSH, linearKey: "lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", installed: []string{"claude"}, wantTracker: "github", wantRunner: "claude"},
+		{name: "github ssh remote, gh logged in, claude", dir: ghSSH, ghAuthed: true, installed: []string{"claude", "codex", "gh"}, wantTracker: "github", wantRunner: "claude", wantReason: "gh is logged in"},
+		{name: "github https remote, GITHUB_TOKEN, only codex", dir: ghHTTPS, githubToken: "ghp_realtoken123", installed: []string{"codex"}, wantTracker: "github", wantRunner: "codex", wantReason: "GITHUB_TOKEN is set"},
+		{name: "github remote, gh not logged in", dir: ghSSH, installed: []string{"claude", "gh"}, wantTracker: "local", wantRunner: "claude", wantReason: "is on github.com, but gh is not logged in and GITHUB_TOKEN is not set"},
+		{name: "github remote, gh logged in but not on PATH", dir: ghSSH, ghAuthed: true, installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude"},
+		{name: "placeholder GITHUB_TOKEN is ignored", dir: ghSSH, githubToken: "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude"},
+		{name: "linear key wins over a github remote", dir: ghSSH, linearKey: "lin_api_realkey123", ghAuthed: true, installed: []string{"claude", "gh"}, wantTracker: "linear", wantRunner: "claude"},
+		{name: "placeholder linear key is ignored", dir: ghSSH, linearKey: "lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", ghAuthed: true, installed: []string{"claude", "gh"}, wantTracker: "github", wantRunner: "claude"},
 		{name: "--tracker overrides detection", dir: gitlab, trackerFlag: "github", installed: []string{"claude"}, wantTracker: "github", wantRunner: "claude"},
-		{name: "--runner overrides detection", dir: ghSSH, runnerFlag: "codex", installed: []string{"claude", "codex"}, wantTracker: "github", wantRunner: "codex"},
+		{name: "--runner overrides detection", dir: ghSSH, runnerFlag: "codex", ghAuthed: true, installed: []string{"claude", "codex", "gh"}, wantTracker: "github", wantRunner: "codex"},
 		// #85: with no service to detect, the local file tracker.
 		{name: "non-github remote without a key", dir: gitlab, installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude", wantReason: "origin git@gitlab.com:acme/widgets.git is not on github.com"},
 		{name: "no remote without a key", dir: noRemote, installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude", wantReason: "no origin remote and LINEAR_API_KEY is not set"},
 		{name: "--tracker local", dir: ghSSH, trackerFlag: "local", installed: []string{"claude"}, wantTracker: "local", wantRunner: "claude"},
 		{name: "no agent CLI", dir: ghSSH, wantErr: "neither claude nor codex is on PATH"},
+		{name: "only opencode and cursor-agent", dir: noRemote, installed: []string{"opencode", "cursor-agent"}, wantErr: "found opencode and cursor-agent"},
 		{name: "--runner not installed", dir: ghSSH, runnerFlag: "codex", installed: []string{"claude"}, wantErr: "--runner codex: codex is not on PATH"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("LINEAR_API_KEY", tc.linearKey)
+			t.Setenv("GITHUB_TOKEN", tc.githubToken)
+			stubGHAuth(t, tc.ghAuthed)
 			stubLookPath(t, tc.installed...)
 			det, err := detectQuickstart(tc.dir, tc.trackerFlag, tc.runnerFlag)
 			if tc.wantErr != "" {
@@ -177,7 +197,11 @@ func TestQuickstartLabelStep(t *testing.T) {
 		assert.Empty(t, repo.created)
 		assert.Contains(t, out.String(), "Create 5 label(s) on owner/repo")
 		assert.Contains(t, out.String(), "ERROR: 5 state label(s) missing")
-		assert.Contains(t, out.String(), "doctor found the problems above")
+		assert.Contains(t, out.String(), "doctor found problems:")
+		// Only the failures with their fixes, not the whole report.
+		assert.Contains(t, out.String(), `gh label create "backlog"`)
+		assert.NotContains(t, out.String(), "itervox doctor\n==============")
+		assert.NotContains(t, out.String(), "running binary:")
 	})
 	t.Run("accepted", func(t *testing.T) {
 		dir, _, repo := quickstartGitHubProject(t, []string{"todo"})
@@ -236,8 +260,9 @@ func TestQuickstartKeepsExistingWorkflow(t *testing.T) {
 }
 
 // TestQuickstartWritesNewWorkflow: in a repository with a GitHub origin and
-// no workflow, quickstart scaffolds a schema-2 GitHub workflow for the
-// detected agent, and stops at the credential step when there is no token.
+// no workflow, quickstart --tracker github shows the plan, scaffolds a
+// schema-2 GitHub workflow for the detected agent once it is confirmed, and
+// stops at the credential step when there is no token.
 func TestQuickstartWritesNewWorkflow(t *testing.T) {
 	dir := repoWithRemote(t, "git@github.com:acme/widgets.git")
 	t.Setenv("HOME", filepath.Join(dir, "home"))
@@ -253,9 +278,13 @@ func TestQuickstartWritesNewWorkflow(t *testing.T) {
 	t.Cleanup(func() { quickstartGHToken = origGH })
 
 	var out strings.Builder
-	code := quickstart(quickstartOptions{Dir: dir, NoStart: true}, strings.NewReader(""), &out)
+	// The plan is confirmed with Enter (the default is yes); the template
+	// offer that follows reads EOF (no).
+	code := quickstart(quickstartOptions{Dir: dir, Tracker: "github", NoStart: true}, strings.NewReader("\n"), &out)
 	assert.Equal(t, 1, code)
-	assert.Contains(t, out.String(), "tracker github (origin is git@github.com:acme/widgets.git), agent claude")
+	assert.Contains(t, out.String(), "  tracker        github — --tracker\n")
+	assert.Contains(t, out.String(), "  agent CLI      claude: /usr/local/bin/claude (the default agent)\n")
+	assert.Contains(t, out.String(), "Write this setup? [Y/n] ")
 	assert.Contains(t, out.String(), "no GitHub token. Run `gh auth login`")
 	front, err := readQuickstartFrontMatter(filepath.Join(dir, "WORKFLOW.md"))
 	require.NoError(t, err)
