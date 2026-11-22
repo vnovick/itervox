@@ -3,7 +3,7 @@
 # (never interpolated into the script). Exit codes follow referee's: 0 auto
 # or ok, 10 second_opinion, 20 human / findings / mismatch, 1 a record that
 # did not verify, 2 an error. fail-on decides which lanes fail the step
-# (and, for audit, never reports findings without failing); an error always
+# (and, for audit and envcheck, never reports findings without failing); an error always
 # does.
 set -uo pipefail
 
@@ -25,6 +25,10 @@ case "${MODE:-}" in
     args=(audit --head "${HEAD_REF:-HEAD}")
     [ -n "${BASE:-}" ] && args+=(--base "$BASE")
     ;;
+  envcheck)
+    args=(envcheck --head "${HEAD_REF:-HEAD}" --policy "${POLICY:-.referee.yml}")
+    [ -n "${BASE:-}" ] && args+=(--base "$BASE")
+    ;;
   pin)
     args=(pin --file "${POLICY:-.referee.yml}" --policy-sha256 "${POLICY_SHA256:-}")
     ;;
@@ -33,7 +37,7 @@ case "${MODE:-}" in
     [ -n "${TREE:-}" ] && args+=(--tree "$TREE")
     ;;
   *)
-    echo "::error::referee: mode must be lanes, audit, pin or verify (got '${MODE:-}')"
+    echo "::error::referee: mode must be lanes, audit, envcheck, pin or verify (got '${MODE:-}')"
     exit 2
     ;;
 esac
@@ -57,7 +61,7 @@ if [ "$MODE" = lanes ]; then
     *) echo "::error::referee: error (exit $code)"; exit "$code" ;;
   esac
 fi
-if [ "$MODE" = audit ] && [ "$code" = 20 ] && [ "${FAIL_ON:-human}" = never ]; then
+if { [ "$MODE" = audit ] || [ "$MODE" = envcheck ]; } && [ "$code" = 20 ] && [ "${FAIL_ON:-human}" = never ]; then
   exit 0 # findings reported (step summary, exit-code output), not enforced here
 fi
 exit "$code"

@@ -66,3 +66,24 @@ func TestRefereeDelegatesToRun(t *testing.T) {
 		}
 	}
 }
+
+// TestRefereeHelpListsEnvcheck: the standalone binary's usage names the
+// envcheck command, and `envcheck -h` reaches its own usage.
+func TestRefereeHelpListsEnvcheck(t *testing.T) {
+	env := func(string) string { return "" }
+	var out, errOut bytes.Buffer
+	if code := run(context.Background(), []string{"help"}, env, &out, &errOut); code != 0 {
+		t.Fatalf("help: exit %d", code)
+	}
+	if !strings.Contains(out.String(), "envcheck") {
+		t.Fatalf("usage lacks envcheck: %q", out.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run(context.Background(), []string{"envcheck", "-h"}, env, &out, &errOut); code != 2 {
+		t.Fatalf("envcheck -h: exit %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "usage: referee envcheck --base <ref>") {
+		t.Fatalf("envcheck -h: stderr %q", errOut.String())
+	}
+}

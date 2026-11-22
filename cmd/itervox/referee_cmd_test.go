@@ -51,3 +51,28 @@ func TestItervoxRefereeLanesHumanLane(t *testing.T) {
 	require.Equal(t, 2, refereeCmd(context.Background(), nil, func(string) string { return "" }, &out, &errOut))
 	require.Contains(t, errOut.String(), "usage: itervox referee <command>")
 }
+
+// TestItervoxRefereeEnvcheckNoTools runs `itervox referee envcheck` on a
+// repository whose base policy has no tools: exit 0 with a message that
+// says nothing was checked.
+func TestItervoxRefereeEnvcheckNoTools(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		out, err := gitexec.Command(context.Background(), dir, args...).CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "referee@example.invalid")
+	git("config", "user.name", "referee test")
+	git("config", "commit.gpgsign", "false")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app.js"), []byte("module.exports = {};\n"), 0o644))
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+
+	t.Chdir(dir)
+	var out, errOut bytes.Buffer
+	code := refereeCmd(context.Background(), []string{"envcheck", "--base", "main"}, func(string) string { return "" }, &out, &errOut)
+	require.Equal(t, 0, code, "stdout=%s stderr=%s", out.String(), errOut.String())
+	require.Contains(t, out.String(), "envcheck: no tools: configured")
+}

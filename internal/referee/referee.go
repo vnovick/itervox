@@ -6,6 +6,8 @@
 //
 //	lanes   classify a diff into human / second_opinion / auto
 //	audit   list changes that weaken checks (skips, deleted tests, …)
+//	envcheck  fail when an installed tool reads a deploy-target variable
+//	          its guard does not classify
 //	pin     fail when a policy file's sha256 is not the pinned one
 //	run     run a check and append a signed record of what it saw
 //	keygen  make the ed25519 key pair records are signed with
@@ -30,7 +32,7 @@ const (
 	exitFailed        = 1 // run: the check failed; verify: a record did not verify
 	exitError         = 2 // usage, I/O or git error
 	exitSecondOpinion = 10
-	exitHuman         = 20 // lanes: human lane; audit: findings; pin: mismatch
+	exitHuman         = 20 // lanes: human lane; audit, envcheck: findings; pin: mismatch
 )
 
 const usageTemplate = `usage: {prog} <command> [flags]
@@ -40,6 +42,8 @@ An agent may change what CI checks, never how CI checks.
 commands:
   lanes    classify the diff against a base ref (policy read from the base ref)
   audit    list changes that weaken checks
+  envcheck fail when an installed tool reads a deploy-target variable its guard
+           does not classify (tools: in the base ref's policy)
   pin      check a policy file against a pinned sha256 (or --print it)
   run      run a check and append a signed record ({prog} run --name N --key K --out F -- cmd...)
   keygen   make an ed25519 key pair ({prog} keygen --out DIR)
@@ -47,7 +51,7 @@ commands:
 
 Run "{prog} <command> -h" for a command's flags.
 Exit codes: 0 ok/auto, 1 check failed or record did not verify,
-10 second_opinion, 20 human lane, audit findings or pin mismatch,
+10 second_opinion, 20 human lane, audit or envcheck findings or pin mismatch,
 2 usage or error (never 0).`
 
 // envFunc reads an environment variable (os.Getenv; tests inject one).
@@ -73,6 +77,8 @@ func dispatch(ctx context.Context, prog string, args []string, env envFunc, stdo
 		return lanesCmd(ctx, rest, env, stdout, stderr)
 	case "audit":
 		return auditCmd(ctx, rest, env, stdout, stderr)
+	case "envcheck":
+		return envcheckCmd(ctx, rest, env, stdout, stderr)
 	case "pin":
 		return pinCmd(rest, stdout, stderr)
 	case "run":
