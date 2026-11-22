@@ -276,8 +276,12 @@ pairs and keep `rate_limited` rules for custom mappings or helper runs.
 Each entry under `profiles:` is a named role selectable per-issue from the
 dashboard or the agent queue view. In schema `2`, profile text lives in
 files under `.itervox/agents/<profile>/`; `WORKFLOW.md` points at those files.
-Commands must not contain shell metacharacters (`;|&\`$()><`) — use a wrapper
-script.
+A command may do setup first (`{ source ~/.nvm/nvm.sh; claude; }`,
+`cd sub && codex`): the runner's flags go after the last word of its final
+command, inside the group. A command where that place is ambiguous (a pipeline,
+`&`, `||` before the agent, `if`/`for`/`while`, the agent CLI not last) is
+refused at load — use a wrapper script that ends in `exec claude "$@"`. See
+[Commands with setup steps](https://itervox.dev/guides/agent-profiles/#commands-with-setup-steps).
 
 | Field | Description |
 |---|---|

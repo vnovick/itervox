@@ -234,18 +234,15 @@ func ValidateDispatch(cfg *Config) error {
 		return err
 	}
 
-	// Check 8: profile commands must not contain shell metacharacters.
-	// Profile commands are passed as the first argument to bash -lc, so
-	// unescaped `;`, `|`, `&`, `` ` ``, `$`, `(`, `)`, `<`, `>` allow
-	// shell code injection via a crafted WORKFLOW.md. Commands are user-
-	// supplied from WORKFLOW.md, but a clear validation error is better than
-	// a silent foot-gun.
-	const shellMetachars = ";|&`$()><"
-	for name, profile := range cfg.Agent.Profiles {
-		if strings.ContainsAny(profile.Command, shellMetachars) {
-			return fmt.Errorf("invalid profile %q: command %q contains shell metacharacters (%s); use a wrapper script instead",
-				name, profile.Command, shellMetachars)
-		}
+	// Check 8: agent.command and profile commands run through bash -lc (or
+	// the SSH worker's remote bash) with the runner's flags added to them.
+	// A command that is not a simple command — `{ source ~/.nvm/nvm.sh;
+	// claude; }`, `cd sub && claude` — takes the flags after its final
+	// command; one where that place is ambiguous (a pipeline, `&`, `||`,
+	// if/for/while, the agent CLI not last) is refused here with a pointer
+	// to a wrapper script, instead of failing at the first turn.
+	if err := ValidateAgentCommands(cfg.Agent.Command, cfg.Agent.Profiles); err != nil {
+		return err
 	}
 	if err := ValidateAgentProfiles(cfg.Agent.Profiles); err != nil {
 		return err

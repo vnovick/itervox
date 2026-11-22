@@ -452,7 +452,7 @@ func buildShellCmdLive(command string, sessionID *string, prompt, promptRedirect
 		slog.Warn("agent: empty command resolved at dispatch — falling back to 'claude'. Check WORKFLOW.md agent.command and any profile.command fields.")
 		command = "claude"
 	}
-	cmd := command + sharedFlagsStrFor(mode)
+	cmd := sharedFlagsStrFor(mode)
 	if live {
 		cmd += " " + strings.Join(liveInputFlags, " ")
 	}
@@ -467,7 +467,7 @@ func buildShellCmdLive(command string, sessionID *string, prompt, promptRedirect
 	if claudeReadsPrompt(sessionID, prompt) {
 		cmd += " -p" + promptRedirect
 	}
-	return cmd
+	return spliceTurnArgs(command, "", cmd)
 }
 
 // todoItems parses a TodoWrite input and returns the content of each todo.

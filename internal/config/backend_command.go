@@ -129,8 +129,14 @@ func ParseBackendHint(command string) (backend, cleaned string) {
 
 // FirstCommandToken returns the first token of command that is the program
 // to run: env assignments are skipped, and `env [-flags] [VAR=val...] prog`
-// resolves to prog.
+// resolves to prog. For a command that is not one simple command (a
+// `{ source ~/.nvm/nvm.sh; claude; }` group, `cd sub && claude`) it is the
+// program of the final simple command — the one the runner's flags go to
+// (ParseAgentCommand) — so the backend is read from it.
 func FirstCommandToken(command string) string {
+	if shape, err := ParseAgentCommand(command); err == nil && shape.Compound {
+		return shape.Program
+	}
 	fields := strings.Fields(command)
 	for i := 0; i < len(fields); i++ {
 		token := fields[i]
