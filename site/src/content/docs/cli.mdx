@@ -628,6 +628,23 @@ Prints the issue's run log, one line per event (`time LEVEL [tool] message`). Wi
 
 ---
 
+## `itervox evidence` — What ran, what was checked, who approved
+
+```bash
+itervox evidence <issue> [--json]
+```
+
+Prints the issue's [evidence report](/guides/evidence/) in four parts:
+
+- **Runs**, oldest first: each run's profile, backend, model, outcome and prompt digest, its rules, memory and playbook, the steering it got, and its `require_evidence` and signed-checks gates.
+- **Checks**: the signed checks, reviewer verdicts and quorum, guardrail refusals and the push lane.
+- **Approvals**: every decision on a held command, a held push or an agent's question, with its channel and who gave it.
+- **Pull requests**: the PRs the runs recorded, and whether the daemon saw them merge.
+
+`--json` prints the `GET /api/v1/issues/{identifier}/evidence` response as it came, on one line. The daemon redacts the report for your token: below operator it leaves out the steering text and who approved. It finds the daemon like `itervox watch`, and exits `1` when the daemon refuses or cannot be reached.
+
+---
+
 ## Quick actions: pause, resume, dispatch, workers, reply, approve
 
 ```bash
