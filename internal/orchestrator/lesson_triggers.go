@@ -175,10 +175,12 @@ func recordReviewerAsk(state *State, a ReviewerAsk) {
 }
 
 // maybeScanReverts starts a reverted-PR scan off the loop when lessons are
-// on, cmd/itervox supplied RevertScan, none is in flight and the last one
+// on or the PR outcome ledger has a merged PR, cmd/itervox supplied RevertScan, none is in flight and the last one
 // is older than revertScanEvery. Event loop only.
 func (o *Orchestrator) maybeScanReverts(state *State, now time.Time) {
-	if o.RevertScan == nil || !o.lessonsOn() || state.RevertScanInFlight ||
+	// The scan also marks merged PR outcomes reverted, so it runs while
+	// either lessons are on or the outcome ledger has a merged PR.
+	if o.RevertScan == nil || (!o.lessonsOn() && !hasMergedPROutcome(*state)) || state.RevertScanInFlight ||
 		(!state.RevertScanAt.IsZero() && now.Sub(state.RevertScanAt) < revertScanEvery) {
 		return
 	}
@@ -215,6 +217,7 @@ func (o *Orchestrator) applyRevertsScanned(state *State, rep *RevertScanReport) 
 		slog.Warn("orchestrator: reverted-PR scan failed", "error", rep.Err)
 		return
 	}
+	markPROutcomesReverted(state, rep.Reverted, time.Now()) // outcome visibility
 	if len(rep.Reverted) == 0 || !o.lessonsOn() {
 		return
 	}

@@ -47,6 +47,10 @@ type Event struct {
 	ReviewState  string // lower case
 	SubmittedAt  time.Time
 	Source       string
+	// Outcome / OutcomeAt: an outcome event queued by the webhook handler
+	// (kind kindOutcome only, outcomes.go).
+	Outcome   string
+	OutcomeAt time.Time
 }
 
 // Managed is a pull request itervox manages.
@@ -73,6 +77,12 @@ type Config struct {
 	// poll reads only each PR (its head SHA and mergeable_state, which no
 	// webhook reports).
 	Webhooks bool
+	// TrackedOutcomes lists the PRs whose outcome can still change (open,
+	// or closed unmerged) from the orchestrator's PR outcome ledger;
+	// Outcome receives what PollOutcomes and the webhook observe about them
+	// (outcomes.go). Either nil: no outcome tracking.
+	TrackedOutcomes func() []Tracked
+	Outcome         func(ctx context.Context, o Outcome)
 }
 
 // Watcher polls the open managed PRs and routes webhook deliveries to them.

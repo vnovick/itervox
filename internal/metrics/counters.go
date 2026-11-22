@@ -85,9 +85,45 @@ var (
 	storePulls      = newCounterVec("trigger")
 	tmuxSends       = newCounterVec("kind")
 	guardrailBlocks = newCounterVec("kind")
+	runTokens       = newCounterVec("kind")
+	prOutcomes      = newCounterVec("outcome")
 	goroutinePanics atomic.Uint64
 	eventsDropped   atomic.Uint64
 )
+
+// Token kinds for RunTokens.
+const (
+	TokensInput      = "input"
+	TokensOutput     = "output"
+	TokensCacheRead  = "cache_read"
+	TokensCacheWrite = "cache_write"
+)
+
+// RunTokens adds one finished run's tokens, by kind (Tokens*), to
+// itervox_agent_tokens_total. Called once per run the event loop records in
+// history; a kind the backend did not report adds 0.
+func RunTokens(input, output, cacheRead, cacheWrite int) {
+	for kind, n := range map[string]int{TokensInput: input, TokensOutput: output, TokensCacheRead: cacheRead, TokensCacheWrite: cacheWrite} {
+		c := runTokens.get(kind) // every kind is exported, at 0 until reported
+		if n > 0 {
+			c.Add(uint64(n))
+		}
+	}
+}
+
+// PROutcome counts one pull request outcome transition the event loop
+// recorded, by the state it reached: "open" (reopened), "merged",
+// "closed" (unmerged) or "reverted".
+func PROutcome(outcome string) {
+	prOutcomes.get(outcome).Add(1)
+}
+
+// RunTokensCount / PROutcomeCount read one counter. Cross-package test
+// readers; kept in production code (deadcode allowlist).
+func RunTokensCount(kind string) uint64 { return runTokens.get(kind).Load() }
+
+// PROutcomeCount reads one PR outcome counter (see RunTokensCount).
+func PROutcomeCount(outcome string) uint64 { return prOutcomes.get(outcome).Load() }
 
 // WorkerExit counts one worker exit processed by the event loop, labelled by
 // its terminal reason (succeeded, failed, stalled, input_required, …).

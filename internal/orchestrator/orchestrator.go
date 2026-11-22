@@ -198,6 +198,8 @@ type Orchestrator struct {
 	// prEventsFile persists State.ManagedPRs, PREventDispatched and
 	// PREventBaselines (#173).
 	prEventsFile string
+	// prOutcomesFile persists State.PROutcomes (pr_outcomes.json).
+	prOutcomesFile string
 	// daemonInstanceID stamps the queue persistence envelope so a reader can
 	// distinguish state written by this daemon from state inherited from
 	// another (todolist4 A.2). Set once at construction; reads are lock-free.

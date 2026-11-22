@@ -67,6 +67,10 @@ func (h *Handler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case ev := <-h.queue:
+			if ev.Kind == kindOutcome {
+				h.watcher.deliverOutcome(ctx, ev)
+				continue
+			}
 			h.watcher.cfg.Emit(ctx, ev)
 		}
 	}
@@ -147,6 +151,10 @@ type whPR struct {
 		SHA string `json:"sha"`
 		Ref string `json:"ref"`
 	} `json:"head"`
+	// Merged / MergedAt / ClosedAt: a "closed" delivery's outcome.
+	Merged   bool       `json:"merged"`
+	MergedAt *time.Time `json:"merged_at"`
+	ClosedAt *time.Time `json:"closed_at"`
 }
 
 // parseDelivery turns one delivery into events for managed PRs. Other event
@@ -214,7 +222,11 @@ func (w *Watcher) parseDelivery(event string, body []byte) ([]Event, error) {
 		if err := json.Unmarshal(body, &p); err != nil {
 			return nil, err
 		}
-		return w.webhookPullRequest(p.Action, p.PullRequest), nil
+		out := w.webhookPullRequest(p.Action, p.PullRequest)
+		if ev, ok := w.webhookOutcome(p.Action, p.PullRequest); ok { // outcome visibility
+			out = append(out, ev)
+		}
+		return out, nil
 	case "pull_request_review":
 		var p struct {
 			Action string `json:"action"`

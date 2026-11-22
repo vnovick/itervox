@@ -1269,6 +1269,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes, snap.DismissedInputQuestions)
 	o.saveAutomationQueueToDisk(snap.AutomationQueue, snap.AutomationQueueOrder, snap.AutomationQueueBackpressure, snap.DependencyAudit, snap.DependencyTransitionSeq, snap.CronCursors)
 	o.savePREventsToDisk(snap) // #173
+	o.savePROutcomesToDisk(snap)
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}

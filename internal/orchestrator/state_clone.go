@@ -68,6 +68,7 @@ func (s State) Clone() State {
 	c.ManagedPRs = maps.Clone(s.ManagedPRs) // value type, no reference fields
 	c.PREventDispatched = maps.Clone(s.PREventDispatched)
 	c.PREventBaselines = maps.Clone(s.PREventBaselines)
+	c.PROutcomes = maps.Clone(s.PROutcomes) // value type, no reference fields
 	c.CronCursors = maps.Clone(s.CronCursors)
 	c.InferredDeps = copyInferredDepsMap(s.InferredDeps)
 	c.DepsOverrides = maps.Clone(s.DepsOverrides)

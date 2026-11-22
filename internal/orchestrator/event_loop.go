@@ -52,6 +52,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	state = o.loadPendingReviewsFromDisk(state)
 	state = o.loadSpendFromDisk(state)
 	state = o.loadPREventsFromDisk(state)           // #173
+	state = o.loadPROutcomesFromDisk(state)         // outcome visibility
 	state = o.loadDeferredStateMovesFromDisk(state) // #177
 	state = o.loadReviewContinuationsFromDisk(state)
 	state = o.loadFeedFromDisk(state)          // #213
@@ -2184,6 +2185,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventRevertsScanned: // #217
 		o.applyRevertsScanned(&state, ev.Reverts)
 
+	case EventPROutcome: // outcome visibility: a PR merged, closed or reopened
+		applyPROutcome(&state, ev.PROutcome, time.Now())
+
 	case EventTrackerPolled: // #187
 		return o.applyTrackerPoll(ctx, state, ev.TrackerPoll, claimsOffLoop)
 	case EventClaimChecked: // #187
@@ -2253,6 +2257,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				liveEntry.InputTokens = ev.RunEntry.InputTokens
 				liveEntry.OutputTokens = ev.RunEntry.OutputTokens
 			}
+			// Prompt-cache tokens reach the loop only on the exit entry.
+			liveEntry.CacheReadTokens = max(liveEntry.CacheReadTokens, ev.RunEntry.CacheReadTokens)
+			liveEntry.CacheWriteTokens = max(liveEntry.CacheWriteTokens, ev.RunEntry.CacheWriteTokens)
 		}
 		budgetStopped := ev.RunID != "" && state.BudgetStops[ev.RunEntry.Issue.Identifier] == ev.RunID
 		if budgetStopped {
@@ -2272,6 +2279,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 		now := time.Now()
 		// #173: the PR this run created or continued is managed from now on.
+		recordPROutcomeOpened(&state, ev.RunEntry, ev.RunID, now) // outcome visibility
 		if recordManagedPR(&state, liveEntry, ev.RunEntry, now) { // #213: a PR new to itervox
 			o.emitFeed(&state, FeedPROpened, ev.RunEntry.Issue.Identifier, FeedPayload{PRURL: ev.RunEntry.PRURL, RunID: ev.RunID})
 		}
@@ -3131,6 +3139,11 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.TotalTokens = liveEntry.TotalTokens
 		run.InputTokens = liveEntry.InputTokens
 		run.OutputTokens = liveEntry.OutputTokens
+		run.CacheReadTokens = liveEntry.CacheReadTokens
+		run.CacheWriteTokens = liveEntry.CacheWriteTokens
+		if liveEntry.RetryAttempt != nil {
+			run.Attempt = *liveEntry.RetryAttempt
+		}
 		run.WorkerHost = liveEntry.WorkerHost
 		run.Backend = liveEntry.Backend
 		run.ProfileName = liveEntry.ProfileName
@@ -3167,6 +3180,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 	}
 	run.BranchName = historyBranch(liveEntry, issue) // #201
 	run.Resources = o.endRunMonitor(issue.Identifier)
+	metrics.RunTokens(run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheWriteTokens)
 	o.addCompletedRun(run)
 	// Reset the per-identifier counter so the next run starts fresh — without
 	// this a long-lived issue accumulates comment counts across multiple runs.
