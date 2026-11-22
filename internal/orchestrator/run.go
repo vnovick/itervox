@@ -62,6 +62,9 @@ type runHandle struct {
 	// carries it, so the event loop settles a run's final usage even when
 	// the turn failed or its last progress update was dropped.
 	usage atomic.Pointer[runUsage]
+	// checks are the run's gate outcomes (evidence report), recorded by the
+	// worker (recordRunGate) and copied onto its CompletedRun at exit.
+	checks atomic.Pointer[RunChecks]
 	// steer carries operator messages from the event loop to the worker
 	// (#178). The loop only sends (non-blocking); the worker, or its runner
 	// during a live turn, receives.

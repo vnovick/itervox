@@ -210,3 +210,44 @@ func TestGuardrailApprovalViaSlackRecordsVia(t *testing.T) {
 		return false
 	}, 5*time.Second, 20*time.Millisecond, "the approval is recorded via slack")
 }
+
+// TestGuardrailApprovalRecordsActorAndRun (evidence report): an approval
+// through the API records who gave it and the run it was for on the
+// guardrail_approved feed event.
+func TestGuardrailApprovalRecordsActorAndRun(t *testing.T) {
+	r := newDeployRig(t)
+	r.waitForApproval()
+	var runID string
+	for _, e := range r.orch.Snapshot().Running {
+		runID = e.RunID
+	}
+	require.NotEmpty(t, runID)
+	require.NoError(t, r.orch.ProvideInputAs("ENG-1", "approve", "", "dashboard:tok_abc"))
+	assert.Contains(t, r.agentOutput(), "exit=0")
+	require.Eventually(t, func() bool {
+		for _, ev := range r.orch.Snapshot().Feed {
+			if ev.Kind == orchestrator.FeedGuardrailApproved && ev.Identifier == "ENG-1" {
+				return ev.Payload.Actor == "dashboard:tok_abc" && ev.Payload.RunID == runID && ev.Payload.Via == "dashboard"
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "the approval names its actor and run")
+}
+
+// TestGuardrailDismissRecordsActor: dismissing a held command rejects it,
+// and the guardrail_blocked event names who dismissed it.
+func TestGuardrailDismissRecordsActor(t *testing.T) {
+	r := newDeployRig(t)
+	r.waitForApproval()
+	require.NoError(t, r.orch.DismissInputAs("ENG-1", "dashboard:bootstrap"))
+	assert.Contains(t, r.agentOutput(), "exit=1")
+	require.Eventually(t, func() bool {
+		for _, ev := range r.orch.Snapshot().Feed {
+			if ev.Kind == orchestrator.FeedGuardrailBlocked && ev.Identifier == "ENG-1" {
+				return ev.Payload.Actor == "dashboard:bootstrap" && ev.Payload.Kind == guardrails.KindApprovalRejected &&
+					ev.Payload.Via == "dismiss"
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "the dismissal names its actor")
+}

@@ -93,6 +93,8 @@ func buildEvidenceBlock(required []string, relPath string) string {
 // evidenceVerdict is the result of checking a run's evidence.
 type evidenceVerdict struct {
 	Missing []string // one human-readable reason per unmet check
+	// FailedNames are the unmet checks' names (the evidence report).
+	FailedNames []string
 }
 
 func (v evidenceVerdict) ok() bool { return len(v.Missing) == 0 }
@@ -121,13 +123,16 @@ func checkEvidence(
 			switch {
 			case reason != "":
 				v.Missing = append(v.Missing, fmt.Sprintf("`%s`: %s", name, reason))
+				v.FailedNames = append(v.FailedNames, name)
 			case !passed[name]:
 				v.Missing = append(v.Missing, fmt.Sprintf("`%s`: no passing entry with a command and output in `%s`", name, relPath))
+				v.FailedNames = append(v.FailedNames, name)
 			}
 		}
 	}
 
 	if containsString(required, config.EvidenceCheckCI) {
+		before := len(v.Missing)
 		if prURL == "" {
 			v.Missing = append(v.Missing, "`ci`: no pull request was found for this run")
 		} else {
@@ -140,6 +145,9 @@ func checkEvidence(
 			case sum.Pending > 0:
 				v.Missing = append(v.Missing, fmt.Sprintf("`ci`: %d of %d checks still running on %s", sum.Pending, sum.Total, prURL))
 			}
+		}
+		if len(v.Missing) > before {
+			v.FailedNames = append(v.FailedNames, config.EvidenceCheckCI)
 		}
 	}
 	return v
