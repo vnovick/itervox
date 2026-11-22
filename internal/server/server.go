@@ -1623,6 +1623,9 @@ type Config struct {
 	// Attestations backs GET /api/v1/issues/{identifier}/attestations
 	// (signed checks). Nil answers 503.
 	Attestations AttestationsClient
+	// Evidence backs GET /api/v1/issues/{identifier}/evidence (the
+	// per-issue evidence report). Nil answers 503.
+	Evidence EvidenceClient
 	// SteeringPhrases are the steering chips GET /api/v1/steering/phrases
 	// serves (#218, sessions.steering_phrases). Read-only after startup.
 	SteeringPhrases []config.SteeringPhrase
@@ -1716,6 +1719,8 @@ type Server struct {
 	steeringPhrases []config.SteeringPhrase
 	// attestations mirrors Config.Attestations (signed checks).
 	attestations AttestationsClient
+	// evidence mirrors Config.Evidence (the per-issue evidence report).
+	evidence EvidenceClient
 	// tasks mirrors Config.Tasks (#251).
 	tasks TasksClient
 	// clearAllInFlight is set while a DELETE /api/v1/workspaces clear runs in
@@ -1778,6 +1783,7 @@ func New(cfg Config) *Server {
 		github:              cfg.GitHubPRs,
 		playbooks:           cfg.Playbooks,
 		attestations:        cfg.Attestations,
+		evidence:            cfg.Evidence,
 		steeringPhrases:     cfg.SteeringPhrases,
 		tasks:               cfg.Tasks,
 	}
@@ -1953,6 +1959,7 @@ func (s *Server) routes() {
 			r.Post("/issues/{identifier}/pr-review", s.handlePRReview)            // #238: never merges
 			r.Get("/issues/{identifier}/decisions", s.handleIssueDecisions)       // #218
 			r.Get("/issues/{identifier}/attestations", s.handleIssueAttestations) // signed checks
+			r.Get("/issues/{identifier}/evidence", s.handleIssueEvidence)         // what ran, what was checked, who approved
 			r.Post("/issues/{identifier}/playbook", s.handleSetIssuePlaybook)     // #218
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)

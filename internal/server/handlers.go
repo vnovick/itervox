@@ -691,6 +691,13 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 			return viaClient.ProvideInputVia(identifier, message, body.Via)
 		}
 	}
+	if as, ok := s.client.(InputActorProvider); ok && !body.FromAgent {
+		// The evidence report's "who approved": the caller's principal.
+		actor := callerActor(r)
+		provide = func(identifier, message string) error {
+			return as.ProvideInputAs(identifier, message, body.Via, actor)
+		}
+	}
 	// ProvideInput performs no lookup of its own (CORE-005): the only error
 	// it can return is ErrBusy (event channel full). There is no "not found"
 	// branch here any more — whether the issue is actually waiting for input
@@ -749,7 +756,12 @@ func (s *Server) handleDismissInput(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	// Same contract as handleProvideInput: no lookup, so no "not found"
 	// branch — only ErrBusy (event channel full) can fail this (CORE-005).
-	if err := s.client.DismissInput(identifier); err != nil {
+	dismiss := s.client.DismissInput
+	if as, ok := s.client.(InputActorProvider); ok {
+		actor := callerActor(r)
+		dismiss = func(identifier string) error { return as.DismissInputAs(identifier, actor) }
+	}
+	if err := dismiss(identifier); err != nil {
 		writeBusyOr404(w, err, "not_found", "issue "+identifier+" is not in input-required state")
 		return
 	}

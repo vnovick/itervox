@@ -46,6 +46,25 @@ type InputViaProvider interface {
 	ProvideInputVia(identifier, message, via string) error
 }
 
+// InputActorProvider is implemented by a Client that records who answered
+// an input or approval (the evidence report). ProvideInputAs is
+// ProvideInputVia ("" via for the dashboard) with the caller's actor;
+// DismissInputAs is DismissInput with it. Same error contracts.
+type InputActorProvider interface {
+	ProvideInputAs(identifier, message, via, actor string) error
+	DismissInputAs(identifier, actor string) error
+}
+
+// callerActor names the request's principal for the feed and the evidence
+// report (Principal.actor: never a secret); "" without one.
+func callerActor(r *http.Request) string {
+	p, ok := principalFrom(r.Context())
+	if !ok {
+		return ""
+	}
+	return p.actor()
+}
+
 func (s *Server) guardrailGrant(w http.ResponseWriter, r *http.Request) (runID string, ok bool) {
 	if s.guardrails == nil {
 		writeError(w, http.StatusNotImplemented, "not_supported", "guardrails are not configured")

@@ -1,0 +1,163 @@
+{
+  "identifier": "ENG-1",
+  "title": "Fix the parser",
+  "generatedAt": "2026-05-25T12:00:00Z",
+  "scope": "admin",
+  "runs": [
+    {
+      "runId": "run-1",
+      "kind": "worker",
+      "profile": "coder",
+      "backend": "claude",
+      "profileModel": "claude-sonnet-4-5",
+      "status": "succeeded",
+      "startedAt": "2026-05-25T12:00:00Z",
+      "finishedAt": "2026-05-25T12:01:00Z",
+      "elapsedMs": 60000,
+      "turnCount": 3,
+      "promptDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "promptParts": {
+        "soul": "s",
+        "template": "t"
+      },
+      "rulesHash": "rh",
+      "ruleIds": [
+        "r1"
+      ],
+      "memoryIds": [
+        "m1"
+      ],
+      "playbook": "bugfix",
+      "steers": [
+        {
+          "at": "2026-05-25T12:00:00Z",
+          "delivery": "live",
+          "text": "check the tests"
+        }
+      ],
+      "branchName": "eng-1",
+      "prUrl": "https://github.com/o/r/pull/1",
+      "checks": {
+        "evidence": {
+          "required": [
+            "tests",
+            "ci"
+          ],
+          "failed": [
+            "ci"
+          ],
+          "passed": false,
+          "checkedAt": "2026-05-25T12:00:00Z"
+        },
+        "signed": {
+          "required": [
+            "lint"
+          ],
+          "passed": true,
+          "checkedAt": "2026-05-25T12:00:00Z",
+          "attestRunId": "20260525T120000Z_coder"
+        }
+      }
+    },
+    {
+      "runId": "run-2",
+      "kind": "reviewer",
+      "status": "running",
+      "live": true,
+      "startedAt": "2026-05-25T12:00:00Z",
+      "elapsedMs": 0,
+      "turnCount": 0,
+      "retryAttempt": 1
+    }
+  ],
+  "retry": {
+    "attempt": 2,
+    "dueAt": "2026-05-25T12:00:00Z"
+  },
+  "reviews": {
+    "verdicts": [
+      {
+        "profile": "reviewer",
+        "verdict": "approve",
+        "backend": "codex",
+        "recordedAt": "2026-05-25T12:00:00Z",
+        "reasons": 1,
+        "comments": 2
+      }
+    ],
+    "outcome": {
+      "blocked": false,
+      "approvals": 1,
+      "blocks": 0,
+      "quorum": "any_block"
+    }
+  },
+  "signedChecks": [
+    {
+      "attestRunId": "20260525T120000Z_coder",
+      "profile": "coder",
+      "checks": [
+        {
+          "name": "lint",
+          "passed": true,
+          "exitCode": 0,
+          "verified": true,
+          "startedAt": "2026-05-25T12:00:00Z",
+          "durationMs": 900
+        }
+      ],
+      "sealed": true,
+      "verified": true
+    }
+  ],
+  "guardrailBlocks": [
+    {
+      "at": "2026-05-25T12:00:00Z",
+      "kind": "force_push"
+    }
+  ],
+  "pushLane": {
+    "lane": "human",
+    "pathsTotal": 3,
+    "pathsKept": 1,
+    "truncated": true,
+    "writerBackends": [
+      "claude"
+    ],
+    "runId": "run-1",
+    "updatedAt": "2026-05-25T12:00:00Z"
+  },
+  "approvals": [
+    {
+      "at": "2026-05-25T12:00:00Z",
+      "kind": "guardrail",
+      "decision": "approved",
+      "via": "dashboard",
+      "runId": "run-1",
+      "push": true,
+      "actor": "dashboard:tok_1",
+      "actorName": "ops"
+    },
+    {
+      "at": "2026-05-25T12:00:00Z",
+      "kind": "guardrail",
+      "decision": "pending",
+      "pathsTotal": 4
+    }
+  ],
+  "pullRequests": [
+    {
+      "url": "https://github.com/o/r/pull/1",
+      "branch": "eng-1",
+      "state": "merged",
+      "recordedAt": "2026-05-25T12:00:00Z",
+      "mergedAt": "2026-05-25T13:00:00Z"
+    }
+  ],
+  "limits": {
+    "feedSince": "2026-05-25T12:00:00Z",
+    "feedMaxAgeHours": 168,
+    "historyRuns": 1,
+    "reviewsSessionOnly": true
+  }
+}

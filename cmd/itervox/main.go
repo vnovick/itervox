@@ -378,7 +378,7 @@ func main() {
 		case "task": // #251
 			runTask(os.Args[2:])
 			return
-		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply", "approve": // #120, #240
+		case "watch", "logs", "pause", "resume", "dispatch", "workers", "reply", "approve", "evidence": // #120, #240
 			runClientCommand(os.Args[1], os.Args[2:])
 			return
 		case "--version", "-version":
@@ -1238,6 +1238,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			GitHubPRs:       githubPRs,                                                                    // #238: the PR-event watcher's GitHub client
 			Playbooks:       playbooksAdapter{orch: orch},                                                 // #218: playbooks, decision logs, verify-skill issue
 			Attestations:    attestationsAdapter{orch: orch},                                              // signed checks: records + verified, off the event loop
+			Evidence:        evidenceAdapter{orch: orch},                                                  // the per-issue evidence report, off the event loop
 			Tasks:           newTasksAdapter(orch, workflowPath),                                          // #251: New task and task templates
 			SteeringPhrases: cfg.Sessions.SteeringPhrases,                                                 // #218
 		})
