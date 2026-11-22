@@ -1139,6 +1139,15 @@ hub's token) becomes `502` with `X-Itervox-Hub-Error: member_auth_failed`,
 never a `401` that would sign the dashboard out; the hub then obtains a new
 member token. An unreachable member is `502 member_unreachable`.
 
+For an `operator` or `admin` hub token every proxied response carries
+`X-Itervox-Hub-Terminal: read`: this hub brokers the read-only live
+terminal for the caller (a `viewer` gets no header, and neither does
+anyone through a hub older than the pass-through). The hub sets it itself
+and drops a member's copy. The desktop app's Sessions window offers **Live
+terminal (read-only)** for a project read through a hub only when its
+sessions read carried it; whether one session has a terminal is still the
+member's `tmux.terminal` and the session's `controllable`.
+
 ### `GET /api/v1/route-scopes`
 
 On every daemon (viewer, #228): the daemon's whole route scope table, which

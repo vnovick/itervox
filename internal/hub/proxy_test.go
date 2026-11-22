@@ -241,3 +241,39 @@ func TestHubRefusesTheLiveTerminal(t *testing.T) {
 	assert.False(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/screen"))
 	assert.False(t, isTerminalRequest(&http.Request{Header: http.Header{}}, "/api/v1/sessions/a/terminal/other"))
 }
+
+// TestHubProxyTellsWhoGetsTheReadOnlyTerminal (#334 follow-up): every
+// proxied response to an operator or admin hub token carries
+// X-Itervox-Hub-Terminal: read (this hub brokers the read-only live
+// terminal for the caller), a viewer's carries none, and a member cannot
+// claim it: its own copy is dropped, so only the hub decides.
+func TestHubProxyTellsWhoGetsTheReadOnlyTerminal(t *testing.T) {
+	alpha := newFakeMember(t, "alpha", time.Now().Add(-time.Hour))
+	reg := &memberList{}
+	reg.add(alpha.rec)
+	th := startTestHub(t, Config{Members: reg.list})
+	waitProxied(t, th, "alpha")
+	base := th.ts.URL + "/hub/p/alpha"
+
+	for _, sc := range []apitokens.Scope{apitokens.ScopeOperator, apitokens.ScopeAdmin} {
+		resp := doHub(t, base+"/api/v1/whoami", http.MethodGet, th.secrets[sc], nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, TerminalHeaderRead, resp.Header.Get(TerminalHeader), "%s", sc)
+	}
+	resp := doHub(t, base+"/api/v1/whoami", http.MethodGet, th.secrets[apitokens.ScopeViewer], nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, resp.Header.Values(TerminalHeader), "a viewer cannot open the terminal through the hub")
+
+	// A member's own claim never reaches the caller.
+	alpha.respHeader.Store(http.Header{TerminalHeader: {"write"}})
+	resp = doHub(t, base+"/api/v1/whoami", http.MethodGet, th.secrets[apitokens.ScopeViewer], nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, resp.Header.Values(TerminalHeader))
+	resp = doHub(t, base+"/api/v1/whoami", http.MethodGet, th.secrets[apitokens.ScopeOperator], nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, []string{TerminalHeaderRead}, resp.Header.Values(TerminalHeader))
+	// A refusal by the hub itself is no proxied response: no header.
+	resp = doHub(t, base+"/api/v1/tokens", http.MethodGet, th.secrets[apitokens.ScopeAdmin], nil)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Empty(t, resp.Header.Values(TerminalHeader))
+}
