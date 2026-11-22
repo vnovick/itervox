@@ -20,6 +20,13 @@ never the judge.
 
 Every error exits `2`, never `0`: referee fails closed.
 
+`lanes` and `audit` with `--key K --record F`, and every `run`, also append a
+signed record of the referee itself: its version, commit and ruleset, the
+policy file's sha256 at the base, the base and head commits, what it decided
+and its exit code. `verify` checks it (`--base`, `--head`,
+`--expect-referee-commit`, `--expect-ruleset`, `--expect-exit`,
+`--require-referee`); the Action takes `key` / `record` and outputs `record`.
+
 ```yaml
 # .referee.yml on the default branch (absent: a default human lane of CI
 # workflows, test-runner, coverage and lint config, CODEOWNERS, Makefile)

@@ -14,6 +14,7 @@ import (
 )
 
 const auditUsage = `usage: referee audit --base <ref> [--head HEAD] [--json] [--dir .]
+                    [--key <private key> --record <referee.jsonl>]
 
 Lists changes in the diff from the merge base of <base> and <head> to <head>
 that weaken what CI checks:
@@ -29,7 +30,8 @@ that weaken what CI checks:
   git_no_verify         git commit/push --no-verify, or git commit -n, in a script
 
 Only added lines are read, and comment lines are skipped. --base defaults to
-origin/$GITHUB_BASE_REF in a pull_request workflow.
+origin/$GITHUB_BASE_REF in a pull_request workflow. --key and --record
+append a signed referee record (as for lanes, with the finding count).
 
 Exit codes: 0 no findings, 20 findings, 2 usage or error.`
 
@@ -43,7 +45,7 @@ type auditReport struct {
 	Findings   []finding `json:"findings"`
 }
 
-func auditCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io.Writer) int {
+func auditCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io.Writer) (code int) {
 	fs := flag.NewFlagSet("referee audit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { _, _ = fmt.Fprintln(stderr, auditUsage) }
@@ -51,6 +53,7 @@ func auditCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io
 	head := fs.String("head", "HEAD", "head ref under review")
 	asJSON := fs.Bool("json", false, "print a JSON report")
 	dir := fs.String("dir", ".", "repository directory")
+	self := addSelfRecordFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
@@ -61,10 +64,18 @@ func auditCmd(ctx context.Context, args []string, env envFunc, stdout, stderr io
 	if err != nil {
 		return usageError(stderr, auditUsage, "%v", err)
 	}
+	sr, err := openSelfRecord(ctx, "audit", *dir, *self.key, *self.record)
+	if err != nil {
+		return usageError(stderr, auditUsage, "%v", err)
+	}
+	sr.setRefs(baseRef, *head, defaultPolicyPath)
+	defer func() { code = sr.finish(ctx, code, stderr) }()
 	rep, err := audit(ctx, *dir, baseRef, *head)
 	if err != nil {
 		return failf(stderr, "audit", "%v", err)
 	}
+	sr.setCommits("", rep.HeadCommit)
+	sr.setFindings(len(rep.Findings))
 	if *asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")

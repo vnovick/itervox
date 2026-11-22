@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+// VerifyOptions are PrintVerificationWith's optional checks.
+type VerifyOptions struct {
+	// TreeDir, when set, also requires each check's tree to be the working
+	// tree in TreeDir now.
+	TreeDir string
+	// Check, when set, is asked about every record (by its index in the
+	// run) whose signature verifies; a non-empty reason fails the record.
+	// The referee uses it to check its own records' content.
+	Check func(i int, r Record) string
+}
+
 // PrintVerification verifies every record of run with pub, prints one line
 // per record to out and returns the exit code: 0 when every record
 // verifies, 1 when one does not, 2 when treeDir's tree cannot be computed.
@@ -15,9 +26,15 @@ import (
 // in treeDir now. prog prefixes error messages ("itervox attest verify").
 // It is shared by `itervox attest verify` and `referee verify`.
 func PrintVerification(ctx context.Context, out, errOut io.Writer, prog string, run RunFile, pub ed25519.PublicKey, treeDir string) int {
+	return PrintVerificationWith(ctx, out, errOut, prog, run, pub, VerifyOptions{TreeDir: treeDir})
+}
+
+// PrintVerificationWith is [PrintVerification] with [VerifyOptions].
+func PrintVerificationWith(ctx context.Context, out, errOut io.Writer, prog string, run RunFile, pub ed25519.PublicKey, opts VerifyOptions) int {
+	treeDir := opts.TreeDir
 	trees := map[string]string{} // excludes key -> current tree in treeDir
 	failed := 0
-	for _, res := range VerifyRun(run, pub) {
+	for i, res := range VerifyRun(run, pub) {
 		r := res.Record
 		reason := res.Reason
 		if res.Verified && treeDir != "" && r.Kind == KindCheck {
@@ -36,6 +53,9 @@ func PrintVerification(ctx context.Context, out, errOut io.Writer, prog string, 
 				reason = err.Error()
 			}
 		}
+		if reason == "" && opts.Check != nil {
+			reason = opts.Check(i, r)
+		}
 		status := "ok  "
 		if reason != "" {
 			status = "FAIL"
@@ -45,9 +65,20 @@ func PrintVerification(ctx context.Context, out, errOut io.Writer, prog string, 
 		if r.Name != "" {
 			label += " " + r.Name
 		}
-		line := fmt.Sprintf("%s %-14s exit=%d tree=%s head=%s", status, label, r.ExitCode, ShortHex(r.TreeHash), ShortHex(r.Head))
-		if r.Kind == KindSeal {
+		var line string
+		switch {
+		case r.Kind == KindSeal:
 			line = fmt.Sprintf("%s %-14s tree=%s head=%s", status, label, ShortHex(r.TreeHash), ShortHex(r.Head))
+		case r.Kind == KindReferee && r.Referee != nil:
+			ref := r.Referee
+			policy := ref.Policy.State
+			if ref.Policy.SHA256 != "" {
+				policy = ShortHex(ref.Policy.SHA256)
+			}
+			line = fmt.Sprintf("%s %-14s exit=%d base=%s head=%s policy=%s ruleset=%s referee=%s@%s", status, label+" "+ref.Command,
+				r.ExitCode, ShortHex(ref.BaseCommit), ShortHex(ref.HeadCommit), policy, ref.Ruleset, ref.Version, ShortHex(ref.Commit))
+		default:
+			line = fmt.Sprintf("%s %-14s exit=%d tree=%s head=%s", status, label, r.ExitCode, ShortHex(r.TreeHash), ShortHex(r.Head))
 		}
 		if reason != "" {
 			line += "  (" + reason + ")"

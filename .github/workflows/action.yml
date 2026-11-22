@@ -251,3 +251,49 @@ jobs:
           WANT: failure lane= exit-code=1
           GOT: ${{ steps.verify-changed.outcome }} lane=${{ steps.verify-changed.outputs.lane }} exit-code=${{ steps.verify-changed.outputs.exit-code }}
         run: '[ "$GOT" = "$WANT" ] || { echo "::error::verify-changed: want $WANT, got $GOT"; exit 1; }'
+      - run: git checkout -q -- src/app.go && git checkout -q human
+      - id: lanes-recorded
+        name: 'lanes: human, with a referee record'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: lanes
+          base: main
+          fail-on: never
+          key: ${{ runner.temp }}/keys/attest.key
+          record: ${{ runner.temp }}/referee.jsonl
+      - name: 'assert lanes-recorded'
+        env:
+          WANT: success lane=human exit-code=20 record=${{ runner.temp }}/referee.jsonl
+          GOT: ${{ steps.lanes-recorded.outcome }} lane=${{ steps.lanes-recorded.outputs.lane }} exit-code=${{ steps.lanes-recorded.outputs.exit-code }} record=${{ steps.lanes-recorded.outputs.record }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::lanes-recorded: want $WANT, got $GOT"; exit 1; }'
+      - id: verify-referee
+        name: 'verify: the referee record, against main and HEAD'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: verify
+          records: ${{ runner.temp }}/referee.jsonl
+          pubkey: ${{ runner.temp }}/keys/attest.pub
+          base: main
+          require-referee: 'true'
+          expect-exit: '20'
+      - name: 'assert verify-referee'
+        env:
+          WANT: success exit-code=0
+          GOT: ${{ steps.verify-referee.outcome }} exit-code=${{ steps.verify-referee.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::verify-referee: want $WANT, got $GOT"; exit 1; }'
+      - id: verify-referee-exit
+        name: 'verify: the referee record did not exit 0'
+        uses: ./itervox/referee
+        continue-on-error: true
+        with:
+          mode: verify
+          records: ${{ runner.temp }}/referee.jsonl
+          pubkey: ${{ runner.temp }}/keys/attest.pub
+          expect-exit: '0'
+      - name: 'assert verify-referee-exit'
+        env:
+          WANT: failure exit-code=1
+          GOT: ${{ steps.verify-referee-exit.outcome }} exit-code=${{ steps.verify-referee-exit.outputs.exit-code }}
+        run: '[ "$GOT" = "$WANT" ] || { echo "::error::verify-referee-exit: want $WANT, got $GOT"; exit 1; }'

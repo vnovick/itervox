@@ -48,13 +48,13 @@ func TestKeygenRunVerify(t *testing.T) {
 
 	recs, err := attest.ReadFile(records)
 	require.NoError(t, err)
-	require.Len(t, recs, 6, "a check and a seal per run")
-	assert.Equal(t, 3, recs[2].ExitCode)
-	assert.True(t, recs[2].Pipefail)
+	require.Len(t, recs, 9, "a check, a seal and a referee record per run")
+	assert.Equal(t, 3, recs[3].ExitCode)
+	assert.True(t, recs[3].Pipefail)
 
 	code, out, errOut = referee(t, nil, "verify", records, "--pubkey", pub, "--tree", r.dir)
 	require.Equal(t, 0, code, out+errOut)
-	assert.Contains(t, out, "all 6 records verify")
+	assert.Contains(t, out, "all 9 records verify")
 
 	raw, err := os.ReadFile(records)
 	require.NoError(t, err)

@@ -148,8 +148,8 @@ type CheckResult struct {
 	Reason string
 }
 
-// VerifyRun checks every record of run with pub: a seal must carry a valid
-// signature, and a check record is verified when its signature is valid and
+// VerifyRun checks every record of run with pub: a seal and a referee
+// record must carry a valid signature, and a check record is verified when its signature is valid and
 // its tree is the run's final tree (the tree its seal records).
 func VerifyRun(run RunFile, pub ed25519.PublicKey) []CheckResult {
 	seal, hasSeal := run.Seal()
@@ -161,7 +161,12 @@ func VerifyRun(run RunFile, pub ed25519.PublicKey) []CheckResult {
 	for _, r := range run.Records {
 		var err error
 		switch {
-		case r.Kind == KindSeal:
+		case r.Kind == KindReferee && r.Referee == nil:
+			err = errors.New("attest: a referee record without its referee section")
+		case r.Kind != KindReferee && r.Referee != nil:
+			// Referee content is signed only on its own kind.
+			err = fmt.Errorf("attest: a %s record with a referee section", r.Kind)
+		case r.Kind == KindSeal, r.Kind == KindReferee:
 			err = VerifySignature(r, pub)
 		case sealErr != nil:
 			if err = VerifySignature(r, pub); err == nil {

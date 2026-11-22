@@ -53,6 +53,11 @@ const (
 	// KindSeal closes a run: the tree after its last check. A check record
 	// is verified against its run's seal.
 	KindSeal = "seal"
+	// KindReferee is the referee's record of its own run: which referee,
+	// which policy and rules, what it judged and the exit code it returned
+	// (see [Referee]). Its signature is all [VerifyRun] checks; the
+	// referee's verify checks its content.
+	KindReferee = "referee"
 )
 
 // pipefailPrefix is prepended to every shell command: bash's pipefail makes
@@ -96,6 +101,10 @@ type Record struct {
 	TreeExcludes []string `json:"tree_excludes,omitempty"`
 	Head         string   `json:"head,omitempty"`
 	TreeError    string   `json:"tree_error,omitempty"`
+	// Referee is a referee record's content (KindReferee only). It is nil,
+	// and so absent from the JSON, on every other kind: records written
+	// before it existed encode, and verify, exactly as they did.
+	Referee *Referee `json:"referee,omitempty"`
 	// KeyID names the signing key (the first 16 hex digits of the SHA-256
 	// of the public key); Sig is the base64 ed25519 signature.
 	KeyID string `json:"key_id,omitempty"`
