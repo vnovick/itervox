@@ -5,7 +5,7 @@
 // on small ones; the location hash selects the tab (/repo#capabilities,
 // #usage, #prompts, #readiness, #evals, #hotspots).
 
-import type { KeyboardEvent, ReactNode } from 'react';
+import { lazy, Suspense, type KeyboardEvent, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import PageMeta from '../../components/common/PageMeta';
 import { SkillsCard } from './capabilities/SkillsCard';
@@ -16,9 +16,17 @@ import { ReadinessSection } from './readiness/ReadinessSection';
 import { REPO_SECTIONS, sectionFromHash, type RepoSectionKey } from './repoSections';
 import { UsageSection } from './usage/UsageSection';
 
+// Outcomes loads as its own lazy chunk (bundle budget).
+const OutcomesSection = lazy(() => import('./outcomes/OutcomesSection'));
+
 const SECTION_BODY: Record<RepoSectionKey, () => ReactNode> = {
   capabilities: () => <SkillsCard />,
   usage: () => <UsageSection />,
+  outcomes: () => (
+    <Suspense fallback={<p className="text-theme-muted text-sm">Loading outcomes…</p>}>
+      <OutcomesSection />
+    </Suspense>
+  ),
   prompts: () => <PromptVersionsSection />,
   readiness: () => <ReadinessSection />,
   evals: () => <EvalsSection />,

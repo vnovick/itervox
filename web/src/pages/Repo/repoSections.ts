@@ -1,10 +1,12 @@
 // The Repo Analysis page's sections (#200) and their deep-link hashes:
 // /repo#capabilities, /repo#usage, /repo#prompts, /repo#readiness, and
-// (#201) /repo#evals, /repo#hotspots.
+// (#201) /repo#evals, /repo#hotspots, and /repo#outcomes (run and PR
+// outcomes per profile and playbook).
 
 export const REPO_SECTIONS = [
   { key: 'capabilities', label: 'Capabilities' },
   { key: 'usage', label: 'Runtime usage and cost' },
+  { key: 'outcomes', label: 'Outcomes' },
   { key: 'prompts', label: 'Prompt versions' },
   { key: 'readiness', label: 'Agent readiness' },
   { key: 'evals', label: 'Evals' },

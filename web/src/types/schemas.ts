@@ -381,6 +381,14 @@ export const HistoryRowSchema = z.object({
   reviewComments: z.number().optional(),
   // System visibility — the run's resource summary; absent without the monitor.
   resources: RunSummarySchema.optional(),
+  // Cost and outcome visibility — prompt-cache tokens where the backend
+  // reports them, the retry attempt (absent: a first run), the run's PR and
+  // what became of it. All omitempty.
+  cacheReadTokens: z.number().optional(),
+  cacheWriteTokens: z.number().optional(),
+  attempt: z.number().optional(),
+  prUrl: z.string().optional(),
+  prOutcome: z.string().optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -1324,6 +1332,24 @@ export const TrackerIssueSchema = z.object({
       started: z.boolean(),
     })
     .optional(),
+  // Cost and outcome visibility — the issue's recorded runs summed, and its
+  // latest PR's outcome (single-issue read only; internal/server/outcomes.go).
+  outcome: z
+    .object({
+      runs: z.number(),
+      succeeded: z.number(),
+      retries: z.number(),
+      turns: z.number(),
+      elapsedMs: z.number(),
+      inputTokens: z.number(),
+      outputTokens: z.number(),
+      cacheReadTokens: z.number().optional(),
+      cacheWriteTokens: z.number().optional(),
+      lastStatus: z.string(),
+      prUrl: z.string().optional(),
+      prOutcome: z.string().optional(),
+    })
+    .optional(),
 });
 
 // Inferred TypeScript types — re-exported from itervox.ts for backward compatibility.
@@ -2117,6 +2143,41 @@ export const PromptVersionsResponseSchema = z.object({
   versions: z.array(PromptVersionRowSchema).nullable(),
   unversionedRuns: z.number().optional(),
 });
+
+// GET /api/v1/outcomes?window= — internal/server/outcomes.go OutcomesResponse.
+export const OutcomeGroupRowSchema = z.object({
+  name: z.string(),
+  runs: z.number(),
+  finished: z.number(),
+  succeeded: z.number(),
+  successRate: z.number(),
+  retries: z.number(),
+  retryRate: z.number(),
+  prs: z.number(),
+  prsMerged: z.number(),
+  prsClosed: z.number(),
+  prsReverted: z.number(),
+  prsOpen: z.number(),
+  medianElapsedMs: z.number(),
+  medianTokens: z.number(),
+  totalTokens: z.number(),
+  cacheReadTokens: z.number(),
+});
+
+export const OutcomesResponseSchema = z.object({
+  window: z.string(),
+  windowStart: z.string(),
+  generatedAt: z.string(),
+  historyRuns: z.number(),
+  earliestRunAt: z.string().optional(),
+  total: OutcomeGroupRowSchema,
+  profiles: z.array(OutcomeGroupRowSchema).nullable(),
+  playbooks: z.array(OutcomeGroupRowSchema).nullable(),
+});
+
+export type OutcomeGroupRow = z.infer<typeof OutcomeGroupRowSchema>;
+export type OutcomesResponse = z.infer<typeof OutcomesResponseSchema>;
+export type IssueOutcome = NonNullable<z.infer<typeof TrackerIssueSchema>['outcome']>;
 
 // GET /api/v1/history[?prompt=] — internal/server/history.go HistoryResponse.
 export const HistoryResponseSchema = z.object({
