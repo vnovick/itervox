@@ -74,7 +74,12 @@ type fakeMember struct {
 	ts       *httptest.Server
 	disp     *fakeDispatch
 	lastAuth atomic.Value
-	requests atomic.Int64 // every request the member received
+	// requests counts every request the member received except the hub's
+	// own background polls (hubPollRequest): those run on the hub's
+	// discovery and feed goroutines every Rescan / FeedPoll, so a test that
+	// asserts "the hub refused before proxying" by an unchanged count would
+	// race them (TestHubRefusesTheLiveTerminal failed that way under load).
+	requests atomic.Int64
 	writes   atomic.Int64 // every non-GET request (#230 member actions)
 	// writeAuth is the Authorization of the last non-GET request.
 	writeAuth atomic.Value
@@ -99,7 +104,9 @@ func newFakeMember(t *testing.T, name string, startedAt time.Time) *fakeMember {
 		Version:     "test-" + name,
 	})
 	m.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m.requests.Add(1)
+		if !hubPollRequest(r) {
+			m.requests.Add(1)
+		}
 		if r.Method != http.MethodGet {
 			m.writes.Add(1)
 			m.writeAuth.Store(r.Header.Get("Authorization"))
@@ -113,6 +120,21 @@ func newFakeMember(t *testing.T, name string, startedAt time.Time) *fakeMember {
 		Version: "test-" + name, StartedAt: startedAt.UTC().Format(time.RFC3339), TokenRequired: true,
 	}
 	return m
+}
+
+// hubPollRequest reports a request the hub makes on its own goroutines, on
+// a timer or on its first use of a token: a plain GET (never an upgrade)
+// of the route table, the summary, the feed or whoami (awaitAccepted).
+// None of the paths a refusal test sends through the proxy is one of them.
+func hubPollRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet || r.Header.Get("Upgrade") != "" {
+		return false
+	}
+	switch r.URL.Path {
+	case RouteScopesPath, "/api/v1/summary", "/api/v1/feed", "/api/v1/whoami":
+		return true
+	}
+	return false
 }
 
 func (m *fakeMember) auth() string {
