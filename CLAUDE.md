@@ -353,6 +353,21 @@ only the event loop mutates them.
   `EventDispatchAutomation`, and `claimPREventDedup` in the event loop decides
   managed-ness, staleness and the once-per-event dedup. Persisted to
   `pr_events.json` by the ledger writer; pruned when the issue turns terminal.
+- `PROutcomes` (cost and outcome visibility) is the PR outcome ledger, per PR
+  URL: `open` → `merged` / `closed` (unmerged, can be reopened) → `reverted`
+  (final). A run's exit that carries a PR records it open
+  (`recordPROutcomeOpened`, beside `recordManagedPR`); off-loop observers
+  (`internal/prwatch` `PollOutcomes` and its `pull_request` webhook, the
+  `merge_pr` adapter) only call `RecordPROutcome` (bounded send of
+  `EventPROutcome`), and the #217 revert scan's `EventRevertsScanned` marks a
+  merged PR reverted (the scan also runs while lessons are off once a merged
+  PR is in the ledger). NOT pruned on terminal (a PR merges as the issue
+  closes): 90 days after its last change, bounded (1000). Persisted to
+  `pr_outcomes.json` via the ledger writer. The run-level figures (tokens incl.
+  `CacheReadTokens`/`CacheWriteTokens`, turns, wall time, `Attempt`, status)
+  stay on `CompletedRun` via `recordHistory`; the per-profile / per-playbook
+  aggregates (`GET /api/v1/outcomes`, `server.ComputeOutcomes`) are computed
+  off-loop from the snapshot's history rows, never stored.
 - Run provenance (#186) on `RunEntry` / `CompletedRun`: `PromptDigest` and
   `PromptParts` are computed once in `startRun` (SHA-256 of SOUL.md +
   INSTRUCTIONS.md + the resolved rules + the memory selection (#202, only

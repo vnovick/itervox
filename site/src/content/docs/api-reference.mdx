@@ -200,6 +200,8 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" http://localhost:8090/metrics
 | `itervox_client_errors_total` | counter | `kind`, `outcome` | Dashboard error reports on `POST /api/v1/client-errors`; `kind` is `render`, `error`, `unhandledrejection`, `schema` or `other`, `outcome` is `accepted`, `rate_limited` or `dropped`. |
 | `itervox_tracker_webhooks_total` | counter | `tracker`, `result` | Tracker webhook deliveries (`tracker.webhooks`); `result` is `accepted`, `ignored` (another repository, a pull request, a comment), `bad_signature`, `stale` (a Linear delivery outside the one-minute replay window) or `malformed`. |
 | `itervox_tracker_store_pulls_total` | counter | `trigger` | List pulls of the tracker store: `cold` (first pull), `interval` (the periodic pull; with webhooks on, the safety net), `webhook` (a delivery whose by-ID read failed) or `view` (a state set read for the first time). |
+| `itervox_agent_tokens_total` | counter | `kind` | Tokens of finished runs as their backends reported them: `input`, `output`, `cache_read`, `cache_write`. Counted once per run recorded in history. |
+| `itervox_pr_outcomes_total` | counter | `outcome` | PR outcome transitions recorded: `merged`, `closed` (unmerged), `reverted`, `open` (reopened). |
 | `itervox_persist_write_errors_total` | counter | | Failed runtime-ledger writes. Resets on a `WORKFLOW.md` reload. |
 | `itervox_transport_failures_total` | counter | | Retry-exhausted runs classified as transport failures. Resets on reload. |
 | `itervox_dispatch_ticks_total` | counter | `bound` | Poll ticks observed (`any`), and those that were slot-bound (`slot`) or dependency-bound (`dependency`). Resets on reload. |
@@ -907,6 +909,16 @@ to the daemon's history file). Each row may carry, besides the fields above
   its newest 20, and `steersDropped` counts older ones that were let go.
   Typing into a tmux pane is not recorded.
 
+- `cacheReadTokens` / `cacheWriteTokens` — the run's prompt-cache tokens where
+  the backend reports them: cached input read (Codex `cached_input_tokens`,
+  Claude `cache_read_input_tokens`) and Claude's `cache_creation_input_tokens`.
+  Not part of `tokens`. Omitted when zero.
+- `attempt` — the run's retry attempt; omitted for a first run (0).
+- `prUrl` / `prOutcome` — the PR the run created or continued, and what became
+  of it: `open`, `merged`, `closed` (closed without merging) or `reverted`
+  (see [Run and PR outcomes](#get-apiv1outcomes)). `prOutcome` is omitted when
+  the outcome ledger no longer holds the PR.
+
 All of these are omitted on rows recorded before they existed.
 
 ### `GET /api/v1/history`
@@ -943,6 +955,70 @@ succeeded (0–1), `firstSeenAt` / `lastSeenAt` are the earliest and latest run
 start, `avgDurationMs` is the mean run duration (#200), and `unversionedRuns`
 counts rows recorded without a digest. The dashboard's Repo Analysis →
 Prompt versions section reads this endpoint.
+
+### `GET /api/v1/outcomes`
+
+How runs turned out, per profile and per playbook, over a window (viewer
+scope). `?window=` is `<days>d` or a duration such as `36h`, from `1h` to
+`90d`; the default is `30d`. Anything else is `400 invalid_window`
+(`field: "window"`). Nothing is stored for it: the figures are computed on
+request from the same run history as `GET /api/v1/history`, so they cover at
+most its 200 runs — `earliestRunAt` says where history starts.
+
+```json
+{
+  "window": "30d",
+  "windowStart": "2026-10-23T12:00:00Z",
+  "generatedAt": "2026-11-22T12:00:00Z",
+  "historyRuns": 140,
+  "earliestRunAt": "2026-10-02T08:10:00Z",
+  "total": { "name": "", "runs": 96, "finished": 92, "succeeded": 71, "successRate": 0.77, "...": "..." },
+  "profiles": [
+    {
+      "name": "implementer",
+      "runs": 64, "finished": 61, "succeeded": 47, "successRate": 0.77,
+      "retries": 9, "retryRate": 0.14,
+      "prs": 30, "prsMerged": 24, "prsClosed": 3, "prsReverted": 1, "prsOpen": 2,
+      "medianElapsedMs": 412000, "medianTokens": 18400,
+      "totalTokens": 1380000, "cacheReadTokens": 9100000
+    }
+  ],
+  "playbooks": [ { "name": "bugfix", "runs": 22, "...": "..." } ]
+}
+```
+
+- A run counts in the window when it **finished** inside it. `name: ""` is
+  the default profile, or runs given no playbook.
+- `successRate` is `succeeded / finished`; `finished` leaves out
+  `input_required` runs (paused for an answer, not ended).
+- `retries` counts runs that were retries (`attempt > 0`); `retryRate` is
+  `retries / runs`.
+- `prs` counts the distinct PRs the group's runs created or continued, split
+  by outcome; a PR worked on by two profiles counts for both.
+- `medianElapsedMs` and `medianTokens` are per-run medians (the mean of the
+  two middle runs for an even count); tokens are input + output, as `tokens`
+  on a history row.
+
+The single-issue read (`GET /api/v1/issues/{identifier}`) carries the same
+figures for one issue as `outcome`: `{ runs, succeeded, retries, turns,
+elapsedMs, inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?,
+lastStatus, prUrl?, prOutcome? }`, summed over the issue's runs in history
+(the PR is the newest run's that carried one). The dashboard shows it as the
+outcome line of the issue panel, and the table as **Repo Analysis → Outcomes**.
+
+**Where PR outcomes come from.** A run whose exit carries a PR records it as
+`open` in the PR outcome ledger (`pr_outcomes.json` next to the run history).
+The PR-event watcher reads each open (or closed-unmerged, which can be
+reopened) GitHub PR once per poll — a conditional request, answered 304 while the PR
+is unchanged — and the `pull_request` `closed` / `reopened` webhook deliveries
+it already receives move it to `merged` or `closed`; itervox's own `merge_pr`
+records `merged` at once. `reverted` comes from the base branch's revert
+commits (the same scan as reverted-PR lessons, every 30 minutes, run while any
+merged PR is in the ledger): a merged PR whose number a revert names. A
+revert is found only once its commit is on the base branch of the repository
+the daemon reads (a GitHub "Revert" PR, `This reverts commit …`, or
+`Revert "… (#N)"`). Non-GitHub PRs stay `open`. Entries are kept 90 days
+after their last change, at most 1000.
 
 ---
 

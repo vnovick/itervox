@@ -11,6 +11,7 @@ The dashboard's **Repo Analysis** page (`/repo`, in the sidebar after Rules) gat
 |---|---|---|
 | [Capabilities](#capabilities) | `/repo#capabilities` | The skills inventory: skills, subagents, plugins, MCP servers, hooks, instruction docs, analyzer recommendations with **Fix**, **Re-scan** |
 | [Runtime usage and cost](#runtime-usage-and-cost) | `/repo#usage` | Runtime analytics and their recommendations, tokens per profile |
+| [Outcomes](#outcomes) | `/repo#outcomes` | Per profile and per playbook over 7 or 30 days: runs, success rate, PRs merged, median wall time and tokens, retry rate |
 | [Prompt versions](#prompt-versions) | `/repo#prompts` | Per profile, each prompt version with its runs, success rate and duration |
 | [Agent readiness](#agent-readiness) | `/repo#readiness` | The repository checks `itervox doctor` runs, pass / warn / fail with the fix |
 | [Evals](#evals) | `/repo#evals` | The latest saved eval result per profile and scenario: pass / fail, failed assertions, prompt digest, regressions |
@@ -27,6 +28,25 @@ The skills inventory, as it was in Settings before (Settings now links here): th
 What the session logs show agents actually load: how many skills are runtime-verified, how many hooks fired, and the analytics recommendations — `HIGH_COST_LOW_USAGE` (a costly skill not seen loaded lately), `HOOK_STORM` (a hook firing very often), `CONFIGURED_NOT_LOADED` and `LOADED_NOT_CONFIGURED` (inventory and runtime disagree). Without session logs the section says how to collect them (`CLAUDE_CODE_LOG_DIR`).
 
 **Tokens per profile** breaks each agent profile's approximate context cost down into instructions, skills, hooks, MCP tool schemas and the prompt template, so you can see which profile carries the most before it reads the issue.
+
+## Outcomes
+
+How the agents' work turned out, per profile and per playbook, over the last **7 days** or **30 days** (the toggle above the tables):
+
+| Column | Meaning |
+|---|---|
+| Runs | Runs that finished in the window (workers, reviewers and automation runs) |
+| Success | Succeeded runs over the runs that ended; a run paused for an answer (`input_required`) is not counted as ended |
+| PRs merged | Merged PRs over the distinct PRs the runs created or continued, with the closed-unmerged and reverted ones in brackets |
+| Median time | The median run's wall time |
+| Median tokens | The median run's tokens (input + output, as the backend reported them) |
+| Retry rate | The share of runs that were retries of a failed or stalled run |
+
+The figures are computed from the run history when the page asks for them (`GET /api/v1/outcomes?window=30d`, [API reference](/api-reference/#get-apiv1outcomes)); nothing extra is stored. History keeps the last 200 runs, so on a busy daemon a 30-day window may start later than 30 days ago — the section says so when it does.
+
+**PR outcomes.** A PR a run created or continued is tracked from that run's exit: `open`, then `merged` or `closed` (closed without merging) when the PR-event watcher reads it on GitHub (one conditional request per open PR per poll, or the `pull_request` webhook when [`pr_events.webhook_secret`](/configuration/) is set), at once when itervox merges it itself (`merge_pr`). It becomes `reverted` when a revert of it lands on the base branch of the repository the daemon reads: the same scan of the base branch's revert commits as [reverted-PR lessons](/guides/memory/). A PR on another forge stays `open`.
+
+**Per issue.** The issue panel shows one line under its actions: runs (and how many succeeded), retries, turns, wall time, input and output tokens (and prompt-cache reads where the backend reports them), the last run's status and a link to the latest PR labelled with its outcome.
 
 ## Prompt versions
 
