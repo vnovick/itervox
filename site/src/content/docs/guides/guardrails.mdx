@@ -538,6 +538,15 @@ rewrites its own `PATH` or environment, or reaches the remote another way
 remote** is what makes a protected-branch push impossible; keep it on.
 :::
 
+**Where it is enforced.** For a profile with `isolation: process`,
+`egress: allowlist` and `push: daemon`, on the daemon's own host, those
+bypasses have nowhere to go: the sandbox has no route to the repository's
+remotes (the [egress proxy](/guides/isolation/#network-egress-allowlist)
+refuses them, SSH has no network), the git credentials are hidden, and
+Itervox pushes after its checks. Everything else in this section — runs
+without isolation and egress, SSH workers, hooks, sessions started by hand —
+stays guidance.
+
 - Runs on [SSH worker hosts](/configuration/#ssh-dispatch) are not guarded in
   this version; a warning is logged at startup and for each such run.
 - Sessions you start by hand are never touched by the shims and hooks; the

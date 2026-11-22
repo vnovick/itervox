@@ -68,8 +68,9 @@ confined than what you asked for.
 Paths that do not exist when the run starts are left out. Both extra lists
 take absolute paths or paths starting with `~/`.
 
-**Network** stays open: agents need their APIs, and the guardrail shims and
-agent actions call the daemon over localhost.
+**Network** stays open unless the profile also sets
+[`egress: allowlist`](#network-egress-allowlist): then the agent reaches only
+allowlisted hosts, through a proxy Itervox runs for the run.
 
 **Processes:** the sandbox covers every child the agent starts. The agent stays
 in the daemon's process group, so cancelling a run still stops all of it.
@@ -101,11 +102,142 @@ the CLIs from using them, but a program that asks the keychain directly is
 not stopped. With `~/.ssh` hidden, an agent cannot fetch over SSH either;
 the daemon's own git commands are not sandboxed.
 
+## Network egress allowlist
+
+`isolation: process` limits the filesystem. `egress: allowlist` limits the
+network as well: the sandboxed agent has no network of its own and reaches
+only the hosts on its allowlist, through an HTTP proxy the daemon runs for
+that one run. Git traffic stays with the daemon.
+
+```yaml
+agent:
+  isolation: process
+  egress: allowlist            # default for profiles that set nothing: off
+  egress_allow:                # on top of the defaults below
+    - registry.example.com     # ports 443 and 80
+    - mirror.example.org:8443  # this port only
+    - "*.corp.example"         # every subdomain (not corp.example itself)
+  egress_defaults: true        # add the model API and registry hosts (default)
+  push: daemon                 # patches only: Itervox pushes, see below
+  profiles:
+    reviewer:
+      command: claude
+      egress_allow: [docs.example.com]   # added to agent.egress_allow
+      # egress: "off"                    # this profile keeps an open network
+```
+
+| Key | Where | Default | Meaning |
+|---|---|---|---|
+| `egress` | `agent.` and per profile | `off` | `allowlist` closes the network but for the allowlist. A profile's own value wins; unset inherits `agent.egress`. Any other value fails config load. |
+| `egress_allow` | `agent.` and per profile | `[]` | Entries: `host` (ports 443 and 80), `host:port`, `*.domain` (subdomains). A URL, a bare `*` or a wildcard on an IP address fails config load. The profile's list adds to the agent's. |
+| `egress_defaults` | `agent.` and per profile | `true` | Adds the backend's model API hosts and the package registries (below). |
+
+`egress: allowlist` needs `isolation: process`: a profile (or `agent.command`)
+that resolves to `allowlist` without the sandbox fails config load, naming it —
+without a sandbox nothing stops the agent from opening a connection itself.
+
+**Default allowlist** (`egress_defaults: true`):
+
+- model API: `api.anthropic.com`, `console.anthropic.com` (Claude);
+  `api.openai.com`, `auth.openai.com`, `chatgpt.com` (Codex). Other backends
+  have no default: list their API host in `egress_allow`;
+- a model server the profile command points at
+  (`ANTHROPIC_BASE_URL=https://llm.example.com claude`, also
+  `OPENAI_BASE_URL` / `OPENAI_API_BASE`, in the command or the daemon's
+  environment): its host and port are allowed; one on loopback
+  (`http://127.0.0.1:8000`) is reached directly instead;
+- registries: `registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org`,
+  `files.pythonhosted.org`, `proxy.golang.org`, `sum.golang.org`,
+  `crates.io`, `index.crates.io`, `static.crates.io`, `rubygems.org`.
+
+**Always refused**, whatever the allowlist says:
+
+- every host the workspace's git remotes name (fetch and push URLs): an
+  agent cannot push, or fetch, through the proxy;
+- git over SSH (port 22) and any other port an entry does not name;
+- a host that resolves to a loopback, link-local (cloud metadata),
+  unspecified or multicast address — the daemon's machine is not reachable
+  through the proxy;
+- anything not on the allowlist.
+
+**Git credentials are hidden** as well: on top of the deny list above, an
+egress run cannot read `~/.git-credentials`, `~/.config/git/credentials`,
+`~/.config/glab-cli`, `~/.config/hub`, git's credential-cache sockets
+(`~/.git-credential-cache`, `~/.cache/git/credential`) or the SSH agent
+socket, and `SSH_AUTH_SOCK`, `GIT_ASKPASS` and `SSH_ASKPASS` are removed from
+its environment.
+
+**What the agent sees:** `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` (and
+the lower-case spellings) name the proxy on its loopback, `NO_PROXY` covers
+loopback, `NODE_USE_ENV_PROXY=1` makes Node's `fetch` honour them, and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` stops Claude Code's telemetry,
+error reports and update checks, which the allowlist would refuse anyway. A
+refused request gets `403` with `itervox egress: <host>:<port> refused
+(not_allowed)`; a tool that ignores the proxy variables gets no route at all.
+
+### How the proxy reaches the sandbox
+
+- **Linux (bubblewrap):** the agent runs in new network and pid namespaces —
+  its only interface is its own loopback. The daemon's proxy, and one relay
+  per bridged local port, listen on Unix sockets in a private per-run
+  directory (`<tmp>/itervox-egress-<uid>/run-…`, mode 0700). Only that run's
+  directory is bound into the sandbox; the directory holding every run's
+  directory is hidden. Inside the sandbox Itervox first starts a tiny
+  forwarder (the `itervox` binary itself) that listens on the sandbox's
+  `127.0.0.1` — the proxy port (3128) and the daemon's API port, so the
+  guardrail shims and agent actions still work, plus a loopback model
+  server's port — and pipes each connection to its socket; then it becomes
+  the agent (exec, so the agent keeps the pid, the prompt on fd 3 and the
+  exit status). When the agent exits, its pid namespace ends the forwarder.
+  Process groups are not namespaced, so cancelling a run still stops all of
+  it.
+- **macOS (sandbox-exec):** the profile denies `network*` and allows
+  outbound connections only to the proxy (on the daemon's loopback) and the
+  daemon's API port; binding and accepting on loopback stay allowed (a dev
+  server, a test's listener), connecting to other loopback ports does not,
+  and there is no DNS (the proxy resolves names).
+- **Landlock** cannot restrict connections by host. An egress run never
+  falls back to it: on a machine where bubblewrap cannot create the network
+  and pid namespaces, the run does not start, and `itervox doctor` fails.
+
+Every proxy decision is logged with the host and port only (never a path,
+query or header): `egress: allowed` at info, `egress: refused` at warn. The
+run log gets `worker: egress refused: <host>:<port> (<reason>)` once per
+destination, the [event feed](/guides/pause-and-feed/) an `egress_refused`
+event (run id, reason, host:port), and `/metrics`
+`itervox_egress_decisions_total{outcome="allowed|refused"}`.
+
+### Egress plus patches only: the agent cannot push
+
+With `isolation: process`, `egress: allowlist` and
+[`push: daemon`](#patches-only-the-daemon-pushes) together, **the agent
+cannot push at all**: it has no route to the remote (the proxy refuses the
+workspace's remotes, and SSH has no network), no credential (hidden files,
+stripped variables) and its push commands are refused by the guardrails.
+Itervox pushes the branch itself, outside the sandbox, after the run's checks.
+With `push: agent` an egress run cannot push either — the run log says so and
+suggests `push: daemon`.
+
+This holds only for runs Itervox starts on its own host with both settings.
+What remains guidance, not enforcement:
+
+- runs with `egress: off`, runs on SSH workers (refused with isolation),
+  [hooks](#hooks-are-not-sandboxed), and sessions started by hand;
+- **New session** in the Sessions panel refuses a profile with
+  `egress: allowlist` for now (a long-lived tmux session would have no owner
+  for its proxy);
+- an allowlisted host is reachable for anything, including uploading what
+  the agent can read: keep the list short;
+- credentials outside files (the macOS keychain) — see above.
+
+Branch protection and required CI on the remote stay the control for
+everything outside Itervox (see [Safety](/guides/safety/#confine-your-agents)).
+
 ## Mechanisms
 
 | Platform | Mechanism | How |
 |---|---|---|
-| Linux | **bubblewrap** (`bwrap`), preferred | A read-only bind of `/`, writable binds for the write list, an empty read-only tmpfs over each denied directory and `/dev/null` over each denied file. Only a mount namespace: same PIDs, same network. |
+| Linux | **bubblewrap** (`bwrap`), preferred | A read-only bind of `/`, writable binds for the write list, an empty read-only tmpfs over each denied directory and `/dev/null` over each denied file. Only a mount namespace: same PIDs, same network — plus network and pid namespaces with [egress](#network-egress-allowlist). |
 | Linux | **Landlock** (kernel 5.13+), fallback | Used when `bwrap` is missing or cannot create namespaces (for example where unprivileged user namespaces are disabled). Itervox re-executes itself as a small launcher that restricts itself and then execs the agent. |
 | macOS | **sandbox-exec** | A generated profile: writes denied except the write list, reads and writes denied on the deny list. |
 
@@ -162,23 +294,29 @@ scripts and run as before, outside the sandbox.
   `sandbox-exec`) while the run is live; `/api/v1/state` carries it as
   `running[].isolation`.
 - `itervox doctor` has an **Isolation** section: each mechanism with whether it
-  works on this machine, the profiles that ask for `process`, the mechanism
-  runs would use and the lists. A profile asking for a sandbox on a machine
-  with none fails doctor.
+  works on this machine, whether egress can be enforced here, the profiles
+  that ask for `process` and for `egress: allowlist`, the mechanism runs
+  would use and the lists. A profile asking for a sandbox (or for egress) on
+  a machine that cannot provide it fails doctor.
 
 ```text
 Isolation
   bubblewrap: available
   landlock: available
+  egress enforcement: available via bubblewrap
   profiles with isolation: process: coder
   sandbox: bubblewrap
   writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache, ~/.local/share/opencode, ~/.local/state/opencode, ~/.config/opencode, ~/.cursor, ~/.config/cursor (+ isolation_extra_write)
   unreadable: ~/.ssh, ~/.aws, …, every other workspace under ~/.itervox/workspaces/app-1a2b3c4d (+ isolation_extra_deny)
-  network: allowed; hooks: not sandboxed
+  profiles with egress: allowlist: coder
+  network: closed for them but the allowlist, through a per-run proxy (bubblewrap); git credentials hidden: ~/.git-credentials, …, the SSH agent socket
+  default allowlist: model API hosts per backend (claude: api.anthropic.com, console.anthropic.com; codex: …), registries: … (agent.egress_defaults)
+  hooks: not sandboxed
 ```
 
 ## Not covered
 
 - Container or VM isolation per run.
-- Network filtering.
+- Network filtering by URL or content: the egress allowlist decides by host
+  and port.
 - Sandboxing SSH workers.

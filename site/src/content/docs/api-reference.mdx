@@ -596,6 +596,7 @@ endpoint.
 | `dispatch_resumed` | Dispatch resumed (`via`: `operator` or `expired`) | `via` |
 | `review_comment_posted` | An operator's line comment went to the running agent (`via: "agent"`) or the PR (`via: "github"`) (#238) | `via`, `runId` or `prUrl` |
 | `pr_review_submitted_by_operator` | An operator submitted a PR review from the dashboard (#238) | `prUrl`, `verdict` (`approve`, `request_changes`, `comment`), `count` |
+| `egress_refused` | A sandboxed run's egress proxy (`agent.egress: allowlist`) refused a connection; once per destination per run | `runId`, `kind` (`not_allowed`, `push_remote`, `local_address`, `bad_request`), `reason` (the destination `host:port`, never a URL) |
 
 Payloads are small and structured. They never contain agent output, prompt
 text, a question or reply, failure text or a guardrail command line; the

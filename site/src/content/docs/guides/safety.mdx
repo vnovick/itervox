@@ -64,7 +64,11 @@ From strongest to weakest:
    sandbox: bubblewrap or Landlock on Linux, sandbox-exec on macOS.
    - The agent can write only to its own workspace.
    - Your credentials and every other workspace are hidden from it.
-   - A run whose sandbox is unavailable does not start.
+   - With `egress: allowlist` it also has no network of its own: it reaches
+     only allowlisted hosts (its model API, the package registries, what you
+     add) through a proxy Itervox runs per run, never the repository's git
+     remotes. See [Network egress](/guides/isolation/#network-egress-allowlist).
+   - A run whose sandbox (or egress) is unavailable does not start.
 
    Set it per profile, or for all of them with `agent.isolation: process`.
    See [Process isolation](/guides/isolation/).
@@ -140,6 +144,15 @@ read-only reviewers publish nothing; and the pull request is opened with
 `gh`, so on GitLab the daemon pushes but does not open a merge request.
 Without `isolation: process` an agent can still read a credential file by
 its path; see [Process isolation](/guides/isolation/#patches-only-the-daemon-pushes).
+
+**With `isolation: process`, `egress: allowlist` and `push: daemon`
+together, the agent cannot push at all**: no route to the remote, no
+credential, and its push commands refused. That is enforced for runs Itervox
+starts on its own host; without the sandbox and egress, the shims and the
+pre-push hook are guidance that a program calling git by absolute path or
+rewriting `PATH` can get around. Branch protection and required CI on the
+remote stay the control for everything outside Itervox. See
+[Egress plus patches only](/guides/isolation/#egress-plus-patches-only-the-agent-cannot-push).
 
 ## Keep secrets out of reach
 
