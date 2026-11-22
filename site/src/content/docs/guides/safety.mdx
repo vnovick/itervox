@@ -29,6 +29,9 @@ its agent with **full permissions**:
   what it reads anywhere.
 
 On SSH worker hosts (`agent.ssh_hosts`), the same applies on those machines.
+The [guardrails](/guides/guardrails/#on-ssh-worker-hosts) are installed on
+the worker for each run (a worker that cannot be guarded does not run unless
+`guardrails.allow_unguarded_ssh`), but process isolation is local only.
 
 ## Check what yours do
 

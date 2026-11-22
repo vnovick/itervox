@@ -211,8 +211,9 @@ wall. Lanes keep honest agents honest; they are not a substitute.
   `[tool.pytest]`, a `conftest.py` that skips tests, a test marked skip) is not
   seen. `itervox referee audit` reports common ones in CI; code review still
   matters.
-- Runs on [SSH worker hosts](/configuration/#ssh-dispatch) are not guarded in
-  this version.
+- Runs on [SSH worker hosts](/guides/guardrails/#on-ssh-worker-hosts) are
+  classified by the hook on the worker; a worker that cannot be guarded does
+  not run, unless `guardrails.allow_unguarded_ssh`.
 - Sessions you start by hand are never touched by the shims and the pre-push
   hook. The [`itervox hook`](/guides/guardrails/#interactive-sessions-itervox-hook)
   PreToolUse hook asks before an edit of a human-lane file in your own Claude

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"slices"
 	"time"
@@ -17,8 +18,8 @@ import (
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
-// Guardrails (#204). A dispatched local run gets a private runtime
-// directory (internal/guardrails): PATH shims for git, gh, glab and the
+// Guardrails (#204). A dispatched run gets a private runtime directory
+// (internal/guardrails; on an SSH worker, installed there, guardrails/remote.go): PATH shims for git, gh, glab and the
 // approval-command programs, and a pre-push hook through core.hooksPath.
 // The shims and hook call the daemon's token-gated agent-actions endpoints
 // (internal/server) to report refusals and to ask for approvals.
@@ -69,29 +70,41 @@ func (o *Orchestrator) guardrailExecutable() (string, error) {
 // production uses os.Executable). Must be called before Run.
 func (o *Orchestrator) SetGuardrailExecutable(path string) { o.guardrailExe = path }
 
-// prepareRunGuardrails prepares a local run's guardrails and returns the
+// runGuard is a run's prepared guardrails: a local runtime directory
+// (*guardrails.Runtime) or one on an SSH worker (*guardrails.RemoteRuntime).
+type runGuard interface {
+	BinDir() string
+	SetIssueBranch(branch string) error
+	RefusedApprovals() []string
+	Remove()
+}
+
+// prepareRunGuardrails prepares a run's guardrails and returns the
 // environment the runner applies to the agent (agent.WithRunEnv), the
-// runtime and its token (nil/"" when the guardrails are off, the run is
-// remote, or preparation failed — the run then proceeds unguarded with a
-// warning). prBase is the branch the issue's pull request targets: pushes
+// guard and its token (nil/"" when the guardrails are off or preparation
+// failed). prBase is the branch the issue's pull request targets: pushes
 // are classified into guardrails.lanes against it. patchOut is push:
 // daemon: the agent's environment then carries no forge credentials and its
 // pushes are refused (a patch-out run whose guardrails cannot be prepared
-// must not start; the worker checks). Worker goroutine; touches no State.
-func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, runID, wsPath, workerHost, branch, prBase string, turnTimeoutMs, maxTurns int, patchOut bool) (agent.RunEnv, *guardrails.Runtime, string) {
+// must not start; the worker checks).
+//
+// A local run whose guardrails cannot be prepared proceeds unguarded with
+// a warning. A run on an SSH worker gets them installed on the worker
+// (prepareRemoteRunGuardrails); when that fails the error is returned and
+// the run does not start, unless guardrails.allow_unguarded_ssh. Worker
+// goroutine; touches no State.
+func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, runID, wsPath, workerHost, branch, prBase string, turnTimeoutMs, maxTurns int, patchOut bool) (agent.RunEnv, runGuard, string, error) {
 	g := o.cfg.Guardrails
 	if !g.Enabled {
-		return agent.RunEnv{}, nil, ""
-	}
-	if workerHost != "" {
-		slog.Warn("guardrails: not applied to a run on an SSH worker host (v1 guards local runs only)",
-			"issue_identifier", identifier, "worker_host", workerHost)
-		return agent.RunEnv{}, nil, ""
+		return agent.RunEnv{}, nil, "", nil
 	}
 	exe, err := o.guardrailExecutable()
 	if err != nil {
+		if workerHost != "" {
+			return o.remoteGuardrailsFailed(identifier, workerHost, fmt.Errorf("guardrails: cannot resolve the itervox binary: %w", err))
+		}
 		slog.Warn("guardrails: cannot resolve the itervox binary; run is unguarded", "issue_identifier", identifier, "error", err)
-		return agent.RunEnv{}, nil, ""
+		return agent.RunEnv{}, nil, "", nil
 	}
 	opts := guardrails.Options{
 		Executable:          exe,
@@ -123,13 +136,65 @@ func (o *Orchestrator) prepareRunGuardrails(ctx context.Context, identifier, run
 			opts.DaemonURL, opts.Token = o.agentActionBaseURL, token
 		}
 	}
+	if workerHost != "" {
+		return o.prepareRemoteRunGuardrails(ctx, identifier, workerHost, opts, token)
+	}
 	rt, err := guardrails.Prepare(ctx, opts)
 	if err != nil {
 		o.agentActionTokens.Revoke(token)
 		slog.Warn("guardrails: cannot prepare; run is unguarded", "issue_identifier", identifier, "error", err)
-		return agent.RunEnv{}, nil, ""
+		return agent.RunEnv{}, nil, "", nil
 	}
-	return rt.AgentEnv(), rt, token
+	return rt.AgentEnv(), rt, token, nil
+}
+
+// prepareRemoteRunGuardrails installs a run's guardrails on its SSH worker
+// (guardrails.InstallRemote): the shims and pre-push hook run there and
+// call back over the turn's reverse-forwarded socket. Worker goroutine.
+func (o *Orchestrator) prepareRemoteRunGuardrails(ctx context.Context, identifier, workerHost string, opts guardrails.Options, token string) (agent.RunEnv, runGuard, string, error) {
+	forward := ""
+	if token != "" {
+		forward = forwardTarget(o.agentActionBaseURL)
+	}
+	rt, err := guardrails.InstallRemote(ctx, guardrails.RemoteOptions{Host: workerHost, Options: opts, ForwardTarget: forward, Token: token})
+	if err != nil {
+		o.agentActionTokens.Revoke(token)
+		return o.remoteGuardrailsFailed(identifier, workerHost, err)
+	}
+	if token != "" && !rt.Callback() { // without a listener (itervox run) there was nothing to reach
+		reason := "the daemon API URL is not plain http"
+		if err := rt.CallbackErr(); err != nil {
+			reason = logging.RedactString(err.Error())
+		}
+		slog.Warn("guardrails: run on an SSH worker is guarded, but its shims cannot reach the daemon: refusals are not reported and approval commands are refused",
+			"issue_identifier", identifier, "worker_host", workerHost, "reason", reason)
+		o.agentActionTokens.Revoke(token)
+		token = ""
+	}
+	slog.Info("guardrails: installed on an SSH worker", "issue_identifier", identifier, "worker_host", workerHost, "dir", rt.Dir())
+	return rt.AgentEnv(), rt, token, nil
+}
+
+// remoteGuardrailsFailed is the outcome of a run on an SSH worker whose
+// guardrails could not be installed: an error (the run does not start), or
+// with guardrails.allow_unguarded_ssh a warning and an unguarded run.
+func (o *Orchestrator) remoteGuardrailsFailed(identifier, workerHost string, err error) (agent.RunEnv, runGuard, string, error) {
+	if o.cfg.Guardrails.AllowUnguardedSSH {
+		slog.Warn("guardrails: cannot install on the SSH worker; run is unguarded (guardrails.allow_unguarded_ssh)",
+			"issue_identifier", identifier, "worker_host", workerHost, "error", logging.RedactString(err.Error()))
+		return agent.RunEnv{}, nil, "", nil
+	}
+	return agent.RunEnv{}, nil, "", fmt.Errorf("%w; run not started (set guardrails.allow_unguarded_ssh to run it unguarded)", err)
+}
+
+// forwardTarget is the host:port of the daemon API URL that an SSH turn's
+// reverse forward points at ("" when the URL is not plain http).
+func forwardTarget(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.Port() == "" {
+		return ""
+	}
+	return u.Host
 }
 
 // GuardrailReport records an operation a run's shim or hook refused: an

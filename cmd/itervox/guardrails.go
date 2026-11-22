@@ -63,7 +63,7 @@ func (a guardrailsAdapter) ProvideAgentInput(identifier, message string) error {
 }
 
 // wireGuardrails prepares one run generation's guardrails: the metric
-// series, a startup warning for what v1 does not cover, and the guardrails
+// series, a startup line about SSH worker hosts, and the guardrails
 // of tmux sessions. It returns the server client (nil without an action
 // token store, i.e. without a listening server).
 func wireGuardrails(cfg *config.Config, orch *orchestrator.Orchestrator, tmux *tmuxSessions, tokens *agentactions.Store, addr string) server.GuardrailsClient {
@@ -72,8 +72,16 @@ func wireGuardrails(cfg *config.Config, orch *orchestrator.Orchestrator, tmux *t
 		return guardrailsAdapter{orch: orch}
 	}
 	if len(cfg.Agent.SSHHosts) > 0 {
-		slog.Warn("guardrails: runs on SSH worker hosts are not guarded (v1 guards local runs only)",
-			"ssh_hosts", len(cfg.Agent.SSHHosts))
+		// 0.3.4: each run's guardrails are installed on its SSH worker. What
+		// stays unguarded is a run whose install fails, and only with the
+		// opt-out; without it such a run does not start.
+		if cfg.Guardrails.AllowUnguardedSSH {
+			slog.Warn("guardrails: a run on an SSH worker whose guardrails cannot be installed there runs unguarded (guardrails.allow_unguarded_ssh)",
+				"ssh_hosts", len(cfg.Agent.SSHHosts))
+		} else {
+			slog.Info("guardrails: installed on each SSH worker per run; a run whose guardrails cannot be installed there does not start",
+				"ssh_hosts", len(cfg.Agent.SSHHosts))
+		}
 	}
 	if tmux != nil {
 		exe, err := os.Executable()

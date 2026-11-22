@@ -74,6 +74,8 @@ type Options struct {
 	// StripEnv are further variable names AgentEnv removes with PatchOut
 	// (the variables holding the tracker key).
 	StripEnv []string
+	// remote is set by the worker side of InstallRemote (Policy.Remote).
+	remote bool
 }
 
 // Runtime is one run's prepared guardrails directory.
@@ -104,7 +106,7 @@ func Prepare(ctx context.Context, opts Options) (*Runtime, error) {
 		AllowForcePush:      opts.AllowForcePush,
 		ApprovalCommands:    opts.ApprovalCommands,
 		EnvApprovalCommands: opts.EnvApprovalCommands,
-		ApprovalsEnabled:    opts.ApprovalsEnabled && opts.DaemonURL != "" && opts.Token != "",
+		ApprovalsEnabled:    opts.ApprovalsEnabled && (opts.remote || opts.DaemonURL != "" && opts.Token != ""),
 		OrigHooksDir:        repoHooksDir(ctx, opts.WorkDir),
 		Dir:                 dir,
 		BinDir:              filepath.Join(dir, "bin"),
@@ -114,6 +116,7 @@ func Prepare(ctx context.Context, opts Options) (*Runtime, error) {
 		Lanes:               opts.Lanes,
 		BaseRefs:            opts.BaseRefs,
 		PatchOut:            opts.PatchOut,
+		Remote:              opts.remote,
 	}
 	r := &Runtime{policy: p}
 	if opts.PatchOut {

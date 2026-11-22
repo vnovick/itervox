@@ -2,12 +2,15 @@ package guardrails
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -31,6 +34,18 @@ type client struct {
 func newClient(p Policy) client {
 	c := client{base: strings.TrimRight(p.DaemonURL, "/"), token: p.Token, identifier: p.Identifier,
 		http: &http.Client{Timeout: 10 * time.Second}}
+	if p.Remote { // an SSH worker: the turn's reverse-forwarded socket (remote.go)
+		c.base, c.token = "", os.Getenv(TokenEnv)
+		if sock := os.Getenv(SocketEnv); sock != "" {
+			// localhost: the daemon's DNS-rebinding check accepts it, and
+			// the request does arrive on the daemon's loopback listener.
+			c.base = "http://localhost"
+			c.http.Transport = &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", sock)
+			}}
+		}
+	}
 	if p.Dir != "" {
 		c.logPath = filepath.Join(p.Dir, refusalLogName)
 	}

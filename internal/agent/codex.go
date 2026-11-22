@@ -90,7 +90,8 @@ func (c *CodexRunner) RunTurn(
 	defer func() { closePromptFile(promptIn) }()
 	if workerHost != "" {
 		shellCmd := remotePromptAssignment(prompt) + buildCodexShellCmd(command, sessionID, workspacePath, remotePromptRedirect, permissionMode)
-		shellCmd = itervoxAgentExportPrefix() + shellCmd
+		remoteArgs, remotePrefix := RunEnvFrom(ctx).remoteTurn() // #204 on SSH hosts
+		shellCmd = itervoxAgentExportPrefix() + remotePrefix + shellCmd
 		if logDir != "" {
 			// Tee codex stdout to a file on the remote host so sshFetchLogs can read it later.
 			shellCmd = shellCmd + " | tee " + ShellQuote(filepath.Join(logDir, logFileName))
@@ -119,7 +120,7 @@ func (c *CodexRunner) RunTurn(
 		sshArgs := []string{"-T"}
 		sshArgs = append(sshArgs, sshStrictHostOption(workerHost)...)
 		remoteArg, payload := remoteBashInvocation("-lc", shellCmd)
-		sshArgs = append(sshArgs, "-o", "BatchMode=yes", workerHost, remoteArg)
+		sshArgs = append(append(sshArgs, remoteArgs...), "-o", "BatchMode=yes", workerHost, remoteArg)
 		cmd = exec.CommandContext(turnCtx, "ssh", sshArgs...)
 		var err error
 		if stdinFeed, err = attachRemoteStdin(cmd, payload); err != nil {

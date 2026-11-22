@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/vnovick/itervox/internal/domain"
-	"github.com/vnovick/itervox/internal/guardrails"
 	"github.com/vnovick/itervox/internal/logging"
 )
 
@@ -95,7 +94,7 @@ func (o *Orchestrator) openOneShotPR(ctx context.Context, wsPath, branch string,
 // oneShotRefusedApprovals reports the approval commands this run's shims
 // refused (run mode only: the daemon has an approval channel) and tells
 // OnApprovalRefused. Worker goroutine.
-func (o *Orchestrator) oneShotRefusedApprovals(identifier string, guard *guardrails.Runtime) []string {
+func (o *Orchestrator) oneShotRefusedApprovals(identifier string, guard runGuard) []string {
 	if o.oneShot == nil || guard == nil {
 		return nil
 	}

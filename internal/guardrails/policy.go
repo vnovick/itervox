@@ -136,6 +136,11 @@ type Policy struct {
 	// glab command that opens, merges or changes a pull request or calls
 	// a write API, is refused; the daemon pushes after its checks.
 	PatchOut bool `json:"patch_out,omitempty"`
+	// Remote marks a runtime on an SSH worker (remote.go): the daemon is
+	// reached through the turn's reverse-forwarded socket (SocketEnv) with
+	// the token in TokenEnv, both from the agent's environment; neither is
+	// in this file.
+	Remote bool `json:"remote,omitempty"`
 }
 
 // policyFileName and adoptedFileName live in the runtime directory.

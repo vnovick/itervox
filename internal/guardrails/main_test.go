@@ -12,12 +12,14 @@ import (
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/gitexec"
+	"github.com/vnovick/itervox/internal/guardrails/sshtest"
 )
 
 // TestMain lets the test binary stand in for the itervox binary: shims and
 // hooks written by Prepare exec it with a guardrail entrypoint, exactly as
 // they exec itervox in production.
 func TestMain(m *testing.M) {
+	sshtest.Main() // started as "ssh": the fake SSH client of the remote tests
 	if len(os.Args) > 1 && IsEntrypoint(os.Args[1]) {
 		os.Exit(Main(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 	}

@@ -335,12 +335,56 @@ recorded is refused). Nothing on
 the daemon runs a command for an agent. Itervox's own git commands are not
 affected.
 
+## On SSH worker hosts
+
+A run on a worker in [`agent.ssh_hosts`](/configuration/#ssh-dispatch) gets
+the same directory, shims and hooks, on the worker:
+
+1. At run start Itervox checks the worker's `uname -s` and `uname -m`. When
+   they match the platform the daemon's itervox binary was built for, it
+   uploads that binary once (per content hash) to
+   `~/.cache/itervox/guardrails/<hash>/itervox` on the worker, and checks the
+   hash the uploaded copy reports.
+2. That binary prepares the run's directory in the worker's `/tmp`, so the
+   shims and the pre-push hook run the very code the daemon was built with,
+   and the worker's git resolves your repository's own hooks directory.
+3. Each turn's `ssh` reverse-forwards a fresh Unix socket in that directory
+   to the daemon's API (`-R`, with `ExitOnForwardFailure=yes`). The shims
+   reach the same token-gated endpoints through it: refusals are reported
+   and approval commands wait for you exactly as on the daemon's host. The
+   run's token and the socket path are only in the agent's environment,
+   exported by the turn's script, which reaches the worker on ssh's stdin:
+   they are never in a command line or in a file on the worker.
+4. When the run ends, its directory on the worker is removed (best effort;
+   a failure is logged). The cached binary stays for the next run.
+
+| On the worker | What happens |
+|---|---|
+| the worker is another OS or architecture than the daemon's binary, or the upload or install fails | the run does not start; the issue's log says why. With `guardrails.allow_unguarded_ssh: true` it runs **unguarded**, with a warning |
+| the worker's SSH server refuses the reverse forward (`AllowStreamLocalForwarding no`, Dropbear) | the run is guarded, but refusals are not reported and approval commands are **refused**, since no one can be asked; a warning is logged |
+| the daemon has no listener (`itervox run`) | as above, with no warning: approvals are refused, as for a local run |
+
+Requirements on the worker, besides the [usual ones](/configuration/#ssh-dispatch):
+the same OS and architecture as the daemon (a Mac daemon cannot guard a Linux
+worker), `uname`, `mkdir`, `chmod`, `mv`, write access to `~/.cache` and
+`/tmp`, and an OpenSSH server that allows Unix-socket forwarding (the
+default) for approvals. The workspace path must exist on the worker, as for
+every SSH run.
+
 ## How it's tested
 
 - **End to end.** The shim and hook tests run real git against a bare
   remote, with the test binary standing in for itervox, through the same
   shims and hooks a run gets, including commands quoted and spaced the
   ways a shell accepts.
+- **SSH workers.** A fake `ssh` client (the test binary again) runs each
+  remote command under `sh -c` in a separate home directory and relays the
+  reverse-forwarded socket. A real orchestrator with the real Claude runner
+  dispatches to it: on the "worker" a push to another branch (git by
+  absolute path, so only the hook can stop it) and a tag push are refused,
+  `gh pr merge` is refused, `vercel --prod` waits until a human approves and
+  then runs once, and the token is in no ssh argument. No real SSH server is
+  involved, and only the build's own platform is exercised.
 - **Fuzzing.** Go fuzz targets cover the command classifier
   (`FuzzDecide`, `FuzzMatchApproval`), the lane matcher (`FuzzLanes`) and
   the signed-check records (`FuzzRecordVerify`, `FuzzRecordByteFlip`).
@@ -538,8 +582,11 @@ rewrites its own `PATH` or environment, or reaches the remote another way
 remote** is what makes a protected-branch push impossible; keep it on.
 :::
 
-- Runs on [SSH worker hosts](/configuration/#ssh-dispatch) are not guarded in
-  this version; a warning is logged at startup and for each such run.
+- On [SSH worker hosts](#on-ssh-worker-hosts) the same limits apply on the
+  worker. A worker of another OS or architecture than the daemon's binary
+  cannot be guarded: its runs do not start, unless
+  `guardrails.allow_unguarded_ssh`, which runs them unguarded with a
+  warning. [Process isolation](/guides/isolation/) is local only.
 - Sessions you start by hand are never touched by the shims and hooks; the
   [PreToolUse hook](#interactive-sessions-itervox-hook) is an opt-in
   convenience layer for them.

@@ -423,8 +423,25 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   the worker, applied before the action bridge so the shims stay first on
   PATH) and tmux sessions started with **New session**
   (`cmd/itervox/guardrails.go`). Never hand-started sessions (read-only
-  invariant). SSH worker hosts are NOT guarded in v1 — a warning at startup
-  and per run; do not claim otherwise.
+  invariant).
+- **SSH worker hosts (0.3.4)**: guarded on the worker by the same shims and
+  pre-push hook (`guardrails.InstallRemote`, `internal/guardrails/remote.go`,
+  called from `prepareRemoteRunGuardrails`). The daemon uploads its OWN
+  binary (only when the worker's `uname -s`/`-m` match its GOOS/GOARCH;
+  cached per hash in `~/.cache/itervox/guardrails/`, checked by the hash the
+  copy reports) and runs `itervox guardrail-remote install` there, which
+  calls `Prepare` on the worker (the worker's git resolves the hooks dir).
+  Each turn's ssh reverse-forwards a fresh Unix socket in the runtime dir to
+  the daemon API (`agent.RemoteEnv`, `-R` + `ExitOnForwardFailure`); the
+  shims call the same `guardrail/*` routes through it. The token and socket
+  reach the shims ONLY as env (`ITERVOX_GUARDRAIL_TOKEN` /
+  `_SOCKET`), exported by the script on ssh's stdin — never argv, never the
+  worker's policy file (`Policy.Remote`). Fails closed: a run whose install
+  fails does not start unless `guardrails.allow_unguarded_ssh` (load-time,
+  not in the cfgMu list). No callback (sshd refuses the forward, no listener)
+  = still guarded, approvals refused. Other platforms are NOT guarded (no
+  cross-arch binary); process isolation stays local only; tests use a fake
+  ssh client (`internal/guardrails/sshtest`), not a real sshd.
 - **Known limit**: guidance, not a sandbox. An agent calling git by absolute
   path, rewriting PATH/env, or using another channel bypasses it. Branch
   protection on the remote is the real control; docs must keep saying so.

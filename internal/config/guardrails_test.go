@@ -25,6 +25,8 @@ func TestGuardrailsConfigRoundTrip(t *testing.T) {
 		{"all set", "guardrails:\n  enabled: false\n  allow_force_push: true\n  approval_commands:\n    - \"helm  upgrade *-prod\"\n    - \"helm upgrade *-prod\"\n    - \"\"\n",
 			config.GuardrailsConfig{Enabled: false, AllowForcePush: true, ApprovalCommands: []string{"helm upgrade *-prod"}, Lanes: lanes}},
 		{"empty list turns approvals off", "guardrails:\n  approval_commands: []\n", config.GuardrailsConfig{Enabled: true, Lanes: lanes}},
+		{"allow_unguarded_ssh opt-out (0.3.4)", "guardrails:\n  allow_unguarded_ssh: true\n",
+			config.GuardrailsConfig{Enabled: true, AllowUnguardedSSH: true, ApprovalCommands: defaults, Lanes: lanes}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
