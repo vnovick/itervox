@@ -115,9 +115,13 @@ func TestCancelResumeRace(t *testing.T) {
 	}
 	wg.Wait()
 	cancel()
+	// Run returns once the cancelled worker's exit is collected
+	// (collectExitsAfterCancel waits up to its stop deadline), which on a
+	// loaded CI runner under -race can take longer than 2s. 10s still
+	// catches a hang and stays under that deadline.
 	select {
 	case <-runDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("orchestrator did not stop after cancel")
 	}
 }
