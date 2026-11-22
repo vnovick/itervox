@@ -52,6 +52,36 @@ inputs:
     description: Also require each record's tree to be this directory's tree now (verify).
     required: false
     default: ''
+  key:
+    description: >-
+      lanes, audit: an ed25519 private key file (referee keygen). The step
+      then also appends a signed referee record (this referee's version,
+      commit and ruleset, the policy file's sha256 at the base, base and
+      head, the verdict and the exit code) to `record`.
+    required: false
+    default: ''
+  record:
+    description: >-
+      lanes, audit: the JSONL file the referee record is appended to (with
+      `key`). Default: $RUNNER_TEMP/referee.jsonl.
+    required: false
+    default: ''
+  require-referee:
+    description: verify - true fails a record file with no referee record.
+    required: false
+    default: 'false'
+  expect-referee-commit:
+    description: verify - require referee records written by the referee built from this commit.
+    required: false
+    default: ''
+  expect-ruleset:
+    description: verify - require referee records judged with this ruleset version.
+    required: false
+    default: ''
+  expect-exit:
+    description: verify - require the last referee record's exit code to be this.
+    required: false
+    default: ''
 
 outputs:
   lane:
@@ -60,6 +90,9 @@ outputs:
   exit-code:
     description: referee's exit code.
     value: ${{ steps.referee.outputs.exit-code }}
+  record:
+    description: The referee record file (lanes, audit with `key`); upload it with the job's artifacts.
+    value: ${{ steps.referee.outputs.record }}
 
 runs:
   using: composite
@@ -73,7 +106,17 @@ runs:
       working-directory: ${{ github.action_path }}/..
       env:
         GOFLAGS: -trimpath
-      run: go install ./cmd/referee
+        ACTION_REF: ${{ github.action_ref }}
+      # The Action's own ref names the build in the referee record: a commit
+      # SHA as main.commit (a tarball checkout has no vcs.revision).
+      run: |
+        ldflags=()
+        if [[ "${ACTION_REF:-}" =~ ^[0-9a-f]{40}$ ]]; then
+          ldflags=(-ldflags "-X main.commit=${ACTION_REF} -X main.version=action@${ACTION_REF:0:12}")
+        elif [[ "${ACTION_REF:-}" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+          ldflags=(-ldflags "-X main.version=action@${ACTION_REF}")
+        fi
+        go install "${ldflags[@]}" ./cmd/referee
     - name: Run referee
       id: referee
       shell: bash
@@ -87,4 +130,10 @@ runs:
         RECORDS: ${{ inputs.records }}
         PUBKEY: ${{ inputs.pubkey }}
         TREE: ${{ inputs.tree }}
+        KEY: ${{ inputs.key }}
+        RECORD: ${{ inputs.record }}
+        REQUIRE_REFEREE: ${{ inputs.require-referee }}
+        EXPECT_REFEREE_COMMIT: ${{ inputs.expect-referee-commit }}
+        EXPECT_RULESET: ${{ inputs.expect-ruleset }}
+        EXPECT_EXIT: ${{ inputs.expect-exit }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"

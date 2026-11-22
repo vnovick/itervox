@@ -173,10 +173,10 @@ referee run --name lint --key "$RUNNER_TEMP/keys/attest.key" --out checks.jsonl 
 referee verify checks.jsonl --pubkey attest.pub --tree .
 ```
 
-`run` runs one check and appends two signed records (ed25519): the check (its
+`run` runs one check and appends three signed records (ed25519): the check (its
 real exit code, duration, the SHA-256 of its output and a redacted tail, the
 git tree hash of the working tree it ran on, tracked plus untracked
-non-ignored files, and `HEAD`) and a seal (the tree after it). One argument
+non-ignored files, and `HEAD`), a seal (the tree after it) and the [referee record](#the-referee-record) (with `run --base <ref>`, also the base commit and the policy hash there). One argument
 after `--` is a shell command line, run by bash with `pipefail`, so a failing
 command piped into `tee` or `tail` still fails; more arguments run directly
 with no shell. It exits with the check's own exit code (`1` when the check was
@@ -194,6 +194,59 @@ See [Signed checks](/guides/signed-checks/) for what a record contains.
 Keep the private key where the agent cannot read it (a CI secret available only
 to the job that runs the checks, not to the job the agent runs in), and give
 reviewers the public key.
+
+### The referee record
+
+`lanes` and `audit` with `--key <private key> --record <file.jsonl>`, and every
+`run`, also append a signed record of the referee itself (`"kind": "referee"`,
+the same ed25519 format and key as the check records):
+
+```bash
+referee lanes --base origin/main --key "$RUNNER_TEMP/keys/attest.key" --record referee.jsonl
+referee audit --base origin/main --key "$RUNNER_TEMP/keys/attest.key" --record referee.jsonl
+referee verify referee.jsonl --pubkey attest.pub --base origin/main --head HEAD \
+  --expect-referee-commit 1a2b3c4 --expect-ruleset 1-0f3c… --expect-exit 0
+```
+
+| Field | |
+|---|---|
+| `referee.version`, `referee.commit` | the referee build (`referee --version`): the release's version and commit, else Go's build info; `-dirty` when built from a modified tree, `unknown` when the build does not say |
+| `referee.ruleset` | the ruleset version, `<epoch>-<16 hex>`: a hash of the default human lane and the audit rule table, so it changes whenever a rule does (`referee --version` prints it) |
+| `referee.command` | `lanes`, `audit` or `run` |
+| `referee.base`, `base_commit`, `head_commit` | the base ref as given and the commits base and head resolved to (`run`: `HEAD`, and the base only with `run --base`) |
+| `referee.policy` | the policy file's path, `state` (`present`, `absent`: the defaults applied, `not_read`: no base) and its `sha256` as read from the base commit |
+| `referee.lane`, `findings`, `check`, `check_sig` | what it decided: the lane, the audit's finding count, or the check record a `run` wrote (bound by that record's signature) |
+| `exit_code`, `started_at`, `duration_ms` | the exit code the referee returned, when and for how long it ran |
+
+It holds hashes, commit ids, a path and counts: never file contents, command
+output or environment values. A run that fails (exit `2`) is still recorded,
+with its exit code. A record that was asked for and cannot be written (a
+missing key, a key inside the repository, a directory that does not exist)
+makes the command exit `2`, whatever it decided: referee fails closed.
+
+`verify` checks every referee record in the file: its signature, and that its
+exit code is the one its lane, its finding count or its check record gives.
+`--base REF` (resolved in `--dir`, default `.`) also requires each record to be
+for `REF`'s commit and its policy `sha256` to be the policy file's at that
+commit; `--head REF` the same for the head; `--expect-referee-commit` (7 or
+more hex digits; never matches a `-dirty` build) and `--expect-ruleset` the
+build and rules you expect; `--expect-exit N` the last referee record's exit
+code. Any of these, or `--require-referee`, fails a file with no referee
+record. Changing any byte of a record's content fails its signature.
+
+**What it proves, and what it does not.** A record that verifies with your
+public key proves that a referee holding the private key wrote it: which
+referee build, ruleset and policy (by hash) judged which base and head, and the
+exit code it returned. It does not prove that the build is a trustworthy one
+(compare `--expect-referee-commit` with the commit you pinned), that CI ran it
+on the pull request you care about unless verify checks `--base` and `--head`
+against that pull request's commits, or that the step's exit code was acted on:
+a record of exit `20` says the referee failed the step, not that the workflow
+honoured it (`--expect-exit` with the code the step returned catches a record
+from a different run). Anyone who can read the private key can write records,
+so keep it out of the agent's job. A referee older than this record format
+reads a referee record without its `referee` section, and so fails its
+signature: it never passes one it cannot check.
 
 ## Exit codes
 
@@ -223,9 +276,14 @@ checkout is an error, not an empty diff; fetch it (`fetch-depth: 0`).
 | `policy-sha256` | | pin: the pinned hash |
 | `fail-on` | `human` | lanes: `human`, `second_opinion` or `never`; audit: `never` reports without failing |
 | `records`, `pubkey`, `tree` | | verify |
+| `key`, `record` | `record`: `$RUNNER_TEMP/referee.jsonl` | lanes, audit: append a signed [referee record](#the-referee-record) |
+| `require-referee`, `expect-referee-commit`, `expect-ruleset`, `expect-exit` | | verify: check the referee records; with `base`, also `--base <base> --head <head>` |
 
-Outputs: `lane` (lanes) and `exit-code`. An error fails the step whatever
-`fail-on` says.
+Outputs: `lane` (lanes), `exit-code` and `record` (the referee record file, to
+upload with `actions/upload-artifact`). An error fails the step whatever
+`fail-on` says. The Action builds referee with its own ref as the version, and
+as the commit when you pin it to a commit SHA (as you should), so the record
+names the referee you pinned.
 
 Pin the Action to a commit SHA. Do not use it as `uses: ./referee` from the
 repository under review: the pull request could change the referee.

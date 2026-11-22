@@ -15,15 +15,33 @@ case "${FAIL_ON:-human}" in
     exit 2
     ;;
 esac
+case "${REQUIRE_REFEREE:-false}" in
+  true | false) ;;
+  *)
+    echo "::error::referee: require-referee must be true or false (got '${REQUIRE_REFEREE}')"
+    exit 2
+    ;;
+esac
 args=()
+record=""
+# lanes, audit: with a key (or a record path), also append a signed referee
+# record. Only one of the two is passed through and fails closed in referee.
+self_record() {
+  if [ -n "${KEY:-}${RECORD:-}" ]; then
+    record=${RECORD:-${RUNNER_TEMP:-.}/referee.jsonl}
+    args+=(--key "${KEY:-}" --record "$record")
+  fi
+}
 case "${MODE:-}" in
   lanes)
     args=(lanes --head "${HEAD_REF:-HEAD}" --policy "${POLICY:-.referee.yml}")
     [ -n "${BASE:-}" ] && args+=(--base "$BASE")
+    self_record
     ;;
   audit)
     args=(audit --head "${HEAD_REF:-HEAD}")
     [ -n "${BASE:-}" ] && args+=(--base "$BASE")
+    self_record
     ;;
   pin)
     args=(pin --file "${POLICY:-.referee.yml}" --policy-sha256 "${POLICY_SHA256:-}")
@@ -31,6 +49,13 @@ case "${MODE:-}" in
   verify)
     args=(verify "${RECORDS:-}" --pubkey "${PUBKEY:-}")
     [ -n "${TREE:-}" ] && args+=(--tree "$TREE")
+    # base (and head) require the referee records to be for those commits,
+    # with the policy sha256 at the base.
+    [ -n "${BASE:-}" ] && args+=(--base "$BASE" --head "${HEAD_REF:-HEAD}")
+    [ "${REQUIRE_REFEREE:-false}" = true ] && args+=(--require-referee)
+    [ -n "${EXPECT_REFEREE_COMMIT:-}" ] && args+=(--expect-referee-commit "$EXPECT_REFEREE_COMMIT")
+    [ -n "${EXPECT_RULESET:-}" ] && args+=(--expect-ruleset "$EXPECT_RULESET")
+    [ -n "${EXPECT_EXIT:-}" ] && args+=(--expect-exit "$EXPECT_EXIT")
     ;;
   *)
     echo "::error::referee: mode must be lanes, audit, pin or verify (got '${MODE:-}')"
@@ -48,6 +73,7 @@ else
   "$referee_bin" "${args[@]}" || code=$?
 fi
 echo "exit-code=$code" >>"$GITHUB_OUTPUT"
+echo "record=$record" >>"$GITHUB_OUTPUT"
 
 if [ "$MODE" = lanes ]; then
   case "$code" in
