@@ -15,6 +15,12 @@ import { terminalWindowSession } from './terminalWindowPath';
 // through auth/terminalSocket), loaded lazily so the renderer stays in its
 // chunk. Closing the window closes the socket: the daemon detaches and the
 // tmux session keeps running.
+//
+// #334 — for a project the app reads through its host's hub, the app loads
+// the same page from the hub's dashboard of that project
+// (/hub/p/{project}/sessions/terminal) with the hub token: the terminal is
+// then the hub's read-only pass-through (terminalModeFor gives 'read'
+// there, and the hub brokers read tickets only).
 
 const TmuxTerminal = lazy(() => import('../Sessions/TmuxTerminal'));
 

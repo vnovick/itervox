@@ -111,14 +111,21 @@ function sessionsBody(over: { terminal?: boolean; terminalWrite?: boolean } = {}
 
 let calls: Call[] = [];
 
-function stubNetwork(body = sessionsBody(), grant: 'read' | 'write' = 'read') {
+function stubNetwork(
+  body = sessionsBody(),
+  grant: 'read' | 'write' = 'read',
+  prefix = '',
+  state: Record<string, unknown> = {},
+) {
   calls = [];
   vi.stubGlobal(
     'fetch',
-    vi.fn((input: string, init: RequestInit = {}) => {
+    vi.fn((url: string, init: RequestInit = {}) => {
+      // Under the hub every API URL carries its /hub/p/{project} base.
+      const input = url.startsWith(`${prefix}/api/`) ? url.slice(prefix.length) : `!${url}`;
       const headers = new Headers(init.headers);
       calls.push({
-        url: input,
+        url,
         method: init.method ?? 'GET',
         auth: headers.get('Authorization'),
         body: typeof init.body === 'string' ? init.body : '',
@@ -140,16 +147,16 @@ function stubNetwork(body = sessionsBody(), grant: 'read' | 'write' = 'read') {
       }
       if (input.startsWith('/api/v1/sessions')) return json(200, body);
       if (input.startsWith('/api/v1/state'))
-        return json(200, { ...quickstartScenario.snapshot, projectName: 'app' });
+        return json(200, { ...quickstartScenario.snapshot, projectName: 'app', ...state });
       return json(404, {});
     }),
   );
   vi.stubGlobal('WebSocket', FakeSocket);
 }
 
-function at(search: string) {
-  window.history.replaceState(null, '', `${TERMINAL_WINDOW_PATH}${search}`);
-  configureApiContext(TERMINAL_WINDOW_PATH);
+function at(search: string, prefix = '') {
+  window.history.replaceState(null, '', `${prefix}${TERMINAL_WINDOW_PATH}${search}`);
+  configureApiContext(`${prefix}${TERMINAL_WINDOW_PATH}`);
 }
 
 function renderPage(ui: ReactElement = <TerminalWindow />) {
@@ -171,14 +178,22 @@ afterEach(() => {
 });
 
 describe('terminal window path', () => {
-  it('is the daemon dashboard path only, never the hub', () => {
+  it('is the daemon dashboard path, or a project through the hub, never a hub page', () => {
     configureApiContext('/');
     expect(isTerminalWindowPath('/sessions/terminal')).toBe(true);
     expect(isTerminalWindowPath('/sessions/terminal/')).toBe(true);
     expect(isTerminalWindowPath('/sessions')).toBe(false);
     expect(isTerminalWindowPath('/sessions/terminalx')).toBe(false);
+    // #334: a project's dashboard through the hub (read-only terminal).
     configureApiContext('/hub/p/app/sessions/terminal');
-    expect(isTerminalWindowPath('/hub/p/app/sessions/terminal')).toBe(false);
+    expect(isTerminalWindowPath('/hub/p/app/sessions/terminal')).toBe(true);
+    expect(isTerminalWindowPath('/hub/p/app/sessions/terminal/')).toBe(true);
+    expect(isTerminalWindowPath('/hub/p/app/sessions')).toBe(false);
+    expect(isTerminalWindowPath('/sessions/terminal')).toBe(false);
+    expect(isTerminalWindowPath('/hub/p/other/sessions/terminal')).toBe(false);
+    // The hub's own pages never are.
+    configureApiContext('/hub/');
+    expect(isTerminalWindowPath('/hub/')).toBe(false);
     expect(isTerminalWindowPath('/sessions/terminal')).toBe(false);
   });
 
@@ -292,6 +307,39 @@ describe('TerminalWindow', () => {
     renderPage();
     expect(await screen.findByText('No live terminal for this daemon')).toBeInTheDocument();
     expect(screen.getByText(/tmux is missing, it runs on Windows/)).toBeInTheDocument();
+  });
+
+  // #334: the desktop app opens the same page from the hub's dashboard of a
+  // project read through the hub. Every request goes to the hub's proxied
+  // API with the held (hub) token, the ticket asks for read only — even
+  // for an admin token on a daemon allowing read-write — and the socket is
+  // the hub's route for the brokered ticket. No keystroke is ever sent.
+  it('through the hub: read-only, the hub API and the hub socket route', async () => {
+    const prefix = '/hub/p/app';
+    stubNetwork(sessionsBody({ terminalWrite: true }), 'read', prefix, { callerScope: 'admin' });
+    at('?id=itervox-abc123', prefix);
+    renderPage();
+    await waitFor(() => {
+      expect(FakeSocket.instances).toHaveLength(1);
+    });
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    for (const c of calls) {
+      expect(c.url.startsWith(`${prefix}/api/v1/`)).toBe(true);
+      expect(c.auth).toBe(`Bearer ${TOKEN}`);
+    }
+    const ticket = calls.find((c) => c.url.includes('/terminal/ticket'));
+    expect(ticket?.url).toBe(`${prefix}/api/v1/sessions/itervox-abc123/terminal/ticket`);
+    expect(JSON.parse(ticket?.body ?? '{}')).toEqual({ mode: 'read' });
+    const ws = new URL(FakeSocket.instances[0].url);
+    expect(ws.pathname).toBe(`${prefix}/api/v1/sessions/itervox-abc123/terminal`);
+    expect(ws.searchParams.get('ticket')).toBe('itvt_one');
+    expect(FakeSocket.instances[0].url).not.toContain(TOKEN);
+    act(() => {
+      FakeSocket.instances[0].onopen?.();
+    });
+    expect(screen.getByTestId('tmux-terminal-mode')).toHaveTextContent('read-only');
+    expect(m.terms[0].readOnly).toBe(true);
+    expect(screen.queryByRole('navigation')).toBeNull();
   });
 
   it('explains a token below operator', async () => {

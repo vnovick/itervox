@@ -21,9 +21,20 @@
 //! Origin: the socket is opened by that page, so its `Origin` is the
 //! page's origin and its `Host` the same `127.0.0.1:<port>` (a tunnel
 //! forwards the bytes unchanged): the daemon's same-origin check passes,
-//! exactly as it does for the app's dashboard windows. A daemon reached
-//! through its host's hub has no live terminal here — the hub never
-//! proxies the terminal's socket — so such a daemon gets no action.
+//! exactly as it does for the app's dashboard windows.
+//!
+//! Through a host's hub (a project the app reads at `/hub/p/<member>/` on
+//! the hub's tunnel, #232) the terminal is the hub's READ-ONLY
+//! pass-through (#334): the window loads the same page from the hub's
+//! dashboard, `<hub>/hub/p/<member>/sessions/terminal?id=…`, with the hub
+//! token the app holds for that connection, handed over the same way and
+//! bound to the hub's origin; the page asks the hub for a read ticket, and
+//! the hub brokers it and relays no keystroke. It is offered only where
+//! the hub says it brokers it for the app's token (every proxied response
+//! carries [`HUB_TERMINAL_HEADER`]: read); a hub older than that gets
+//! [`HUB_NOTE`] instead. Such a window has its own key per (hub, member,
+//! session) ([`hub_window_label`]) and says read-only in its title
+//! ([`hub_window_title`]).
 //!
 //! Closing the window closes the socket: the daemon detaches, and tmux
 //! keeps the session running.
@@ -36,18 +47,41 @@ use crate::sessions::percent_encode;
 /// `TERMINAL_WINDOW_PATH`.
 pub const TERMINAL_PAGE_PATH: &str = "sessions/terminal";
 
-/// Why a daemon reached through its host's hub has no "Live terminal".
+/// Why a daemon reached through its host's hub has no "Live terminal": the
+/// hub did not say it brokers the read-only terminal (an older hub).
 pub const HUB_NOTE: &str =
-    "The live terminal is not available through the host's hub: open the session's dashboard on the daemon's own tunnel, or use Open in Terminal.";
+    "The host's hub does not offer the live terminal (update itervox on the host): open the session's dashboard on the daemon's own tunnel, or use Open in Terminal.";
+
+/// What a group read through its host's hub says while it offers the live
+/// terminal: always read-only there.
+pub const HUB_READ_ONLY_NOTE: &str =
+    "Through the host's hub the live terminal is read-only: type in the session from its own dashboard, or use Open in Terminal.";
+
+/// The response header a hub sets on every proxied response to a token
+/// that may open the read-only live terminal through it, with the value
+/// [`HUB_TERMINAL_READ`] (internal/hub `TerminalHeader`, drift-checked).
+pub const HUB_TERMINAL_HEADER: &str = "X-Itervox-Hub-Terminal";
+/// [`HUB_TERMINAL_HEADER`]'s value (internal/hub `TerminalHeaderRead`).
+pub const HUB_TERMINAL_READ: &str = "read";
 
 /// The prefix of a hub-proxied dashboard path (`/hub/p/<project>/`).
 const HUB_PATH: &str = "/hub/p/";
 
+/// The hub member `url` (a daemon's API base) goes through: the
+/// `/hub/p/<member>/` segment, as it is in the URL; `None` for a daemon's
+/// own address.
+pub fn hub_member(url: &str) -> Option<String> {
+    let path = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))?;
+    let after = path.strip_prefix(HUB_PATH)?;
+    let member = after.split(['/', '?', '#']).next().unwrap_or("");
+    (!member.is_empty()).then(|| member.to_string())
+}
+
 /// Whether `url` (a daemon's API base) goes through a host's hub.
 pub fn via_hub(url: &str) -> bool {
-    url.split_once("://")
-        .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
-        .is_some_and(|path| path.starts_with(HUB_PATH))
+    hub_member(url).is_some()
 }
 
 /// The terminal page of session `id` at `base`:
@@ -72,6 +106,38 @@ pub fn window_label(daemon: &str, id: &str) -> String {
         h = h.wrapping_mul(0x100000001b3);
     }
     format!("terminal-{h:016x}")
+}
+
+/// The window key of session `id` of hub member `member` of `daemon` (its
+/// key, which names the connection and so the hub): one window per (hub,
+/// member, session), never the key of the same session opened on the
+/// daemon's own tunnel ([`window_label`]), whose terminal may be
+/// read-write.
+pub fn hub_window_label(daemon: &str, member: &str, id: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in "hub"
+        .bytes()
+        .chain([0u8])
+        .chain(daemon.bytes())
+        .chain([0u8])
+        .chain(member.bytes())
+        .chain([0u8])
+        .chain(id.bytes())
+    {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("terminal-hub-{h:016x}")
+}
+
+/// The title of a window opened through the host's hub: it says so, and
+/// that the terminal is read-only.
+pub fn hub_window_title(session: &str, project: &str, remote: Option<&str>) -> String {
+    let via = match remote.filter(|r| !r.is_empty()) {
+        Some(r) => format!("{r} hub"),
+        None => "hub".to_string(),
+    };
+    format!("{session} — {project} ({via}) — Live terminal (read-only)")
 }
 
 /// The window's title: the session, then the project (and the remote
@@ -279,6 +345,114 @@ mod tests {
         assert!(!format!("{built:?}").contains("tok-1"));
     }
 
+    #[test]
+    fn terminal_window_reads_the_hub_member() {
+        assert_eq!(
+            hub_member("http://127.0.0.1:50001/hub/p/app/").as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            hub_member("http://127.0.0.1:50001/hub/p/my%20app/sessions/terminal?id=x").as_deref(),
+            Some("my%20app")
+        );
+        assert_eq!(hub_member("http://127.0.0.1:50001/hub/p/"), None);
+        assert_eq!(hub_member("http://127.0.0.1:50001/hub/"), None);
+        assert_eq!(hub_member("http://127.0.0.1:8090/"), None);
+        assert_eq!(hub_member("http://127.0.0.1:8090/x/hub/p/app/"), None);
+    }
+
+    /// #334: through a host's hub the window opens the hub's page for the
+    /// member, `<hub>/hub/p/<member>/sessions/terminal?id=…`: the Sessions
+    /// window's link rebased onto the hub route (remote_model::rebase_url,
+    /// what dash::target does), with no token in it; the token reaches the
+    /// window only through the script bound to the hub's origin.
+    #[test]
+    fn hub_terminal_page_link_carries_no_token_and_is_the_hubs() {
+        let hub_base = "http://127.0.0.1:50001/hub/p/app/";
+        let link = crate::remote_model::rebase_url(
+            &page_link("http://127.0.0.1/", "itervox-abc123"),
+            hub_base,
+        );
+        assert_eq!(
+            link,
+            "http://127.0.0.1:50001/hub/p/app/sessions/terminal?id=itervox-abc123"
+        );
+        assert_eq!(page_link(hub_base, "itervox-abc123"), link);
+        assert_eq!(hub_member(&link).as_deref(), Some("app"));
+        assert!(!link.contains("token"));
+        let origin = origin_of(&link).unwrap();
+        assert_eq!(origin, "http://127.0.0.1:50001");
+        let script = crate::dashboard::token_init_script(&origin, "hub-token-value");
+        assert!(script.contains("window.location.origin!==\"http://127.0.0.1:50001\""));
+        assert!(!link.contains("hub-token-value"));
+    }
+
+    /// One window per (hub, member, session), never the window of the same
+    /// session opened on the daemon's own tunnel.
+    #[test]
+    fn hub_terminal_window_label_is_one_per_hub_member_session() {
+        let k = "remote:c1//srv/WORKFLOW.md";
+        let a = hub_window_label(k, "app", "itervox-abc123");
+        assert_eq!(a, hub_window_label(k, "app", "itervox-abc123"));
+        assert!(a.starts_with("terminal-hub-"));
+        assert!(a
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+        assert_ne!(a, hub_window_label(k, "app", "itervox-def456"));
+        assert_ne!(a, hub_window_label(k, "app2", "itervox-abc123"));
+        assert_ne!(
+            a,
+            hub_window_label("remote:c2//srv/WORKFLOW.md", "app", "itervox-abc123")
+        );
+        assert_ne!(
+            hub_window_label(k, "ab", "c"),
+            hub_window_label(k, "a", "bc")
+        );
+        assert_ne!(a, window_label(k, "itervox-abc123"));
+        assert_ne!(a, crate::dashboard::window_label(k));
+    }
+
+    #[test]
+    fn hub_terminal_window_title_says_hub_and_read_only() {
+        assert_eq!(
+            hub_window_title("ENG-1", "server", Some("PROD")),
+            "ENG-1 — server (PROD hub) — Live terminal (read-only)"
+        );
+        assert_eq!(
+            hub_window_title("ENG-1", "server", None),
+            "ENG-1 — server (hub) — Live terminal (read-only)"
+        );
+    }
+
+    /// The hub window stays on the hub's origin: not the member's own
+    /// address, not another site.
+    #[test]
+    fn hub_terminal_window_stays_on_the_hub_origin() {
+        let o = "http://127.0.0.1:50001";
+        assert!(navigation_allowed(
+            o,
+            "http://127.0.0.1:50001/hub/p/app/sessions/terminal?id=x"
+        ));
+        assert!(navigation_allowed(o, "about:blank"));
+        assert!(!navigation_allowed(
+            o,
+            "http://127.0.0.1:8090/sessions/terminal?id=x"
+        ));
+        assert!(!navigation_allowed(o, "https://example.com/hub/p/app/"));
+    }
+
+    /// Drift guard: the header the app reads is the one the hub sets.
+    #[test]
+    fn hub_terminal_header_matches_the_hub() {
+        let go = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../internal/hub/terminal.go"
+        ))
+        .expect("internal/hub/terminal.go");
+        assert!(go.contains(&format!("= \"{HUB_TERMINAL_HEADER}\"")));
+        assert!(go.contains(&format!("TerminalHeaderRead = \"{HUB_TERMINAL_READ}\"")));
+    }
+
     /// Drift guard: the route the app opens is the one the dashboard
     /// renders as the terminal-only page.
     #[test]
@@ -290,6 +464,8 @@ mod tests {
         .expect("web/src/pages/TerminalWindow/terminalWindowPath.ts");
         assert!(path.contains(&format!("TERMINAL_WINDOW_PATH = '/{TERMINAL_PAGE_PATH}'")));
         assert!(path.contains("get('id')"));
+        // #334: the page renders under a hub project's basename too.
+        assert!(path.contains("ctx.mode === 'hubProject'"));
         let app = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../web/src/App.tsx"

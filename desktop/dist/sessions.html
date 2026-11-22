@@ -161,9 +161,11 @@
           var row = el('div', 'session-row');
           row.appendChild(b);
           if (s.liveTerminal) {
-            var live = el('button', 'terminal chip', 'Live terminal');
+            var live = el('button', 'terminal chip', s.liveTerminalReadOnly ? 'Live terminal (read-only)' : 'Live terminal');
             live.type = 'button';
-            live.title = 'Open this session\'s live terminal in its own window (closing it leaves the session running)';
+            live.title = s.liveTerminalReadOnly
+              ? 'Watch this session\'s live terminal through the host\'s hub, read-only, in its own window (closing it leaves the session running)'
+              : 'Open this session\'s live terminal in its own window (closing it leaves the session running)';
             live.addEventListener('click', function () { openLiveTerminal(g.daemon, s.key); });
             row.appendChild(live);
           }

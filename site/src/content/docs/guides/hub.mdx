@@ -161,6 +161,16 @@ token and `sessions.terminal_write` say: the hub holds only an operator
 token on each member, and a read-write terminal needs admin. Open the
 project's own dashboard to type.
 
+The [desktop app](/guides/desktop-app/#live-terminal) offers the same
+read-only terminal for a project it reads through a remote host's hub:
+**Live terminal (read-only)** in its Sessions window opens the hub's
+terminal page for that project (`/hub/p/<project>/sessions/terminal?id=…`)
+in its own window, with the app's hub token and only on the hub's address.
+The hub tells clients it brokers the terminal for their token with
+`X-Itervox-Hub-Terminal: read` on every answer it proxies to an `operator`
+or `admin` hub token; a hub older than this sends no such header, and the
+app offers nothing there.
+
 How it works:
 
 1. The dashboard asks the hub for a ticket

@@ -1196,6 +1196,10 @@ fn handle_page_action(app: &AppHandle, shared: &Arc<Shared>, action: PageAction)
 /// terminal_window.rs): the daemon's terminal-only page from its own
 /// origin, the token handed over by the origin-guarded initialization
 /// script, never in the URL. One window per session; closing it detaches.
+/// For a project read through its host's hub (#334) the page is the hub's
+/// (`<hub>/hub/p/<member>/sessions/terminal`), with the hub token and
+/// bound to the hub's origin, and the terminal is read-only; it opens only
+/// on the route the Sessions window offered it for.
 fn open_live_terminal(
     app: &AppHandle,
     shared: &Arc<Shared>,
@@ -1224,6 +1228,16 @@ fn open_live_terminal(
             return;
         }
     };
+    // The route must still be the one "Live terminal" was offered for: a
+    // hub-routed project (read-only through the hub) whose hub went down
+    // since, or the other way round, is chosen again from the window.
+    if crate::terminal_window::hub_member(&t.url) != target.hub_member {
+        error_dialog(
+            app,
+            "That project's connection changed since the Sessions window showed it: choose Live terminal again.",
+        );
+        return;
+    }
     let (Ok(url), Some(origin)) = (tauri::Url::parse(&t.url), t.origin.clone()) else {
         error_dialog(app, "That project's dashboard has no web address to open.");
         return;

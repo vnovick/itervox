@@ -11,12 +11,20 @@ import { getApiContext } from '../../auth/apiBase';
 export const TERMINAL_WINDOW_PATH = '/sessions/terminal';
 
 /**
- * Whether `pathname` is the terminal window's page: only on a daemon's own
- * dashboard (the hub never proxies the terminal's socket).
+ * Whether `pathname` is the terminal window's page: on a daemon's own
+ * dashboard, or (#334) on a project's dashboard through the hub,
+ * `/hub/p/{project}/sessions/terminal`, where the terminal is the hub's
+ * read-only pass-through (terminalModeFor). Never the hub's own pages.
  */
 export function isTerminalWindowPath(pathname: string = window.location.pathname): boolean {
-  if (getApiContext().mode !== 'daemon') return false;
-  return pathname.replace(/\/+$/, '') === TERMINAL_WINDOW_PATH;
+  const ctx = getApiContext();
+  if (ctx.mode === 'hub') return false;
+  let path = pathname;
+  if (ctx.mode === 'hubProject') {
+    if (!pathname.startsWith(`${ctx.basename}/`)) return false;
+    path = pathname.slice(ctx.basename.length);
+  }
+  return path.replace(/\/+$/, '') === TERMINAL_WINDOW_PATH;
 }
 
 /** The session the page shows: `?id=`, or '' when absent. */
