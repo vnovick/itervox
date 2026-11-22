@@ -1,0 +1,4 @@
+{
+  "name": "fixture-app",
+  "dependencies": { "convex": "^1.0.0" }
+}

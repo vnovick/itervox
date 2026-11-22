@@ -28,14 +28,88 @@ The [desktop app](/guides/desktop-app/) also runs on Linux and Windows, from the
 | Windows x86_64 | `Itervox_<version>_x64_en-US.msi` or `Itervox_<version>_x64-setup.exe` | [Windows](/guides/desktop-app/#windows) — local projects need WSL or a remote daemon for now |
 
 
-## Prerequisites
+## Five minutes to a first run
 
-- **An AI agent CLI** — one of:
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
-  - [Codex](https://github.com/openai/codex) (`codex`)
-- **A project tracker** — Linear or GitHub Issues, or none: the [local tracker](/guides/local-issues/) keeps issues as Markdown files in your repository
+You need Itervox (above), an agent CLI — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) or [Codex](https://github.com/openai/codex) (`codex`), logged in — and a git repository. No tracker account: without one, issues are Markdown files in the repository ([local tracker](/guides/local-issues/)).
 
-## Try it first: `itervox demo`
+**1. In your repository, run quickstart.**
+
+```bash
+itervox quickstart
+```
+
+It looks around first and changes nothing until you say yes:
+
+```text
+Here's what I found:
+  tracker        local — no origin remote and LINEAR_API_KEY is not set; issues are files in .itervox/issues/ (…)
+  agent CLI      claude: /usr/local/bin/claude (the default agent)
+  agent CLI      codex: not found
+  agent CLI      opencode: not found
+  agent CLI      cursor-agent: not found
+  model server   none answering on the usual local ports
+  CI             GitHub Actions (.github/workflows) — `itervox referee` can hold agent changes to CI for a human: …
+  test/lint      test: make test (Makefile)
+
+Here's what I'll write:
+  ./WORKFLOW.md — schema 2, tracker local, agent claude, the prompt and the profiles
+  ./.itervox/settings.jsonc — tracker, agent, workspace and server settings
+  ./.itervox/agents/ — the implementer, reviewer and other profiles' SOUL.md and INSTRUCTIONS.md
+  ./.itervox/.env — placeholders for credentials (gitignored)
+  ./.itervox/issues/ITX-1.md — an example issue (Backlog)
+  ./.itervox/issues/DEMO-1.md — a demo task (Todo): "Add a README section on how to run the tests"
+
+Suggested verify checks (not written: …):
+      verify:
+        - { name: test, run: "make test" }
+
+Write this setup? [Y/n]
+```
+
+Press Enter. Quickstart writes the files, runs the `itervox doctor` checks in-process and prints only what fails, each with its fix (`itervox doctor` shows the full report).
+
+**2. Run the demo issue.**
+
+```bash
+itervox run --issue DEMO-1 --worktree
+```
+
+The agent adds one "Running the tests" section to `README.md` and changes nothing else, in a git worktree under `.itervox/run/worktrees/`, so your checkout is untouched. [`itervox run`](/cli/) prints a summary when it is done.
+
+**3. Open the board.**
+
+```bash
+itervox quickstart   # now starts the daemon in the background
+itervox open         # opens the dashboard, logged in
+```
+
+From here, write issues as Markdown files in `.itervox/issues/` (or on the dashboard) and set `state: Todo` when an agent should pick one up.
+
+### What quickstart detects
+
+Detection only reads files, looks names up on your `PATH` and probes local model server ports on loopback. It never runs an agent CLI, and it reports a credential by its presence only, never its value.
+
+| What | How | What it changes |
+|---|---|---|
+| Tracker | `LINEAR_API_KEY` set → Linear. Otherwise an `origin` on github.com with `GITHUB_TOKEN` set or `gh auth status` succeeding → GitHub Issues. Otherwise the local tracker, so the first run never waits on a credential. | `tracker.kind`; override with `--tracker github\|linear\|local` |
+| Agent CLIs | `claude`, `codex`, `opencode` and `cursor-agent` on `PATH` (looked up, not run) | the default agent: `claude`, else `codex`; override with `--runner` |
+| Local model servers | Ollama, LM Studio, llama.cpp server and vLLM on their usual ports at `127.0.0.1` and `[::1]` | offered after the checks as a `local` profile ([Local models](/guides/local-models/)); `--no-local-model` skips |
+| CI | `.github/workflows`, `.gitlab-ci.yml`, `.circleci`, `.buildkite` | nothing; points at [`itervox referee`](/guides/referee/) |
+| Deploy tools | the [referee adapters](/guides/referee/#referee-envcheck) (Convex, Vercel) from `package.json` or their config files | nothing; points at `itervox referee envcheck` |
+| Test and lint commands | `Makefile` targets, `package.json` scripts (with the lockfile's package manager), `go.mod` | nothing; suggests [`verify`](/guides/signed-checks/) checks to add to a profile, and names the test command in the demo issue |
+
+### With Linear or GitHub Issues
+
+Quickstart creates nothing on the service. For GitHub without `GITHUB_TOKEN` it offers your `gh` CLI's token (`gh auth token`) and saves it to the gitignored `.itervox/.env` if you agree; for Linear, put `LINEAR_API_KEY` in `.itervox/.env` first. It creates missing GitHub state labels after asking (the same step as `itervox doctor --fix`), starts the daemon in the background, waits for `/api/v1/ready`, prints the dashboard URL and the file that holds the API token, and then how to hand an issue to the agent: on GitHub, `gh issue edit 42 --add-label todo`; on Linear, move an issue to Todo. The daemon picks it up on its next poll. Its output goes to `.itervox/logs/quickstart-daemon.log`; stop it with `itervox stop`.
+
+### Flags and re-runs
+
+- `--yes` (`-y`) accepts the plan and every prompt (for scripts). Without a terminal and without `--yes`, quickstart prints the plan, writes nothing and exits 1.
+- `--no-demo` writes no `DEMO-1`; quickstart then starts the daemon, as it does for Linear and GitHub.
+- `--no-start` stops after the checks. `--tracker` / `--runner` change a detected choice. `--model-server URL` adds the `local` profile without asking.
+- Re-running is safe: an existing schema-2 workflow is used as it is (an older one is migrated with `itervox init --update` only after you confirm), nothing is overwritten without asking, and if the daemon is already running quickstart prints its URL instead of starting another.
+
+## Try it without a repository: `itervox demo`
 
 ```bash
 itervox demo
@@ -43,26 +117,7 @@ itervox demo
 
 Opens a throwaway board with fake issues and a scripted agent: no tracker account, API keys or agent CLI needed, and nothing is written outside a temporary directory. Within about a minute you see issues run, ask for input, fail and retry, go to review and finish. See [`itervox demo`](/cli/#itervox-demo--try-it-in-30-seconds).
 
-## Quickstart: one command
-
-In your project repository:
-
-```bash
-itervox quickstart
-```
-
-It takes you from a repository to a running board:
-
-1. **Detects** the tracker and the agent CLI. `LINEAR_API_KEY` set → Linear; otherwise an `origin` remote on github.com → GitHub Issues; otherwise the [local tracker](/guides/local-issues/). The agent is `claude` if it is on your `PATH`, otherwise `codex`. Override either with `--tracker github|linear|local` and `--runner claude|codex`.
-2. **Writes `WORKFLOW.md`** (schema 2) and the `.itervox/agents/` profiles, the same files `itervox init` writes. An existing schema-2 workflow is used as it is; an older one is migrated with `itervox init --update` only after you confirm.
-3. **Sets up the tracker token.** For GitHub without `GITHUB_TOKEN`, it offers your `gh` CLI's token (`gh auth token`) and saves it to the gitignored `.itervox/.env` if you agree. For Linear, put `LINEAR_API_KEY` in `.itervox/.env` first.
-4. **Creates missing GitHub state labels** after asking (the same step as `itervox doctor --fix`).
-5. **Runs `itervox doctor`** and stops with its report if anything is wrong.
-6. **Starts the daemon in the background**, waits for `/api/v1/ready`, and prints the dashboard URL and the file that holds the API token. The daemon's output goes to `.itervox/logs/quickstart-daemon.log`; stop it with `itervox stop`.
-
-Re-running is safe: nothing is overwritten without asking, and if the daemon is already running quickstart prints its URL instead of starting another. Pass `--yes` to accept every prompt (for scripts) or `--no-start` to stop after the checks.
-
-The steps below do the same by hand.
+The steps below do what quickstart does, by hand.
 
 ## Manual setup
 

@@ -355,7 +355,7 @@ cd path/to/your/project
 itervox quickstart
 ```
 
-`itervox quickstart` detects the tracker (Linear when `LINEAR_API_KEY` is set, otherwise GitHub from the `origin` remote) and the agent CLI (`claude`, else `codex`), writes a schema-2 `WORKFLOW.md`, offers your `gh` token and creates missing GitHub state labels (it asks first), runs `itervox doctor`, then starts the daemon in the background and prints the dashboard URL and where the API token is stored. Re-running it is safe. For Linear, put `LINEAR_API_KEY=lin_api_...` in `.itervox/.env` first.
+`itervox quickstart` shows what it found — the tracker (Linear when `LINEAR_API_KEY` is set, GitHub when `origin` is on github.com and `gh` is logged in or `GITHUB_TOKEN` is set, otherwise local Markdown issues), the agent CLIs on your `PATH`, local model servers, CI, and your test and lint commands — and what it will write, and asks before writing anything. With local issues it adds a small demo issue and prints the command for a first run, `itervox run --issue DEMO-1 --worktree`. With Linear or GitHub it offers your `gh` token, creates missing GitHub state labels (it asks first), starts the daemon in the background and prints the dashboard URL. Either way it runs the `itervox doctor` checks and prints only what fails, with the fix. Re-running it is safe. For Linear, put `LINEAR_API_KEY=lin_api_...` in `.itervox/.env` first.
 
 Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the key in `.itervox/.env`, run `itervox`, and read the dashboard URL from `.itervox/dashboard_url` (the scaffold uses an OS-assigned port).
 
@@ -368,7 +368,7 @@ Prefer to do it by hand? `itervox init --tracker linear` (or `github`), put the 
 | Command | Description |
 |---|---|
 | `itervox demo` | Try Itervox in about a minute: a throwaway board with fake issues and a scripted agent, no tracker, keys or agent CLI; everything stays in a temporary directory |
-| `itervox quickstart` | One command from a repository to a running board: detect tracker and agent, write or migrate `WORKFLOW.md`, set up the token and GitHub labels (asks first), run doctor, start the daemon in the background |
+| `itervox quickstart` | One command from a repository to a first run: show what it detected and will write (asks first), write or migrate `WORKFLOW.md`, set up the token and GitHub labels, run the doctor checks; then a demo issue with its `itervox run` command (local issues) or the daemon in the background |
 | `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
 | `itervox run --issue <id>` | Run one issue and exit, for CI: agent turns, reviewers, push, PR, issue comment; exit codes 0 / 2 failed / 3 needs input / 4 budget / 5 config. A GitHub Action wraps it (`uses: vnovick/itervox/action@<ref>`); see [Running in CI](site/src/content/docs/guides/ci.mdx) |
 | `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo metadata |

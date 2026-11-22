@@ -24,7 +24,7 @@ build: web-deps web-build
 	go build $(GO_PACKAGES)
 
 # referee (cmd/referee) is the standalone build of `itervox referee` (both
-# wrap internal/referee): lanes, audit, pin, run, keygen, verify. Not part of `build`
+# wrap internal/referee): lanes, audit, envcheck, pin, run, keygen, verify. Not part of `build`
 # (the root has a referee/ directory, the Action, so the binary goes to bin/).
 referee:
 	go build -o bin/referee ./cmd/referee
