@@ -83,7 +83,9 @@ type fakeMember struct {
 	writes   atomic.Int64 // every non-GET request (#230 member actions)
 	// writeAuth is the Authorization of the last non-GET request.
 	writeAuth atomic.Value
-	rec       MemberRecord
+	// respHeader, when set (an http.Header), is added to every response.
+	respHeader atomic.Value
+	rec        MemberRecord
 }
 
 func newFakeMember(t *testing.T, name string, startedAt time.Time) *fakeMember {
@@ -112,6 +114,11 @@ func newFakeMember(t *testing.T, name string, startedAt time.Time) *fakeMember {
 			m.writeAuth.Store(r.Header.Get("Authorization"))
 		}
 		m.lastAuth.Store(r.Header.Get("Authorization"))
+		if extra, ok := m.respHeader.Load().(http.Header); ok {
+			for k, v := range extra {
+				w.Header()[k] = v
+			}
+		}
 		m.srv.ServeHTTP(w, r)
 	}))
 	t.Cleanup(m.ts.Close)

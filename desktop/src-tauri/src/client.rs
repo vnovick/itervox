@@ -67,9 +67,19 @@ pub fn fetch_state(base_url: &str, token: Option<&str>) -> Result<StateSummary, 
 }
 
 /// GET `{base_url}api/v1/sessions` (#178): the daemon's agent sessions.
+/// Read through a host's hub, the answer also says whether that hub
+/// brokers the read-only live terminal for `token` (#334,
+/// [`crate::terminal_window::HUB_TERMINAL_HEADER`]).
 pub fn fetch_sessions(base_url: &str, token: Option<&str>) -> Result<SessionsRead, FetchError> {
-    let body = get_body(shared_agent(), base_url, "api/v1/sessions", token)?;
-    parse_read(&body).map_err(FetchError::Parse)
+    let a = request(shared_agent(), base_url, "api/v1/sessions", token, None)?;
+    match a.status {
+        200 => {}
+        401 => return Err(FetchError::Unauthorized),
+        other => return Err(FetchError::Status(other)),
+    }
+    let mut read = parse_read(&a.body).map_err(FetchError::Parse)?;
+    read.hub_terminal = a.hub_terminal;
+    Ok(read)
 }
 
 /// GET `{base_url}api/v1/model-servers`: the model servers the daemon's
@@ -163,6 +173,9 @@ pub fn set_dispatch_paused(
 struct Answer {
     status: u16,
     etag: Option<String>,
+    /// A hub set [`crate::terminal_window::HUB_TERMINAL_HEADER`] to
+    /// [`crate::terminal_window::HUB_TERMINAL_READ`].
+    hub_terminal: bool,
     body: Vec<u8>,
 }
 
@@ -192,13 +205,23 @@ fn request(
         .get("etag")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let hub_terminal = resp
+        .headers()
+        .get(crate::terminal_window::HUB_TERMINAL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == crate::terminal_window::HUB_TERMINAL_READ);
     let body = resp
         .body_mut()
         .with_config()
         .limit(32 << 20)
         .read_to_vec()
         .map_err(|e| FetchError::Transport(e.to_string()))?;
-    Ok(Answer { status, etag, body })
+    Ok(Answer {
+        status,
+        etag,
+        hub_terminal,
+        body,
+    })
 }
 
 /// [`request`] that wants a 200.
@@ -354,6 +377,16 @@ mod tests {
     /// A one-shot HTTP server that answers with `status`/`body` and reports
     /// the Authorization header it saw.
     fn serve_once(status: &'static str, body: &'static str) -> (String, mpsc::Receiver<String>) {
+        serve_once_with(status, "", body)
+    }
+
+    /// [`serve_once`] with extra response header lines (each ending in
+    /// `\r\n`).
+    fn serve_once_with(
+        status: &'static str,
+        headers: &'static str,
+        body: &'static str,
+    ) -> (String, mpsc::Receiver<String>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let (tx, rx) = mpsc::channel();
@@ -376,12 +409,35 @@ mod tests {
             tx.send(format!("{} {}", first.trim(), auth)).unwrap();
             write!(
                 s,
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             )
             .unwrap();
         });
         (format!("http://{addr}/"), rx)
+    }
+
+    /// #334: a sessions read through a hub that brokers the read-only live
+    /// terminal for the token carries the hub's header; any other answer
+    /// (a daemon's own, an older hub, another value) does not count.
+    #[test]
+    fn sessions_read_notes_the_hubs_read_only_terminal() {
+        const BODY: &str = r#"{"generatedAt":"x","sessions":[]}"#;
+        let (url, seen) = serve_once_with("200 OK", "X-Itervox-Hub-Terminal: read\r\n", BODY);
+        let read = fetch_sessions(&format!("{url}hub/p/app/"), Some("hub-tok")).unwrap();
+        assert!(read.hub_terminal);
+        assert_eq!(
+            seen.recv().unwrap(),
+            "GET /hub/p/app/api/v1/sessions HTTP/1.1 Bearer hub-tok"
+        );
+        let (url, _seen) = serve_once("200 OK", BODY);
+        assert!(!fetch_sessions(&url, None).unwrap().hub_terminal);
+        let (url, _seen) = serve_once_with("200 OK", "X-Itervox-Hub-Terminal: write\r\n", BODY);
+        assert!(!fetch_sessions(&url, None).unwrap().hub_terminal);
+        let (url, _seen) = serve_once("401 Unauthorized", "");
+        assert_eq!(fetch_sessions(&url, None), Err(FetchError::Unauthorized));
+        let (url, _seen) = serve_once("404 Not Found", "");
+        assert_eq!(fetch_sessions(&url, None), Err(FetchError::Status(404)));
     }
 
     #[test]

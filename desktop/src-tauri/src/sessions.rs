@@ -25,6 +25,16 @@
 //! page navigates to [`OPEN_TERMINAL_PATH`] with the session's key, and the
 //! app attaches only to a session of the view it last pushed
 //! ([`terminal_target`]), never to a name the page hands it.
+//!
+//! "Live terminal" (#278 phase 2) opens the session's own app window with
+//! the daemon's live terminal (#298) in it ([`crate::terminal_window`]):
+//! offered for a controllable session of a daemon that reports a live
+//! terminal (`tmux.terminal`), and resolved only against the view last
+//! pushed ([`live_terminal_target`]). For a project read through its
+//! host's hub it is "Live terminal (read-only)", the hub's read-only
+//! pass-through (#334), offered only when the hub's answer to the sessions
+//! read said it brokers one for the app's token
+//! ([`crate::terminal_window::HUB_TERMINAL_HEADER`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +92,12 @@ pub struct Session {
     /// The window offers "Open in Terminal": `attach` is set and the
     /// daemon's host can be reached from a terminal here.
     pub open_terminal: bool,
+    /// The window offers "Live terminal" (#278 phase 2): the daemon offers
+    /// this session a live terminal ([`aggregate`]).
+    pub live_terminal: bool,
+    /// That live terminal goes through the host's hub, so it is read-only
+    /// ("Live terminal (read-only)").
+    pub live_terminal_read_only: bool,
 }
 
 impl Session {
@@ -144,6 +160,9 @@ struct RawPane {
 pub struct TmuxInfo {
     pub available: bool,
     pub install_hint: String,
+    /// The daemon's platform runs the live terminal (#298); absent from
+    /// older daemons, which have none.
+    pub terminal: bool,
 }
 
 /// One daemon's `GET /api/v1/sessions`: its sessions and, from a daemon
@@ -152,6 +171,9 @@ pub struct TmuxInfo {
 pub struct SessionsRead {
     pub sessions: Vec<Session>,
     pub tmux: Option<TmuxInfo>,
+    /// The answer came through a hub that brokers the read-only live
+    /// terminal for this token ([`crate::terminal_window::HUB_TERMINAL_HEADER`]).
+    pub hub_terminal: bool,
 }
 
 /// The warning a group shows while its daemon has no tmux.
@@ -176,6 +198,7 @@ pub fn parse_read(body: &[u8]) -> Result<SessionsRead, String> {
     Ok(SessionsRead {
         tmux: raw.tmux.clone(),
         sessions: sessions_of(raw),
+        hub_terminal: false,
     })
 }
 
@@ -232,6 +255,8 @@ fn sessions_of(raw: RawSessions) -> Vec<Session> {
                 queued_at: r.queued_at,
                 attach,
                 open_terminal: false,
+                live_terminal: false,
+                live_terminal_read_only: false,
             })
         })
         .collect()
@@ -251,6 +276,19 @@ pub struct DaemonSessions {
     /// Where its tmux sessions are attached from, or why a terminal here
     /// cannot ([`crate::terminal::attach_host`]).
     pub terminal: Result<AttachHost, String>,
+    /// Read through its host's hub ([`crate::terminal_window::hub_member`]);
+    /// `None` on the daemon's own address.
+    pub hub: Option<HubRoute>,
+}
+
+/// How a daemon read through its host's hub was reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubRoute {
+    /// Its `/hub/p/<member>/` segment.
+    pub member: String,
+    /// The hub said it brokers the read-only live terminal for the app's
+    /// token ([`SessionsRead::hub_terminal`]).
+    pub terminal: bool,
 }
 
 /// One daemon's group in the window.
@@ -275,6 +313,18 @@ pub struct SessionGroup {
     /// Where "Open in Terminal" attaches from. Not sent to the page.
     #[serde(skip)]
     pub attach_host: Option<AttachHost>,
+    /// Through its host's hub: why its controllable sessions have no
+    /// "Live terminal" (the hub does not offer one), or that the one they
+    /// have is read-only.
+    pub live_terminal_note: Option<String>,
+    /// The hub member it was read through; `None` on the daemon's own
+    /// address. Not sent to the page.
+    #[serde(skip)]
+    pub hub_member: Option<String>,
+    /// The remote connection's name; `None` for a local daemon. Not sent
+    /// to the page (`location` says it).
+    #[serde(skip)]
+    pub remote: Option<String>,
     pub sessions: Vec<Session>,
 }
 
@@ -302,11 +352,31 @@ pub fn aggregate(daemons: Vec<DaemonSessions>) -> SessionsView {
                 Err(e) => (Vec::new(), Some(e)),
             };
             sessions.sort_by_key(|s| (!s.waiting(), s.external()));
+            // #278 phase 2: the daemon offers a live terminal (#298) for a
+            // controllable session when its platform runs one. Through the
+            // host's hub only when the hub said it brokers one for the
+            // app's token, and then read-only (#334).
+            let runs = d.tmux.as_ref().is_some_and(|t| t.available && t.terminal);
+            let hub_offers = d.hub.as_ref().is_none_or(|h| h.terminal);
+            let live = runs && hub_offers;
             for s in &mut sessions {
                 s.open_terminal = !s.attach.is_empty() && d.terminal.is_ok();
+                s.live_terminal = live && s.controllable && !s.id.is_empty();
+                s.live_terminal_read_only = s.live_terminal && d.hub.is_some();
             }
             let attachable = sessions.iter().any(|s| !s.attach.is_empty());
+            let controllable = sessions.iter().any(|s| s.controllable);
+            let offered = sessions.iter().any(|s| s.live_terminal);
             SessionGroup {
+                live_terminal_note: match &d.hub {
+                    Some(_) if offered => Some(crate::terminal_window::HUB_READ_ONLY_NOTE.into()),
+                    Some(_) if runs && controllable => {
+                        Some(crate::terminal_window::HUB_NOTE.into())
+                    }
+                    _ => None,
+                },
+                hub_member: d.hub.map(|h| h.member),
+                remote: d.remote.clone(),
                 terminal_note: d.terminal.as_ref().err().filter(|_| attachable).cloned(),
                 attach_host: d.terminal.ok(),
                 waiting: sessions.iter().filter(|s| s.waiting()).count(),
@@ -373,9 +443,9 @@ where
                         }
                         e => e.to_string(),
                     });
-                    let (result, tmux) = match read {
-                        Ok(r) => (Ok(r.sessions), r.tmux),
-                        Err(e) => (Err(e), None),
+                    let (result, tmux, hub_terminal) = match read {
+                        Ok(r) => (Ok(r.sessions), r.tmux, r.hub_terminal),
+                        Err(e) => (Err(e), None, false),
                     };
                     DaemonSessions {
                         key: j.key.clone(),
@@ -384,6 +454,10 @@ where
                         result,
                         tmux,
                         terminal: j.terminal.clone(),
+                        hub: crate::terminal_window::hub_member(&j.url).map(|member| HubRoute {
+                            member,
+                            terminal: hub_terminal,
+                        }),
                     }
                 })
             })
@@ -411,6 +485,8 @@ pub const READY_PATH: &str = "/__itervox/ready";
 pub const NEW_SESSION_PATH: &str = "/__itervox/new-session";
 /// The path the page navigates to for "Open in Terminal" (#278).
 pub const OPEN_TERMINAL_PATH: &str = "/__itervox/open-terminal";
+/// The path the page navigates to for "Live terminal" (#278 phase 2).
+pub const OPEN_LIVE_TERMINAL_PATH: &str = "/__itervox/open-live-terminal";
 
 /// What a navigation of the Sessions page asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +499,8 @@ pub enum PageAction {
     NewSession { daemon: String },
     /// Open a terminal attached to `session` (its key) of `daemon`.
     OpenTerminal { daemon: String, session: String },
+    /// Open the live terminal window of `session` (its key) of `daemon`.
+    OpenLiveTerminal { daemon: String, session: String },
 }
 
 /// The action behind a navigation of the Sessions page, or `None` for an
@@ -441,7 +519,7 @@ pub fn page_action(url: &str) -> Option<PageAction> {
             .and_then(percent_decode)
             .filter(|d| !d.is_empty())
             .map(|daemon| PageAction::NewSession { daemon }),
-        OPEN_PATH | OPEN_TERMINAL_PATH => {
+        OPEN_PATH | OPEN_TERMINAL_PATH | OPEN_LIVE_TERMINAL_PATH => {
             let mut daemon = None;
             let mut session = None;
             for pair in query.split('&') {
@@ -453,19 +531,20 @@ pub fn page_action(url: &str) -> Option<PageAction> {
                 }
             }
             match (daemon, session) {
-                (Some(d), Some(s)) if !d.is_empty() && !s.is_empty() => {
-                    Some(if path == OPEN_PATH {
-                        PageAction::Open {
-                            daemon: d,
-                            session: s,
-                        }
-                    } else {
-                        PageAction::OpenTerminal {
-                            daemon: d,
-                            session: s,
-                        }
-                    })
-                }
+                (Some(d), Some(s)) if !d.is_empty() && !s.is_empty() => Some(match path {
+                    OPEN_PATH => PageAction::Open {
+                        daemon: d,
+                        session: s,
+                    },
+                    OPEN_TERMINAL_PATH => PageAction::OpenTerminal {
+                        daemon: d,
+                        session: s,
+                    },
+                    _ => PageAction::OpenLiveTerminal {
+                        daemon: d,
+                        session: s,
+                    },
+                }),
                 _ => None,
             }
         }
@@ -487,6 +566,50 @@ pub fn terminal_target(
         .iter()
         .find(|s| s.key == session && s.open_terminal)?;
     Some((g.attach_host.clone()?, s.attach.clone()))
+}
+
+/// What "Live terminal" opens for `session` (its key) of `daemon`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveTerminalTarget {
+    /// The session's id, the one the terminal route takes.
+    pub id: String,
+    /// Its window ([`crate::terminal_window::window_label`]).
+    pub window: String,
+    /// Its window's title ([`crate::terminal_window::window_title`]).
+    pub title: String,
+    /// The hub member it goes through (read-only); `None` on the daemon's
+    /// own address. The window opens only on that same route.
+    pub hub_member: Option<String>,
+}
+
+/// The live terminal window of `session` (its key) of `daemon`, from
+/// `view`, the view the window last showed, when it offered "Open
+/// terminal" there; else `None`.
+pub fn live_terminal_target(
+    view: &SessionsView,
+    daemon: &str,
+    session: &str,
+) -> Option<LiveTerminalTarget> {
+    let g = view.groups.iter().find(|g| g.daemon == daemon)?;
+    let s = g
+        .sessions
+        .iter()
+        .find(|s| s.key == session && s.live_terminal)?;
+    let remote = g.remote.as_deref();
+    Some(match &g.hub_member {
+        Some(member) => LiveTerminalTarget {
+            id: s.id.clone(),
+            window: crate::terminal_window::hub_window_label(daemon, member, &s.id),
+            title: crate::terminal_window::hub_window_title(&s.label, &g.name, remote),
+            hub_member: Some(member.clone()),
+        },
+        None => LiveTerminalTarget {
+            id: s.id.clone(),
+            window: crate::terminal_window::window_label(daemon, &s.id),
+            title: crate::terminal_window::window_title(&s.label, &g.name, remote),
+            hub_member: None,
+        },
+    })
 }
 
 /// The dashboard route of one session: `{base}sessions?id=<key>`.
@@ -573,6 +696,8 @@ mod tests {
             queued_at: String::new(),
             attach: String::new(),
             open_terminal: false,
+            live_terminal: false,
+            live_terminal_read_only: false,
         }
     }
 
@@ -602,6 +727,7 @@ mod tests {
         let view = aggregate(vec![
             DaemonSessions {
                 terminal: Ok(AttachHost::Local),
+                hub: None,
                 tmux: None,
                 key: "/a/WORKFLOW.md".into(),
                 name: "alpha".into(),
@@ -610,6 +736,7 @@ mod tests {
             },
             DaemonSessions {
                 terminal: Ok(AttachHost::Local),
+                hub: None,
                 tmux: None,
                 key: "remote:vm:/srv/WORKFLOW.md".into(),
                 name: "server".into(),
@@ -621,6 +748,7 @@ mod tests {
             },
             DaemonSessions {
                 terminal: Ok(AttachHost::Local),
+                hub: None,
                 tmux: None,
                 key: "/b/WORKFLOW.md".into(),
                 name: "beta".into(),
@@ -649,6 +777,7 @@ mod tests {
         s.title = "a\u{2028}b</script>".into();
         let view = aggregate(vec![DaemonSessions {
             terminal: Ok(AttachHost::Local),
+            hub: None,
             tmux: None,
             key: "k".into(),
             name: "n".into(),
@@ -825,6 +954,7 @@ mod tests {
         assert_eq!(parsed.len(), 3, "a row with no key is still skipped");
         let view = aggregate(vec![DaemonSessions {
             terminal: Ok(AttachHost::Local),
+            hub: None,
             tmux: None,
             key: "/work/app/WORKFLOW.md".into(),
             name: "app".into(),
@@ -904,6 +1034,7 @@ mod tests {
             result: Ok(read.sessions),
             tmux: read.tmux,
             terminal: Ok(AttachHost::Local),
+            hub: None,
         };
         let view = aggregate(vec![
             daemon("a", read),
@@ -989,6 +1120,7 @@ mod tests {
                 result: Ok(read.sessions.clone()),
                 tmux: read.tmux.clone(),
                 terminal,
+                hub: None,
             }])
         };
         let view = group(Ok(AttachHost::Ssh {
@@ -1043,6 +1175,7 @@ mod tests {
             result: Ok(vec![session("ENG-1", "running")]),
             tmux: None,
             terminal: Err("no".into()),
+            hub: None,
         }]);
         assert_eq!(plain.groups[0].terminal_note, None);
 
@@ -1069,6 +1202,288 @@ mod tests {
         assert!(html.contains("if (s.openTerminal)"));
         assert!(html.contains("'Open in Terminal'"));
         assert!(html.contains("g.terminalNote"));
+    }
+
+    /// #278 phase 2: "Live terminal" is offered for the controllable
+    /// sessions of a daemon that reports a live terminal (`tmux.terminal`)
+    /// and is read on its own address — never through a host's hub, never
+    /// for read-only or ordinary sessions, never from an older daemon — and
+    /// the app opens only what it offered, one window per session.
+    #[test]
+    fn open_live_terminal_offered_only_where_the_daemon_offers_one() {
+        let body = br#"{"generatedAt":"x","tmux":{"available":true,"installHint":"","control":true,"terminal":true,"terminalWrite":false},"sessions":[
+          {"id":"sess-1","owner":"itervox","identifier":"ENG-1","status":"running"},
+          {"id":"itervox-abc123","owner":"itervox","kind":"tmux","identifier":"","title":"Fix the flaky test","status":"running","cwd":"/w","controllable":true,"attachCommand":"tmux attach -t itervox-abc123"},
+          {"id":"hand-1","owner":"external","identifier":"","status":"running","cwd":"/w","tmuxPane":{"id":"%3","label":"work:0.0"},"controllable":false},
+          {"id":"hand-2","owner":"external","identifier":"","status":"running","cwd":"/w/b","tmuxPane":{"id":"%4","label":"mine:1.0"},"controllable":true}
+        ]}"#;
+        let read = parse_read(body).unwrap();
+        assert_eq!(read.tmux.as_ref().map(|t| t.terminal), Some(true));
+        let daemon =
+            |read: &SessionsRead, hub: Option<HubRoute>, remote: Option<&str>| DaemonSessions {
+                key: "/w/WORKFLOW.md".into(),
+                name: "w".into(),
+                remote: remote.map(Into::into),
+                result: Ok(read.sessions.clone()),
+                tmux: read.tmux.clone(),
+                // The live terminal does not need a terminal here (an IAP
+                // port tunnel, Windows): only the daemon's own socket.
+                terminal: Err(crate::terminal::IAP_PORT_NOTE.into()),
+                hub,
+            };
+        let view = aggregate(vec![daemon(&read, None, Some("PROD"))]);
+        let g = &view.groups[0];
+        let offered: Vec<_> = g
+            .sessions
+            .iter()
+            .filter(|s| s.live_terminal)
+            .map(|s| s.key.as_str())
+            .collect();
+        assert_eq!(offered, vec!["itervox-abc123", "hand-2"]);
+        assert!(g.sessions.iter().all(|s| !s.open_terminal));
+        assert_eq!(g.live_terminal_note, None);
+        let js = push_script(&view);
+        assert!(js.contains(r#""liveTerminal":true"#));
+        assert!(
+            !js.contains(r#""remote""#),
+            "the connection stays in the app"
+        );
+
+        let t = live_terminal_target(&view, "/w/WORKFLOW.md", "itervox-abc123").unwrap();
+        assert_eq!(t.id, "itervox-abc123");
+        assert_eq!(
+            t.window,
+            crate::terminal_window::window_label("/w/WORKFLOW.md", "itervox-abc123")
+        );
+        assert_eq!(t.title, "Fix the flaky test — w (PROD) — Live terminal");
+        assert_eq!(
+            live_terminal_target(&view, "/w/WORKFLOW.md", "itervox-abc123"),
+            Some(t.clone()),
+            "the same session finds the same window"
+        );
+        assert_ne!(
+            live_terminal_target(&view, "/w/WORKFLOW.md", "hand-2")
+                .unwrap()
+                .window,
+            t.window
+        );
+        assert_eq!(
+            live_terminal_target(&view, "/w/WORKFLOW.md", "hand-1"),
+            None
+        );
+        assert_eq!(
+            live_terminal_target(&view, "/w/WORKFLOW.md", "sess-1"),
+            None
+        );
+        assert_eq!(
+            live_terminal_target(&view, "/other", "itervox-abc123"),
+            None
+        );
+
+        assert!(g.sessions.iter().all(|s| !s.live_terminal_read_only));
+        assert_eq!(t.hub_member, None);
+        assert!(js.contains(r#""liveTerminalReadOnly":false"#));
+
+        // Through a host's hub that does not say it brokers the terminal
+        // (older than #334): no action, and a note saying why.
+        let route = |terminal: bool| {
+            Some(HubRoute {
+                member: "app".into(),
+                terminal,
+            })
+        };
+        let old_hub = aggregate(vec![daemon(&read, route(false), Some("PROD"))]);
+        assert!(old_hub.groups[0].sessions.iter().all(|s| !s.live_terminal));
+        assert_eq!(
+            old_hub.groups[0].live_terminal_note.as_deref(),
+            Some(crate::terminal_window::HUB_NOTE)
+        );
+        assert_eq!(
+            live_terminal_target(&old_hub, "/w/WORKFLOW.md", "itervox-abc123"),
+            None
+        );
+
+        // A daemon without the live terminal (Windows, older): no action.
+        for tmux in [
+            r#""tmux":{"available":true,"installHint":"","control":true,"terminal":false}"#,
+            r#""tmux":{"available":true,"installHint":"","control":true}"#,
+            r#""tmux":{"available":false,"installHint":"","control":true,"terminal":true}"#,
+        ] {
+            let body = format!(
+                r#"{{"generatedAt":"x",{tmux},"sessions":[{{"id":"itervox-abc123","owner":"itervox","kind":"tmux","identifier":"","status":"running","cwd":"/w","controllable":true}}]}}"#
+            );
+            let r = parse_read(body.as_bytes()).unwrap();
+            let v = aggregate(vec![daemon(&r, None, None)]);
+            assert!(!v.groups[0].sessions[0].live_terminal, "{tmux}");
+            assert_eq!(v.groups[0].live_terminal_note, None);
+        }
+
+        assert_eq!(
+            page_action(
+                "tauri://localhost/__itervox/open-live-terminal?daemon=%2Fw%2FWORKFLOW.md&id=itervox-abc123"
+            ),
+            Some(PageAction::OpenLiveTerminal {
+                daemon: "/w/WORKFLOW.md".into(),
+                session: "itervox-abc123".into()
+            })
+        );
+        assert_eq!(
+            page_action("tauri://localhost/__itervox/open-live-terminal?id=x"),
+            None
+        );
+
+        let html = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../dist/sessions.html"
+        ))
+        .expect("desktop/dist/sessions.html");
+        assert!(html.contains(OPEN_LIVE_TERMINAL_PATH));
+        assert!(html.contains("if (s.liveTerminal)"));
+        assert!(html.contains("'Live terminal'"));
+        assert!(html.contains("g.liveTerminalNote"));
+        assert!(
+            html.contains("'Open in Terminal'"),
+            "Open in Terminal stays as it is"
+        );
+    }
+
+    /// #334: through a host's hub that brokers the read-only pass-through
+    /// for the app's token, the same sessions get "Live terminal
+    /// (read-only)": one window per (hub, member, session), never the
+    /// direct one's, a read-only title, and the target names the member so
+    /// the window opens only on that route. Only where the member offers a
+    /// terminal (tmux.terminal, a controllable session with an id).
+    #[test]
+    fn hub_live_terminal_is_read_only_and_offered_only_where_the_hub_offers_it() {
+        let body = br#"{"generatedAt":"x","tmux":{"available":true,"installHint":"","control":true,"terminal":true},"sessions":[
+          {"id":"sess-1","owner":"itervox","identifier":"ENG-1","status":"running"},
+          {"id":"itervox-abc123","owner":"itervox","kind":"tmux","identifier":"","title":"Fix the flaky test","status":"running","cwd":"/w","controllable":true},
+          {"id":"hand-1","owner":"external","identifier":"","status":"running","cwd":"/w","tmuxPane":{"id":"%3","label":"work:0.0"},"controllable":false}
+        ]}"#;
+        let read = parse_read(body).unwrap();
+        let key = "remote:c1//srv/WORKFLOW.md";
+        let daemon = |read: &SessionsRead, hub: Option<HubRoute>| DaemonSessions {
+            key: key.into(),
+            name: "app".into(),
+            remote: Some("PROD".into()),
+            result: Ok(read.sessions.clone()),
+            tmux: read.tmux.clone(),
+            terminal: Err(crate::terminal::IAP_PORT_NOTE.into()),
+            hub,
+        };
+        let hub = Some(HubRoute {
+            member: "app".into(),
+            terminal: true,
+        });
+        let view = aggregate(vec![daemon(&read, hub.clone())]);
+        let g = &view.groups[0];
+        let offered: Vec<_> = g
+            .sessions
+            .iter()
+            .filter(|s| s.live_terminal)
+            .map(|s| s.key.as_str())
+            .collect();
+        assert_eq!(offered, vec!["itervox-abc123"]);
+        assert!(g
+            .sessions
+            .iter()
+            .all(|s| s.live_terminal_read_only == s.live_terminal));
+        assert_eq!(
+            g.live_terminal_note.as_deref(),
+            Some(crate::terminal_window::HUB_READ_ONLY_NOTE)
+        );
+        let js = push_script(&view);
+        assert!(js.contains(r#""liveTerminalReadOnly":true"#));
+        assert!(!js.contains("hubMember"), "the route stays in the app");
+
+        let t = live_terminal_target(&view, key, "itervox-abc123").unwrap();
+        assert_eq!(t.id, "itervox-abc123");
+        assert_eq!(t.hub_member.as_deref(), Some("app"));
+        assert_eq!(
+            t.window,
+            crate::terminal_window::hub_window_label(key, "app", "itervox-abc123")
+        );
+        assert_ne!(
+            t.window,
+            crate::terminal_window::window_label(key, "itervox-abc123"),
+            "never the window of the direct (maybe read-write) terminal"
+        );
+        assert_eq!(
+            t.title,
+            "Fix the flaky test — app (PROD hub) — Live terminal (read-only)"
+        );
+        assert_eq!(live_terminal_target(&view, key, "sess-1"), None);
+        assert_eq!(live_terminal_target(&view, key, "hand-1"), None);
+
+        // The hub offers it, the member does not run one: no action, no note.
+        for tmux in [
+            r#""tmux":{"available":true,"installHint":"","control":true,"terminal":false}"#,
+            r#""tmux":{"available":false,"installHint":"","control":true,"terminal":true}"#,
+        ] {
+            let body = format!(
+                r#"{{"generatedAt":"x",{tmux},"sessions":[{{"id":"itervox-abc123","owner":"itervox","kind":"tmux","identifier":"","status":"running","cwd":"/w","controllable":true}}]}}"#
+            );
+            let r = parse_read(body.as_bytes()).unwrap();
+            let v = aggregate(vec![daemon(&r, hub.clone())]);
+            assert!(!v.groups[0].sessions[0].live_terminal, "{tmux}");
+            assert_eq!(v.groups[0].live_terminal_note, None, "{tmux}");
+        }
+
+        let html = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../dist/sessions.html"
+        ))
+        .expect("desktop/dist/sessions.html");
+        assert!(
+            html.contains("s.liveTerminalReadOnly ? 'Live terminal (read-only)' : 'Live terminal'")
+        );
+        // Same action either way: the app resolves the route itself.
+        assert!(html.contains("openLiveTerminal(g.daemon, s.key)"));
+    }
+
+    /// The Sessions window reads a hub-routed daemon at its hub path; that
+    /// read is marked with its member, and its sessions get a live terminal
+    /// (read-only) only when the hub's answer said it brokers one.
+    #[test]
+    fn hub_routed_reads_are_marked() {
+        let jobs = vec![
+            SessionsJob {
+                key: "a".into(),
+                url: "http://127.0.0.1:50001/hub/p/app/".into(),
+                token: None,
+                name: "a".into(),
+                remote: Some("PROD".into()),
+                terminal: Ok(AttachHost::Local),
+            },
+            SessionsJob {
+                key: "b".into(),
+                url: "http://127.0.0.1:50002/".into(),
+                token: None,
+                name: "b".into(),
+                remote: Some("PROD".into()),
+                terminal: Ok(AttachHost::Local),
+            },
+        ];
+        let body = br#"{"generatedAt":"x","tmux":{"available":true,"installHint":"","control":true,"terminal":true},"sessions":[{"id":"itervox-abc123","owner":"itervox","kind":"tmux","identifier":"","status":"running","cwd":"/w","controllable":true}]}"#;
+        let view = read_all(&jobs, |_, _| Ok(parse_read(body).unwrap()));
+        let by = |k: &str| view.groups.iter().find(|g| g.daemon == k).unwrap();
+        assert!(!by("a").sessions[0].live_terminal, "no hub header: none");
+        assert_eq!(by("a").hub_member.as_deref(), Some("app"));
+        assert!(by("b").sessions[0].live_terminal);
+        assert!(!by("b").sessions[0].live_terminal_read_only);
+        assert_eq!(by("b").hub_member, None);
+
+        // The hub's answer carried the header: read-only through the hub.
+        let view = read_all(&jobs, |url, _| {
+            let mut r = parse_read(body).unwrap();
+            r.hub_terminal = crate::terminal_window::via_hub(url);
+            Ok(r)
+        });
+        let by = |k: &str| view.groups.iter().find(|g| g.daemon == k).unwrap();
+        assert!(by("a").sessions[0].live_terminal);
+        assert!(by("a").sessions[0].live_terminal_read_only);
+        assert!(by("b").sessions[0].live_terminal);
+        assert!(!by("b").sessions[0].live_terminal_read_only);
     }
 
     /// Drift guard: the page navigates to the paths the window intercepts

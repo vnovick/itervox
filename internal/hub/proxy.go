@@ -137,6 +137,12 @@ func (h *Hub) handleProxy(w http.ResponseWriter, r *http.Request) {
 				resp.Header.Set("X-Itervox-Hub-Error", "member_auth_failed")
 			}
 			resp.Header.Del("Set-Cookie")
+			// The hub, not the member, says whether this caller gets the
+			// read-only live terminal through it (terminal.go).
+			resp.Header.Del(TerminalHeader)
+			if p.Scope.Allows(apitokens.ScopeOperator) {
+				resp.Header.Set(TerminalHeader, TerminalHeaderRead)
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {

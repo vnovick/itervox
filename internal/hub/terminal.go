@@ -52,6 +52,20 @@ import (
 // server code; TestHubCallerHeaderMatchesServer pins the two).
 const hubCallerHeader = "X-Itervox-Hub-Caller"
 
+// TerminalHeader is set on every proxied member response the hub returns
+// to a caller whose hub token may open the read-only live terminal
+// (operator or admin): value TerminalHeaderRead. It tells a client that
+// reads a member through the hub (the desktop app's Sessions window) that
+// THIS hub brokers the read-only pass-through, so it can offer "Live
+// terminal (read-only)" only where the hub offers it; a hub older than the
+// pass-through never sets it. A member's own copy of the header is
+// dropped. It promises nothing about one session: whether the member runs a
+// live terminal is its own tmux.terminal.
+const (
+	TerminalHeader     = "X-Itervox-Hub-Terminal"
+	TerminalHeaderRead = "read"
+)
+
 // Hub-side limits of the pass-through.
 const (
 	maxHubTerminals       = 16

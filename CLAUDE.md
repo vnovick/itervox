@@ -323,7 +323,11 @@ only the event loop mutates them.
   checks the socket's Origin itself, dials the member with no browser
   credentials, relays only resize and control frames from the browser, and
   closes with 4403 when the hub token or the member token loses access. Any
-  other WebSocket upgrade is still `terminal_not_proxied`. Unix only
+  other WebSocket upgrade is still `terminal_not_proxied`. The hub (never a
+  member: their copy is dropped) sets `hub.TerminalHeader`
+  (`X-Itervox-Hub-Terminal: read`) on proxied answers to an operator+ hub
+  token; the desktop app offers its read-only Live terminal window for a
+  hub-routed project only on it (`terminal_window.rs`, hub origin only). Unix only
   (`tmuxctl.AttachSupported`).
 - `ExternalSessions` (#178 step 3) is event-loop state.
   Discovery of sessions started by hand (`internal/extsessions`, read-only:
