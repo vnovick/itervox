@@ -22,6 +22,14 @@ type IsolationCheck struct {
 	// WorkspaceRoot and ProjectDir name where the lists apply.
 	WorkspaceRoot string
 	ProjectDir    string
+	// EgressProfiles are the enabled profiles running with egress:
+	// allowlist ("(default)" for agent.command under agent.egress).
+	EgressProfiles []string
+	// EgressMechanism is the sandbox that can close the network here
+	// (bubblewrap with network and pid namespaces, sandbox-exec), "" when
+	// none can; EgressUnavailable is why.
+	EgressMechanism   string
+	EgressUnavailable string
 }
 
 // Available is the mechanism runs would use, "" when none works.
@@ -35,18 +43,32 @@ func (c IsolationCheck) Available() string {
 }
 
 // Failing reports profiles asking for process isolation on a machine where
-// no sandbox works: every run of theirs is refused.
+// no sandbox works, or for egress where no sandbox can close the network:
+// every run of theirs is refused.
 func (c IsolationCheck) Failing() bool {
-	return len(c.Profiles) > 0 && c.Available() == ""
+	return (len(c.Profiles) > 0 && c.Available() == "") || c.egressFailing()
+}
+
+func (c IsolationCheck) egressFailing() bool {
+	return len(c.EgressProfiles) > 0 && c.EgressMechanism == ""
 }
 
 // isolationMechanismReport is agent.IsolationMechanismReport; tests swap it.
 var isolationMechanismReport = agent.IsolationMechanismReport
 
+// egressAvailability is agent.EgressAvailability; tests swap it.
+var egressAvailability = agent.EgressAvailability
+
 func checkIsolation(cfg *config.Config) IsolationCheck {
 	c := IsolationCheck{Mechanisms: isolationMechanismReport()}
+	if name, err := egressAvailability(); err != nil {
+		c.EgressUnavailable = err.Error()
+	} else {
+		c.EgressMechanism = name
+	}
 	if cfg != nil {
 		c.Profiles = config.IsolatedProfiles(cfg.Agent)
+		c.EgressProfiles = config.EgressProfiles(cfg.Agent)
 		c.WorkspaceRoot = cfg.Workspace.Root
 		c.ProjectDir = filepath.Dir(cfg.WorkflowPath)
 		if abs, err := filepath.Abs(c.ProjectDir); err == nil {
@@ -68,12 +90,17 @@ func renderIsolationCheck(b *strings.Builder, c IsolationCheck) {
 			fmt.Fprintf(b, "  %s: unavailable — %v\n", m.Name, m.Err)
 		}
 	}
+	if c.EgressMechanism != "" {
+		fmt.Fprintf(b, "  egress enforcement: available via %s\n", c.EgressMechanism)
+	} else {
+		fmt.Fprintf(b, "  egress enforcement: unavailable — %s\n", strings.TrimPrefix(c.EgressUnavailable, agent.ErrIsolationUnavailable.Error()+": "))
+	}
 	if len(c.Profiles) == 0 {
 		b.WriteString("  profiles with isolation: process: none\n")
 		return
 	}
 	fmt.Fprintf(b, "  profiles with isolation: process: %s\n", strings.Join(c.Profiles, ", "))
-	if c.Failing() {
+	if c.Available() == "" {
 		fmt.Fprintf(b, "ERROR: %s ask for process isolation but no sandbox works on this machine; their runs do not start — install bubblewrap (Linux) or set isolation: none\n",
 			strings.Join(c.Profiles, ", "))
 		return
@@ -90,7 +117,27 @@ func renderIsolationCheck(b *strings.Builder, c IsolationCheck) {
 		deny = append(deny, "every other workspace under "+c.WorkspaceRoot)
 	}
 	fmt.Fprintf(b, "  unreadable: %s (+ isolation_extra_deny)\n", strings.Join(deny, ", "))
-	b.WriteString("  network: allowed; hooks: not sandboxed\n")
+	renderEgressCheck(b, c)
+	b.WriteString("  hooks: not sandboxed\n")
+}
+
+// renderEgressCheck is the network part of the Isolation section.
+func renderEgressCheck(b *strings.Builder, c IsolationCheck) {
+	if len(c.EgressProfiles) == 0 {
+		b.WriteString("  network: allowed (no profile sets egress: allowlist)\n")
+		return
+	}
+	fmt.Fprintf(b, "  profiles with egress: allowlist: %s\n", strings.Join(c.EgressProfiles, ", "))
+	if c.egressFailing() {
+		fmt.Fprintf(b, "ERROR: %s ask for egress: allowlist but no sandbox here can close the network; their runs do not start — install bubblewrap with user namespaces (Linux) or set egress: off\n",
+			strings.Join(c.EgressProfiles, ", "))
+		return
+	}
+	fmt.Fprintf(b, "  network: closed for them but the allowlist, through a per-run proxy (%s); git credentials hidden: %s, the SSH agent socket\n",
+		c.EgressMechanism, strings.Join(homeRel(append(append([]string{}, agent.IsolationPatchOutHomeDeny...), agent.IsolationEgressHomeDeny...)), ", "))
+	fmt.Fprintf(b, "  default allowlist: model API hosts per backend (claude: %s; codex: %s), registries: %s (agent.egress_defaults)\n",
+		strings.Join(config.EgressModelHosts[config.BackendClaude], ", "), strings.Join(config.EgressModelHosts[config.BackendCodex], ", "),
+		strings.Join(config.EgressRegistryHosts, ", "))
 }
 
 func homeRel(rels []string) []string {

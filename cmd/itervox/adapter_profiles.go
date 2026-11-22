@@ -101,6 +101,10 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, 
 		Isolation:           existingProfile.Isolation,
 		IsolationExtraWrite: existingProfile.IsolationExtraWrite,
 		IsolationExtraDeny:  existingProfile.IsolationExtraDeny,
+		// Egress (agent.egress: allowlist): load-time, carried over.
+		Egress:         existingProfile.Egress,
+		EgressAllow:    existingProfile.EgressAllow,
+		EgressDefaults: existingProfile.EgressDefaults,
 		// Patches only (push: daemon): load-time, carried over.
 		Push: existingProfile.Push,
 	}

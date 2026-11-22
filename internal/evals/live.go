@@ -270,11 +270,16 @@ func runLiveScenario(ctx context.Context, cfg *config.Config, sc Scenario, opts 
 
 	// #258: the profile's sandbox, as on a dispatched run; no sandbox
 	// available means no eval run rather than an unconfined one.
-	iso, err := agent.PrepareIsolation(config.ResolveIsolation(profile.Isolation, cfg.Agent.Isolation),
-		agent.RunIsolationInputs(sb.Workspace, "", filepath.Dir(cfg.WorkflowPath), profile), nil)
+	isoMode := config.ResolveIsolation(profile.Isolation, cfg.Agent.Isolation)
+	isoIn := agent.RunIsolationInputs(sb.Workspace, "", filepath.Dir(cfg.WorkflowPath), profile)
+	if isoMode == config.IsolationProcess { // agent.egress: allowlist, as on a dispatched run
+		isoIn.Egress = agent.EgressInputsFor(config.ResolveEgress(profile, cfg.Agent, backend, command, config.EnvModelServerURLs()), "eval")
+	}
+	iso, err := agent.PrepareIsolation(isoMode, isoIn, nil)
 	if err != nil {
 		return fail("isolation: %v", err)
 	}
+	defer iso.Close()
 	turnCtx, cancel := context.WithTimeout(agent.WithIsolation(ctx, iso), opts.Budget.Timeout)
 	defer cancel()
 	var overBudget atomic.Bool

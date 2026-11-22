@@ -38,6 +38,14 @@ func (sandboxExec) Available() error {
 	return nil
 }
 
+// EgressAvailable: a profile that denies network* is plain SBPL, so egress
+// works wherever sandbox-exec does.
+func (s sandboxExec) EgressAvailable() error { return s.Available() }
+
+// EgressBridge is false: there is no network namespace on macOS; the proxy
+// listens on the daemon's loopback and the profile allows only its port.
+func (sandboxExec) EgressBridge() bool { return false }
+
 func (sandboxExec) Wrap(argv []string, p IsolationPolicy) ([]string, error) {
 	return append([]string{sandboxExecPath, "-p", sandboxExecProfile(p)}, argv...), nil
 }
@@ -95,7 +103,24 @@ func sandboxExecProfile(p IsolationPolicy) string {
 	for _, a := range dedupe(ancestors) {
 		fmt.Fprintf(&b, "(allow file-read-metadata (literal %s))\n", sbplString(a))
 	}
+	if p.Egress != nil {
+		writeSandboxExecEgress(&b, p.Egress)
+	}
 	return b.String()
+}
+
+// writeSandboxExecEgress closes the network but for the proxy (egress on):
+// outbound connections only to the proxy port and the local ports (the
+// daemon's API, a local model server) on loopback; the agent may still
+// bind and accept on loopback (a dev server, a test's listener). No DNS:
+// the proxy resolves names, and an open resolver would be a channel out.
+func writeSandboxExecEgress(b *strings.Builder, e *EgressPolicy) {
+	b.WriteString("(deny network*)\n")
+	b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+	b.WriteString("(allow network-inbound (local ip \"localhost:*\"))\n")
+	for _, port := range append([]int{e.ProxyPort}, e.LocalPorts...) {
+		fmt.Fprintf(b, "(allow network-outbound (remote ip \"localhost:%d\"))\n", port)
+	}
 }
 
 // sbplString quotes s as an SBPL string literal.

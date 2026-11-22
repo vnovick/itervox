@@ -233,7 +233,7 @@ func runCLITurn(ctx context.Context, log Logger, onProgress func(TurnResult), t 
 			}
 			// fd 3, not stdin: a login profile that reads stdin cannot
 			// eat the prompt (see ClaudeRunner.RunTurn).
-			argv := []string{shell, "-lc", RunEnvFrom(ctx).shellPrefix() + t.shellCmd(t.localPromptTail())}
+			argv := []string{shell, "-lc", turnEnv(ctx).shellPrefix() + t.shellCmd(t.localPromptTail())}
 			if cmd, err = agentCommand(ctx, turnCtx, argv); err != nil { // #258
 				return TurnResult{Failed: true, FailureText: err.Error()}, out, err
 			}
@@ -248,9 +248,9 @@ func runCLITurn(ctx context.Context, log Logger, onProgress func(TurnResult), t 
 	// inherit the environment without the itervox marker.
 	var extra []string
 	if workerHost == "" {
-		extra = append(RunEnvFrom(ctx).direct(), t.env...) // #204
+		extra = append(turnEnv(ctx).direct(), t.env...) // #204
 	}
-	cmd.Env = RunEnvFrom(ctx).strip(itervoxAgentEnv(extra...))
+	cmd.Env = turnEnv(ctx).strip(itervoxAgentEnv(extra...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

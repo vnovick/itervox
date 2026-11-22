@@ -425,9 +425,32 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   (`cmd/itervox/guardrails.go`). Never hand-started sessions (read-only
   invariant). SSH worker hosts are NOT guarded in v1 — a warning at startup
   and per run; do not claim otherwise.
-- **Known limit**: guidance, not a sandbox. An agent calling git by absolute
-  path, rewriting PATH/env, or using another channel bypasses it. Branch
-  protection on the remote is the real control; docs must keep saying so.
+- **Known limit**: on their own the shims and hook are guidance, not a
+  sandbox. An agent calling git by absolute path, rewriting PATH/env, or
+  using another channel bypasses them. Branch protection on the remote is
+  the real control for everything outside Itervox; docs must keep saying so.
+- **Where it is enforced — egress**: only a dispatched run on the daemon's
+  host with `isolation: process` + `egress: allowlist` (+ `push: daemon` for
+  "cannot push at all"). Then the agent has no network of its own (bwrap
+  `--unshare-net --unshare-pid`; sandbox-exec `(deny network*)` but the
+  proxy port) and reaches only the allowlist through a per-run HTTP CONNECT
+  proxy (`internal/egress`, started by `agent.PrepareIsolation`, closed by
+  `Isolation.Close` when the worker returns), which always refuses the
+  workspace's git remotes, port 22 unless named, and local/link-local
+  destinations; git credential files, credential-cache sockets and
+  `SSH_AUTH_SOCK` are hidden. Linux bridge: the proxy and a relay per local
+  port (the daemon API, a loopback model server) listen on Unix sockets in a
+  private 0700 run dir bound into the sandbox; `itervox
+  __itervox-egress-forward` (dispatched by `agent.RunIsolationHelper`, first
+  in `main()`) listens on the sandbox's loopback and execs the agent.
+  Landlock cannot restrict by host: an egress run never falls back to it
+  (fail closed). Still guidance: `egress: off`, SSH workers, hooks,
+  hand-started sessions; **New session** refuses an egress profile. Every
+  decision is logged (host:port only), refusals go to the run log, the
+  `egress_refused` feed event (`RecordFeedEvent`, off-loop, once per
+  destination per run) and `itervox_egress_decisions_total`.
+  `agent.egress*` / profile `egress*` are load-time config, NOT in the cfgMu
+  allowlist; the proxy is per-run worker state, not `State`.
 - **No daemon-side execution**: the shim↔daemon channel is the token-gated
   `/api/v1/agent-actions/{id}/guardrail/*` routes (grant action
   `guardrail`, scoped to issue + run). They record reports and raise/read
@@ -768,6 +791,11 @@ sysmon (system visibility: per-run resource sampling, activity audit,
 cors (stdlib only — the server.allowed_origins CORS allow-list, #231;
       imported by server, hub and config)
 
+egress (network egress for isolation: process — the per-run allowlist
+        HTTP CONNECT proxy, its Unix-socket relays and the in-sandbox
+        forwarder; imports logging and metrics only; imported by config
+        (allowlist entry parsing), agent and orchestrator)
+
 apitokens (stored API tokens + scopes, #214 — imports atomicfs only;
            used by server, hub and cmd/itervox)
 
@@ -787,8 +815,8 @@ rules (layered JSONC rules, #157 — imports config only; used by orchestrator,
 playbook (task-type playbooks, #218 — imports config only; used by
           orchestrator, app and cmd/itervox)
 
-agent (claude/codex subprocess runners — imports domain, config, procgroup,
-       logging)
+agent (claude/codex subprocess runners — imports domain, config, egress,
+       procgroup, logging)
 
 attest (signed daemon-run checks, 0.3.3 — imports gitexec, logging,
         procgroup, atomicfs; used by orchestrator and cmd/itervox)
@@ -798,7 +826,7 @@ guardrails (agent shims, pre-push hook, approval broker, `itervox hook`
             procgroup; never orchestrator or server)
 
 orchestrator (single-goroutine state machine — imports agent, agentactions,
-              atomicfs, attest, config, depsanalysis, domain, extsessions, guardrails,
+              atomicfs, attest, config, depsanalysis, domain, egress, extsessions, guardrails,
               logbuffer, logging, memory, metrics, outbox, playbook, prdetector,
               procgroup, prompt, rules, sysmon, tracker, workspace)
 

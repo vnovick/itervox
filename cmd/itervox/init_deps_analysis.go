@@ -145,6 +145,7 @@ func runInitDepsAnalysis(workflowPath, requestedMode string) (issueCount, analyz
 
 		DefaultIsolation: cfg.Agent.Isolation, // #258
 		ProjectDir:       filepath.Dir(cfg.WorkflowPath),
+		Egress:           analyzerEgress(profile, cfg.Agent),
 	}, plan.ToAnalyze, trackerEdges, chunkSize, nil)
 	if err != nil {
 		return 0, 0, 0, "", false, fmt.Errorf("agent pass: %w", err)
@@ -167,4 +168,12 @@ func initEnvLooksLikePlaceholder(envPath string) bool {
 		return true // missing env counts as "no credentials"
 	}
 	return strings.Contains(string(data), "xxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+}
+
+// analyzerEgress is the dependency analyzer's egress (agent.egress:
+// allowlist) for profile, nil when off. The analyzer runs with no
+// workspace, so there are no remotes to refuse beyond the allowlist.
+func analyzerEgress(profile config.AgentProfile, a config.AgentConfig) *agent.EgressInputs {
+	return agent.EgressInputsFor(config.ResolveEgress(profile, a, profile.Backend, profile.Command,
+		config.EnvModelServerURLs()), "deps-analyzer")
 }

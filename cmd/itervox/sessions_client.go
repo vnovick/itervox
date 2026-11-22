@@ -205,7 +205,7 @@ func wireSessions(orch *orchestrator.Orchestrator, cfg *config.Config, workflowP
 	t := &tmuxSessions{orch: orch, detect: &tmuxDetector{}, control: cfg.Sessions.TmuxControl,
 		terminalWrite: cfg.Sessions.TerminalWrite,
 		projectRoot:   project, workspaceRoot: cfg.Workspace.Root, agentCommand: cfg.Agent.Command,
-		isolation: cfg.Agent.Isolation}
+		isolation: cfg.Agent.Isolation, egress: cfg.Agent.Egress}
 	if demo {
 		return t
 	}

@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vnovick/itervox/internal/server"
 )
 
 // TestClientPauseAllDispatch (#213): `itervox pause` without an issue
@@ -86,4 +88,13 @@ func TestWatchShowsDispatchPause(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"dispatchPaused":{"reason":"deploy freeze"}}`), &s))
 	assert.Contains(t, w.renderStatus(&s, time.Now(), false),
 		"ALL DISPATCH PAUSED — running agents continue, nothing new starts: deploy freeze (itervox resume)\n")
+}
+
+// TestWatchShowsEgressRefused: watch names a refused egress destination
+// and its reason.
+func TestWatchShowsEgressRefused(t *testing.T) {
+	w := &watcher{p: paint(false)}
+	line, _ := w.eventText(server.FeedEvent{Kind: "egress_refused", Identifier: "ENG-1",
+		Payload: server.FeedPayload{RunID: "run-1", Kind: "not_allowed", Reason: "evil.example:443"}})
+	assert.Contains(t, line, "egress refused: evil.example:443 (not_allowed)")
 }

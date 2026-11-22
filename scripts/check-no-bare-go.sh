@@ -12,6 +12,9 @@
 #       recoverHubGoroutine(...) (internal/hub and internal/hub/slack: logs
 #       and counts the panic and ends only that hub goroutine, never the
 #       hosting daemon), or
+#       recoverEgressGoroutine(...) (internal/egress: logs and counts the
+#       panic and ends only that tunnel, relay or forwarder goroutine;
+#       egress must not import orchestrator), or
 #   (b) appear on the reasoned ALLOWLIST below, with the exact number of
 #       occurrences expected in that file.
 # goSafe(&o.<wg>, ...) launches are not `go` statements at their call sites;
@@ -77,7 +80,7 @@ function report(file, line, text) { printf "%s:%d: %s\n", file, line, text }
   line = $0
   t = trim(line)
   if (pending) {
-    if (t ~ /^defer[ \t]+(orchestrator\.)?(RecoverGoroutine|failFastOnPanic|recoverServerGoroutine|recoverHubGoroutine)\(/) {
+    if (t ~ /^defer[ \t]+(orchestrator\.)?(RecoverGoroutine|failFastOnPanic|recoverServerGoroutine|recoverHubGoroutine|recoverEgressGoroutine)\(/) {
       pending = 0
     } else if (t == "" || t ~ /^\/\// || t ~ /^defer[ \t]/) {
       # keep scanning the leading defers / comments

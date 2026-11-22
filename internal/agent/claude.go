@@ -272,7 +272,7 @@ func (c *ClaudeRunner) RunTurn(
 			}
 			var err error
 			argv := []string{shell, "-lc",
-				RunEnvFrom(ctx).shellPrefix() + buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil)}
+				turnEnv(ctx).shellPrefix() + buildShellCmdLive(command, sessionID, prompt, redirect, permissionMode, live != nil)}
 			if cmd, err = agentCommand(ctx, turnCtx, argv, logDir); err != nil { // #258
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
 			}
@@ -293,9 +293,9 @@ func (c *ClaudeRunner) RunTurn(
 	// travels in the shell command instead (see below).
 	var runEnv []string
 	if workerHost == "" {
-		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
+		runEnv = turnEnv(ctx).direct() // #204; through a shell, PATH also travels in the command line
 	}
-	cmd.Env = RunEnvFrom(ctx).strip(itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...))
+	cmd.Env = turnEnv(ctx).strip(itervoxAgentEnv(append([]string{logDirEnv}, runEnv...)...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

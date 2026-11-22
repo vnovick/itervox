@@ -43,7 +43,7 @@ import (
 //     exec.CommandContext, or inside an allowlisted helper that is handed
 //     such a command by its caller (which is checked);
 //   - os.Pipe — the live-steering stdin — only where the steering writer
-//     lives.
+//     lives (and the egress forwarder's readiness pipe, osPipeAllowed).
 func TestNoWritesToProcessesItervoxDidNotStart(t *testing.T) {
 	var violations []string
 	for _, root := range []string{"../../cmd", "../../internal"} {
@@ -142,9 +142,11 @@ var stdinHelpers = map[string]string{
 	"internal/agent/ssh.go:attachRemoteStdin":             "the script pipe of the ssh command RunTurn created",
 }
 
-// osPipeAllowed: the live-steering stdin of a claude turn RunTurn starts.
+// osPipeAllowed: the live-steering stdin of a claude turn RunTurn starts,
+// and the egress forwarder's readiness pipe to the copy it starts.
 var osPipeAllowed = map[string]string{
-	"internal/agent/steer.go": "newLiveInput: stdin of the claude turn RunTurn starts",
+	"internal/agent/steer.go":         "newLiveInput: stdin of the claude turn RunTurn starts",
+	"internal/egress/forward_unix.go": "startServer: the readiness pipe (fd 3) of the forwarder copy it starts itself; the child writes, this process reads",
 }
 
 func relPath(path string) string {

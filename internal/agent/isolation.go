@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/egress"
 )
 
 // Process-level agent isolation (#258).
@@ -18,8 +19,9 @@ import (
 // create namespaces) on Linux, sandbox-exec on macOS. The sandbox lets the
 // run write only to its workspace, the git directories that worktree needs,
 // the temp directory and the agent CLI's own state, and hides a deny list of
-// credentials and every other workspace. Network stays open: agents need
-// their APIs, and the guardrail shims call the daemon over localhost.
+// credentials and every other workspace. Network stays open unless egress
+// is on (agent.egress: allowlist, isolation_egress.go): then the agent
+// reaches only allowlisted hosts through a per-run proxy.
 //
 // The runners never decide whether to sandbox. The worker resolves an
 // *Isolation once per run (PrepareIsolation) and passes it in the turn's
@@ -52,6 +54,9 @@ type IsolationMechanism interface {
 type Isolation struct {
 	Mechanism IsolationMechanism
 	Policy    IsolationPolicy
+	// Egress is the run's egress proxy when egress is on, else nil. The
+	// owner of the Isolation must Close it when the run ends.
+	Egress *egress.Runtime
 }
 
 // Name is the mechanism's name, or "" for a nil Isolation.
@@ -68,8 +73,8 @@ func (iso *Isolation) Describe() string {
 	if iso == nil {
 		return "isolation: none"
 	}
-	return fmt.Sprintf("isolation: process via %s; write: %s; read-only re-exposed: %s; denied: %s; network: allowed",
-		iso.Name(), listOrNone(iso.Policy.Write), listOrNone(iso.Policy.Read), listOrNone(iso.Policy.Deny))
+	return fmt.Sprintf("isolation: process via %s; write: %s; read-only re-exposed: %s; denied: %s; %s",
+		iso.Name(), listOrNone(iso.Policy.Write), listOrNone(iso.Policy.Read), listOrNone(iso.Policy.Deny), iso.describeEgress())
 }
 
 func listOrNone(paths []string) string {
@@ -168,7 +173,9 @@ func IsolateShellCommand(iso *Isolation, command string) (string, error) {
 // returns nil: no sandbox. mode "process" picks the first available
 // mechanism through detect and builds the policy from in; when none is
 // available it returns an error wrapping ErrIsolationUnavailable with the
-// reason, and the caller must not start the run.
+// reason, and the caller must not start the run. With in.Egress set it also
+// starts the run's egress proxy (the caller must Close the Isolation), and
+// fails the same way when the mechanism cannot close the network.
 func PrepareIsolation(mode string, in IsolationInputs, detect func() (IsolationMechanism, error)) (*Isolation, error) {
 	switch mode {
 	case "", config.IsolationNone:
@@ -184,7 +191,16 @@ func PrepareIsolation(mode string, in IsolationInputs, detect func() (IsolationM
 	if err != nil {
 		return nil, err
 	}
-	return &Isolation{Mechanism: m, Policy: BuildIsolationPolicy(in)}, nil
+	iso := &Isolation{Mechanism: m, Policy: BuildIsolationPolicy(in)}
+	if in.Egress != nil {
+		rt, pol, err := startEgress(m, in.Egress)
+		if err != nil {
+			return nil, err
+		}
+		addEgressPolicy(&iso.Policy, rt, pol, in.Home)
+		iso.Egress = rt
+	}
+	return iso, nil
 }
 
 var (

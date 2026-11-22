@@ -17,15 +17,23 @@ import (
 // asks for "process" on an SSH worker or on a machine where no sandbox
 // mechanism works. Runs on the worker goroutine and touches no State;
 // cfg.Agent.Isolation, cfg.Workspace.Root and cfg.WorkflowPath are
-// read-only after startup.
-func (o *Orchestrator) prepareRunIsolation(profile config.AgentProfile, workerHost, wsPath string) (*agent.Isolation, error) {
+// read-only after startup. With egress on (agent.egress: allowlist) it
+// also starts the run's egress proxy: the caller must Close the result.
+func (o *Orchestrator) prepareRunIsolation(ctx context.Context, profile config.AgentProfile, workerHost, wsPath, backend, command, identifier, runLogID string) (*agent.Isolation, error) {
 	mode := config.ResolveIsolation(profile.Isolation, o.cfg.Agent.Isolation)
 	if mode == config.IsolationProcess && workerHost != "" {
 		return nil, fmt.Errorf("%w: process isolation is not supported on SSH workers (host %s)", agent.ErrIsolationUnavailable, workerHost)
 	}
 	in := agent.RunIsolationInputs(wsPath, o.cfg.Workspace.Root, filepath.Dir(o.cfg.WorkflowPath), profile)
 	in.PatchOut = config.ResolvePush(profile.Push, o.cfg.Agent.Push) == config.PushDaemon
-	return agent.PrepareIsolation(mode, in, o.isolationDetect)
+	if mode == config.IsolationProcess {
+		in.Egress = o.runEgressInputs(ctx, profile, backend, command, wsPath, identifier, runLogID)
+	}
+	iso, err := agent.PrepareIsolation(mode, in, o.isolationDetect)
+	if err == nil && iso.EgressOn() {
+		o.logEgressPushAgent(identifier, runLogID, profile)
+	}
+	return iso, err
 }
 
 // reportRunIsolation records the sandbox in the run log (mechanism and
