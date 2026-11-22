@@ -21,3 +21,4 @@ internal/agent/isolation_sandboxexec.go sandboxExec.Wrap | macOS sandbox-exec me
 internal/agent/isolation_sandboxexec.go sandboxExecProfile | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
 internal/agent/isolation_sandboxexec.go sbplString | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
 internal/agent/isolation_sandboxexec.go regexQuote | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/guardrails/audit_patch.go AuditPatch | patch-only audit (no repository, so the test-path hunk heuristic); used by internal/referee rule tests (cross-package); production audits read the repository through AuditDiff

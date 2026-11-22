@@ -50,7 +50,15 @@ var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
 // to 0) to a patch, with or without context lines. Context lines count in
 // the head version's line numbers and are never findings themselves; a
 // "+++ " line inside a hunk is an added line, not a file header.
-func AuditPatch(patch []byte) ([]AuditFinding, error) {
+//
+// Without the repository, test_path_ignored on a Jest/Vitest config or
+// package.json is the hunk heuristic (testPathsIgnored); AuditDiff reads
+// those files whole instead.
+func AuditPatch(patch []byte) ([]AuditFinding, error) { return auditPatchWith(patch, nil) }
+
+// auditPatchWith is AuditPatch; exact are the paths whose test-path arrays
+// auditTestConfigs compared whole, where the hunk heuristic is skipped.
+func auditPatchWith(patch []byte, exact map[string]bool) ([]AuditFinding, error) {
 	var out []AuditFinding
 	var file string
 	inHunk := false
@@ -59,7 +67,7 @@ func AuditPatch(patch []byte) ([]AuditFinding, error) {
 	var cur *hunk     // the change being read (nil between changes)
 	flush := func() {
 		if cur != nil && file != "" {
-			out = appendHunkFindings(out, file, *cur)
+			out = appendHunkFindings(out, file, *cur, exact[file])
 		}
 		cur = nil
 	}
@@ -113,10 +121,15 @@ func AuditPatch(patch []byte) ([]AuditFinding, error) {
 	return out, nil
 }
 
-// appendHunkFindings appends every hunk rule's findings on one change.
-func appendHunkFindings(out []AuditFinding, file string, h hunk) []AuditFinding {
+// appendHunkFindings appends every hunk rule's findings on one change;
+// exactTestPaths skips the test-path heuristic for a file whose arrays
+// were compared whole.
+func appendHunkFindings(out []AuditFinding, file string, h hunk, exactTestPaths bool) []AuditFinding {
 	for _, rule := range hunkRules {
 		out = append(out, rule(file, h)...)
+	}
+	if !exactTestPaths {
+		out = append(out, testPathsIgnored(file, h)...)
 	}
 	return out
 }

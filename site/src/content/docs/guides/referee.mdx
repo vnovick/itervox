@@ -163,7 +163,7 @@ For TypeScript, React, React Native and other JS projects:
 | `script_stubbed` | a `package.json` `test`, `lint`, `typecheck` or `check` script set to `true`, `exit 0` or a bare `echo` |
 | `test_pass_with_no_tests` | `--passWithNoTests` or `passWithNoTests: true` added in a script, workflow or Jest/Vitest config |
 | `snapshot_update` | `jest -u`, `--updateSnapshot`, `vitest --update`, `playwright test --update-snapshots` or `--ci=false` added in a workflow, or in `package.json`'s `test` / `test:ci` script |
-| `test_path_ignored` | a test file (`*.test.*`, `*.spec.*`, `__tests__/`) added to `testPathIgnorePatterns`, Vitest's test `exclude` (not `coverage.exclude`) or `vitest --exclude`, also in a multi-line array and when one entry is added to an existing array |
+| `test_path_ignored` | a test file (`*.test.*`, `*.spec.*`, `__tests__/`) added to Jest's `testPathIgnorePatterns` (a Jest or Vitest config, or the `jest` key of `package.json`), Vitest's test `exclude` (the `exclude` of a `test` block, not `coverage.exclude`) or `vitest --exclude`; or Jest's `testMatch` narrowed (an entry dropped while `testMatch` stays). Configs are read whole (see below) |
 
 The suppression rules (`ts_*`, `eslint_disable*`, `flow_suppress`) match
 comments on purpose, so the directive has to open the line's first comment
@@ -175,6 +175,21 @@ off `@typescript-eslint/no-explicit-any` instead. Coverage thresholds in
 Jest's `coverageThreshold` (in `jest.config.*` or `package.json`) and
 Vitest's `coverage.thresholds` are read by `coverage_lowered`, and a deleted
 Detox spec (`*.e2e.ts`) is a `test_deleted` finding.
+
+`test_path_ignored` reads each changed `jest.config.*`, `vitest.config.*`,
+`vite.config.*`, `vitest.workspace.*` and `package.json` whole, at the head
+and at the merge base (`git show`, at most 1 MiB each and 64 files per
+audit), with a small tokenizer for JS, TS and JSON object literals
+(strings, template literals, comments, regex literals, nested brackets,
+keys; JSON must also parse as JSON). An entry the head has and the base does
+not is a finding at its line, wherever its array was opened, through
+`defineConfig(…)`, a function config or a workspace project list; removing
+or moving an entry is not. A config it cannot read whole (larger than the
+cap, or text the tokenizer refuses) falls back to the diff's context lines:
+an entry is then seen only when its array opens within 20 lines above the
+change. The pre-push lane reasons and the dashboard's Lanes view read the
+same way; the hunk-only reading is what remains when only a patch is at
+hand.
 
 `git push -n` is not flagged: for `push`, `-n` is `--dry-run`. A threshold
 removed outright is not flagged either; the human lane covers the common

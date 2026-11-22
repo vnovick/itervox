@@ -169,7 +169,9 @@ const (
 
 // webHunkRules read a change together with the lines ahead of it in its
 // diff hunk.
-var webHunkRules = []func(p string, h hunk) []AuditFinding{maxWarningsRaised, testPathsIgnored, eslintRulesZero}
+// testPathsIgnored is not among them: appendHunkFindings runs it for a
+// file auditTestConfigs could not read whole.
+var webHunkRules = []func(p string, h hunk) []AuditFinding{maxWarningsRaised, eslintRulesZero}
 
 // --- comment directives ---
 
@@ -546,6 +548,13 @@ var (
 // opener on an added line or a context line above: a test file pattern
 // added to Jest's testPathIgnorePatterns (a Jest/Vitest config or
 // package.json) or to Vitest's test exclude (not coverage.exclude).
+//
+// It is the fallback for a patch read without its repository (AuditPatch)
+// and for a config that could not be read whole: it sees at most
+// AuditContext lines above a change, so an array opened further up is
+// missed, and a Vitest exclude outside coverage counts. Where the files
+// are at hand, auditTestConfigs reads each config whole instead
+// (audit_testconfig.go).
 func testPathsIgnored(p string, h hunk) []AuditFinding {
 	jest, vitest := isTestRunnerConfig(p) || isPackageJSON(p), isVitestConfig(p)
 	if !jest && !vitest || len(h.added) == 0 {

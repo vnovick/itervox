@@ -44,7 +44,8 @@ TypeScript, lint and JS test runners:
                         exit 0 or echo
   test_pass_with_no_tests  --passWithNoTests / passWithNoTests: true added
   snapshot_update       jest/vitest -u, --updateSnapshot, --ci=false in CI
-  test_path_ignored     a test file excluded (testPathIgnorePatterns, exclude)
+  test_path_ignored     a test file excluded (testPathIgnorePatterns, test
+                        exclude) or testMatch narrowed; configs read whole
 
 Only added lines are read, and comment lines are skipped (except by the
 rules whose construct is a comment). --base defaults to
@@ -111,13 +112,12 @@ func audit(ctx context.Context, dir, base, head string) (auditReport, error) {
 	if err != nil {
 		return auditReport{}, err
 	}
-	rep.Findings = append(rep.Findings, deletedTests(status)...)
 	patch, err := git(ctx, dir, "-c", "core.quotePath=false", "diff", "-U"+strconv.Itoa(guardrails.AuditContext), "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
 		"--src-prefix=a/", "--dst-prefix=b/", r.MergeBase, r.Head, "--")
 	if err != nil {
 		return auditReport{}, err
 	}
-	found, err := auditPatch(patch)
+	found, err := guardrails.AuditDiff(ctx, dir, r.MergeBase, r.Head, status, patch)
 	if err != nil {
 		return auditReport{}, err
 	}
@@ -129,12 +129,8 @@ func audit(ctx context.Context, dir, base, head string) (auditReport, error) {
 }
 
 // The rules and the patch reader live in internal/guardrails (the daemon
-// shares them); these names keep the referee's code and tests readable.
+// shares them); this name keeps the referee's code and tests readable.
 type finding = guardrails.AuditFinding
-
-func deletedTests(status []byte) []finding { return guardrails.AuditDeletedTests(status) }
-
-func auditPatch(patch []byte) ([]finding, error) { return guardrails.AuditPatch(patch) }
 
 func printAudit(w io.Writer, rep auditReport) {
 	if len(rep.Findings) == 0 {

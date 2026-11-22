@@ -7,7 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vnovick/itervox/internal/guardrails"
 )
+
+// The rule tests read a patch alone (the hunk heuristic for test-path
+// arrays); `referee audit` itself reads the repository (guardrails.AuditDiff).
+func deletedTests(status []byte) []finding { return guardrails.AuditDeletedTests(status) }
+
+func auditPatch(patch []byte) ([]finding, error) { return guardrails.AuditPatch(patch) }
 
 // onePatch is a -U0 patch adding lines to path.
 func onePatch(path string, removed, added []string) []byte {
