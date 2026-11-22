@@ -96,11 +96,17 @@ type FeedPayload struct {
 	Verdict string `json:"verdict,omitempty"`
 	// PRURL is the pull request (pr_opened, pr_merged).
 	PRURL string `json:"prUrl,omitempty"`
-	// Kind is the guardrail kind (guardrail_blocked).
+	// Kind is the guardrail kind (guardrail_blocked; guardrail_approved:
+	// "lane_human" for a held push, empty for a held command).
 	Kind string `json:"kind,omitempty"`
 	// Via is how an input or approval was answered ("dashboard",
 	// "slack" (#230), "agent", "tracker", "dismiss").
 	Via string `json:"via,omitempty"`
+	// Actor names who answered an input or approval when it is known: the
+	// API principal ("dashboard:<token id>", "dashboard:bootstrap") or the
+	// tracker comment's author ("tracker:<name>"). Never a secret. The feed
+	// and the evidence report show it to operators and admins only.
+	Actor string `json:"actor,omitempty"`
 	// MemoryID is the proposed lesson's entry (lesson_proposed).
 	MemoryID string `json:"memoryId,omitempty"`
 	// Reason is the operator's redacted pause reason (dispatch_paused).

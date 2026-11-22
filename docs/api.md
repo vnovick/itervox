@@ -153,6 +153,7 @@ The caller's principal: `{"scope":"operator","source":"token","tokenId":"tok_…
 | `GET` | `/api/v1/issues/{identifier}` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/context` | viewer |
 | `GET` | `/api/v1/issues/{identifier}/attestations` | viewer (signed check records with `verified`; redacted at record time) |
+| `GET` | `/api/v1/issues/{identifier}/evidence` | viewer (the evidence report; below operator no steering text and no approver) |
 | `GET` | `/api/v1/issues/{identifier}/decisions` | viewer (redacted, bounded decision logs, #218) |
 | `GET` | `/api/v1/issues/{identifier}/diff` | viewer (`?file=` hunks: operator) |
 | `GET` | `/api/v1/issues/{identifier}/log-stream` | viewer |
@@ -2077,6 +2078,20 @@ not wired.
       "treeHash": "9c1e…", "head": "4b2d…", "keyId": "3f1c9a0b5d7e2468", "verified": true}]}
 ]}
 ```
+
+#### `GET /api/v1/issues/{identifier}/evidence`
+
+The issue's evidence report (viewer): what ran, what was checked, who
+approved. See the [Evidence report guide](../site/src/content/docs/guides/evidence.mdx)
+and the full field list in the
+[API reference](../site/src/content/docs/api-reference.mdx). It is built on
+the request from the run history and the live run (with each run's gate
+results), the signed check records, the reviewer verdicts, the push lane, the
+event feed, the pending input request and the managed PRs. It holds hashes,
+ids, names, counts and outcomes, never prompt text, agent output, findings,
+pushed paths or command lines. Below operator `runs[].steers[].text` and
+`approvals[].actor` are left out; admins also get `approvals[].actorName`.
+`503 not_supported` when it is not wired.
 
 #### `GET /api/v1/steering/phrases`
 

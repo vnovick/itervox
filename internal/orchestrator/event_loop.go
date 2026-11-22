@@ -1143,7 +1143,7 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 			continue // no reply yet
 		}
 		if entry.GuardrailApprovalID != "" { // #204: the reply decides the approval
-			o.resolveGuardrailApproval(&state, entry, replyComment.Body, "tracker")
+			o.resolveGuardrailApproval(&state, entry, replyComment.Body, "tracker", trackerActor(replyComment))
 			continue
 		}
 		slog.Info("orchestrator: tracker comment reply detected, queuing pending resume",
@@ -1154,8 +1154,8 @@ func (o *Orchestrator) applyReplyChecks(ctx context.Context, state State, res *t
 		}
 		delete(state.InputRequiredIssues, identifier)
 		state.PendingInputResumes[identifier] = buildPendingInputResumeEntry(entry, replyComment.Body)
-		o.emitFeed(&state, FeedInputAnswered, identifier, FeedPayload{Via: "tracker"}) // #213
-		o.observeInputReply(&state, entry, replyComment.Body)                          // #203
+		o.emitFeed(&state, FeedInputAnswered, identifier, FeedPayload{Via: "tracker", Actor: trackerActor(replyComment)}) // #213
+		o.observeInputReply(&state, entry, replyComment.Body)                                                             // #203
 	}
 	return state
 }
@@ -1947,7 +1947,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					"identifier", ev.Identifier)
 				return state
 			}
-			o.resolveGuardrailApproval(&state, entry, ev.Message, cmp.Or(ev.Via, "dashboard"))
+			o.resolveGuardrailApproval(&state, entry, ev.Message, cmp.Or(ev.Via, "dashboard"), ev.Actor)
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
@@ -1956,7 +1956,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		if ev.FromAgent {
 			via = "agent"
 		}
-		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: via})
+		actor := ev.Actor
+		if ev.FromAgent {
+			actor = ""
+		}
+		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: via, Actor: actor})
 		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
 		o.observeInputReply(&state, entry, ev.Message) // #203
@@ -1981,14 +1985,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			return state
 		}
 		if entry.GuardrailApprovalID != "" { // #204: dismissing rejects; the run keeps going
-			o.resolveGuardrailApproval(&state, entry, "dismissed", "dismiss")
+			o.resolveGuardrailApproval(&state, entry, "dismissed", "dismiss", ev.Actor)
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		recordDismissedInputQuestion(&state, entry, time.Now()) // not rehydrated from this comment again
 		state.PausedIdentifiers[ev.Identifier] = entry.IssueID
 		setPauseReason(&state, ev.Identifier, PauseReasonUserDismissedInput)
-		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: "dismiss", Outcome: "dismissed"}) // #213
+		o.emitFeed(&state, FeedInputAnswered, ev.Identifier, FeedPayload{Via: "dismiss", Outcome: "dismissed", Actor: ev.Actor}) // #213
 		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 		o.savePauseReasonsToDisk(maps.Clone(state.PauseReasons))
 		slog.Info("orchestrator: input-required issue dismissed and paused", "identifier", ev.Identifier)
@@ -3151,6 +3155,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.ReviewVerdict = liveEntry.reviewVerdict // #201
 		run.ContinuedFromReview = liveEntry.ContinuedFromReview
 		run.ReviewComments = liveEntry.ReviewComments
+		run.Checks = runChecksOf(liveEntry) // evidence report
 		// CommentCount on liveEntry is rarely populated directly — the live
 		// counter lives on the orchestrator (BumpCommentCount writes to the
 		// concurrent map). Prefer the orchestrator counter; fall back to the

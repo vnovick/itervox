@@ -171,6 +171,9 @@ type OrchestratorEvent struct { //nolint:revive
 	// Via names the human reply channel of an EventProvideInput when it is
 	// not the dashboard ("slack", #230); empty means the dashboard.
 	Via string
+	// Actor names who sent an EventProvideInput / EventDismissInput (the
+	// API principal, FeedPayload.Actor); empty when unknown.
+	Actor string
 	// guardrail is the payload of EventGuardrailApproval (#204).
 	guardrail *guardrailApprovalEvent
 	// guardrailLane is the payload of EventGuardrailLane (guardrails.lanes).
@@ -553,6 +556,10 @@ type CompletedRun struct {
 	// process count, disk I/O. Nil when no monitor was installed or the
 	// run started no local process.
 	Resources *sysmon.RunSummary `json:"resources,omitempty"`
+	// Checks are the run's gate outcomes (the #80 evidence gate and the
+	// signed checks; run_checks.go): names and pass/fail only. Nil when no
+	// gate ran.
+	Checks *RunChecks `json:"checks,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.

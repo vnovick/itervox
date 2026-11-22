@@ -2495,6 +2495,154 @@ export const AttestationsResponseSchema = z.object({
 });
 export type AttestationsResponse = z.infer<typeof AttestationsResponseSchema>;
 
+// Evidence report — GET /api/v1/issues/{identifier}/evidence: what ran,
+// what was checked, who approved. Hashes, ids, names, counts and outcomes
+// only; the daemon redacts it for the caller's scope (internal/server/
+// evidence.go). Every list may arrive null from an older shape: [] here.
+const evidenceList = <T extends z.ZodType>(item: T) =>
+  z
+    .array(item)
+    .nullish()
+    .transform((v) => v ?? []);
+
+export const EvidenceGateSchema = z.object({
+  required: evidenceList(z.string()),
+  failed: evidenceList(z.string()),
+  passed: z.boolean(),
+  checkedAt: z.string(),
+  attestRunId: z.string().optional(),
+});
+export type EvidenceGate = z.infer<typeof EvidenceGateSchema>;
+
+export const EvidenceRunSchema = z.object({
+  runId: z.string().optional(),
+  kind: z.string(),
+  profile: z.string().optional(),
+  backend: z.string().optional(),
+  profileModel: z.string().optional(),
+  workerHost: z.string().optional(),
+  status: z.string(),
+  live: z.boolean().optional(),
+  startedAt: z.string(),
+  finishedAt: z.string().optional(),
+  elapsedMs: z.number().default(0),
+  turnCount: z.number().default(0),
+  retryAttempt: z.number().optional(),
+  automationId: z.string().optional(),
+  triggerType: z.string().optional(),
+  promptDigest: z.string().optional(),
+  promptParts: PromptPartsSchema.optional(),
+  rulesHash: z.string().optional(),
+  ruleIds: evidenceList(z.string()),
+  memoryIds: evidenceList(z.string()),
+  playbook: z.string().optional(),
+  steers: evidenceList(
+    z.object({ at: z.string(), delivery: z.string(), text: z.string().optional() }),
+  ),
+  steersDropped: z.number().optional(),
+  branchName: z.string().optional(),
+  prUrl: z.string().optional(),
+  reviewVerdict: z.string().optional(),
+  checks: z
+    .object({ evidence: EvidenceGateSchema.optional(), signed: EvidenceGateSchema.optional() })
+    .optional(),
+});
+export type EvidenceRun = z.infer<typeof EvidenceRunSchema>;
+
+export const EvidenceApprovalSchema = z.object({
+  at: z.string(),
+  kind: z.string(),
+  decision: z.string(),
+  via: z.string().optional(),
+  runId: z.string().optional(),
+  push: z.boolean().optional(),
+  pathsTotal: z.number().optional(),
+  actor: z.string().optional(),
+  actorName: z.string().optional(),
+});
+export type EvidenceApproval = z.infer<typeof EvidenceApprovalSchema>;
+
+export const EvidenceReportSchema = z.object({
+  identifier: z.string(),
+  title: z.string().optional(),
+  generatedAt: z.string(),
+  scope: z.string(),
+  runs: evidenceList(EvidenceRunSchema),
+  retry: z.object({ attempt: z.number(), dueAt: z.string() }).optional(),
+  reviews: z
+    .object({
+      verdicts: evidenceList(
+        z.object({
+          profile: z.string(),
+          verdict: z.string(),
+          backend: z.string().optional(),
+          recordedAt: z.string(),
+          reasons: z.number(),
+          comments: z.number(),
+        }),
+      ),
+      outcome: z
+        .object({
+          blocked: z.boolean(),
+          approvals: z.number(),
+          blocks: z.number(),
+          quorum: z.string().optional(),
+        })
+        .optional(),
+    })
+    .default({ verdicts: [] }),
+  signedChecks: evidenceList(
+    z.object({
+      attestRunId: z.string(),
+      profile: z.string().optional(),
+      checks: evidenceList(
+        z.object({
+          name: z.string(),
+          passed: z.boolean(),
+          exitCode: z.number(),
+          timedOut: z.boolean().optional(),
+          verified: z.boolean(),
+          startedAt: z.string(),
+          durationMs: z.number().default(0),
+        }),
+      ),
+      sealed: z.boolean(),
+      verified: z.boolean(),
+    }),
+  ),
+  guardrailBlocks: evidenceList(z.object({ at: z.string(), kind: z.string() })),
+  pushLane: z
+    .object({
+      lane: z.string(),
+      pathsTotal: z.number(),
+      pathsKept: z.number(),
+      truncated: z.boolean(),
+      writerBackends: evidenceList(z.string()),
+      runId: z.string().optional(),
+      updatedAt: z.string(),
+    })
+    .optional(),
+  approvals: evidenceList(EvidenceApprovalSchema),
+  pullRequests: evidenceList(
+    z.object({
+      url: z.string(),
+      branch: z.string().optional(),
+      state: z.string(),
+      recordedAt: z.string().optional(),
+      mergedAt: z.string().optional(),
+    }),
+  ),
+  limits: z
+    .object({
+      feedSince: z.string().optional(),
+      feedMaxAgeHours: z.number(),
+      historyRuns: z.number(),
+      reviewsSessionOnly: z.boolean(),
+    })
+    .optional(),
+});
+export type EvidenceReport = z.infer<typeof EvidenceReportSchema>;
+
 export const SteeringPhraseSchema = z.object({ label: z.string(), message: z.string() });
 export type SteeringPhrase = z.infer<typeof SteeringPhraseSchema>;
 

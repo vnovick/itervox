@@ -214,6 +214,11 @@ Commands:
   workers  <n>             set max_concurrent_agents (saved to WORKFLOW.md)
   reply    <issue> <text>  answer an agent's question
   approve  <issue>         approve the command a guardrail is holding (once)
+  evidence <issue>         the issue's evidence report: its runs (prompt
+                           digests, rules, memory, playbook, steering), the
+                           checks (evidence gate, signed checks, reviews,
+                           push lanes), the approvals and the PRs
+             --json          the report as JSON
   task     "<title>"       create a New task: a local task file (or a tracker
                            issue with --tracker) in the first active state
              --instructions <text|@file>  custom instructions for this task

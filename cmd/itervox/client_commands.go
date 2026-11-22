@@ -141,6 +141,13 @@ func clientCommand(ctx context.Context, name string, args []string, out, errOut 
 		if err := approveCommand(rctx, c, pos[0], out); err != nil {
 			return fail(err)
 		}
+	case "evidence": // what ran, what was checked, who approved
+		if len(pos) != 1 {
+			return usage("usage: itervox evidence <issue> [--json]")
+		}
+		if err := evidenceCommand(rctx, c, pos[0], wf.json, out); err != nil {
+			return fail(err)
+		}
 	case "reply":
 		if len(pos) < 2 {
 			return usage("usage: itervox reply <issue> <text>")

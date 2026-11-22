@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/vnovick/itervox/internal/apitokens"
 	"github.com/vnovick/itervox/internal/sysmon"
 )
 
@@ -312,6 +313,41 @@ func TestGenerateDTOFixturesForZodParity(t *testing.T) {
 			ConsecutiveTransportFailures: 3,
 		},
 		"TrackerPollRowIdle.json": TrackerPollRow{SlowAfterMs: 45000},
+		// The evidence report as an admin sees it: every section filled.
+		"EvidenceReport.json": evidenceForScope(EvidenceReport{
+			Identifier: "ENG-1", Title: "Fix the parser", GeneratedAt: at,
+			Runs: []EvidenceRun{{
+				RunID: "run-1", Kind: "worker", Profile: "coder", Backend: "claude", ProfileModel: "claude-sonnet-4-5",
+				Status: "succeeded", StartedAt: at, FinishedAt: tptr(at.Add(time.Minute)), ElapsedMs: 60000, TurnCount: 3,
+				PromptDigest: strings.Repeat("a", 64), PromptParts: &HistoryPromptParts{Soul: "s", Template: "t"},
+				RulesHash: "rh", RuleIDs: []string{"r1"}, MemoryIDs: []string{"m1"}, Playbook: "bugfix",
+				Steers:     []EvidenceSteer{{At: at, Delivery: "live", Text: "check the tests"}},
+				BranchName: "eng-1", PRURL: "https://github.com/o/r/pull/1",
+				Checks: &EvidenceRunChecks{
+					Evidence: &EvidenceGate{Required: []string{"tests", "ci"}, Failed: []string{"ci"}, CheckedAt: at},
+					Signed:   &EvidenceGate{Required: []string{"lint"}, Passed: true, CheckedAt: at, AttestRunID: "20260525T120000Z_coder"},
+				},
+			}, {RunID: "run-2", Kind: "reviewer", Status: "running", Live: true, StartedAt: at, RetryAttempt: 1, ReviewVerdict: ""}},
+			Retry: &EvidenceRetry{Attempt: 2, DueAt: at},
+			Reviews: EvidenceReviews{
+				Verdicts: []EvidenceVerdict{{Profile: "reviewer", Verdict: "approve", Backend: "codex", RecordedAt: at, Reasons: 1, Comments: 2}},
+				Outcome:  &EvidenceOutcome{Approvals: 1, Quorum: "any_block"},
+			},
+			SignedChecks: []EvidenceSignedRun{{AttestRunID: "20260525T120000Z_coder", Profile: "coder", Sealed: true, Verified: true,
+				Checks: []EvidenceSignedCheck{{Name: "lint", Passed: true, Verified: true, StartedAt: at, DurationMs: 900}}}},
+			GuardrailBlocks: []EvidenceGuardrailBlock{{At: at, Kind: "force_push"}},
+			PushLane: &EvidencePushLane{Lane: "human", PathsTotal: 3, PathsKept: 1, Truncated: true,
+				WriterBackends: []string{"claude"}, RunID: "run-1", UpdatedAt: at},
+			Approvals: []EvidenceApproval{{At: at, Kind: EvidenceApprovalGuardrail, Decision: EvidenceDecisionApproved,
+				Via: "dashboard", RunID: "run-1", Push: true, Actor: "dashboard:tok_1"},
+				{At: at, Kind: EvidenceApprovalGuardrail, Decision: EvidenceDecisionPending, PathsTotal: 4}},
+			PullRequests: []EvidencePullRequest{{URL: "https://github.com/o/r/pull/1", Branch: "eng-1", State: "merged",
+				RecordedAt: tptr(at), MergedAt: tptr(at.Add(time.Hour))}},
+			Limits: EvidenceLimits{FeedSince: tptr(at), FeedMaxAgeHours: 168, HistoryRuns: 1, ReviewsSessionOnly: true},
+		}, apitokens.ScopeAdmin, map[string]string{"tok_1": "ops"}),
+		// …and an issue with nothing recorded, as a viewer sees it.
+		"EvidenceReportEmpty.json": evidenceForScope(EvidenceReport{Identifier: "ENG-2", GeneratedAt: at},
+			apitokens.ScopeViewer, nil),
 	}
 
 	for name, value := range fixtures {

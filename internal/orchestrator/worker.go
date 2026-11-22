@@ -1191,9 +1191,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// it only as this worker's exit event.
 	verifySealTree := "" // the seal's tree when the signed checks passed (push: daemon)
 	if len(verifyChecks) > 0 && wsPath != "" && ctx.Err() == nil {
+		signedRunID := attestRunID(runTimestamp, profileName)
 		verdict := o.runVerifyChecks(ctx, wsPath, verifyRun{
-			issue: issue, runID: attestRunID(runTimestamp, profileName), profile: profileName, runLogID: runLogID,
+			issue: issue, runID: signedRunID, profile: profileName, runLogID: runLogID,
 		}, verifyChecks)
+		recordSignedGate(ctx, verifyChecks, verdict, signedRunID, time.Now()) // evidence report
 		if ctx.Err() != nil {
 			o.sendExit(ctx, issue, attempt, TerminalFailed, fmt.Errorf("worker: signed checks interrupted: %w", ctx.Err()))
 			return
@@ -1239,6 +1241,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			evCtx, evCancel := context.WithTimeout(context.Background(), postRunTimeout)
 			verdict := checkEvidence(evCtx, wsPath, evidenceRelPathFor(profileName), required, "", o.prChecksReader())
 			evCancel()
+			recordEvidenceGate(ctx, required, verdict, time.Now()) // evidence report
 			if !verdict.ok() {
 				slog.Info("worker: holding issue for evidence before the daemon push (require_evidence)",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "missing", len(verdict.Missing))
@@ -1490,6 +1493,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		evCtx, evCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		verdict := checkEvidence(evCtx, wsPath, evidenceRelPathFor(profileName), required, detectedPRURL, o.prChecksReader())
 		evCancel()
+		recordEvidenceGate(ctx, required, verdict, time.Now()) // evidence report
 		if !verdict.ok() {
 			slog.Info("worker: holding issue for evidence (require_evidence)",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "missing", len(verdict.Missing))

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/vnovick/itervox/internal/apitokens"
 )
 
 // feed.go — #213: the event feed with a cursor (GET /api/v1/feed) and the
@@ -34,15 +36,18 @@ const pauseReasonMaxBytes = 500
 // FeedPayload is the small, redacted payload of a feed event. It never
 // holds agent output or prompt text.
 type FeedPayload struct {
-	RunID    string    `json:"runId,omitempty"`
-	RunKind  string    `json:"runKind,omitempty"`
-	Profile  string    `json:"profile,omitempty"`
-	Backend  string    `json:"backend,omitempty"`
-	Outcome  string    `json:"outcome,omitempty"`
-	Verdict  string    `json:"verdict,omitempty"`
-	PRURL    string    `json:"prUrl,omitempty"`
-	Kind     string    `json:"kind,omitempty"`
-	Via      string    `json:"via,omitempty"`
+	RunID   string `json:"runId,omitempty"`
+	RunKind string `json:"runKind,omitempty"`
+	Profile string `json:"profile,omitempty"`
+	Backend string `json:"backend,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
+	PRURL   string `json:"prUrl,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Via     string `json:"via,omitempty"`
+	// Actor names who answered an input or approval (operator and admin
+	// only: GET /api/v1/feed leaves it out below operator).
+	Actor    string    `json:"actor,omitempty"`
 	MemoryID string    `json:"memoryId,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
 	Until    time.Time `json:"until,omitzero"`
@@ -116,8 +121,22 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if page.Events == nil {
 		page.Events = []FeedEvent{}
 	}
+	if p, _ := principalFrom(r.Context()); !p.Scope.Allows(apitokens.ScopeOperator) {
+		page.Events = feedWithoutActors(page.Events)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, page)
+}
+
+// feedWithoutActors returns events with Payload.Actor cleared (a copy:
+// the page may share its backing array with the daemon's feed).
+func feedWithoutActors(events []FeedEvent) []FeedEvent {
+	out := make([]FeedEvent, len(events))
+	for i, ev := range events {
+		ev.Payload.Actor = ""
+		out[i] = ev
+	}
+	return out
 }
 
 // handlePauseDispatch serves POST /api/v1/dispatch/pause

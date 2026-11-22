@@ -1,0 +1,18 @@
+{
+  "identifier": "ENG-2",
+  "generatedAt": "2026-05-25T12:00:00Z",
+  "scope": "viewer",
+  "runs": [],
+  "reviews": {
+    "verdicts": []
+  },
+  "signedChecks": [],
+  "guardrailBlocks": [],
+  "approvals": [],
+  "pullRequests": [],
+  "limits": {
+    "feedMaxAgeHours": 0,
+    "historyRuns": 0,
+    "reviewsSessionOnly": false
+  }
+}

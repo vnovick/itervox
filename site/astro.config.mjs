@@ -75,6 +75,7 @@ export default defineConfig({
             { label: 'Guardrails', slug: 'guides/guardrails' },
             { label: 'Lanes (pipeline changes)', slug: 'guides/lanes' },
             { label: 'Signed checks', slug: 'guides/signed-checks' },
+            { label: 'Evidence report', slug: 'guides/evidence' },
             { label: 'Running in CI (GitHub Actions)', slug: 'guides/ci' },
             { label: 'referee (agents in CI, any harness)', slug: 'guides/referee' },
             { label: 'Agents in CI: fix the build, not the pipeline', slug: 'guides/agents-in-ci' },

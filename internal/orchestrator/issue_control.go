@@ -318,6 +318,13 @@ const InputViaSlack = "slack"
 // guardrail approval. Same error contract as ProvideInput. Safe to call
 // from any goroutine.
 func (o *Orchestrator) ProvideInputVia(identifier, message, via string) error {
+	return o.ProvideInputAs(identifier, message, via, "")
+}
+
+// ProvideInputAs is ProvideInputVia with the reply's actor (the API
+// principal, FeedPayload.Actor) recorded on its feed event for the
+// evidence report. Same contract as ProvideInputVia.
+func (o *Orchestrator) ProvideInputAs(identifier, message, via, actor string) error {
 	if o.isDraining() { // CORE-057: the resume would start a worker
 		return ErrDraining
 	}
@@ -330,6 +337,7 @@ func (o *Orchestrator) ProvideInputVia(identifier, message, via string) error {
 		Identifier: identifier,
 		Message:    message,
 		Via:        via,
+		Actor:      actor,
 	}:
 		return nil
 	default:
@@ -345,10 +353,17 @@ func (o *Orchestrator) ProvideInputVia(identifier, message, via string) error {
 // (CORE-005).
 // Safe to call from any goroutine.
 func (o *Orchestrator) DismissInput(identifier string) error {
+	return o.DismissInputAs(identifier, "")
+}
+
+// DismissInputAs is DismissInput with the actor recorded on the feed event
+// (FeedPayload.Actor). Same contract as DismissInput.
+func (o *Orchestrator) DismissInputAs(identifier, actor string) error {
 	select {
 	case o.events <- OrchestratorEvent{
 		Type:       EventDismissInput,
 		Identifier: identifier,
+		Actor:      actor,
 	}:
 		return nil
 	default:

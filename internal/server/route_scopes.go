@@ -84,6 +84,7 @@ var routeScopes = map[string]routeAccess{
 	"GET /api/v1/issues/{identifier}/diff":          accessViewer, // #215: ?file= hunks need operator (handleIssueDiff)
 	"GET /api/v1/issues/{identifier}/decisions":     accessViewer, // #218: redacted, bounded decision logs
 	"GET /api/v1/issues/{identifier}/attestations":  accessViewer, // signed checks: redacted at record time
+	"GET /api/v1/issues/{identifier}/evidence":      accessViewer, // evidence report: redacted per scope (evidenceForScope)
 	"GET /api/v1/playbooks":                         accessViewer, // #218
 	"GET /api/v1/task-templates":                    accessViewer, // #251
 	"GET /api/v1/steering/phrases":                  accessViewer, // #218

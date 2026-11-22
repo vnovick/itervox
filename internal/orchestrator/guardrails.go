@@ -280,7 +280,7 @@ func (o *Orchestrator) handleGuardrailApproval(state *State, ev OrchestratorEven
 // "dismiss"): the request is decided and the entry removed; nothing is
 // resumed — the run never stopped. A dashboard or Slack answer is mirrored
 // to the tracker like any input-required reply. Event loop.
-func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequiredEntry, reply, via string) {
+func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequiredEntry, reply, via, actor string) {
 	approved := guardrails.IsApproval(reply)
 	command, runID := "", ""
 	lane := entry.GuardrailLanePaths != nil
@@ -308,7 +308,11 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 	delete(state.InputRequiredIssues, entry.Identifier)
 	restartStallClock(state, entry.Identifier, time.Now())
 	if approved {
-		o.emitFeed(state, FeedGuardrailApproved, entry.Identifier, FeedPayload{Via: via}) // #213
+		approvedKind := "" // a held push names its lane (evidence report)
+		if lane {
+			approvedKind = guardrails.KindLaneHuman
+		}
+		o.emitFeed(state, FeedGuardrailApproved, entry.Identifier, FeedPayload{Kind: approvedKind, Via: via, Actor: actor, RunID: runID}) // #213
 		slog.Info("guardrails: approved", "issue_identifier", entry.Identifier, "via", via, "command", command)
 		if o.logBuf != nil {
 			o.logBuf.Add(entry.Identifier, makeBufLine("INFO", "guardrails: approved via "+via+": "+command))
@@ -316,7 +320,7 @@ func (o *Orchestrator) resolveGuardrailApproval(state *State, entry *InputRequir
 	} else {
 		slog.Warn("guardrails: refused", "issue_identifier", entry.Identifier, "kind", rejectedKind, "via", via, "command", command)
 		metrics.GuardrailBlock(rejectedKind)
-		o.emitFeed(state, FeedGuardrailBlocked, entry.Identifier, FeedPayload{Kind: rejectedKind, Via: via}) // #213
+		o.emitFeed(state, FeedGuardrailBlocked, entry.Identifier, FeedPayload{Kind: rejectedKind, Via: via, Actor: actor, RunID: runID}) // #213
 		appendRecentFailure(state, FailureRecord{Kind: FailureKindGuardrail, Identifier: entry.Identifier,
 			Source: rejectedKind, Message: "rejected via " + via + ": " + command, OccurredAt: time.Now()}, time.Now())
 		if o.logBuf != nil {

@@ -118,4 +118,35 @@ describe('IssueDetailSlide Now panel and Changes tab (#215)', () => {
       expect.anything(),
     );
   });
+
+  it('lazy-loads the Evidence tab on a daemon that serves the report', async () => {
+    routeFetch(vi.mocked(authedFetch), {
+      '/api/v1/issues/ENG-10/evidence': {
+        body: {
+          identifier: 'ENG-10',
+          generatedAt: '2026-11-20T10:00:00Z',
+          scope: 'viewer',
+          runs: [
+            {
+              runId: 'run-9',
+              kind: 'worker',
+              status: 'running',
+              startedAt: '2026-11-20T09:00:00Z',
+            },
+          ],
+        },
+      },
+    });
+    setup(['issue_evidence']);
+    render(<IssueDetailSlide />, { wrapper });
+    expect(screen.queryByRole('tab', { name: 'Changes' })).toBeNull();
+    expect(vi.mocked(authedFetch)).not.toHaveBeenCalledWith(
+      '/api/v1/issues/ENG-10/evidence',
+      expect.anything(),
+    );
+    await userEvent.click(screen.getByRole('tab', { name: 'Evidence' }));
+    expect(await screen.findByTestId('issue-evidence')).toBeInTheDocument();
+    expect(screen.getByText('run-9')).toBeInTheDocument();
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'issue-tab-evidence');
+  });
 });

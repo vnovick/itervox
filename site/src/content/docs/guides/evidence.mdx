@@ -1,0 +1,71 @@
+---
+title: Evidence report
+description: One page per issue that answers three questions about a pull request an agent opened — what ran, what was checked, who approved. In the dashboard's Evidence tab, with itervox evidence, and as JSON.
+sidebar:
+  order: 13
+---
+
+Before you merge a pull request an agent opened, you want three answers:
+
+- **What ran?** Which runs worked on the issue, with which profile, backend and prompt version.
+- **What was checked?** Which gates the work passed, and which it failed.
+- **Who approved?** Which person let a held command or push through, and through which channel.
+
+The **evidence report** gives those answers for one issue. Itervox builds it from what the daemon
+already keeps (the run history, the event feed, the signed check records and the guardrail state).
+Turning it on records nothing new about your code or your prompts.
+
+## Where to see it
+
+- **Dashboard.** Open an issue and choose the **Evidence** tab. The tab loads only when you open
+  it, and refreshes every 10 seconds while the issue has a live run.
+- **Terminal.** `itervox evidence ENG-7` prints the report as text. Add `--json` to print the API
+  response as it came. The command finds the daemon like [`itervox watch`](/cli/#itervox-watch--a-live-terminal-panel)
+  does: `--workflow`, `--url`, or `--project NAME` through the hub.
+- **API.** `GET /api/v1/issues/{identifier}/evidence` (viewer scope). See the
+  [API reference](/api-reference/#get-apiv1issuesidentifierevidence).
+
+## What it contains
+
+| Section | From | What you see |
+|---|---|---|
+| **What ran** | Run history and the live run | Each run, oldest first, with the live run last. You see its run ID, kind (worker, reviewer, automation), profile, backend, and the model its profile's command names now. You also see start time, duration, turns, outcome and retry attempt. For provenance you get the prompt digest and per-part digests (hashes only), the rule IDs and hash, the memory entry IDs, and the playbook. The report also lists the steering messages delivered to the run. |
+| **Gates per run** | The worker | The [`require_evidence`](/configuration/#done-needs-evidence) gate and the [signed checks](/guides/signed-checks/) gate. For each: the check names it asked for, the names that were not proved, and whether it passed. A signed-checks gate names its record run, which links it to the signed records. |
+| **What was checked** | Attestation store, reviewers, guardrails | The signed checks of each run: name, exit code, whether it timed out, and whether the record verifies. You also see each reviewer's verdict and backend, with the number of reasons and line comments (never their text), and the review quorum. Guardrail refusals appear by kind (`force_push`, `tag`, …). The [push lane](/guides/lanes/) shows how many files reached it and whether the list was cut, but never the paths. |
+| **Who approved** | Event feed and pending requests | Every answer to a [guardrail approval](/guides/guardrails/) (a held command, or a held push in the human lane) and every answer to an agent's question. Each answer shows its decision (approved, rejected, answered, dismissed), when it was given, through which channel (`dashboard`, `slack`, `tracker`, `dismiss`), and who gave it. A request that is still waiting comes last, as `pending`. |
+| **Pull requests** | Managed PRs, runs, feed | The PRs the issue's runs recorded. A PR shows as `merged` when this daemon saw the merge, and as `recorded` otherwise. |
+
+The report never contains prompt text, agent output, a reviewer's findings, the lines of a pushed
+file, a held command line or an output tail. For the signed records themselves, with their commands
+and output tails, use `GET /api/v1/issues/{identifier}/attestations`.
+
+## Who sees what
+
+The daemon redacts the report for the token that asks, like every other route:
+
+| Scope | Steering messages | Who approved |
+|---|---|---|
+| viewer | Only their time and how they were delivered | Only the channel |
+| operator | Their text, redacted again before it is served | Also the actor: `dashboard:<token id>`, `dashboard:bootstrap` or `tracker:<author>` |
+| admin | The same | Also the stored token's name |
+
+An answer through the dashboard, the Mac app, `itervox reply`, `itervox approve` or the hub's
+Slack app records the API token that sent it. A tracker reply records the comment's author. An
+agent's relayed answer (`fromAgent`, `via: agent`) never records a person. `GET /api/v1/feed`
+follows the same rule and leaves the actor out below operator.
+
+## How far back it reaches
+
+The report reads what this daemon keeps, so its reach has limits. The `limits` object in the JSON
+states them.
+
+- **Runs** come from the run history, which keeps the daemon's last 200 runs across all issues.
+  `limits.historyRuns` says how many of this issue's runs it still holds.
+- **Approvals, refusals and merges** come from the event feed, which keeps 5000 events for up to 7
+  days. `limits.feedSince` is the oldest event the feed still holds.
+- **Reviewer verdicts** are kept for the current daemon session only (`limits.reviewsSessionOnly`).
+  A reviewer run's own verdict stays on its run.
+- **Gate results** are recorded on runs that finish after this release. Older runs show none.
+
+The report is per issue and per daemon. It does not keep its own history, and it does not export
+or retain anything beyond the sources above.
