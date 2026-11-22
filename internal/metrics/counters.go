@@ -85,6 +85,7 @@ var (
 	storePulls      = newCounterVec("trigger")
 	tmuxSends       = newCounterVec("kind")
 	guardrailBlocks = newCounterVec("kind")
+	egressDecisions = newCounterVec("outcome")
 	goroutinePanics atomic.Uint64
 	eventsDropped   atomic.Uint64
 )
@@ -188,6 +189,25 @@ func PreinitGuardrailBlocks(kinds ...string) {
 // GuardrailBlockCount reads one guardrail block counter. A cross-package
 // test reader; kept in production code (deadcode allowlist).
 func GuardrailBlockCount(kind string) uint64 { return guardrailBlocks.get(kind).Load() }
+
+// Egress decision outcomes for EgressDecision.
+const (
+	// EgressAllowed is a proxied connection to an allowlisted host.
+	EgressAllowed = "allowed"
+	// EgressRefused is a connection the egress proxy refused.
+	EgressRefused = "refused"
+)
+
+// EgressDecision counts one decision of a sandboxed run's egress proxy
+// (agent.egress) by outcome: EgressAllowed or EgressRefused. Never the host:
+// label values stay bounded.
+func EgressDecision(outcome string) {
+	egressDecisions.get(outcome).Add(1)
+}
+
+// EgressDecisionCount reads one egress decision counter. A cross-package
+// test reader; kept in production code (deadcode allowlist).
+func EgressDecisionCount(outcome string) uint64 { return egressDecisions.get(outcome).Load() }
 
 // GoroutinePanic counts one panic recovered on a daemon goroutine. The site
 // is in the panic's own log line; the counter is unlabelled so an alert can

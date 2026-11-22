@@ -291,6 +291,7 @@ func (s *depsAnalyzerService) run(ctx context.Context, profile string) (*depsana
 
 		DefaultIsolation: s.cfg.Agent.Isolation, // #258
 		ProjectDir:       filepath.Dir(s.cfg.WorkflowPath),
+		Egress:           analyzerEgress(prof, s.cfg.Agent),
 	}, plan.ToAnalyze, trackerEdges, chunkSize, onChunkDone)
 	if err != nil {
 		return nil, err

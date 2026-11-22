@@ -59,6 +59,12 @@ const (
 	// via the caller ("dashboard:<token id>"). Never a terminal byte.
 	FeedTerminalAttached = "terminal_attached"
 	FeedTerminalDetached = "terminal_detached"
+	// A sandboxed run's egress proxy (agent.egress: allowlist) refused a
+	// connection: the payload holds the run id, the refusal reason as kind
+	// (not_allowed, push_remote, local_address, bad_request) and the
+	// destination host:port as reason. Never a URL, path or header. One
+	// event per destination per run.
+	FeedEgressRefused = "egress_refused"
 )
 
 // FeedCap and FeedMaxAge bound the feed: the newest FeedCap events, none
@@ -96,14 +102,16 @@ type FeedPayload struct {
 	Verdict string `json:"verdict,omitempty"`
 	// PRURL is the pull request (pr_opened, pr_merged).
 	PRURL string `json:"prUrl,omitempty"`
-	// Kind is the guardrail kind (guardrail_blocked).
+	// Kind is the guardrail kind (guardrail_blocked), or the egress refusal
+	// reason (egress_refused).
 	Kind string `json:"kind,omitempty"`
 	// Via is how an input or approval was answered ("dashboard",
 	// "slack" (#230), "agent", "tracker", "dismiss").
 	Via string `json:"via,omitempty"`
 	// MemoryID is the proposed lesson's entry (lesson_proposed).
 	MemoryID string `json:"memoryId,omitempty"`
-	// Reason is the operator's redacted pause reason (dispatch_paused).
+	// Reason is the operator's redacted pause reason (dispatch_paused), or
+	// the refused destination host:port (egress_refused).
 	Reason string `json:"reason,omitempty"`
 	// Until is when a pause expires (dispatch_paused); zero = until resumed.
 	Until time.Time `json:"until,omitzero"`

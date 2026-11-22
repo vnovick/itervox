@@ -164,6 +164,34 @@
           "x-itervox-group": "SSH",
           "x-itervox-live": true
         },
+        "egress": {
+          "default": "off",
+          "description": "Default for profiles that do not set egress: off, or allowlist (needs isolation: process; the agent has no network of its own and reaches only allowlisted hosts through a proxy Itervox runs per run; git traffic stays with the daemon). Read at load time.",
+          "enum": [
+            "off",
+            "allowlist"
+          ],
+          "title": "Network egress",
+          "type": "string",
+          "x-itervox-group": "Core"
+        },
+        "egress_allow": {
+          "default": [],
+          "description": "Hosts every egress run may reach on top of the defaults: host (ports 443 and 80), host:port, or *.domain. Read at load time.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Egress allowlist",
+          "type": "array",
+          "x-itervox-group": "Core"
+        },
+        "egress_defaults": {
+          "default": true,
+          "description": "Add the backend's model API hosts and the package registries (npm, PyPI, Go proxy, crates.io, RubyGems) to every egress allowlist. Read at load time.",
+          "title": "Egress defaults",
+          "type": "boolean",
+          "x-itervox-group": "Core"
+        },
         "inline_input": {
           "default": false,
           "description": "When an agent asks for input, the tracker issue is the only place to reply (the dashboard reply box is hidden).",

@@ -68,6 +68,9 @@ type tmuxSessions struct {
 	// the sandbox mechanism, nil meaning agent.DetectIsolation.
 	isolation       string
 	isolationDetect func() (agent.IsolationMechanism, error)
+	// egress is agent.egress: a session whose profile resolves to
+	// allowlist is refused (sessionIsolation).
+	egress string
 	// stopWait is how long a graceful stop waits for the CLI to quit on
 	// its interrupt (<= 0: defaultStopWait).
 	stopWait time.Duration
@@ -337,9 +340,17 @@ func (t *tmuxSessions) start(req server.NewSessionRequest) (orchestrator.AgentSe
 // sessionIsolation resolves the sandbox a session's profile asks for
 // (#258): nil for isolation none, an error when no sandbox works here.
 // The session's command line goes through agent.IsolateShellCommand.
+//
+// A profile with egress: allowlist is refused: a tmux session outlives any
+// one request, and its proxy would have no owner to stop it. Refusing is
+// fail closed; the session never starts with an open network.
 func (t *tmuxSessions) sessionIsolation(profile config.AgentProfile, cwd string) (*agent.Isolation, error) {
-	return agent.PrepareIsolation(config.ResolveIsolation(profile.Isolation, t.isolation),
-		agent.RunIsolationInputs(cwd, t.workspaceRoot, t.projectRoot, profile), t.isolationDetect)
+	mode := config.ResolveIsolation(profile.Isolation, t.isolation)
+	if mode == config.IsolationProcess && config.ResolveEgressMode(profile.Egress, t.egress) == config.EgressAllowlist {
+		return nil, fmt.Errorf("%w: egress: allowlist is not supported for New session yet; use a profile with egress: off",
+			agent.ErrIsolationUnavailable)
+	}
+	return agent.PrepareIsolation(mode, agent.RunIsolationInputs(cwd, t.workspaceRoot, t.projectRoot, profile), t.isolationDetect)
 }
 
 // kill kills one of itervox's tmux sessions at once (DELETE, the same as

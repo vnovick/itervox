@@ -11,6 +11,7 @@ internal/metrics/counters.go ClientErrorCount | counter reader used by internal/
 internal/metrics/counters.go WebhookCount | counter reader used by internal/tracker/webhook and internal/tracker/store tests (cross-package)
 internal/metrics/counters.go StorePullCount | counter reader used by internal/tracker/store tests (cross-package)
 internal/metrics/counters.go GuardrailBlockCount | counter reader used by internal/orchestrator and cmd/itervox guardrail tests (cross-package)
+internal/metrics/counters.go EgressDecisionCount | counter reader used by internal/egress tests (cross-package)
 internal/tracker/ratelimit_gate.go RateLimitGate.Clear | used by cmd/itervox outbox flusher tests to reset the shared gate (cross-package)
 internal/tracker/ratelimit_retry.go HasWriteIntent | used by internal/tracker/linear tests to assert request intent (cross-package)
 internal/tracker/ratelimit_retry.go HasReadIntent | used by internal/tracker/linear tests to assert request intent (cross-package)
@@ -21,3 +22,6 @@ internal/agent/isolation_sandboxexec.go sandboxExec.Wrap | macOS sandbox-exec me
 internal/agent/isolation_sandboxexec.go sandboxExecProfile | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
 internal/agent/isolation_sandboxexec.go sbplString | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
 internal/agent/isolation_sandboxexec.go regexQuote | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go sandboxExec.EgressAvailable | macOS sandbox-exec egress (network allowlist), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go sandboxExec.EgressBridge | macOS sandbox-exec egress (network allowlist), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/agent/isolation_sandboxexec.go writeSandboxExecEgress | macOS sandbox-exec egress (network allowlist), reached via isolation_platform_darwin.go; deadcode analyses the linux build

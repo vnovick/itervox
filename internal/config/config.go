@@ -473,6 +473,18 @@ type AgentProfile struct {
 	// IsolationExtraDeny are absolute paths (or ~/...) added to the
 	// sandbox's unreadable list. Used only with isolation "process".
 	IsolationExtraDeny []string
+	// Egress closes this profile's network but for an allowlist (with
+	// isolation "process" only): "allowlist", or "off". Empty inherits
+	// agent.egress. See internal/config/egress.go. YAML key: egress.
+	// Load-time only: the dashboard profile editor carries it over.
+	Egress string
+	// EgressAllow are hosts (host, host:port, *.domain) this profile may
+	// reach on top of agent.egress_allow and the defaults. YAML key:
+	// egress_allow.
+	EgressAllow []string
+	// EgressDefaults overrides agent.egress_defaults for this profile; nil
+	// inherits it. YAML key: egress_defaults.
+	EgressDefaults *bool
 	// Push is who publishes this profile's branch: "agent" (the agent
 	// pushes and opens its pull request, as before) or "daemon" (patches
 	// only: the agent gets no forge credentials, its push and pull-request
@@ -739,6 +751,18 @@ type AgentConfig struct {
 	// their own (#258): "none" (the default, no sandbox) or "process" (the
 	// agent subprocess runs inside an OS sandbox). Read-only after startup.
 	Isolation string
+	// Egress is the default egress for profiles that do not set their own
+	// (#258 follow-up): "off" (the default) or "allowlist" (with isolation
+	// "process": the agent reaches only allowlisted hosts through a
+	// per-run proxy). Read-only after startup.
+	Egress string
+	// EgressAllow are hosts every egress run may reach, on top of the
+	// defaults. Read-only after startup.
+	EgressAllow []string
+	// EgressDefaults adds the backend's model API hosts and the package
+	// registries (EgressModelHosts, EgressRegistryHosts) to every egress
+	// allowlist. Default true. Read-only after startup.
+	EgressDefaults bool
 	// Push is the default push mode for profiles that do not set their
 	// own: "agent" (the default) or "daemon" (patches only; see
 	// AgentProfile.Push). Read-only after startup.
@@ -1179,6 +1203,14 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	if err := ValidateIsolationMode("agent.isolation", cfg.Agent.Isolation, false); err != nil {
 		return nil, err
 	}
+	cfg.Agent.Egress = strings.TrimSpace(strField(agent, "egress", EgressOff))
+	if err := ValidateEgressMode("agent.egress", cfg.Agent.Egress, false); err != nil {
+		return nil, err
+	}
+	if cfg.Agent.EgressAllow, err = parseEgressAllow(agent, "agent.egress_allow"); err != nil {
+		return nil, err
+	}
+	cfg.Agent.EgressDefaults = boolField(agent, "egress_defaults", true)
 	cfg.Agent.Push = strings.TrimSpace(strField(agent, "push", PushAgent))
 	if err := ValidatePushMode("agent.push", cfg.Agent.Push, false); err != nil {
 		return nil, err
@@ -1190,6 +1222,9 @@ func fromWorkflow(wf *workflow.Workflow, workflowPath string) (*Config, error) {
 	cfg.Agent.Profiles = profiles
 	// #258: process isolation is local only for now.
 	if err := ValidateIsolationHosts(cfg.Agent); err != nil {
+		return nil, err
+	}
+	if err := ValidateEgress(cfg.Agent); err != nil {
 		return nil, err
 	}
 	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
@@ -1593,6 +1628,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			if err != nil {
 				return nil, err
 			}
+			eg, err := profileEgressFields(m, name)
+			if err != nil {
+				return nil, err
+			}
 			profiles[name] = AgentProfile{
 				Command:             cmd,
 				SoulFile:            soulFile,
@@ -1611,6 +1650,9 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 				Isolation:           iso.Isolation,
 				IsolationExtraWrite: iso.IsolationExtraWrite,
 				IsolationExtraDeny:  iso.IsolationExtraDeny,
+				Egress:              eg.Egress,
+				EgressAllow:         eg.EgressAllow,
+				EgressDefaults:      eg.EgressDefaults,
 				Push:                push,
 			}
 			continue
@@ -1639,6 +1681,10 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 		if err != nil {
 			return nil, err
 		}
+		eg, err := profileEgressFields(m, name)
+		if err != nil {
+			return nil, err
+		}
 		profiles[name] = AgentProfile{
 			Command:             cmd,
 			Prompt:              strField(m, "prompt", ""),
@@ -1654,6 +1700,9 @@ func parseAgentProfiles(raw map[string]any, schemaVersion int, workflowPath stri
 			Isolation:           iso.Isolation,
 			IsolationExtraWrite: iso.IsolationExtraWrite,
 			IsolationExtraDeny:  iso.IsolationExtraDeny,
+			Egress:              eg.Egress,
+			EgressAllow:         eg.EgressAllow,
+			EgressDefaults:      eg.EgressDefaults,
 			Push:                push,
 		}
 	}

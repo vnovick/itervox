@@ -58,6 +58,14 @@ func (w *watcher) eventText(ev server.FeedEvent) (line, command string) {
 		if pl.Kind != "" {
 			what += " (" + pl.Kind + ")"
 		}
+	case "egress_refused":
+		what, colour = "egress refused", sgrRed
+		if pl.Reason != "" {
+			what += ": " + pl.Reason
+		}
+		if pl.Kind != "" {
+			what += " (" + pl.Kind + ")"
+		}
 	case "guardrail_approved":
 		what = "held command approved"
 	case "lesson_proposed":

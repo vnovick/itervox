@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/vnovick/itervox/internal/egress"
 )
 
 // bubblewrap confines an agent with bwrap on Linux (#258): a read-only bind
@@ -15,7 +17,12 @@ import (
 // read-only, and an empty read-only tmpfs (directories) or /dev/null (files)
 // over each denied path. No PID, network or user-visible namespace changes
 // beyond the mount namespace: the agent keeps the daemon's process group,
-// so the group kill on cancel still reaches it, and its network.
+// so the group kill on cancel still reaches it, and its network. With
+// egress on (p.Egress) it also gets new network and pid namespaces: only a
+// loopback interface, on which the egress forwarder (started first inside
+// the sandbox) bridges the proxy and the daemon's API port; the pid
+// namespace ends the forwarder with the agent. Process groups are not
+// namespaced, so the group kill still reaches every process in it.
 type bubblewrap struct {
 	// path is the bwrap binary; empty means look it up on PATH.
 	path string
@@ -59,9 +66,43 @@ func (b bubblewrap) Wrap(argv []string, p IsolationPolicy) ([]string, error) {
 		return nil, fmt.Errorf("%w: bwrap is not installed", ErrIsolationUnavailable)
 	}
 	out := append([]string{bin}, bubblewrapArgs(p)...)
+	if p.Egress != nil {
+		if p.Egress.Forwarder == "" || len(p.Egress.Bridges) == 0 {
+			return nil, fmt.Errorf("%w: egress: no forwarder resolved for this run", ErrIsolationUnavailable)
+		}
+		out = append(out, bubblewrapEgressArgs...)
+		argv = egress.ForwarderArgv(p.Egress.Forwarder, p.Egress.Bridges, argv)
+	}
 	out = append(out, "--")
 	return append(out, argv...), nil
 }
+
+// bubblewrapEgressArgs close the network (egress on): new network and pid
+// namespaces.
+var bubblewrapEgressArgs = []string{"--unshare-net", "--unshare-pid"}
+
+// EgressAvailable probes the egress namespaces, which a kernel or a
+// container may refuse even where the mount namespace works.
+func (b bubblewrap) EgressAvailable() error {
+	bin, err := b.binary()
+	if err != nil {
+		return errors.New("bwrap is not installed")
+	}
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		return fmt.Errorf("cannot find true for the probe: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	args := append(bubblewrapArgs(IsolationPolicy{}), bubblewrapEgressArgs...)
+	args = append(args, "--", truePath)
+	if out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("bwrap cannot create network and pid namespaces here (%v): %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (bubblewrap) EgressBridge() bool { return true }
 
 // bubblewrapArgs returns the bwrap options enforcing p, without the binary
 // and the command. Rules are applied shallowest first so the deeper one

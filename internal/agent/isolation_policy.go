@@ -65,6 +65,9 @@ type IsolationInputs struct {
 	ExtraDeny  []string
 	// PatchOut is push: daemon: IsolationPatchOutHomeDeny is denied too.
 	PatchOut bool
+	// Egress, when set, closes the network but for its allowlist
+	// (agent.egress: allowlist); PrepareIsolation starts the proxy.
+	Egress *EgressInputs
 }
 
 // IsolationPolicy is what a sandbox enforces. Every path is absolute,
@@ -80,6 +83,9 @@ type IsolationPolicy struct {
 	Read []string
 	// Deny is neither readable nor writable.
 	Deny []string
+	// Egress, when set, is the network policy: no network but the proxy
+	// (and the bridged local ports). Nil leaves the network open.
+	Egress *EgressPolicy
 }
 
 // RunIsolationInputs fills IsolationInputs for a run of profile in

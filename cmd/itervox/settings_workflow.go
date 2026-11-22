@@ -38,6 +38,9 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			Isolation:           strings.TrimSpace(profile.Isolation),
 			IsolationExtraWrite: profile.IsolationExtraWrite,
 			IsolationExtraDeny:  profile.IsolationExtraDeny,
+			Egress:              strings.TrimSpace(profile.Egress),
+			EgressAllow:         profile.EgressAllow,
+			EgressDefaults:      profile.EgressDefaults,
 			Push:                strings.TrimSpace(profile.Push),
 		}
 	}

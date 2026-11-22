@@ -448,7 +448,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// #258: process isolation, resolved once per run before anything runs
 	// in the workspace (hooks are not sandboxed, but must not run for a run
 	// that cannot start). No sandbox available means no run.
-	iso, isoErr := o.prepareRunIsolation(profilesSnap[profileName], workerHost, wsPath)
+	iso, isoErr := o.prepareRunIsolation(ctx, profilesSnap[profileName], workerHost, wsPath, backend, agentCommand, issue.Identifier, runLogID)
 	if isoErr != nil {
 		slog.Warn("worker: isolation unavailable; run not started",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName, "error", isoErr)
@@ -459,6 +459,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		return
 	}
 	if iso != nil {
+		// Egress: the run's proxy lives until every turn, the verify gate
+		// and the daemon's push are done.
+		defer iso.Close()
 		ctx = agent.WithIsolation(ctx, iso)
 		o.reportRunIsolation(ctx, issue, runLogID, iso)
 	}

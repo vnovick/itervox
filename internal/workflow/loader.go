@@ -249,6 +249,12 @@ type ProfileEntry struct {
 	Isolation           string
 	IsolationExtraWrite []string
 	IsolationExtraDeny  []string
+	// Egress is the profile's egress ("" omits the key), EgressAllow its
+	// egress_allow list and EgressDefaults its egress_defaults (nil omits
+	// it).
+	Egress         string
+	EgressAllow    []string
+	EgressDefaults *bool
 	// Push is the profile's push mode ("" omits the key; "daemon" is
 	// patches only).
 	Push string
@@ -410,6 +416,13 @@ func MutateProfilesBlock(profiles map[string]ProfileEntry) Mutator {
 				}
 				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_write:", lvl4, entry.IsolationExtraWrite)
 				replacement = appendQuotedList(replacement, lvl3+"isolation_extra_deny:", lvl4, entry.IsolationExtraDeny)
+				if entry.Egress != "" {
+					replacement = append(replacement, lvl3+"egress: "+strconv.Quote(entry.Egress))
+				}
+				replacement = appendQuotedList(replacement, lvl3+"egress_allow:", lvl4, entry.EgressAllow)
+				if entry.EgressDefaults != nil {
+					replacement = append(replacement, lvl3+"egress_defaults: "+strconv.FormatBool(*entry.EgressDefaults))
+				}
 				if entry.Push != "" {
 					replacement = append(replacement, lvl3+"push: "+strconv.Quote(entry.Push))
 				}

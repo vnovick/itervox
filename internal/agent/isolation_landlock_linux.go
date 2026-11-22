@@ -22,18 +22,17 @@ import (
 // <policy-json> <argv...>` restricts itself and execs argv (#258).
 const LandlockEntrypoint = "__itervox-landlock-exec"
 
-// landlockHelperReady is set by RunIsolationHelper: only a binary that
+// landlockHelperReady is set by RunIsolationHelper (runLandlockHelper): only a binary that
 // handles LandlockEntrypoint at startup may re-execute itself as the
 // launcher. Any other binary (a test binary of another package) reports
 // Landlock unavailable instead of running its own main with that argument.
 var landlockHelperReady atomic.Bool
 
-// RunIsolationHelper must be called first thing in main (and in a test
-// binary's TestMain). When args name LandlockEntrypoint it applies the
-// policy and execs the command, returning only on failure with the exit
-// code to use (ok=true); otherwise it marks this binary as able to act as
-// the launcher and returns ok=false.
-func RunIsolationHelper(args []string) (code int, ok bool) {
+// runLandlockHelper is RunIsolationHelper's Landlock part: when args name
+// LandlockEntrypoint it applies the policy and execs the command, returning
+// only on failure with the exit code to use (ok=true); otherwise it marks
+// this binary as able to act as the launcher and returns ok=false.
+func runLandlockHelper(args []string) (code int, ok bool) {
 	if len(args) > 1 && args[1] == LandlockEntrypoint {
 		return landlockExecMain(args[2:]), true
 	}
@@ -73,6 +72,10 @@ func (l landlock) Available() error {
 }
 
 func (l landlock) Wrap(argv []string, p IsolationPolicy) ([]string, error) {
+	if p.Egress != nil {
+		// Fail closed: Landlock cannot restrict connections by host.
+		return nil, fmt.Errorf("%w: landlock cannot enforce egress: allowlist", ErrIsolationUnavailable)
+	}
 	exe := l.exe
 	if exe == "" {
 		var err error

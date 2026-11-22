@@ -141,7 +141,7 @@ func (c *CodexRunner) RunTurn(
 			// fd 3, not stdin: a login profile that reads stdin cannot eat
 			// the prompt (see ClaudeRunner.RunTurn).
 			argv := []string{shell, "-lc",
-				RunEnvFrom(ctx).shellPrefix() + buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode)}
+				turnEnv(ctx).shellPrefix() + buildCodexShellCmd(command, sessionID, workspacePath, localPromptRedirect, permissionMode)}
 			if cmd, err = agentCommand(ctx, turnCtx, argv); err != nil { // #258
 				return TurnResult{Failed: true, FailureText: err.Error()}, err
 			}
@@ -158,9 +158,9 @@ func (c *CodexRunner) RunTurn(
 	// travels in the shell command instead (see above).
 	var runEnv []string
 	if workerHost == "" {
-		runEnv = RunEnvFrom(ctx).direct() // #204; through a shell, PATH also travels in the command line
+		runEnv = turnEnv(ctx).direct() // #204; through a shell, PATH also travels in the command line
 	}
-	cmd.Env = RunEnvFrom(ctx).strip(itervoxAgentEnv(runEnv...))
+	cmd.Env = turnEnv(ctx).strip(itervoxAgentEnv(runEnv...))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

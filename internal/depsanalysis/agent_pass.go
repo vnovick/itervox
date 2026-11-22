@@ -83,6 +83,10 @@ type AgentPassInput struct {
 	// workspace root, is hidden), or not at all when no sandbox works.
 	DefaultIsolation string
 	ProjectDir       string
+	// Egress is the analyzer's egress (agent.egress: allowlist), resolved
+	// by the caller; nil leaves the sandbox's network open. Each turn
+	// starts its own proxy and stops it when the turn ends.
+	Egress *agent.EgressInputs
 }
 
 // RunAgentPass invokes the analyzer profile against the supplied issue set
@@ -99,11 +103,16 @@ func RunAgentPass(ctx context.Context, input AgentPassInput) ([]InferredEdge, er
 		return nil, fmt.Errorf("depsanalysis: profile %q has no command", input.ProfileName)
 	}
 
-	iso, err := agent.PrepareIsolation(config.ResolveIsolation(input.Profile.Isolation, input.DefaultIsolation),
-		agent.RunIsolationInputs("", input.WorkspacePath, input.ProjectDir, input.Profile), nil)
+	mode := config.ResolveIsolation(input.Profile.Isolation, input.DefaultIsolation)
+	in := agent.RunIsolationInputs("", input.WorkspacePath, input.ProjectDir, input.Profile)
+	if mode == config.IsolationProcess {
+		in.Egress = input.Egress
+	}
+	iso, err := agent.PrepareIsolation(mode, in, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrAnalyzerFailed, err)
 	}
+	defer iso.Close()
 	ctx = agent.WithIsolation(ctx, iso)
 
 	prompt := buildAnalyzerPrompt(input.Profile, input.RulesBlock, input.Issues, input.TrackerEdges)
