@@ -31,6 +31,8 @@
 package guardrails
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,7 +123,9 @@ type Policy struct {
 	Token     string `json:"token,omitempty"`
 	// PreApproved are commands, in their display form, that the operator
 	// approved before the run started (`itervox run --approve`, #252): a
-	// matching approval command runs without asking. Empty in the daemon.
+	// matching approval command runs once without asking (spendPreApproval);
+	// a second one is an ordinary approval command again. Empty in the
+	// daemon.
 	PreApproved []string `json:"pre_approved,omitempty"`
 	// Lanes is guardrails.lanes: which changed files hold a push for a
 	// human (human) or mark it for a second-opinion review
@@ -190,6 +194,31 @@ func (p Policy) preApproved(display string) bool {
 	return want != "" && slices.ContainsFunc(p.PreApproved, func(c string) bool {
 		return strings.Join(strings.Fields(c), " ") == want
 	})
+}
+
+// preApprovedSpentDir, in the runtime directory, holds one marker per
+// pre-approved command that already ran in this run.
+const preApprovedSpentDir = "pre-approved-spent"
+
+// spendPreApproval reports whether display is pre-approved for this run
+// and not spent yet, and spends it: the marker is created exclusively, so
+// of any number of shims running the same command, one runs it. Any error
+// counts as spent (fail closed: the command then needs an approval).
+func (p Policy) spendPreApproval(display string) bool {
+	if !p.preApproved(display) || p.Dir == "" {
+		return false
+	}
+	dir := filepath.Join(p.Dir, preApprovedSpentDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false
+	}
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(display), " ")))
+	f, err := os.OpenFile(filepath.Join(dir, hex.EncodeToString(sum[:])), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
 }
 
 // protected reports whether branch may never be pushed to or merged into.

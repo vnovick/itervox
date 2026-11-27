@@ -372,6 +372,9 @@ export const HistoryRowSchema = z.object({
   promptParts: PromptPartsSchema.optional(),
   // #218 — the task-type playbook the run was given; absent when none.
   playbook: z.string().optional(),
+  // Approval integrity — governing files / config keys that changed while
+  // the run ran (names only); absent when nothing changed.
+  policyChanged: z.array(z.string()).optional(),
   // Operator messages delivered to the run (redacted, bounded).
   steers: z.array(RunSteerSchema).optional(),
   steersDropped: z.number().optional(),
@@ -616,6 +619,17 @@ export const ConfigInvalidStatusSchema = z.object({
   error: z.string(),
   retryAttempt: z.number(),
   retryAt: z.string().optional(),
+});
+
+// PolicyChangedStatusSchema mirrors server.PolicyChangedStatus (Go): a
+// change to a file that governs agents (WORKFLOW.md, settings and rules
+// layers, playbooks, profiles) seen while runs were active. Names only.
+export const PolicyChangedStatusSchema = z.object({
+  at: z.string(),
+  source: z.string(),
+  files: z.array(z.string()).nullable().optional(),
+  runIds: z.array(z.string()).nullable().optional(),
+  possiblyAgent: z.boolean().optional(),
 });
 
 export const InputRequiredEntrySchema = z.object({
@@ -1139,6 +1153,9 @@ export const StateSnapshotSchema = z.object({
   // most recent reload tick failed and the daemon is exponentially backing
   // off retries on the last-valid config (T-26).
   configInvalid: ConfigInvalidStatusSchema.optional(),
+  // Approval integrity — the latest governing-file change seen while runs
+  // were active (the policy-change banner). Absent when none was seen.
+  policyChanged: PolicyChangedStatusSchema.optional(),
   // CORE-044 — most recent tracker failure (poll outage/rate limit, or a
   // failed failed-state move). Absent when none is recorded and on snapshots
   // from daemons predating the field.
@@ -1360,6 +1377,7 @@ export type DependencyAttentionRow = z.infer<typeof DependencyAttentionRowSchema
 export type DepsAnalyzeJob = z.infer<typeof DepsAnalyzeJobSchema>;
 export type DepsAnalyzeEnqueueResponse = z.infer<typeof DepsAnalyzeEnqueueResponseSchema>;
 export type ConfigInvalidStatus = z.infer<typeof ConfigInvalidStatusSchema>;
+export type PolicyChangedStatus = z.infer<typeof PolicyChangedStatusSchema>;
 export type OutboxEntryRow = z.infer<typeof OutboxEntryRowSchema>;
 export type FailureRow = z.infer<typeof FailureRowSchema>;
 

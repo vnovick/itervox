@@ -48,6 +48,14 @@ type FeedPayload struct {
 	Until    time.Time `json:"until,omitzero"`
 	// Count is the line comments of an operator PR review (#238).
 	Count int `json:"count,omitempty"`
+	// Source, Files, RunIDs and PossiblyAgent describe a policy_changed
+	// event: who saw it, the governing files and config keys (names
+	// only), the runs active, and whether a running unsandboxed agent
+	// could have made it.
+	Source        string   `json:"source,omitempty"`
+	Files         []string `json:"files,omitempty"`
+	RunIDs        []string `json:"runIds,omitempty"`
+	PossiblyAgent bool     `json:"possiblyAgent,omitempty"`
 }
 
 // FeedEvent is one feed entry of GET /api/v1/feed.

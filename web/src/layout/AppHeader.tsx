@@ -5,6 +5,7 @@ import { fmtMs } from '../utils/format';
 import { useStatusSummary } from '../hooks/useStatusSummary';
 import { useConnectionState } from '../hooks/useConnectionState';
 import { SchemaDriftBanner } from '../components/itervox/SchemaDriftBanner';
+import { PolicyChangedBanner } from '../components/itervox/PolicyChangedBanner';
 import { DemoModeBadge } from '../components/itervox/DemoModeBadge';
 import { HubProjectSwitcher } from '../components/itervox/HubProjectSwitcher';
 import { useUIStore } from '../store/uiStore';
@@ -74,6 +75,9 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
           </span>
         </div>
       )}
+      {/* Policy-change banner — a file that governs agents changed while
+          runs were active (operator and admin only; dismissible). */}
+      <PolicyChangedBanner />
       {/* Schema-drift banner — CORE-047. */}
       <SchemaDriftBanner />
       {/* Stale-data banner — CORE-023. A snapshot can go stale in place (the

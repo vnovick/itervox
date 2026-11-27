@@ -25,6 +25,7 @@ func (o *Orchestrator) prepareRunIsolation(profile config.AgentProfile, workerHo
 	}
 	in := agent.RunIsolationInputs(wsPath, o.cfg.Workspace.Root, filepath.Dir(o.cfg.WorkflowPath), profile)
 	in.PatchOut = config.ResolvePush(profile.Push, o.cfg.Agent.Push) == config.PushDaemon
+	in.WorkflowFile = o.cfg.WorkflowPath
 	return agent.PrepareIsolation(mode, in, o.isolationDetect)
 }
 

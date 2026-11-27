@@ -65,6 +65,14 @@ confined than what you asked for.
   workspace is put back);
 - anything in `isolation_extra_deny`.
 
+**Never write** the daemon's live policy, even when a writable path (the
+workspace, the temp directory, `isolation_extra_write`) contains it: the
+project's `WORKFLOW.md`, `.itervox/settings.jsonc`,
+`.itervox/settings.local.jsonc`, `.itervox/rules.json`,
+`.itervox/rules.local.json` and `.referee.yml`, and `~/.itervox/settings.jsonc`
+and `~/.itervox/rules.json`. They stay readable. The agent's own worktree
+copies of these files are other paths and stay writable.
+
 Paths that do not exist when the run starts are left out. Both extra lists
 take absolute paths or paths starting with `~/`.
 
@@ -174,6 +182,7 @@ Isolation
   sandbox: bubblewrap
   writable: <workspace>, <worktree git dir>, <shared git objects, refs, logs>, <temp dir>, ~/.claude, ~/.claude.json, ~/.codex, ~/.cache, ~/.local/share/opencode, ~/.local/state/opencode, ~/.config/opencode, ~/.cursor, ~/.config/cursor (+ isolation_extra_write)
   unreadable: ~/.ssh, ~/.aws, …, every other workspace under ~/.itervox/workspaces/app-1a2b3c4d (+ isolation_extra_deny)
+  never writable (live policy, even inside a writable path): /work/app/WORKFLOW.md, /work/app/.itervox/settings.jsonc, …, ~/.itervox/rules.json
   network: allowed; hooks: not sandboxed
 ```
 

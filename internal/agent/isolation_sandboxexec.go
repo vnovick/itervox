@@ -68,6 +68,8 @@ func sandboxExecProfile(p IsolationPolicy) string {
 			fmt.Fprintf(&b, "(allow file-read* file-write* %s)\n", filter)
 		case ruleRead:
 			fmt.Fprintf(&b, "(allow file-read* %s)\n", filter)
+		case ruleProtect:
+			fmt.Fprintf(&b, "(allow file-read* %s)\n(deny file-write* %s)\n", filter, filter)
 		case ruleDeny:
 			fmt.Fprintf(&b, "(deny file-read* file-write* %s)\n", filter)
 			if r.dir {

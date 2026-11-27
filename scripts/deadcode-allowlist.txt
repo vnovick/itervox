@@ -21,3 +21,4 @@ internal/agent/isolation_sandboxexec.go sandboxExec.Wrap | macOS sandbox-exec me
 internal/agent/isolation_sandboxexec.go sandboxExecProfile | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
 internal/agent/isolation_sandboxexec.go sbplString | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
 internal/agent/isolation_sandboxexec.go regexQuote | macOS sandbox-exec mechanism (#258), reached via isolation_platform_darwin.go; deadcode analyses the linux build
+internal/workflow/selfwrite.go SelfWriteCount | config-write counter read by the internal/orchestrator and cmd/itervox approval-integrity tests (cross-package)

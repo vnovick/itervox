@@ -2098,6 +2098,9 @@ func (o *Orchestrator) deliverExit(ctx context.Context, issue domain.Issue, ev O
 	markFinishing(ctx)
 	ev.RunID = runIDFrom(ctx)
 	settleRunUsage(ctx, ev.RunEntry) // #136: the run's final usage
+	if ev.RunEntry != nil {          // what governs the run, compared with its start (off the loop)
+		ev.RunEntry.PolicyChanged = o.runPolicyChanged(runFrom(ctx))
+	}
 	// If the worker context is already cancelled (e.g. user-triggered pause via
 	// CancelIssue), the exit event must still reach the event loop so that
 	// PausedIdentifiers is set correctly.  Fall back to a background-derived

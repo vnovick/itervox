@@ -181,6 +181,8 @@ type OrchestratorEvent struct { //nolint:revive
 	deferReply chan bool
 	// feed is the payload of EventFeedRecorded (#213).
 	feed *FeedEvent
+	// policyFiles is the payload of EventPolicyFilesChanged.
+	policyFiles []string
 	// runContext is the payload of EventRunContext (#215).
 	runContext *runContextUpdate
 	// dispatchPause is the payload of EventSetDispatchPause (#213).
@@ -461,6 +463,11 @@ type RunEntry struct {
 	// it (copyRunningMap).
 	Steers        []RunSteer
 	SteersDropped int
+	// PolicyChanged names the governing files and config keys that changed
+	// while the run ran (policy_fingerprint.go): computed by the worker at
+	// its exit, set once by the exit handler. Names only. Never written
+	// through.
+	PolicyChanged []string
 	// ContinuedFromReview marks a worker run that was given an operator
 	// review queued while no run was live; ReviewComments counts its line
 	// comments. Set once at dispatch (startRun).
@@ -534,6 +541,12 @@ type CompletedRun struct {
 	// and bounded; SteersDropped counts older ones the bound let go.
 	Steers        []RunSteer `json:"steers,omitempty"`
 	SteersDropped int        `json:"steersDropped,omitempty"`
+	// PolicyChanged names the files that govern agents (WORKFLOW.md, the
+	// settings and rules layers, playbooks, profiles, the referee policy)
+	// and the config keys of the run's profile ("config:agent.push") that
+	// changed between the run's start and its exit. Names only; empty when
+	// nothing changed or the run recorded no fingerprint.
+	PolicyChanged []string `json:"policyChanged,omitempty"`
 	// BranchName is the branch the run worked on (#201): the branch its exit
 	// reported, else the issue's worktree branch. PRURL is the PR the run
 	// created or continued; empty when it reported none. Repo Analysis
@@ -811,6 +824,11 @@ type State struct {
 	// failures; reset by a successful poll. Drives the Warn→Error escalation
 	// at PollFailureEscalationThreshold and the /ready probe (CORE-043).
 	ConsecutivePollFailures int
+	// PolicyBaseline is the governing-file fingerprint the latest dispatch
+	// read (policy_alert.go): the next dispatch compares its own with it,
+	// so a change made while runs are active is raised. Session-scoped, not
+	// persisted.
+	PolicyBaseline map[string]string
 	// RecentFailures is the bounded (RecentFailuresCap) ring of operator-
 	// relevant failures, oldest first by RecordedAt (CORE-046). Appended only
 	// by the event loop — in-loop producers call appendRecentFailure, off-loop

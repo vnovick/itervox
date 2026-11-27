@@ -2147,6 +2147,9 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventFeedRecorded: // #213
 		o.applyFeedRecorded(&state, ev)
 
+	case EventPolicyFilesChanged: // approval integrity
+		o.applyPolicyFilesChanged(&state, ev)
+
 	case EventRunContext: // #215
 		o.applyRunContext(&state, ev.runContext)
 
@@ -2232,6 +2235,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			return state
 		}
 		noteRunExit(liveEntry, ev.RunEntry) // #201: branch and PR for history
+		o.notePolicyChangedOnExit(&state, liveEntry, ev)
 		if ev.RunEntry.TerminalReason != TerminalCanceledByReconciliation {
 			// Reconcile's own stop event precedes the run's exit; only the
 			// run's exit closes its record.
@@ -3147,6 +3151,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.Playbook = liveEntry.Playbook           // #218
 		run.Steers = slices.Clone(liveEntry.Steers) // #186
 		run.SteersDropped = liveEntry.SteersDropped
+		run.PolicyChanged = liveEntry.PolicyChanged
 		run.PRURL = liveEntry.PRURL                 // #201
 		run.ReviewVerdict = liveEntry.reviewVerdict // #201
 		run.ContinuedFromReview = liveEntry.ContinuedFromReview

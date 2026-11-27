@@ -68,8 +68,8 @@ func (iso *Isolation) Describe() string {
 	if iso == nil {
 		return "isolation: none"
 	}
-	return fmt.Sprintf("isolation: process via %s; write: %s; read-only re-exposed: %s; denied: %s; network: allowed",
-		iso.Name(), listOrNone(iso.Policy.Write), listOrNone(iso.Policy.Read), listOrNone(iso.Policy.Deny))
+	return fmt.Sprintf("isolation: process via %s; write: %s; read-only re-exposed: %s; protected policy files: %s; denied: %s; network: allowed",
+		iso.Name(), listOrNone(iso.Policy.Write), listOrNone(iso.Policy.Read), listOrNone(iso.Policy.Protect), listOrNone(iso.Policy.Deny))
 }
 
 func listOrNone(paths []string) string {

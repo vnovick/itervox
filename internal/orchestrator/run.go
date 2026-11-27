@@ -78,6 +78,11 @@ type runHandle struct {
 	// by startRun before the worker starts and never changed.
 	review        *ReviewContinuation
 	noTrackerMove bool
+	// profile and policy are the run's profile and the policy fingerprint
+	// startRun recorded (policy_fingerprint.go); the worker recomputes it at
+	// its exit. Set before the worker starts and never changed.
+	profile string
+	policy  policyFingerprint
 }
 
 // runUsage is a run's cumulative usage at the end of its latest turn (#136).
@@ -173,6 +178,11 @@ func (o *Orchestrator) startRun(ctx context.Context, state *State, entry *RunEnt
 	entry.Playbook, entry.PlaybookSource = h.playbook.Name(), playbookSource(h.playbook)
 	// #186: the prompt version this run is dispatched with.
 	entry.PromptDigest, entry.PromptParts = o.runPromptComponents(entry, h.rules, h.memory, h.playbook.Playbook.Block(), h.taskBlock).digest()
+	// Approval integrity: what governs the run now, to compare at its exit;
+	// a change since the previous dispatch is raised while runs are active.
+	h.profile = entry.ProfileName
+	h.policy = o.runPolicyFingerprint(entry.ProfileName)
+	o.observeDispatchPolicy(state, entry, h.policy.files)
 	if state != nil {
 		if state.LatestRun == nil {
 			state.LatestRun = map[string]RunRecord{}

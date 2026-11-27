@@ -11,9 +11,9 @@ import (
 
 // bubblewrap confines an agent with bwrap on Linux (#258): a read-only bind
 // of /, /dev bound read-write (so /dev/null and terminals work), the
-// writable paths bound read-write, the readable re-exposures bound
-// read-only, and an empty read-only tmpfs (directories) or /dev/null (files)
-// over each denied path. No PID, network or user-visible namespace changes
+// writable paths bound read-write, the readable re-exposures and the
+// protected policy files bound read-only, and an empty read-only tmpfs
+// (directories) or /dev/null (files) over each denied path. No PID, network or user-visible namespace changes
 // beyond the mount namespace: the agent keeps the daemon's process group,
 // so the group kill on cancel still reaches it, and its network.
 type bubblewrap struct {
@@ -75,7 +75,7 @@ func bubblewrapArgs(p IsolationPolicy) []string {
 		switch r.kind {
 		case ruleWrite:
 			args = append(args, "--bind", r.path, r.path)
-		case ruleRead:
+		case ruleRead, ruleProtect:
 			args = append(args, "--ro-bind", r.path, r.path)
 		case ruleDeny:
 			if r.dir {

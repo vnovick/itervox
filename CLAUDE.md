@@ -384,6 +384,23 @@ only the event loop mutates them.
   Payloads are structured and redacted — never agent output or prompt text.
   The ring is trimmed only by re-slicing from the front, so `State.Clone`
   shares it (allowlisted); never write through an index or reslice to `[:0]`.
+- **Policy fingerprint / policy changes** (approval integrity,
+  `internal/orchestrator/policy_fingerprint.go`, `policy_alert.go`):
+  `startRun` records on the run handle hashes of the governing files
+  (WORKFLOW.md, settings and rules layers, playbooks, `.itervox/agents/**`,
+  the profile's SOUL/INSTRUCTIONS, `.referee.yml`) and of the profile's
+  push/isolation/permission/actions/command/guardrails/lanes (hashes only);
+  the worker recomputes it in `deliverExit` (off the loop) and the exit
+  carries the changed names (`RunEntry.PolicyChanged` →
+  `CompletedRun.PolicyChanged`, keyed by run ID). `State.PolicyBaseline`
+  (event-loop, session-scoped) is the latest dispatch's file fingerprint; a
+  difference at the next dispatch, or a config-watcher report
+  (`NotePolicyFilesChanged` → `EventPolicyFilesChanged`), while runs are
+  active is logged at Warn, fed as `policy_changed` and handed to the
+  `SetPolicyChangeHook` hook (cmd/itervox: the dashboard banner,
+  `StateSnapshot.PolicyChanged`, process state like the config-invalid
+  banner). With `isolation: process`, the live policy files a writable path
+  reaches are `IsolationPolicy.Protect` (read-only).
 - `DispatchPaused` (#213) is the daemon-wide dispatch pause, set only by
   `EventSetDispatchPause` (`PauseDispatch` / `ResumeDispatch`, a loop
   round-trip) and cleared at its `Until` by `expireDispatchPause` (tick and
@@ -443,6 +460,24 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   persisted nor fed to input-required automations, and they are dropped when
   the run exits. `guardrails.Approvals` is concurrency-safe and is not
   `State`.
+- **An approval allows one request once; no approval path writes policy;
+  there is no allow-always.** An approval is bound to its issue, run and
+  exact command (or held push) and is spent by its first read
+  (`guardrails.Approvals`: a re-read is `unknown`); `itervox run --approve`
+  pre-approves one command for one run, spent by an exclusive marker in the
+  run's guardrails dir (`spendPreApproval`). Every answer path — dashboard /
+  Mac provide-input and dismiss, tracker reply (`applyReplyChecks`), Slack
+  (`hub.MemberActions`), the hub proxy, `itervox run --approve` — decides
+  that one request and never saves a setting or writes WORKFLOW.md, the
+  settings or rules layers, playbooks, profiles or the referee policy: those
+  writes are admin routes, which the hub refuses. Pinned by
+  `TestApprovalPathsNeverWritePolicy`, `TestInputAnswersNeverWritePolicy`,
+  `TestPolicyWritingRoutesAreAdminOnly`,
+  `TestHubApprovalChannelsCannotReachPolicyRoutes`,
+  `TestSlackAnswersOnlyAnswer`,
+  `TestRunApproveAllowsOneCommandOnceAndWritesNoPolicy` and
+  `TestApprovalAllowsOneRequestOnce` (the spy is
+  `workflow.SelfWriteCount`). Do not add an "always allow" answer.
 - **Shim entrypoints run first in `main()`** (`runGuardrailEntrypoint`),
   before dotenv / GIT_DIR scrubbing, forward the agent's env untouched and
   exit via `exitWithoutCleanup` (no `onFatalExit` cleanup in the agent's process).
