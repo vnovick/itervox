@@ -598,7 +598,15 @@ A read-only live panel over the daemon running in this project (#240). It shows:
 - **A status header**: running agents against slots, queued automation runs, retries, requests waiting for you, issues waiting for a slot and issues blocked by dependencies — with a `slot-bound` or `dependency-bound` line when one of them is what holds work back —, paused issues, `ALL DISPATCH PAUSED` while all dispatch is paused, and the hub when this daemon serves it.
 - **One lane per running issue**: identifier, title, profile and backend (and `reviewer` / `@host`), elapsed time, turn, tokens and estimated cost, and the latest activity line — the run's last tool call (name and target, never its output) and current step from the [run context](/api-reference/), or the state's last event line on a daemon without run contexts. Every line is redacted like the other log surfaces, and control characters are dropped.
 - **Events as they happen**, from the event feed (`GET /api/v1/feed`): runs started, finished and failed, pull requests opened and merged, review verdicts, guardrail refusals, lessons proposed, dispatch paused and resumed. Watch reads the feed by cursor, so a dropped connection or a restarted daemon continues where it left off; events that left the daemon's feed window before they were read are reported as a gap. When it stops it prints the cursor (`stopped at feed cursor 1234; resume with: itervox watch --since 1234`).
-- **What needs you**, highlighted: each input request with `itervox reply <issue> "<your answer>"` and each guardrail approval with `itervox approve <issue>` (and the `reply` that refuses it), including the `--workflow`, `--url` or `--project` flags that reach the same daemon. Watch prints the command; it never answers.
+- **What needs you** (`NEEDS YOU`), highlighted and oldest first, each with how long it has waited: each input request with `itervox reply <issue> "<your answer>"` and each guardrail approval (a held pipeline push reads `pipeline change`) with `itervox approve <issue>` (and the `reply` that refuses it), including the `--workflow`, `--url` or `--project` flags that reach the same daemon. A request whose wait the daemon does not know comes last, without a wait. Watch prints the command; it never answers.
+
+  ```text
+  NEEDS YOU
+    ? ENG-12     2h14m  question: Which database should I use?
+        → itervox reply ENG-12 "<your answer>"
+    ! ENG-7      40m00s  pipeline change: Pipeline change: the agent wants to push changes to `.github/workflows/ci.yml`
+        → itervox approve ENG-7
+  ```
 
 On a terminal the panel is redrawn in place every `--interval`, coloured by state (running green, reviewers cyan, what needs you bold yellow, failures red); `NO_COLOR` (any value) or `TERM=dumb` turns colour off. Without a terminal (a pipe, a file, `ssh host itervox watch`, a CI log) it is plain text: the status again, with a time stamp, only when something other than the ticking run times, token counts, costs and retry countdowns changes, and each event once.
 
@@ -609,7 +617,7 @@ Watch never reads stdin and never changes the terminal's mode (no raw mode, no a
 | `--issue ID` | Follow one issue: its lane, its full run log (redacted, streamed like `itervox logs -f`) and its events |
 | `--project NAME` | Watch one project through the machine's [hub](/guides/hub/): the hub's address from `~/.itervox/daemons/hub.lock` (or `--url`), the hub token from `ITERVOX_HUB_TOKEN` (`itervox token create --hub`) |
 | `--events-only` | The event stream alone, one line per event — for piping |
-| `--json` | One JSON object per line: `{"type":"status",…}` when the status changes (`lanes`, `needsYou` with each `command`, the counts and `feedCursor`), `{"type":"event",…}` per feed event (the feed event's fields plus `text` and, for input requests, `command`), `{"type":"gap","after","oldestSeq"}`, and with `--issue` `{"type":"log",…}`. Never coloured |
+| `--json` | One JSON object per line: `{"type":"status",…}` when the status changes (`lanes`, `needsYou` oldest first with each `command` and its `waitingSince`, the counts and `feedCursor`), `{"type":"event",…}` per feed event (the feed event's fields plus `text` and, for input requests, `command`), `{"type":"gap","after","oldestSeq"}`, and with `--issue` `{"type":"log",…}`. Never coloured |
 | `--since SEQ` | Replay the feed events after cursor `SEQ`, then keep following. Without it, watch starts at the feed's head |
 | `--interval 2s` | Refresh interval |
 | `--once` | Print once and exit (with `--since`, the events after it too) |

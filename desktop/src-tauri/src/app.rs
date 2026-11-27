@@ -31,8 +31,8 @@ use crate::machine_health::HealthAlert;
 use crate::machine_poll::MachinePoller;
 use crate::material::{self, Surface};
 use crate::menu::{
-    append_app_section, append_hub_section, append_model_servers_section, build_menu, MenuAction,
-    MenuEntry, MenuSpec,
+    append_app_section, append_hub_section, append_model_servers_section, append_needs_you_section,
+    build_menu, MenuAction, MenuEntry, MenuSpec,
 };
 use crate::model::{refresh_interval, Core, NotificationTargets, PendingOp};
 use crate::projects::{project_key, validate_workflow_file, SavedProjects, PROJECTS_FILE};
@@ -539,18 +539,33 @@ fn machine_changed(app: &AppHandle, shared: &Arc<Shared>, alerts: Vec<HealthAler
 
 /// Rebuilds the tray menu from the model, on the main thread.
 fn update_menu(app: &AppHandle, shared: &Arc<Shared>) {
-    let mut spec = {
+    let (mut spec, needs_you, waiting) = {
         let core = lock(&shared.core);
         let status_error = lock(&shared.status_error).clone();
         let remotes = shared.remote.views();
-        build_menu(
-            core.views(),
-            &remotes,
-            core.recent_alerts(),
-            status_error.as_deref(),
+        let waiting = core.views().iter().map(|v| v.needs_input()).sum::<usize>()
+            + remotes
+                .iter()
+                .flat_map(|c| c.daemons.iter())
+                .map(|d| d.needs_input())
+                .sum::<usize>();
+        (
+            build_menu(
+                core.views(),
+                &remotes,
+                core.recent_alerts(),
+                status_error.as_deref(),
+            ),
+            crate::needs_you::collect(core.views(), &remotes),
+            waiting,
         )
     };
     append_hub_section(&mut spec, &lock(&shared.hub_status));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    append_needs_you_section(&mut spec, &needs_you, waiting, now);
     append_model_servers_section(&mut spec, &shared.machine.menu_lines());
     let mut app_items = Vec::new();
     // #260: Windows without a bundled itervox.exe (#259) runs no local

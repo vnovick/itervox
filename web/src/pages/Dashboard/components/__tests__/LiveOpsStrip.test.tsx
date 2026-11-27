@@ -1037,6 +1037,30 @@ describe('LiveOpsStrip chip links (CORE-086)', () => {
     expect(href(/^Outbox 1 pending/)).toBe('/#outbox');
   });
 
+  it('links the needs-input count to the Needs you lane when the daemon sends one', () => {
+    const queuedAt = new Date().toISOString();
+    useItervoxStore.setState({
+      snapshot: makeSnapshot({
+        inputRequired: [
+          {
+            identifier: 'DEMO-I',
+            sessionId: 's',
+            state: 'input_required',
+            context: 'Q?',
+            queuedAt,
+          },
+        ],
+        needsYou: [
+          { kind: 'question', identifier: 'DEMO-I', summary: 'Q?', waitingSince: queuedAt },
+        ],
+      }),
+    });
+    renderWithQuery(<LiveOpsStrip />);
+    expect(screen.getByRole('link', { name: /^Needs input 1$/ }).getAttribute('href')).toBe(
+      '/#needs-you',
+    );
+  });
+
   it('keeps capacity, zero counts and historical counters as static spans', () => {
     useItervoxStore.setState({ snapshot: makeSnapshot() });
     renderWithQuery(<LiveOpsStrip />);

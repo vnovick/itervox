@@ -20,6 +20,7 @@ pub mod machine_poll;
 pub mod material;
 pub mod menu;
 pub mod model;
+pub mod needs_you;
 pub mod platform;
 pub mod projects;
 pub mod prompt;

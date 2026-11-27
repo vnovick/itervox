@@ -317,6 +317,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		// surface visually even when no automation guards against them.
 		staleAfter := longestInputRequiredMaxAge(orch.AutomationsCfg(), 24*time.Hour)
 		snap.InputRequired = sortedInputRequiredRows(s.InputRequiredIssues, s.PendingInputResumes, staleAfter, now)
+		snap.NeedsYou = server.BuildNeedsYou(snap.InputRequired, issueTitles(snap.Running, snap.History), snap.ProjectName)
 		// Surface in-flight WORKFLOW.md reload failures (T-26). nil when valid.
 		snap.ConfigInvalid = loadConfigInvalid()
 		return snap

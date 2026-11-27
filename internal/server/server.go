@@ -835,7 +835,10 @@ type StateSnapshot struct {
 	Automations []AutomationDef `json:"automations,omitempty"`
 	// InputRequired lists issues whose agent is either waiting for human input
 	// or has already received a reply that is pending resume.
-	InputRequired   []InputRequiredRow   `json:"inputRequired,omitempty"`
+	InputRequired []InputRequiredRow `json:"inputRequired,omitempty"`
+	// NeedsYou is the "Needs you" lane (needs_you.go): the input-required
+	// rows that wait on a person, oldest first, one summary line each.
+	NeedsYou        []NeedsYouRow        `json:"needsYou,omitempty"`
 	AutomationQueue []AutomationQueueRow `json:"automationQueue,omitempty"`
 	// AutomationQueueBackpressure reports queue saturation so the dashboard can
 	// warn when automation producers are paused by the bounded durable queue.

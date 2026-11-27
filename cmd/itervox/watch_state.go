@@ -58,6 +58,20 @@ type watchInput struct {
 	State             string `json:"state"`
 	Context           string `json:"context"`
 	GuardrailApproval bool   `json:"guardrailApproval"`
+	// QueuedAt is when the request started waiting (RFC 3339): NEEDS YOU
+	// lists the oldest first, with the wait.
+	QueuedAt string `json:"queuedAt"`
+	// GuardrailLanePaths marks a held pipeline change (guardrails.lanes).
+	GuardrailLanePaths []string `json:"guardrailLanePaths"`
+}
+
+// since is when the request started waiting; zero when unknown.
+func (in watchInput) since() time.Time {
+	t, err := time.Parse(time.RFC3339, in.QueuedAt)
+	if err != nil || t.Year() <= 1 {
+		return time.Time{}
+	}
+	return t
 }
 
 // waiting reports whether the entry waits for a human (not an answered

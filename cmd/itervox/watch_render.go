@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -90,38 +91,71 @@ type prompt struct {
 	// Command answers it; Reject (approvals only) refuses it with a reason.
 	Command string `json:"command"`
 	Reject  string `json:"reject,omitempty"`
+	// WaitingSince is when the request started waiting (RFC 3339, UTC);
+	// absent when the daemon did not say.
+	WaitingSince *time.Time `json:"waitingSince,omitempty"`
+	// pipeline marks a held pipeline change (an approval of a push that
+	// changes guardrails.lanes.human files).
+	pipeline bool
 }
 
+// prompts lists the requests waiting for a human, oldest first (requests
+// whose wait is unknown last, then by identifier).
 func (w *watcher) prompts(st *watchState) []prompt {
 	var out []prompt
 	for _, in := range st.InputRequired {
 		if !in.waiting() {
 			continue
 		}
+		var since *time.Time
+		if t := in.since(); !t.IsZero() {
+			t = t.UTC()
+			since = &t
+		}
 		if in.GuardrailApproval {
 			first, _, _ := strings.Cut(strings.TrimSpace(in.Context), "\n")
 			out = append(out, prompt{Identifier: in.Identifier, Kind: "approval", Context: clip(redactLine(first), 120),
-				Command: w.approveCommandLine(in.Identifier), Reject: w.command("reply", in.Identifier, `"<why not>"`)})
+				Command: w.approveCommandLine(in.Identifier), Reject: w.command("reply", in.Identifier, `"<why not>"`),
+				WaitingSince: since, pipeline: len(in.GuardrailLanePaths) > 0})
 			continue
 		}
 		out = append(out, prompt{Identifier: in.Identifier, Kind: "input", Context: clip(redactLine(in.Context), 120),
-			Command: w.replyCommand(in.Identifier)})
+			Command: w.replyCommand(in.Identifier), WaitingSince: since})
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].WaitingSince, out[j].WaitingSince
+		switch {
+		case (a == nil) != (b == nil):
+			return a != nil
+		case a != nil && !a.Equal(*b):
+			return a.Before(*b)
+		}
+		return out[i].Identifier < out[j].Identifier
+	})
 	return out
 }
 
-// renderPrompts is the NEEDS YOU block.
-func (w *watcher) renderPrompts(b *strings.Builder, ps []prompt) {
+// renderPrompts is the NEEDS YOU block, oldest first. With live, each
+// request shows how long it has waited (left out otherwise: the stream
+// modes compare the view without it).
+func (w *watcher) renderPrompts(b *strings.Builder, ps []prompt, now time.Time, live bool) {
 	if len(ps) == 0 {
 		return
 	}
 	fmt.Fprintf(b, "\n%s\n", w.p.c(sgrBold+";"+sgrYellow, "NEEDS YOU"))
 	for _, pr := range ps {
 		label, mark := "question", "?"
-		if pr.Kind == "approval" {
+		switch {
+		case pr.pipeline:
+			label, mark = "pipeline change", "!"
+		case pr.Kind == "approval":
 			label, mark = "approval", "!"
 		}
-		fmt.Fprintf(b, "  %s %-10s %s: %s\n", w.p.c(sgrBold+";"+sgrYellow, mark), pr.Identifier, label, pr.Context)
+		wait := ""
+		if live && pr.WaitingSince != nil {
+			wait = shortDuration(max(now.Sub(*pr.WaitingSince), 0)) + "  "
+		}
+		fmt.Fprintf(b, "  %s %-10s %s%s: %s\n", w.p.c(sgrBold+";"+sgrYellow, mark), pr.Identifier, w.p.c(sgrDim, wait), label, pr.Context)
 		fmt.Fprintf(b, "      %s %s\n", w.p.c(sgrYellow, "→"), w.p.c(sgrBold, pr.Command))
 		if pr.Reject != "" {
 			fmt.Fprintf(b, "      %s\n", w.p.c(sgrDim, "to refuse it: "+pr.Reject))
@@ -205,7 +239,7 @@ func (w *watcher) renderStatus(s *watchState, now time.Time, live bool) string {
 	if w.opt.issue != "" {
 		return b.String()
 	}
-	w.renderPrompts(&b, prompts)
+	w.renderPrompts(&b, prompts, now, live)
 	section := func(title string, n int) bool {
 		if n == 0 {
 			return false

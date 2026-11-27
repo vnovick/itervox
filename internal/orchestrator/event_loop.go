@@ -1071,9 +1071,19 @@ func recoverInputRequired(issue domain.Issue, detailed *domain.Issue, dismissed 
 		QuestionCommentID:  questionComment.ID,
 		QuestionAuthorID:   questionComment.AuthorID,
 		QuestionAuthorName: questionComment.AuthorName,
-		QueuedAt:           time.Now(),
+		QueuedAt:           rehydratedQueuedAt(questionComment, time.Now()),
 	}
 	return entry
+}
+
+// rehydratedQueuedAt is when a question rehydrated from the tracker started
+// waiting: the question comment's own time, so the "Needs you" wait does not
+// restart on every daemon restart; now when the tracker gave no usable time.
+func rehydratedQueuedAt(c domain.Comment, now time.Time) time.Time {
+	if c.CreatedAt == nil || c.CreatedAt.IsZero() || c.CreatedAt.After(now) {
+		return now
+	}
+	return *c.CreatedAt
 }
 
 func branchNameValue(branchName *string) string {
