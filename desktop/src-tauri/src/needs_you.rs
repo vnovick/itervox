@@ -32,7 +32,7 @@ pub struct NeedsYouItem {
     /// Seconds since the Unix epoch; `None` when the daemon gave no time.
     pub since: Option<i64>,
     /// The dashboard deep link that opens the issue; empty when the
-    /// daemon's dashboard cannot be reached (a remote tunnel is down).
+    /// daemon's dashboard address is unknown (the item is shown disabled).
     pub url: String,
 }
 
