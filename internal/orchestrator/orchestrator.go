@@ -74,6 +74,9 @@ type Orchestrator struct {
 	// read them, so the Go memory model's happens-before guarantee (set before
 	// goroutine start) ensures visibility without any additional synchronisation.
 	OnStateChange func()
+	// onPolicyChange is told every policy change seen while runs were
+	// active (SetPolicyChangeHook, before Run); called from the event loop.
+	onPolicyChange func(PolicyChangeAlert)
 	// Logger, when set, is used in place of the global slog.Default() for the
 	// worker-completion / dispatch-success log lines (see logger(), and its
 	// two call sites: worker.go's "worker: completed" and event_loop.go's

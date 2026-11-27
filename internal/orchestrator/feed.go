@@ -59,6 +59,7 @@ const (
 	// via the caller ("dashboard:<token id>"). Never a terminal byte.
 	FeedTerminalAttached = "terminal_attached"
 	FeedTerminalDetached = "terminal_detached"
+	// FeedPolicyChanged (policy_alert.go) is declared with its producers.
 )
 
 // FeedCap and FeedMaxAge bound the feed: the newest FeedCap events, none
@@ -110,6 +111,14 @@ type FeedPayload struct {
 	// Count is how many line comments an operator's PR review carried
 	// (pr_review_submitted_by_operator, #238).
 	Count int `json:"count,omitempty"`
+	// Source, Files, RunIDs and PossiblyAgent describe a policy change
+	// (policy_changed): who saw it (config_watcher, dispatch, run_exit),
+	// the governing files and config keys (names only), the runs active,
+	// and whether a running unsandboxed agent could have made it.
+	Source        string   `json:"source,omitempty"`
+	Files         []string `json:"files,omitempty"`
+	RunIDs        []string `json:"runIds,omitempty"`
+	PossiblyAgent bool     `json:"possiblyAgent,omitempty"`
 }
 
 // FeedEvent is one feed entry. Seq increases by one per event and never
@@ -146,12 +155,26 @@ func sanitizeFeedEvent(ev FeedEvent) FeedEvent {
 	ev.Kind = sanitizeFailureField(ev.Kind)
 	ev.Identifier = sanitizeFailureField(ev.Identifier)
 	p := &ev.Payload
-	for _, f := range []*string{&p.RunID, &p.RunKind, &p.Profile, &p.Backend, &p.Outcome, &p.Verdict, &p.Kind, &p.Via, &p.MemoryID} {
+	for _, f := range []*string{&p.RunID, &p.RunKind, &p.Profile, &p.Backend, &p.Outcome, &p.Verdict, &p.Kind, &p.Via, &p.MemoryID, &p.Source} {
 		*f = sanitizeFailureField(*f)
 	}
+	p.Files, p.RunIDs = sanitizeFeedList(p.Files), sanitizeFeedList(p.RunIDs)
 	p.PRURL = sanitizeFailureMessage(p.PRURL)
 	p.Reason = sanitizeFailureMessage(p.Reason)
 	return ev
+}
+
+// sanitizeFeedList bounds a name list (maxPolicyNames entries, each a
+// capped label) into a fresh slice.
+func sanitizeFeedList(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, min(len(in), maxPolicyNames))
+	for _, s := range in[:min(len(in), maxPolicyNames)] {
+		out = append(out, sanitizeFailureField(s))
+	}
+	return out
 }
 
 // appendFeed assigns ev the next seq, appends it and trims the ring to

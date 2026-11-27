@@ -49,16 +49,16 @@ func newPolicyProject(t *testing.T) policyProject {
 	p.workflow = filepath.Join(p.dir, "WORKFLOW.md")
 	files := map[string]string{
 		p.workflow: "---\nitervox_schema_version: 2\n---\nWork on {{ issue.identifier }}.\n",
-		filepath.Join(p.dir, ".itervox", "settings.jsonc"):                    "{\n  // project\n  \"agent\": {\"max_turns\": 1},\n}\n",
-		filepath.Join(p.dir, ".itervox", "settings.local.jsonc"):              "{\"agent\": {}}\n",
-		filepath.Join(p.dir, ".itervox", "rules.json"):                        "{\"rules\": [{\"id\": \"no-force\", \"text\": \"Never force push.\", \"severity\": \"must\"}]}\n",
-		filepath.Join(p.dir, ".itervox", "rules.local.json"):                  "{\"rules\": []}\n",
-		filepath.Join(p.dir, ".itervox", "playbooks", "bugfix.md"):            "# Bugfix\nReproduce first.\n",
-		filepath.Join(p.dir, ".itervox", "agents", "coder", "SOUL.md"):        "You are careful.\n",
+		filepath.Join(p.dir, ".itervox", "settings.jsonc"):                     "{\n  // project\n  \"agent\": {\"max_turns\": 1},\n}\n",
+		filepath.Join(p.dir, ".itervox", "settings.local.jsonc"):               "{\"agent\": {}}\n",
+		filepath.Join(p.dir, ".itervox", "rules.json"):                         "{\"rules\": [{\"id\": \"no-force\", \"text\": \"Never force push.\", \"severity\": \"must\"}]}\n",
+		filepath.Join(p.dir, ".itervox", "rules.local.json"):                   "{\"rules\": []}\n",
+		filepath.Join(p.dir, ".itervox", "playbooks", "bugfix.md"):             "# Bugfix\nReproduce first.\n",
+		filepath.Join(p.dir, ".itervox", "agents", "coder", "SOUL.md"):         "You are careful.\n",
 		filepath.Join(p.dir, ".itervox", "agents", "coder", "INSTRUCTIONS.md"): "Run the tests.\n",
-		filepath.Join(p.dir, ".referee.yml"):                                  "human: [\".github/**\"]\n",
-		filepath.Join(home, ".itervox", "settings.jsonc"):                     "{}\n",
-		filepath.Join(home, ".itervox", "rules.json"):                         "{\"rules\": []}\n",
+		filepath.Join(p.dir, ".referee.yml"):                                   "human: [\".github/**\"]\n",
+		filepath.Join(home, ".itervox", "settings.jsonc"):                      "{}\n",
+		filepath.Join(home, ".itervox", "rules.json"):                          "{\"rules\": []}\n",
 	}
 	for path, body := range files {
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))

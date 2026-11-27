@@ -384,6 +384,23 @@ only the event loop mutates them.
   Payloads are structured and redacted — never agent output or prompt text.
   The ring is trimmed only by re-slicing from the front, so `State.Clone`
   shares it (allowlisted); never write through an index or reslice to `[:0]`.
+- **Policy fingerprint / policy changes** (approval integrity,
+  `internal/orchestrator/policy_fingerprint.go`, `policy_alert.go`):
+  `startRun` records on the run handle hashes of the governing files
+  (WORKFLOW.md, settings and rules layers, playbooks, `.itervox/agents/**`,
+  the profile's SOUL/INSTRUCTIONS, `.referee.yml`) and of the profile's
+  push/isolation/permission/actions/command/guardrails/lanes (hashes only);
+  the worker recomputes it in `deliverExit` (off the loop) and the exit
+  carries the changed names (`RunEntry.PolicyChanged` →
+  `CompletedRun.PolicyChanged`, keyed by run ID). `State.PolicyBaseline`
+  (event-loop, session-scoped) is the latest dispatch's file fingerprint; a
+  difference at the next dispatch, or a config-watcher report
+  (`NotePolicyFilesChanged` → `EventPolicyFilesChanged`), while runs are
+  active is logged at Warn, fed as `policy_changed` and handed to the
+  `SetPolicyChangeHook` hook (cmd/itervox: the dashboard banner,
+  `StateSnapshot.PolicyChanged`, process state like the config-invalid
+  banner). With `isolation: process`, the live policy files a writable path
+  reaches are `IsolationPolicy.Protect` (read-only).
 - `DispatchPaused` (#213) is the daemon-wide dispatch pause, set only by
   `EventSetDispatchPause` (`PauseDispatch` / `ResumeDispatch`, a loop
   round-trip) and cleared at its `Until` by `expireDispatchPause` (tick and

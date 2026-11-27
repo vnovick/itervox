@@ -77,6 +77,8 @@ func (w *watcher) eventText(ev server.FeedEvent) (line, command string) {
 		if pl.Outcome != "" {
 			what += ": " + pl.Outcome
 		}
+	case "policy_changed":
+		what, colour = policyChangedText(pl), sgrBold+";"+sgrRed
 	case "terminal_attached", "terminal_detached":
 		what = "live terminal attached"
 		if ev.Kind == "terminal_detached" {
@@ -99,6 +101,23 @@ func (w *watcher) eventText(ev server.FeedEvent) (line, command string) {
 		line += "  " + p.c(sgrYellow, "→ ") + p.c(sgrBold, command)
 	}
 	return line, command
+}
+
+// policyChangedText is the line for a policy_changed event: the files that
+// govern agents (names only) that changed while runs were active, the runs,
+// and the warning when a running unsandboxed agent could have made it.
+func policyChangedText(pl server.FeedPayload) string {
+	files := cmpStr(strings.Join(pl.Files, ", "), "governing files")
+	what := "POLICY CHANGED while agents ran: " + files
+	if pl.Source == "run_exit" {
+		what = "POLICY CHANGED during this run: " + files
+	} else if len(pl.RunIDs) > 0 {
+		what += " (active runs: " + strings.Join(pl.RunIDs, ", ") + ")"
+	}
+	if pl.PossiblyAgent {
+		what += " — possibly changed by a running agent"
+	}
+	return what
 }
 
 func kindLabel(k string) string {

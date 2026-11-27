@@ -29,6 +29,7 @@ func (s State) Clone() State {
 	c.PauseDispatchWhenAnyInState = cloneSlice(s.PauseDispatchWhenAnyInState)
 	c.Running = copyRunningMap(s.Running)
 	c.LatestRun = maps.Clone(s.LatestRun)
+	c.PolicyBaseline = maps.Clone(s.PolicyBaseline)
 	c.Spend = s.Spend.clone()
 	c.BudgetStops = maps.Clone(s.BudgetStops)
 	c.Claimed = maps.Clone(s.Claimed)

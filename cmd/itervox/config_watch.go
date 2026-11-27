@@ -85,6 +85,9 @@ func watchConfigFiles(ctx context.Context, workflowPath string, cfg *config.Conf
 		Settled:  opts.Settled,
 	}
 	return w.Run(ctx, func(changed []string) {
+		// Approval integrity: a change to these files while agents run is
+		// raised loudly (Warn, feed, banner) whether or not it loads.
+		notePolicyFilesChanged(changed)
 		if err := probeConfigReload(workflowPath); err != nil {
 			reportInvalidConfigEdit(changed, err)
 			return

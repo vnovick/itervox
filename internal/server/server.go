@@ -146,6 +146,10 @@ type HistoryRow struct {
 	// and bounded; SteersDropped counts the older ones not kept.
 	Steers        []HistorySteer `json:"steers,omitempty"`
 	SteersDropped int            `json:"steersDropped,omitempty"`
+	// PolicyChanged names the files that govern agents and the config keys
+	// of the run's profile that changed while the run ran (names only);
+	// empty when nothing changed.
+	PolicyChanged []string `json:"policyChanged,omitempty"`
 	// ContinuedFromReview marks a run that continued from an operator
 	// review (POST .../review-continue); ReviewComments counts its line
 	// comments.
@@ -901,6 +905,10 @@ type StateSnapshot struct {
 	// daemon is running on the previously-valid config while exponentially
 	// backing off retries (T-26).
 	ConfigInvalid *ConfigInvalidStatus `json:"configInvalid,omitempty"`
+	// PolicyChanged is the latest change to a file that governs agents seen
+	// while runs were active (the dashboard's policy-change banner). Absent
+	// when none was seen since the daemon started.
+	PolicyChanged *PolicyChangedStatus `json:"policyChanged,omitempty"`
 	// LastTrackerError is the most recent tracker failure (CORE-044). Absent
 	// when none is recorded: a successful poll clears a poll failure, and a
 	// write failure ages out after an hour.
@@ -1298,6 +1306,19 @@ type ConfigInvalidStatus struct {
 	Error        string `json:"error"`
 	RetryAttempt int    `json:"retryAttempt"`
 	RetryAt      string `json:"retryAt,omitempty"`
+}
+
+// PolicyChangedStatus is a change to a file that governs agents (WORKFLOW.md,
+// the settings and rules layers, playbooks, profiles) seen while runs were
+// active: when, who saw it (config_watcher, dispatch), the files (names
+// only), the runs then active, and whether a running unsandboxed agent
+// could have made it. The dashboard shows it as a dismissible banner.
+type PolicyChangedStatus struct {
+	At            time.Time `json:"at"`
+	Source        string    `json:"source"`
+	Files         []string  `json:"files"`
+	RunIDs        []string  `json:"runIds"`
+	PossiblyAgent bool      `json:"possiblyAgent,omitempty"`
 }
 
 // InputRequiredRow is one input-related issue in the snapshot.

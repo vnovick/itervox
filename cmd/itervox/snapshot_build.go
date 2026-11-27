@@ -174,6 +174,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				Playbook:      r.Playbook, // #218
 				Steers:        historySteers(r.Steers),
 				SteersDropped: r.SteersDropped,
+				PolicyChanged: r.PolicyChanged, // approval integrity
 				// Review and continue: the run took an operator review.
 				ContinuedFromReview: r.ContinuedFromReview,
 				ReviewComments:      r.ReviewComments,
@@ -319,6 +320,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		snap.InputRequired = sortedInputRequiredRows(s.InputRequiredIssues, s.PendingInputResumes, staleAfter, now)
 		// Surface in-flight WORKFLOW.md reload failures (T-26). nil when valid.
 		snap.ConfigInvalid = loadConfigInvalid()
+		snap.PolicyChanged = loadPolicyAlert()
 		return snap
 	}
 }

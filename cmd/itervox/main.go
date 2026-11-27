@@ -867,6 +867,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		slog.Info("itervox: dry-run mode enabled — agents will not be dispatched")
 	}
 	orch.SetLogBuffer(logBuf)
+	defer watchPolicyChanges(orch)()                                      // approval integrity: banner + watcher reports
 	orch.RevertScan = lessonRevertScan(cfg, workflowPath)                 // #217: reverted-PR lessons
 	sessTmux := wireSessions(orch, cfg, workflowPath, demoSession != nil) // #178
 	orch.SetDepsSidecarPath(depsanalysis.SidecarPath(filepath.Dir(workflowPath)))

@@ -42,19 +42,24 @@ var cloneAllowlist = map[string]string{
 	// (memory.Selection.IDs). Evidence: grep -rnE
 	// 'MemoryIDs(\[[^]]*\])? *=|append\([^,]*MemoryIDs' internal/orchestrator →
 	// only the startRun assignment and the CompletedRun copy.
-	"RunEntry.MemoryIDs":    "immutable []string (set once at dispatch, never written through)",
-	"Issue.Priority":        "immutable *int from the tracker adapter",
-	"Issue.BranchName":      "immutable *string from the tracker adapter",
-	"Issue.Description":     "immutable *string from the tracker adapter",
-	"Issue.URL":             "immutable *string from the tracker adapter",
-	"Issue.CreatedAt":       "immutable *time.Time from the tracker adapter",
-	"Issue.UpdatedAt":       "immutable *time.Time from the tracker adapter",
-	"Comment.CreatedAt":     "immutable *time.Time from the tracker adapter",
-	"BlockerRef.ID":         "immutable *string from the tracker adapter",
-	"BlockerRef.Identifier": "immutable *string from the tracker adapter",
-	"BlockerRef.State":      "immutable *string from the tracker adapter",
-	"BlockerRef.URL":        "immutable *string from the tracker adapter",
-	"BlockerRef.BranchName": "immutable *string from the tracker adapter",
+	"RunEntry.MemoryIDs": "immutable []string (set once at dispatch, never written through)",
+	// The names a run's exit reported changed (policy_alert.go): a fresh
+	// slice set once by notePolicyChangedOnExit. Evidence: grep -rnE
+	// 'PolicyChanged(\[[^]]*\])? *=|append\([^,]*PolicyChanged' internal/orchestrator →
+	// only the exit-handler and deliverExit assignments and the CompletedRun copy.
+	"RunEntry.PolicyChanged": "immutable []string (set once at exit, never written through)",
+	"Issue.Priority":         "immutable *int from the tracker adapter",
+	"Issue.BranchName":       "immutable *string from the tracker adapter",
+	"Issue.Description":      "immutable *string from the tracker adapter",
+	"Issue.URL":              "immutable *string from the tracker adapter",
+	"Issue.CreatedAt":        "immutable *time.Time from the tracker adapter",
+	"Issue.UpdatedAt":        "immutable *time.Time from the tracker adapter",
+	"Comment.CreatedAt":      "immutable *time.Time from the tracker adapter",
+	"BlockerRef.ID":          "immutable *string from the tracker adapter",
+	"BlockerRef.Identifier":  "immutable *string from the tracker adapter",
+	"BlockerRef.State":       "immutable *string from the tracker adapter",
+	"BlockerRef.URL":         "immutable *string from the tracker adapter",
+	"BlockerRef.BranchName":  "immutable *string from the tracker adapter",
 }
 
 // TestStateCloneDeepCopiesAllReferenceFields fills every settable field of
