@@ -86,3 +86,21 @@ func makeInputRequiredRow(state, identifier, sessionID, context, backend, profil
 	}
 	return row
 }
+
+// issueTitles maps identifiers to issue titles for the "Needs you" lane:
+// the run history first, then the running issues (a guardrail approval's
+// issue is running), which win.
+func issueTitles(running []server.RunningRow, history []server.HistoryRow) map[string]string {
+	titles := make(map[string]string, len(running)+len(history))
+	for _, h := range history {
+		if h.Title != "" {
+			titles[h.Identifier] = h.Title
+		}
+	}
+	for _, r := range running {
+		if r.Title != "" {
+			titles[r.Identifier] = r.Title
+		}
+	}
+	return titles
+}

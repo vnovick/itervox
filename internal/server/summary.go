@@ -57,8 +57,12 @@ type Summary struct {
 	// System is the run monitor's summary (system visibility): the live
 	// runs' memory and the workspace disk warning, rounded so the ETag
 	// moves only when the tray's text would. Absent without the monitor.
-	System      *SummarySystem `json:"system,omitempty"`
-	GeneratedAt time.Time      `json:"generatedAt"`
+	System *SummarySystem `json:"system,omitempty"`
+	// NeedsYou is the oldest StateSnapshot.NeedsYou rows (at most 20), so a
+	// supervisor reading only the summary — the desktop app, directly or
+	// through the hub's copy — can list what waits on a person.
+	NeedsYou    []NeedsYouRow `json:"needsYou,omitempty"`
+	GeneratedAt time.Time     `json:"generatedAt"`
 }
 
 // Summary rounding steps: the live runs' memory to 64 MiB, free disk to
@@ -108,6 +112,7 @@ type summaryDigestInput struct {
 	System       *SummarySystem
 	Input        []summaryDigestInputRow
 	Failures     []summaryDigestFailure
+	NeedsYou     []NeedsYouRow
 }
 
 type summaryDigestInputRow struct {
@@ -152,6 +157,10 @@ func buildSummary(snap StateSnapshot, version string) Summary {
 	}
 	in.Counts, in.Paused, in.PauseReason, in.PausedUntil = sum.Counts, sum.Paused, sum.PauseReason, sum.PausedUntil
 	in.System = sum.System
+	if len(snap.NeedsYou) > 0 {
+		sum.NeedsYou = snap.NeedsYou[:min(len(snap.NeedsYou), summaryNeedsYouMax)]
+		in.NeedsYou = sum.NeedsYou
+	}
 	raw, _ := json.Marshal(in) // plain strings, ints and times: cannot fail
 	digest := sha256.Sum256(raw)
 	sum.ETag = hex.EncodeToString(digest[:16])

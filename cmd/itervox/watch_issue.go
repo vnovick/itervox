@@ -80,7 +80,7 @@ func (w *watcher) printIssueHeader(st *watchState) {
 			ps = append(ps, pr)
 		}
 	}
-	w.renderPrompts(&b, ps)
+	w.renderPrompts(&b, ps, time.Now(), true)
 	b.WriteString("\n")
 	_, _ = io.WriteString(w.out, b.String())
 }
