@@ -13,6 +13,26 @@ pub struct InputRequired {
     pub context: String,
 }
 
+/// One item of the daemon's "Needs you" lane (`needsYou[]`,
+/// internal/server/needs_you.go): an issue blocked on a person.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NeedsYou {
+    /// `question`, `approval` or `pipeline-change`.
+    pub kind: String,
+    pub identifier: String,
+    pub title: String,
+    /// The question or approval as one line, redacted by the daemon.
+    pub summary: String,
+    /// RFC 3339; empty when unknown.
+    pub waiting_since: String,
+}
+
+/// `needsYou[].kind` values.
+pub const NEEDS_YOU_QUESTION: &str = "question";
+pub const NEEDS_YOU_APPROVAL: &str = "approval";
+pub const NEEDS_YOU_PIPELINE_CHANGE: &str = "pipeline-change";
+
 /// A recorded operator-relevant failure (`recentFailures[]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
@@ -30,6 +50,9 @@ pub struct StateSummary {
     pub retrying: usize,
     pub paused: usize,
     pub input_required: Vec<InputRequired>,
+    /// What waits on a person, oldest first: the daemon's `needsYou`, or,
+    /// from a daemon older than it, derived from `inputRequired`.
+    pub needs_you: Vec<NeedsYou>,
     pub failures: Vec<Failure>,
     /// All dispatch is paused (#213: `dispatchPaused` is not null): running
     /// agents continue, nothing new starts.
@@ -98,6 +121,37 @@ struct RawInput {
     state: String,
     queued_at: String,
     context: String,
+    guardrail_approval: bool,
+    guardrail_lane_paths: Vec<String>,
+}
+
+/// The marker agents print to ask for input; noise in a summary.
+const INPUT_SENTINEL: &str = "<!-- itervox:needs-input -->";
+
+/// The "Needs you" item of a waiting `inputRequired` row, for a daemon that
+/// sends no `needsYou` (its first non-empty line, as the daemon would cut it).
+fn needs_you_of(i: &RawInput) -> NeedsYou {
+    let kind = if !i.guardrail_lane_paths.is_empty() {
+        NEEDS_YOU_PIPELINE_CHANGE
+    } else if i.guardrail_approval {
+        NEEDS_YOU_APPROVAL
+    } else {
+        NEEDS_YOU_QUESTION
+    };
+    let summary = i
+        .context
+        .replace(INPUT_SENTINEL, " ")
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+    NeedsYou {
+        kind: kind.into(),
+        identifier: i.identifier.clone(),
+        title: String::new(),
+        summary,
+        waiting_since: i.queued_at.clone(),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -116,6 +170,8 @@ struct RawState {
     counts: Option<RawCounts>,
     running: Option<Vec<serde_json::Value>>,
     input_required: Option<Vec<RawInput>>,
+    /// Absent on daemons older than the "Needs you" lane.
+    needs_you: Option<Vec<NeedsYou>>,
     recent_failures: Option<Vec<RawFailure>>,
     /// #213: null (or absent, on older daemons) unless paused.
     dispatch_paused: Option<serde_json::Value>,
@@ -161,7 +217,20 @@ pub fn parse_state(body: &[u8]) -> Result<StateSummary, String> {
         raw.running.map(|r| r.len()).unwrap_or(0)
     };
     let system = raw.system.unwrap_or_default();
+    let input = raw.input_required.unwrap_or_default();
+    let needs_you = match raw.needs_you {
+        Some(rows) => rows
+            .into_iter()
+            .filter(|n| !n.identifier.is_empty())
+            .collect(),
+        None => input
+            .iter()
+            .filter(|i| !i.identifier.is_empty() && i.state == INPUT_STATE_WAITING)
+            .map(needs_you_of)
+            .collect(),
+    };
     Ok(StateSummary {
+        needs_you,
         runs_rss_bytes: system.runs.rss_bytes,
         disk: system.machine.disk_low.then(|| DiskWarning {
             free_bytes: system.machine.disk.map(|d| d.free_bytes).unwrap_or(0),
@@ -172,9 +241,7 @@ pub fn parse_state(body: &[u8]) -> Result<StateSummary, String> {
         running,
         retrying: counts.retrying,
         paused: counts.paused,
-        input_required: raw
-            .input_required
-            .unwrap_or_default()
+        input_required: input
             .into_iter()
             .filter(|i| !i.identifier.is_empty())
             .map(|i| InputRequired {
@@ -228,6 +295,56 @@ mod tests {
         assert_eq!(waiting, vec!["ENG-1"]);
         let failed: Vec<_> = s.run_failures().map(|f| f.identifier.as_str()).collect();
         assert_eq!(failed, vec!["ENG-3"]);
+    }
+
+    /// The "Needs you" lane: the daemon's `needsYou` as sent (oldest
+    /// first); from an older daemon, derived from the waiting questions.
+    #[test]
+    fn reads_the_needs_you_lane() {
+        let s = parse_state(
+            br#"{"needsYou": [
+              {"kind": "pipeline-change", "identifier": "ENG-7", "summary": "Pipeline change: ci.yml", "waitingSince": "2026-10-14T08:00:00Z", "project": "web-app"},
+              {"kind": "question", "identifier": "ENG-1", "title": "Pick a DB", "summary": "Which DB?", "waitingSince": "2026-10-14T09:00:00Z"},
+              {"kind": "question", "identifier": "", "summary": "no id"}
+            ]}"#,
+        )
+        .unwrap();
+        let ids: Vec<_> = s.needs_you.iter().map(|n| n.identifier.as_str()).collect();
+        assert_eq!(ids, vec!["ENG-7", "ENG-1"]);
+        assert_eq!(s.needs_you[1].title, "Pick a DB");
+        assert_eq!(s.needs_you[0].waiting_since, "2026-10-14T08:00:00Z");
+
+        let old = parse_state(
+            br#"{"inputRequired": [
+              {"identifier": "ENG-1", "state": "input_required", "context": "\n<!-- itervox:needs-input -->\nWhich  DB?\nmore", "queuedAt": "2026-10-14T09:59:00Z"},
+              {"identifier": "ENG-2", "state": "pending_input_resume", "context": "x", "queuedAt": "t"},
+              {"identifier": "ENG-3", "state": "input_required", "guardrailApproval": true, "context": "Agent wants to run: `npm publish`", "queuedAt": "2026-10-14T09:00:00Z"},
+              {"identifier": "ENG-4", "state": "input_required", "guardrailApproval": true, "guardrailLanePaths": ["ci.yml"], "context": "Pipeline change", "queuedAt": ""}
+            ]}"#,
+        )
+        .unwrap();
+        let got: Vec<_> = old
+            .needs_you
+            .iter()
+            .map(|n| (n.identifier.as_str(), n.kind.as_str(), n.summary.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("ENG-1", NEEDS_YOU_QUESTION, "Which DB?"),
+                (
+                    "ENG-3",
+                    NEEDS_YOU_APPROVAL,
+                    "Agent wants to run: `npm publish`"
+                ),
+                ("ENG-4", NEEDS_YOU_PIPELINE_CHANGE, "Pipeline change"),
+            ]
+        );
+        assert_eq!(
+            old.input_required.len(),
+            4,
+            "inputRequired is kept as it was"
+        );
     }
 
     #[test]

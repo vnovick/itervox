@@ -507,6 +507,75 @@ pub fn append_hub_section(spec: &mut MenuSpec, hub: &HubStatus) {
     }
 }
 
+/// The most "Needs you" items the submenu lists; the rest are counted.
+pub const MAX_NEEDS_YOU_ITEMS: usize = 15;
+
+/// Inserts the "Needs you (N)" submenu right under the header (above the
+/// hub section when [`append_hub_section`] ran first): every issue blocked
+/// on a person across the projects, oldest first, each with its wait,
+/// opening the project's dashboard at the issue. `waiting` is the menu's
+/// count of waiting requests, which can exceed the items listed (a hub
+/// member older than the lane sends counts only); the title shows the
+/// larger. Nothing when nothing waits.
+pub fn append_needs_you_section(
+    spec: &mut MenuSpec,
+    items: &[crate::needs_you::NeedsYouItem],
+    waiting: usize,
+    now: i64,
+) {
+    let total = waiting.max(items.len());
+    if total == 0 {
+        return;
+    }
+    let at = spec
+        .entries
+        .iter()
+        .position(|e| matches!(e, MenuEntry::Separator))
+        .unwrap_or(spec.entries.len());
+    let mut sub = Vec::new();
+    for (n, it) in items.iter().take(MAX_NEEDS_YOU_ITEMS).enumerate() {
+        let id = format!("itervox-needs-you-{n}");
+        let enabled = !it.url.is_empty();
+        if enabled {
+            spec.actions.insert(
+                id.clone(),
+                MenuAction::OpenUrl {
+                    project: it.project.clone(),
+                    url: it.url.clone(),
+                },
+            );
+        }
+        sub.push(MenuEntry::Item {
+            id,
+            label: crate::needs_you::menu_label(it, now),
+            enabled,
+            accelerator: None,
+        });
+    }
+    let listed = items.len().min(MAX_NEEDS_YOU_ITEMS);
+    if total > listed {
+        sub.push(MenuEntry::Item {
+            id: "itervox-needs-you-more".into(),
+            label: format!(
+                "…and {} more (see each project's dashboard)",
+                total - listed
+            ),
+            enabled: false,
+            accelerator: None,
+        });
+    }
+    spec.entries.splice(
+        at..at,
+        [
+            MenuEntry::Separator,
+            MenuEntry::Submenu {
+                label: crate::needs_you::title(total),
+                items: sub,
+            },
+        ],
+    );
+}
+
 /// The "Model servers" section title.
 pub const MODEL_SERVERS_TITLE: &str = "Model servers";
 

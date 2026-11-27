@@ -15,7 +15,9 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::client::{ClientPool, FetchError};
-use crate::daemon_state::{DiskWarning, InputRequired, StateSummary, INPUT_STATE_WAITING};
+use crate::daemon_state::{
+    DiskWarning, InputRequired, NeedsYou, StateSummary, INPUT_STATE_WAITING,
+};
 use crate::model::FetchJob;
 use crate::status::DaemonRecord;
 
@@ -78,6 +80,8 @@ struct Summary {
     paused: bool,
     /// System visibility: the summary's rounded run memory and disk warning.
     system: SummarySystem,
+    /// The member's oldest "Needs you" items (absent from older members).
+    needs_you: Vec<NeedsYou>,
 }
 
 #[derive(Deserialize, Default)]
@@ -113,6 +117,11 @@ pub fn summary_state(summary: &serde_json::Value) -> Option<StateSummary> {
         retrying: s.counts.retrying,
         paused: s.counts.paused,
         input_required,
+        needs_you: s
+            .needs_you
+            .into_iter()
+            .filter(|n| !n.identifier.is_empty())
+            .collect(),
         failures: Vec::new(),
         dispatch_paused: s.paused,
         runs_rss_bytes: s.system.runs_rss_bytes,
@@ -310,6 +319,28 @@ pub fn read_local(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A member's summary carries its oldest "Needs you" items (#needs-you);
+    /// an older member's has none, and only counts.
+    #[test]
+    fn summary_carries_the_needs_you_items() {
+        let st = summary_state(&serde_json::json!({
+            "projectName": "web-app",
+            "counts": {"inputRequired": 2},
+            "needsYou": [
+                {"kind": "approval", "identifier": "ENG-3", "summary": "Agent wants to run: `npm publish`", "waitingSince": "2026-10-14T09:00:00Z"},
+                {"kind": "question", "identifier": "ENG-1", "summary": "Which DB?", "waitingSince": "2026-10-14T10:00:00Z"}
+            ]
+        }))
+        .unwrap();
+        let ids: Vec<_> = st.needs_you.iter().map(|n| n.identifier.as_str()).collect();
+        assert_eq!(ids, vec!["ENG-3", "ENG-1"]);
+        assert_eq!(st.needs_you[0].kind, "approval");
+        assert_eq!(st.waiting_for_input().count(), 2);
+        let old = summary_state(&serde_json::json!({"counts": {"inputRequired": 1}})).unwrap();
+        assert!(old.needs_you.is_empty());
+        assert_eq!(old.waiting_for_input().count(), 1);
+    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
