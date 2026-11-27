@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
-	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
 )
@@ -91,19 +89,5 @@ func TestConfigWatcherRaisesPolicyChangeWhileRunsActive(t *testing.T) {
 	assert.Equal(t, []string{runID}, banner.RunIDs)
 	assert.True(t, banner.PossiblyAgent)
 
-	feed := &fakeFeed{}
-	feed.add(ev.Kind, ev.Identifier, server.FeedPayload(ev.Payload))
-	d := newFakeDaemon(t, func(rw http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/state":
-			writeJSONBody(rw, map[string]any{"maxConcurrentAgents": 1})
-		case "/api/v1/feed":
-			feed.serve(t, rw, r)
-		default:
-			rw.WriteHeader(http.StatusNotFound)
-		}
-	})
-	code, out, errOut := runClient(t, t.Context(), d, "watch", "--once", "--since", "0")
-	require.Equal(t, 0, code, errOut)
-	assert.Contains(t, out, "POLICY CHANGED while agents ran: .itervox/settings.jsonc (active runs: "+runID+") — possibly changed by a running agent")
+	assertWatchShowsPolicyChange(t, ev, runID)
 }
