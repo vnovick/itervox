@@ -8,7 +8,8 @@ import { mergeSearch } from './useUrlState';
 // that lists those items, or to the dashboard view that shows them.
 //
 //   running, paused     -> RunningSessionsTable   (/#running-sessions)
-//   needs input         -> AttentionInbox         (/#attention-inbox)
+//   needs input         -> the Needs you lane     (/#needs-you), else
+//                          AttentionInbox         (/#attention-inbox)
 //   resuming            -> PendingResumePanel     (/#pending-resume)
 //   retrying            -> RetryQueueTable        (/#retry-queue)
 //   outbox              -> OutboxList             (/#outbox)
@@ -16,6 +17,7 @@ import { mergeSearch } from './useUrlState';
 export type DashboardTarget =
   | 'running-sessions'
   | 'attention-inbox'
+  | 'needs-you'
   | 'pending-resume'
   | 'retry-queue'
   | 'outbox'

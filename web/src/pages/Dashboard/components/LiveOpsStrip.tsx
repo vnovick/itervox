@@ -332,6 +332,7 @@ export function LiveOpsStrip() {
         autoSwitches: s?.autoSwitches,
         syncStatus: s?.syncStatus,
         trackerPoll: s?.trackerPoll,
+        hasNeedsYou: (s?.needsYou?.length ?? 0) > 0,
       };
     }),
   );
@@ -359,6 +360,7 @@ export function LiveOpsStrip() {
     dependencyAttention,
     outboxEntries,
     rateLimits,
+    hasNeedsYou,
   } = branches;
   const model = useMemo(
     () =>
@@ -462,7 +464,11 @@ export function LiveOpsStrip() {
           statusKey="input_required"
           statusCount={model.inputRequiredCount}
           warning={model.inputRequiredCount > 0}
-          to={linkWhen(model.inputRequiredCount, 'attention-inbox')}
+          to={
+            hasNeedsYou
+              ? dashboardHref('needs-you')
+              : linkWhen(model.inputRequiredCount, 'attention-inbox')
+          }
         />
         {model.resumingCount > 0 && (
           <OpsChip

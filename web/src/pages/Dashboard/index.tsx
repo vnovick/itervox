@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, lazy, Suspense } from 'react';
 import { useConnectionState } from '../../hooks/useConnectionState';
 import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
@@ -50,6 +50,12 @@ import type { TrackerIssue } from '../../types/schemas';
 // issue list is still loading.
 const EMPTY_ISSUES: TrackerIssue[] = [];
 
+// The "Needs you" lane is its own chunk, loaded only once something waits on
+// a person (the daemon omits an empty lane).
+const NeedsYouLane = lazy(() =>
+  import('./components/NeedsYouLane').then((m) => ({ default: m.NeedsYouLane })),
+);
+
 export default function Dashboard() {
   // CORE-079 — ?view= / ?q= / ?state= <-> the dashboard view and filters.
   useDashboardUrlState();
@@ -64,10 +70,12 @@ export default function Dashboard() {
       snap.paused.length,
       snap.retrying.length,
       snap.inputRequired?.length ?? 0,
+      snap.needsYou?.length ?? 0,
       snap.outboxEntries?.length ?? 0,
     ].join('|');
   });
   useHashScroll(sectionRowsKey);
+  const hasNeedsYou = useItervoxStore((st) => (st.snapshot?.needsYou?.length ?? 0) > 0);
   const { data: issues = EMPTY_ISSUES } = useIssues();
   const {
     availableProfiles,
@@ -206,6 +214,12 @@ export default function Dashboard() {
       <NewTaskDialog />
       <div className="page-container">
         <ProjectSelector />
+        {/* Every issue blocked on a person, oldest first, above the rest. */}
+        {hasNeedsYou && (
+          <Suspense fallback={<div id="needs-you" />}>
+            <NeedsYouLane onSelectIssue={handleIssueSelect} />
+          </Suspense>
+        )}
         {/* CORE-077 — everything that needs the operator, with inline
             Reply / Resume / Discard, above every other section. */}
         {/* CORE-097 — only on an empty fleet (no issues, no runs). */}

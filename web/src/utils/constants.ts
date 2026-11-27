@@ -6,6 +6,7 @@ import type {
   ProfileDef,
   AutomationDef,
   InputRequiredEntry,
+  NeedsYouRow,
   DependencyGraphNode,
   DependencyGraphEdge,
   AutomationQueueRow,
@@ -35,6 +36,7 @@ export const EMPTY_AUTOMATIONS: AutomationDef[] = [];
 // declared before its first reference (no use-before-define hazard) and so
 // other consumers can reuse the same stable reference instead of inlining.
 export const EMPTY_INPUT_REQUIRED: InputRequiredEntry[] = [];
+export const EMPTY_NEEDS_YOU: NeedsYouRow[] = [];
 
 // v0.2.0 audit P2-9 — typed empties hoisted out of Dashboard/index.tsx so
 // every empty fallback shares a single stable module-level reference,

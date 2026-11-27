@@ -643,6 +643,20 @@ export const InputRequiredEntrySchema = z.object({
   guardrailLanePathsTotal: z.number().optional(),
 });
 
+// NeedsYouRowSchema mirrors server.NeedsYouRow (internal/server/needs_you.go):
+// one item of the "Needs you" lane — an issue blocked on a person, with the
+// one-line question or approval (already redacted for every scope) and when
+// it started waiting. The daemon sends the lane oldest first.
+export const NeedsYouRowSchema = z.object({
+  kind: tolerantEnum('needsYou.kind', ['question', 'approval', 'pipeline-change'], 'question'),
+  identifier: z.string(),
+  title: z.string().optional(),
+  project: z.string().optional(),
+  sessionId: z.string().optional(),
+  summary: z.string(),
+  waitingSince: z.string().optional(),
+});
+
 export const AutomationQueueBackpressureSchema = z.object({
   length: z.number(),
   maxLength: z.number(),
@@ -1089,6 +1103,9 @@ export const StateSnapshotSchema = z.object({
   inlineInput: z.boolean().optional(),
   automations: z.array(AutomationDefSchema).optional(),
   inputRequired: z.array(InputRequiredEntrySchema).optional(),
+  // The "Needs you" lane (server.NeedsYouRow), oldest first; absent when
+  // nothing waits on a person or from an older daemon.
+  needsYou: z.array(NeedsYouRowSchema).optional(),
   automationQueue: z.array(AutomationQueueRowSchema).optional(),
   automationQueueBackpressure: AutomationQueueBackpressureSchema.optional(),
   // Go-side omitempty: absent (not a zero row) until the daemon completes
@@ -1350,6 +1367,7 @@ export type IssueReview = z.infer<typeof IssueReviewSchema>;
 export type ReviewVerdict = z.infer<typeof ReviewVerdictSchema>;
 export type TrackerIssue = z.infer<typeof TrackerIssueSchema>;
 export type InputRequiredEntry = z.infer<typeof InputRequiredEntrySchema>;
+export type NeedsYouRow = z.infer<typeof NeedsYouRowSchema>;
 export type AutomationQueueRow = z.infer<typeof AutomationQueueRowSchema>;
 export type AutomationQueueBackpressure = z.infer<typeof AutomationQueueBackpressureSchema>;
 export type DependencyAuditRow = z.infer<typeof DependencyAuditRowSchema>;
