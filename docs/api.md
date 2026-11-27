@@ -680,6 +680,19 @@ Useful top-level fields include:
   [guardrail approval](/guides/guardrails/) request (#240): `approve` (or
   `itervox approve <issue>`) runs the held command once, any other reply
   rejects it.
+- `needsYou[]` is the "Needs you" lane: every issue blocked on a person,
+  oldest first (rows without a time last), derived from the waiting
+  `inputRequired[]` rows (an answered question that is only resuming is
+  left out). Each row is `{ "kind": "question" | "approval" |
+  "pipeline-change", "identifier", "title"?, "project"?, "sessionId"?,
+  "summary", "waitingSince"? }`: `kind` is `pipeline-change` for a push held
+  by `guardrails.lanes.human`, `approval` for another guardrail approval;
+  `summary` is the request's first line with secrets redacted and control
+  characters dropped, at most 200 characters, the same for every scope;
+  `waitingSince` (RFC 3339) is when the entry started waiting (its
+  `queuedAt`, persisted with the entry; a question rebuilt from the
+  tracker keeps its comment's time). Omitted when nothing waits. Treat
+  unknown `kind` values as `question`.
 - `proposedLessons` (#203) — how many proposed lessons wait in the Memory
   page's review queue (the Memory nav item's count); omitted when none.
 - `autoSwitches` (CORE-055) — issues whose next run uses an automatic
@@ -800,10 +813,18 @@ token like `/state`, and built from the same snapshot.
   "paused": true,
   "pauseReason": "deploy freeze",
   "pausedUntil": "2026-10-22T12:00:00Z",
+  "needsYou": [
+    { "kind": "question", "identifier": "ENG-12", "project": "web-app",
+      "summary": "Which database should I use?", "waitingSince": "2026-10-22T07:46:00Z" }
+  ],
   "generatedAt": "2026-10-22T10:00:00Z"
 }
 ```
 
+- `needsYou` is the oldest 20 rows of `GET /state`'s `needsYou[]` (the
+  counts stay exact), part of the ETag digest. The hub's project list hands
+  each member's summary on unchanged, so the desktop app lists hub-routed
+  projects' items from it.
 - `counts.running`, `counts.retrying` and `counts.paused` are `counts` of
   `GET /state` (`paused` counts paused issues); `counts.inputRequired` and
   `counts.pendingInputResume` split `inputRequired[]` by `state`;

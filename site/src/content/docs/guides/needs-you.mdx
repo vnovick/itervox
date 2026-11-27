@@ -1,0 +1,53 @@
+---
+title: Needs you
+description: One place for every issue blocked on a person — the questions agents asked, the guardrail approvals and the held pipeline pushes — oldest first, with how long each has waited, on the dashboard, in itervox watch and in the desktop app.
+---
+
+An agent that asks a question, a command held for a [guardrail approval](/guides/guardrails/) and a push held as a [pipeline change](/guides/lanes/) all wait on a person. **Needs you** lists every one of them in one place, the longest wait first, each with the single question or approval it is stuck on and how long it has waited.
+
+## What is listed
+
+| Kind | What waits | How it is answered |
+|------|-----------|--------------------|
+| **Question** | An agent asked for input (`input_required`) | A reply: the agent resumes with it |
+| **Approval** | A command in `guardrails.approval_commands` | `approve` runs it once; any other reply rejects it |
+| **Pipeline change** | A push that changes `guardrails.lanes.human` files | `approve` lets it through once; any other reply rejects it |
+
+An answered question whose agent is only resuming waits on nobody and is not listed. Neither is an issue you paused yourself: it waits for you by your choice, and the dashboard's **Needs attention** inbox keeps its Resume and Discard.
+
+Each item's wait starts when its request did. The time is the input-required entry's own (`queuedAt`), kept with the entry across a restart; a question rebuilt from the tracker after its local state was lost waits since its tracker comment was posted. Each item's line is the first line of the request, with secrets redacted, the same for every token scope.
+
+## On the dashboard
+
+The **Needs you** lane sits at the top of the dashboard, above the attention inbox and the board, and is hidden while nothing waits. Each row shows:
+
+- how long it has waited (`2h 14m`, moving on its own between updates; hover it for the exact time);
+- the issue and, when the daemon knows it, its title;
+- the kind: **Question**, **Approval** or **Pipeline change** (with the files it changes);
+- the question or approval line;
+- the actions: **Answer** opens the reply box (or the tracker notice with `agent.inline_input`), **Approve** and **Reject** decide an approval, and **Open** opens the issue. Answering needs an operator token; a viewer sees the lane without the controls.
+
+The live-ops strip's **Needs input** count links to the lane while it is shown. A row leaves the lane when the daemon's next update drops it, never optimistically.
+
+## In the terminal
+
+[`itervox watch`](/cli/#itervox-watch--a-live-terminal-panel) lists the same requests under `NEEDS YOU`, oldest first, with the wait and the command that answers each:
+
+```text
+NEEDS YOU
+  ? ENG-12     2h14m  question: Which database should I use?
+      → itervox reply ENG-12 "<your answer>"
+  ! ENG-7      40m00s  pipeline change: Pipeline change: the agent wants to push changes to `.github/workflows/ci.yml`
+      → itervox approve ENG-7
+      to refuse it: itervox reply ENG-7 "<why not>"
+```
+
+With `--json`, each status line's `needsYou` rows carry `waitingSince` (RFC 3339).
+
+## In the desktop app
+
+The [desktop app](/guides/desktop-app/#needs-you)'s tray menu has **Needs you (N)** under its header while anything waits, across every project the app knows: local daemons, projects read through the machine's [hub](/guides/hub/) and remote daemons. Each item reads `2h 14m · ENG-12 · question: Which database? — web-app`, oldest first; choosing it opens that project's dashboard at the issue, where you answer it. New items notify as before (the app's own alerts, or the hub's notifications); the menu adds no notifications of its own.
+
+## In the API
+
+`GET /api/v1/state` carries the lane as `needsYou[]` and `GET /api/v1/summary` its oldest 20 rows (both viewer scope); see the [API reference](/api-reference/).
