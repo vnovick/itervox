@@ -82,6 +82,19 @@ From strongest to weakest:
 5. **Your repository's own rules.** For example, `PreToolUse` deny hooks, branch
    protection and required CI. See [Agent permissions](/guides/agent-permissions/).
 
+## Approvals and policy changes
+
+- **An approval allows one request, once.** Approving a held command runs
+  that command once in that run. There is no "always allow", and no answer —
+  from the dashboard, a tracker comment, Slack, the hub or
+  `itervox run --approve` — changes a rule, a setting or a profile. See
+  [Approvals allow one request, once](/guides/guardrails/#approvals-allow-one-request-once).
+- **A policy change during a run is loud.** When `WORKFLOW.md`, a settings or
+  rules file, a playbook or a profile changes while agents run, you get a
+  warning, a `policy_changed` feed event, a dashboard banner and a line in
+  `itervox watch`, and each affected run's history records what changed.
+  See [Policy changes during a run](/guides/guardrails/#policy-changes-during-a-run).
+
 ## Patches only: the daemon pushes
 
 By default an agent's worktree has git and the daemon's credentials, and the

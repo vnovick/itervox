@@ -890,6 +890,7 @@ endpoint.
 | `pr_merged` | The `merge_pr` action merged a PR | `prUrl` |
 | `guardrail_blocked` | A shim or hook refused an operation, or an approval was rejected | `kind`, `via` |
 | `guardrail_approved` | A guardrail approval was granted | `via` |
+| `policy_changed` | A file that governs agents (WORKFLOW.md, settings or rules layers, playbooks, profiles) changed while runs were active (`source`: `config_watcher`, `dispatch`), or a run's policy fingerprint changed between its start and exit (`source: "run_exit"`) | `source`, `files` (names only; config keys as `config:<key>`), `runIds`, `possiblyAgent` |
 | `lesson_proposed` | A lesson was proposed (or auto-approved) | `outcome`, `memoryId` |
 | `dispatch_paused` | All dispatch was paused | `reason`, `until` |
 | `dispatch_resumed` | Dispatch resumed (`via`: `operator` or `expired`) | `via` |

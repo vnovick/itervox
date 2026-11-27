@@ -123,6 +123,52 @@ too. The run keeps going while it waits — nothing is paused or resumed.
 - Tmux sessions have no approval channel: matching commands are refused there,
   and the agent is told to ask you to run them.
 
+### Approvals allow one request, once
+
+An approval is an answer to one request, never a change of policy:
+
+- **It allows exactly one thing.** The request names the issue, the run and
+  the exact command (or the held push). An approval does not cover another
+  command, another run, or the same command later in the same run: that asks
+  again.
+- **It is spent by its first use.** The first read that sees the approval
+  runs the command; a second read is refused. `itervox run --approve
+  "<command>"` works the same way: the command runs once in that run, and a
+  second attempt is refused and named again.
+- **There is no "always allow".** No reply — `approve always`, `allow
+  everything`, a Slack click, a tracker comment — changes
+  `guardrails.approval_commands`, the deny rules, a setting or a profile.
+- **No answer path writes policy.** The dashboard, the Mac app, a tracker
+  reply, Slack, the hub and `itervox run --approve` only decide the request.
+  None of them writes `WORKFLOW.md`, `.itervox/settings*.jsonc`,
+  `.itervox/rules*.json`, `.itervox/playbooks/`, `.itervox/agents/` or
+  `.referee.yml`, and none saves a setting. Those writes are admin routes,
+  and the hub refuses admin routes. Tests drive every path against a
+  project holding those files and check that they are byte-identical
+  afterwards.
+
+### Policy changes during a run
+
+Rules, playbooks and profiles are read again for every dispatch, and
+`WORKFLOW.md` and the settings files reload when they change. When one of
+them changes while agents are running, Itervox does not change it quietly:
+
+- The daemon logs a warning, and the [feed](/guides/pause-and-feed/) gets a
+  `policy_changed` event naming the files (names only) and the active runs.
+  The dashboard shows a banner to operators and admins (you can dismiss
+  it), and `itervox watch` prints a `POLICY CHANGED` line.
+- When a changed file is in the project directory and a running agent could
+  write there (it runs on this host without `isolation: process`), the
+  warning says **possibly changed by a running agent**.
+- Each run records a fingerprint of what governs it when it starts: hashes
+  of those files, and the push, isolation, permission mode, allowed actions,
+  command, guardrails and lanes of its profile. At its exit the fingerprint
+  is taken again. When anything differs, the run's history row gets
+  `policyChanged` (the names that changed, such as `.itervox/rules.json` or
+  `config:agent.push`) and a `policy_changed` event names the run.
+- With [`isolation: process`](/guides/isolation/) the daemon's live policy
+  files are read-only to the agent even when a writable path contains them.
+
 Patterns are glob tokens: the first matches the program name, the rest must
 each match an argument, in order, with other arguments allowed between them.
 `kubectl apply` matches `kubectl -n prod apply -f k8s/`; `helm upgrade *-prod`
