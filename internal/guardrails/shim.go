@@ -258,8 +258,8 @@ func runShim(p Policy, tool string, args, env []string, realPATH string, stderr 
 		newClient(p).report(Event{Kind: d.kind, Tool: tool, Command: display})
 		return 1
 	case actApprove:
-		if p.preApproved(display) {
-			_, _ = fmt.Fprintf(stderr, "guardrails: `%s` was approved for this run; running it.\n", display)
+		if p.spendPreApproval(display) {
+			_, _ = fmt.Fprintf(stderr, "guardrails: `%s` was approved for this run; running it once.\n", display)
 			break
 		}
 		if code, ok := waitForApproval(p, approvalAsk{

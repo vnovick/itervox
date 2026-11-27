@@ -443,6 +443,24 @@ self-merge (PATH shims for `git`, `gh`, `glab`), and a human approval for
   persisted nor fed to input-required automations, and they are dropped when
   the run exits. `guardrails.Approvals` is concurrency-safe and is not
   `State`.
+- **An approval allows one request once; no approval path writes policy;
+  there is no allow-always.** An approval is bound to its issue, run and
+  exact command (or held push) and is spent by its first read
+  (`guardrails.Approvals`: a re-read is `unknown`); `itervox run --approve`
+  pre-approves one command for one run, spent by an exclusive marker in the
+  run's guardrails dir (`spendPreApproval`). Every answer path — dashboard /
+  Mac provide-input and dismiss, tracker reply (`applyReplyChecks`), Slack
+  (`hub.MemberActions`), the hub proxy, `itervox run --approve` — decides
+  that one request and never saves a setting or writes WORKFLOW.md, the
+  settings or rules layers, playbooks, profiles or the referee policy: those
+  writes are admin routes, which the hub refuses. Pinned by
+  `TestApprovalPathsNeverWritePolicy`, `TestInputAnswersNeverWritePolicy`,
+  `TestPolicyWritingRoutesAreAdminOnly`,
+  `TestHubApprovalChannelsCannotReachPolicyRoutes`,
+  `TestSlackAnswersOnlyAnswer`,
+  `TestRunApproveAllowsOneCommandOnceAndWritesNoPolicy` and
+  `TestApprovalAllowsOneRequestOnce` (the spy is
+  `workflow.SelfWriteCount`). Do not add an "always allow" answer.
 - **Shim entrypoints run first in `main()`** (`runGuardrailEntrypoint`),
   before dotenv / GIT_DIR scrubbing, forward the agent's env untouched and
   exit via `exitWithoutCleanup` (no `onFatalExit` cleanup in the agent's process).

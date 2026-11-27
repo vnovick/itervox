@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -119,7 +120,19 @@ func RecordSelfWrite(path string, pre []byte, preExists bool, post []byte, postE
 	recordSelfWriteAt(canonicalPath(path), FileHash(pre, preExists), FileHash(post, postExists), time.Now())
 }
 
+// selfWriteCount counts every config write this process registered: each
+// WORKFLOW.md patch and each JSONC settings or rules write (they all
+// register here). Read through SelfWriteCount.
+var selfWriteCount atomic.Uint64
+
+// SelfWriteCount is how many config writes (WORKFLOW.md, the settings and
+// rules layers) this process has made. The approval-integrity tests read it
+// before and after driving every approval path: no answer to an agent ever
+// saves policy, so it must not move.
+func SelfWriteCount() uint64 { return selfWriteCount.Load() }
+
 func recordSelfWriteAt(path string, pre, post [32]byte, now time.Time) {
+	selfWriteCount.Add(1)
 	selfWrites.mu.Lock()
 	defer selfWrites.mu.Unlock()
 	pruneSelfWritesLocked(now)
