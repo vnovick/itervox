@@ -44,6 +44,21 @@ var (
 	// IsolationHomeDeny (which already holds ~/.ssh, ~/.config/gh and
 	// ~/.netrc). Other runs keep reading them, as before.
 	IsolationPatchOutHomeDeny = []string{".git-credentials", ".config/git/credentials", ".config/glab-cli", ".config/hub"}
+
+	// IsolationProjectProtect is the daemon's live policy, relative to the
+	// directory holding WORKFLOW.md: readable, never writable, even when a
+	// writable path of the run (the workspace, the temp directory,
+	// isolation_extra_write) contains it. The workflow file itself is
+	// IsolationInputs.WorkflowFile. An agent's own worktree copies of these
+	// files are other paths and stay writable; only the files the daemon
+	// loads are protected. The token files are already in
+	// IsolationProjectDeny and the hub directory in IsolationHomeDeny.
+	IsolationProjectProtect = []string{".itervox/settings.jsonc", ".itervox/settings.local.jsonc",
+		".itervox/rules.json", ".itervox/rules.local.json", ".referee.yml"}
+
+	// IsolationHomeProtect is the same for the user layers, relative to
+	// $HOME.
+	IsolationHomeProtect = []string{".itervox/settings.jsonc", ".itervox/rules.json"}
 )
 
 // IsolationInputs is what one run's sandbox policy is built from.
@@ -65,13 +80,16 @@ type IsolationInputs struct {
 	ExtraDeny  []string
 	// PatchOut is push: daemon: IsolationPatchOutHomeDeny is denied too.
 	PatchOut bool
+	// WorkflowFile is the daemon's WORKFLOW.md (protected like
+	// IsolationProjectProtect); empty means ProjectDir/WORKFLOW.md.
+	WorkflowFile string
 }
 
 // IsolationPolicy is what a sandbox enforces. Every path is absolute,
 // symlink-resolved and exists. Everything not listed is readable and not
 // writable. Where a path is in more than one list, or one list's path lies
 // inside another's, the more specific (deeper) rule wins, and on the same
-// path Deny wins over Read over Write.
+// path Deny wins over Protect over Read over Write.
 type IsolationPolicy struct {
 	// Write is readable and writable.
 	Write []string
@@ -80,6 +98,12 @@ type IsolationPolicy struct {
 	Read []string
 	// Deny is neither readable nor writable.
 	Deny []string
+	// Protect is readable and never writable although it lies inside a
+	// writable path: the daemon's live policy files (WORKFLOW.md, the
+	// settings and rules layers, the referee policy) when a writable path
+	// of the run reaches them. Only such paths are listed: everything
+	// outside Write is read-only already.
+	Protect []string `json:",omitempty"`
 }
 
 // RunIsolationInputs fills IsolationInputs for a run of profile in
@@ -136,11 +160,44 @@ func BuildIsolationPolicy(in IsolationInputs) IsolationPolicy {
 	}
 	deny = append(deny, in.ExtraDeny...)
 
-	return IsolationPolicy{
+	p := IsolationPolicy{
 		Write: resolveExisting(write),
 		Read:  resolveExisting(read),
 		Deny:  resolveExisting(expandGlobs(deny)),
 	}
+	p.Protect = reachableProtect(p, resolveExisting(livePolicyFiles(in)))
+	return p
+}
+
+// livePolicyFiles are the daemon's live policy files for in (they may not
+// exist): the workflow file, IsolationProjectProtect and
+// IsolationHomeProtect.
+func livePolicyFiles(in IsolationInputs) []string {
+	var out []string
+	wf := in.WorkflowFile
+	if wf == "" && in.ProjectDir != "" {
+		wf = filepath.Join(in.ProjectDir, "WORKFLOW.md")
+	}
+	if wf != "" {
+		out = append(out, absOrEmpty(wf))
+	}
+	out = append(out, joinAll(in.ProjectDir, IsolationProjectProtect)...)
+	return append(out, joinAll(in.Home, IsolationHomeProtect)...)
+}
+
+// reachableProtect keeps the files a writable path of p reaches and no
+// denied path already hides.
+func reachableProtect(p IsolationPolicy, files []string) []string {
+	var out []string
+	for _, f := range files {
+		if slices.ContainsFunc(p.Deny, func(d string) bool { return within(f, d) }) {
+			continue
+		}
+		if slices.ContainsFunc(p.Write, func(w string) bool { return within(f, w) }) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // joinAll joins each rel onto base; nothing when base is empty.
@@ -236,6 +293,7 @@ type isolationRuleKind int
 const (
 	ruleWrite isolationRuleKind = iota
 	ruleRead
+	ruleProtect
 	ruleDeny
 )
 
@@ -264,6 +322,7 @@ func (p IsolationPolicy) orderedRules() []isolationRule {
 	}
 	add(ruleWrite, p.Write)
 	add(ruleRead, p.Read)
+	add(ruleProtect, p.Protect)
 	add(ruleDeny, p.Deny)
 	sort.SliceStable(rules, func(i, j int) bool {
 		di, dj := pathDepth(rules[i].path), pathDepth(rules[j].path)

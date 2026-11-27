@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -126,21 +127,24 @@ type landlockGrant struct {
 
 // landlockGrants turns p into Landlock rules: read everywhere but the
 // denied paths, full access to the writable paths (and /dev) but their
-// denied parts, read on the re-exposed paths but their denied parts.
+// denied and protected parts, read on the re-exposed paths but their denied
+// parts. A protected path keeps only the read grant of "/": Landlock only
+// grants, so it is carved out of every writable grant instead.
 func landlockGrants(p IsolationPolicy, handled uint64) []landlockGrant {
 	var out []landlockGrant
-	add := func(root string, access uint64) {
-		for _, r := range complementRoots(root, p.Deny) {
+	add := func(root string, access uint64, except []string) {
+		for _, r := range complementRoots(root, except) {
 			out = append(out, landlockGrant{path: r, access: access & handled})
 		}
 	}
-	add("/", llRead)
+	add("/", llRead, p.Deny)
 	for _, r := range p.Read {
-		add(r, llRead)
+		add(r, llRead, p.Deny)
 	}
-	add("/dev", handled)
+	notWritable := append(slices.Clone(p.Deny), p.Protect...)
+	add("/dev", handled, notWritable)
 	for _, w := range p.Write {
-		add(w, handled)
+		add(w, handled, notWritable)
 	}
 	return out
 }

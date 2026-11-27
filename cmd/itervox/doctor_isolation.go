@@ -90,6 +90,12 @@ func renderIsolationCheck(b *strings.Builder, c IsolationCheck) {
 		deny = append(deny, "every other workspace under "+c.WorkspaceRoot)
 	}
 	fmt.Fprintf(b, "  unreadable: %s (+ isolation_extra_deny)\n", strings.Join(deny, ", "))
+	protect := []string{filepath.Join(c.ProjectDir, "WORKFLOW.md")}
+	for _, p := range agent.IsolationProjectProtect {
+		protect = append(protect, filepath.Join(c.ProjectDir, p))
+	}
+	protect = append(protect, homeRel(agent.IsolationHomeProtect)...)
+	fmt.Fprintf(b, "  never writable (live policy, even inside a writable path): %s\n", strings.Join(protect, ", "))
 	b.WriteString("  network: allowed; hooks: not sandboxed\n")
 }
 
