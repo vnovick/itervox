@@ -216,11 +216,31 @@ flags, so nothing is written into the repository's own config:
 | Claude Code | `--mcp-config <generated JSON>` (`mcpServers` shape) |
 | Codex | `-c mcp_servers.<name>.command=...` overrides (a project `.codex/config.toml` is ignored when the project is untrusted, so flags are the reliable route) |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` (inline JSON config, merged above the project's `opencode.json` and below managed settings) carrying `mcp.servers.<pack>.<name>` entries (`type: local`, `command`, `environment` values as `{env:NAME}`); nothing is written to disk, and namespaced names never replace the repo's own servers |
-| Cursor CLI | no config-path flag; the run writes the servers into the worktree's `.cursor/mcp.json` (`mcpServers`, values as `${env:NAME}` interpolation, so no secret reaches the file), merged with and restored to any file the repo already has, and passes `--approve-mcps` (which approves every configured server, the repo's own included) |
+| Cursor CLI | no config-path flag; the run writes the servers into the worktree's `.cursor/mcp.json` (`mcpServers`, values as `${env:NAME}` interpolation, so no secret reaches the file) and passes `--approve-mcps`, only when the repo has no `.cursor/mcp.json` of its own (see below); the file is removed when the run exits |
 
 A backend with no confirmed delivery route makes `validate` downgrade that
 backend to "no MCP" and say so; a profile that requires an MCP server is then
 refused on that backend rather than run without it.
+
+**Cursor CLI and the repo's own servers.** `--approve-mcps` cannot name
+servers: it approves every server in `.cursor/mcp.json`. If the repository has
+its own `.cursor/mcp.json`, passing it would also start the repo's servers in
+an unattended run, which a person never approved. So by default:
+
+- A repo with no `.cursor/mcp.json`: the pack's servers are delivered as above.
+- A repo with its own `.cursor/mcp.json`: the pack's MCP servers are **not**
+  delivered on Cursor CLI and `--approve-mcps` is not passed. A profile that
+  needs one of them is refused on Cursor CLI (it runs on another backend, or
+  the operator chooses), and `itervox doctor` and the run's failure say why.
+
+A project that trusts its own servers can opt in with
+`packs[].cursor_approve_repo_mcps: true`, honoured only in the **local** layer
+(`.itervox/settings.local.jsonc`), like `override_permissions`. Then the run
+merges the pack's servers into a copy of the repo's file, passes
+`--approve-mcps` (approving the repo's servers too), and restores the repo's
+file when the run exits. `itervox doctor` and the evidence report show the
+setting when it is on. The other three backends never need it: their servers
+are passed on their own without approving anything else.
 
 ### 5.4 Models and flags
 
@@ -312,9 +332,6 @@ versions.
 
 ## 13. Open questions
 
-- Cursor CLI: `--approve-mcps` approves all configured servers, not only the
-  pack's. Decide whether a pack's MCP servers may run on Cursor when the repo
-  has its own `.cursor/mcp.json`, or only when it has none.
 - Pin each backend's file locations with a recorded fake-runner test, since
   these formats change often (checked 2026-11-28: Cursor docs, OpenCode and
   Codex source, Claude Code docs).
