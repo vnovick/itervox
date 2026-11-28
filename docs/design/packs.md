@@ -215,7 +215,7 @@ flags, so nothing is written into the repository's own config:
 |---|---|
 | Claude Code | `--mcp-config <generated JSON>` (`mcpServers` shape) |
 | Codex | `-c mcp_servers.<name>.command=...` overrides (a project `.codex/config.toml` is ignored when the project is untrusted, so flags are the reliable route) |
-| OpenCode | open question: no MCP flag found; candidates are a generated config passed via an environment variable, or an `opencode.json` merge the run removes on exit |
+| OpenCode | `OPENCODE_CONFIG_CONTENT` (inline JSON config, merged above the project's `opencode.json` and below managed settings) carrying `mcp.servers.<pack>.<name>` entries (`type: local`, `command`, `environment` values as `{env:NAME}`); nothing is written to disk, and namespaced names never replace the repo's own servers |
 | Cursor CLI | no config-path flag; the run writes the servers into the worktree's `.cursor/mcp.json` (`mcpServers`, values as `${env:NAME}` interpolation, so no secret reaches the file), merged with and restored to any file the repo already has, and passes `--approve-mcps` (which approves every configured server, the repo's own included) |
 
 A backend with no confirmed delivery route makes `validate` downgrade that
@@ -306,15 +306,12 @@ versions.
 ## 12. Rollout
 
 1. **v1:** local directories and zips, import, lock file, envelope,
-   provenance, skills delivery for all four backends, MCP for Claude Code,
-   Codex and Cursor CLI.
+   provenance, skills delivery for all four backends, MCP for all four.
 2. **v2:** a registry (`itervox pack install acme/secfix`), Ed25519 signatures
-   and a trust store; MCP for OpenCode once its route is
-   confirmed.
+   and a trust store.
 
 ## 13. Open questions
 
-- OpenCode MCP delivery (§5.3).
 - Cursor CLI: `--approve-mcps` approves all configured servers, not only the
   pack's. Decide whether a pack's MCP servers may run on Cursor when the repo
   has its own `.cursor/mcp.json`, or only when it has none.
